@@ -78,9 +78,10 @@ If the user wants to create a new playbook:
 
 Steps:
 1. Ask the user to describe the workflow steps.
-2. Write to `$VAULT/CEO/playbooks/<name>.md` with numbered steps.
-3. Add an entry to `$VAULT/CEO/SKILLS.md` dispatch table.
-4. Confirm: "Created `playbooks/<name>.md` and added to SKILLS.md dispatch table."
+2. Check `$VAULT/CEO/SKILLS.md` — if a task type with this name already exists, tell the user and ask if they want to update the existing playbook instead.
+3. Write to `$VAULT/CEO/playbooks/<name>.md` with numbered steps.
+4. Add an entry to `$VAULT/CEO/SKILLS.md` dispatch table (with `status: active`).
+5. Confirm: "Created `playbooks/<name>.md` and added to SKILLS.md dispatch table."
 
 ## Constraints
 

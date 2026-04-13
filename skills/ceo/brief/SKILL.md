@@ -24,11 +24,12 @@ Set `$VAULT` to the vault_path value.
 
 4. **Read user profile** — read `$VAULT/Profile.md` Active Domains for priority order.
 
-5. **Scan open PRs** — run across all known repos:
+5. **Scan open PRs** — read `$VAULT/CEO/repos.md` for known repos. For each repo (and as a global fallback):
    ```bash
-   gh pr list --state open --search "review-requested:@me" --limit 20
-   gh pr list --state open --author @me --limit 10
+   gh pr list --state open --search "review-requested:@me" --repo <org>/<repo> --limit 10
+   gh pr list --state open --author @me --repo <org>/<repo> --limit 10
    ```
+   If repos.md is empty, run without `--repo` flag (searches across all accessible repos).
    Note: PR count, oldest PR age, any with failing CI.
 
 6. **Check pending approvals** — read `$VAULT/CEO/approvals/pending.md`. Count outstanding items.

@@ -16,7 +16,7 @@ Set `$VAULT` to the vault_path value.
 
 ## Steps
 
-1. **Read CEO identity** — read `$VAULT/CEO/AGENTS.md` and `$VAULT/CEO/IDENTITY.md` (first 20 lines of each for context).
+1. **Read CEO identity** — read `$VAULT/CEO/AGENTS.md` (full file — includes authority tier definitions needed for context) and `$VAULT/CEO/IDENTITY.md`.
 
 2. **Check pending approvals** — read `$VAULT/CEO/approvals/pending.md`.
    - Count items: total, approved (`[x]`), pending (`[ ]`)
