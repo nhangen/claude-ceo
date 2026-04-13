@@ -1,6 +1,6 @@
 ---
 name: ceo
-description: Read the Obsidian vault and propose prioritized actions. Triggers on "/ceo", "what should I work on", "ceo status", "prioritize my work".
+description: Read the Obsidian vault and propose prioritized actions. Triggers on "/ceo", "what should I work on", "prioritize my work".
 version: 0.1.0
 ---
 
@@ -28,7 +28,7 @@ Set `$VAULT` to the vault_path value.
 
 5. **Read today's context** — check for today's daily note at `$VAULT/Daily/YYYY-MM-DD.md`. Read the Top 3 and Tasks sections if they exist.
 
-6. **Check pending approvals** — read `$VAULT/CEO/approvals/pending.md`. If there are approved items (marked `[x]`), list them as top priority for execution.
+6. **Check pending approvals** — read `$VAULT/CEO/approvals/pending.md`. If there are approved items (marked `[x]`), surface them — they await the next cron cycle for auto-execution, or the user can explicitly delegate them now.
 
 7. **Check pending questions** — read `$VAULT/Pending.md`. Note 1-2 questions relevant to the current context (don't ask all).
 
