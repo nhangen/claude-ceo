@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "nhangen",
+  "description": "nhangen's Claude Code plugins",
+  "owner": {
+    "name": "nhangen"
+  },
+  "plugins": [
+    {
+      "name": "ceo",
+      "description": "Autonomous CEO agent. Reads Obsidian vault, prioritizes work, proposes actions by authority tier, learns from corrections.",
+      "version": "0.1.0",
+      "author": {
+        "name": "nhangen"
+      },
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
