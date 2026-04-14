@@ -34,7 +34,7 @@ fi
 # Display the log
 echo "## CEO Log — $DATE"
 echo ""
-cat "$LOG_FILE" | tail -n +8  # Skip frontmatter (first 7 lines: ---, date, type, ---, blank, # heading, blank)
+sed -n '/^## /,$p' "$LOG_FILE"  # Skip frontmatter and heading, start at first ## entry
 echo ""
 
 # Summary stats

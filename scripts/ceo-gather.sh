@@ -34,19 +34,25 @@ fi
 
 # --- GitHub PRs (if gh available) ---
 if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+  # Build repo args from repos.md (column 2 = repo name like org/repo)
   REPOS_FILE="$CEO_DIR/repos.md"
-  REPO_ARGS=""
+  REPO_NAMES=()
   if [ -f "$REPOS_FILE" ]; then
-    REPO_LIST=$(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $2}' | xargs)
-    if [ -n "$REPO_LIST" ]; then
-      for REPO in $REPO_LIST; do
-        REPO_ARGS="$REPO_ARGS --repo $REPO"
-      done
-    fi
+    while IFS= read -r REPO_NAME; do
+      REPO_NAME=$(echo "$REPO_NAME" | xargs)
+      [ -n "$REPO_NAME" ] && REPO_NAMES+=("$REPO_NAME")
+    done < <(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $2}')
   fi
 
-  export PR_REVIEW_REQUESTED=$(timeout 30 gh pr list --state open --search "review-requested:@me" --json number,title,createdAt,repository --limit 20 $REPO_ARGS 2>/dev/null || echo "[]")
-  export PR_AUTHORED=$(timeout 30 gh pr list --state open --author @me --json number,title,createdAt,repository --limit 10 $REPO_ARGS 2>/dev/null || echo "[]")
+  # Build gh command args
+  GH_REPO_FLAGS=""
+  for RN in "${REPO_NAMES[@]+"${REPO_NAMES[@]}"}"; do
+    GH_REPO_FLAGS="$GH_REPO_FLAGS --repo $RN"
+  done
+
+  # Fetch PRs (with timeout to avoid hanging cron)
+  export PR_REVIEW_REQUESTED=$(eval timeout 30 gh pr list --state open --search "\"review-requested:@me\"" --json number,title,createdAt,repository --limit 20 "$GH_REPO_FLAGS" 2>/dev/null || echo "[]")
+  export PR_AUTHORED=$(eval timeout 30 gh pr list --state open --author @me --json number,title,createdAt,repository --limit 10 "$GH_REPO_FLAGS" 2>/dev/null || echo "[]")
 
   export PR_REVIEW_COUNT=$(echo "$PR_REVIEW_REQUESTED" | jq 'length' 2>/dev/null || echo 0)
   export PR_AUTHORED_COUNT=$(echo "$PR_AUTHORED" | jq 'length' 2>/dev/null || echo 0)

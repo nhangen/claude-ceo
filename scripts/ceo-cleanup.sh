@@ -18,18 +18,15 @@ echo "CLEANUP_DATE: $TODAY"
 echo ""
 
 # --- Process each cloned repo ---
-if [ -f "$REPOS_FILE" ]; then
-  REPO_PATHS=$(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---\|No repos" | awk -F'|' '{print $3}' | xargs)
-else
-  REPO_PATHS=""
-fi
-
 MERGED_COUNT=0
 ORPHAN_BRANCHES=""
+HAS_REPOS=false
 
-if [ -n "$REPO_PATHS" ]; then
-  for REPO_PATH in $REPO_PATHS; do
-    REPO_PATH=$(echo "$REPO_PATH" | xargs)  # trim whitespace
+if [ -f "$REPOS_FILE" ]; then
+  while IFS= read -r REPO_PATH; do
+    REPO_PATH=$(echo "$REPO_PATH" | xargs)
+    [ -z "$REPO_PATH" ] && continue
+    HAS_REPOS=true
     if [ ! -d "$REPO_PATH" ]; then
       echo "REPO_MISSING: $REPO_PATH"
       continue
@@ -84,9 +81,11 @@ if [ -n "$REPO_PATHS" ]; then
       fi
     done
     echo ""
-  done
-else
-  echo "NO_REPOS: repos.md is empty"
+  done < <(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---\|No repos" | awk -F'|' '{print $3}')
+fi
+
+if [ "$HAS_REPOS" = false ]; then
+  echo "NO_REPOS: repos.md is empty or has no data rows"
 fi
 
 echo "MERGED_TOTAL: $MERGED_COUNT"
@@ -109,7 +108,7 @@ echo "OLD_LOGS: $OLD_LOGS (>30 days)"
 if [ -n "$ORPHAN_BRANCHES" ]; then
   echo ""
   echo "ORPHAN_SUMMARY:"
-  echo -e "$ORPHAN_BRANCHES"
+  printf '%b\n' "$ORPHAN_BRANCHES"
   echo ""
   echo "AI_NEEDED: yes — review orphaned branches and decide whether to propose deletion"
 else
