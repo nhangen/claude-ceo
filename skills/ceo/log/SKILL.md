@@ -23,15 +23,12 @@ Optional date argument:
 
 ## Steps
 
-1. **Determine date** — parse the argument. Default to today (YYYY-MM-DD format).
+1. **Run the log script** — execute the shell script that handles all log display:
+   ```bash
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/ceo-log.sh" <date-argument>
+   ```
+   - No argument or "today" → today's log
+   - "yesterday" → yesterday's log
+   - "2026-04-10" → specific date
 
-2. **Read log file** — read `$VAULT/CEO/log/YYYY-MM-DD.md`.
-   - If the file doesn't exist, say "No CEO activity logged for YYYY-MM-DD."
-
-3. **Present log** — print the full log content to terminal. If long, summarize:
-   - Total actions count
-   - Completed / failed / partial breakdown
-   - Any audibles (deviations from playbooks)
-   - Any errors
-
-4. **Offer navigation** — "Want to see a different date? Or check `/ceo:status` for the full overview."
+2. **If the user asks for analysis** — only then use AI judgment to summarize patterns, trends, or recommendations from the log output. Otherwise, the shell script output is sufficient.
