@@ -39,10 +39,40 @@ The user provides a task description after the command, e.g.:
 6. **Read matched playbook** — read `$VAULT/CEO/playbooks/<matched-type>.md`.
    - If the playbook file doesn't exist yet, tell the user: "Playbook `<type>.md` is listed in SKILLS.md but hasn't been created yet. Want me to create a starter playbook based on your task?"
 
-7. **Execute playbook** — follow the playbook steps, respecting authority tiers:
-   - **Read actions:** execute freely
-   - **Low-stakes write actions:** execute and log
-   - **High-stakes actions:** propose to user for approval before executing (in interactive mode, ask inline rather than writing to pending.md)
+7. **Execute playbook with subagent dispatch** — read the playbook steps. For each step:
+   
+   a. **Determine if the step needs a specialist.** Match by keywords:
+      - Diff analysis, code review, CI check → **Code Reviewer**
+      - Write code, fix bug, run tests → **Implementer**
+      - Search, investigate, literature review → **Researcher**
+      - Draft text, write post, compose email → **Writer**
+      - Check inventory, run SOP, review hiring → **Ops Manager**
+      - Compare options, analyze data, evaluate → **Analyst**
+      - No specialist needed → CEO handles directly
+   
+   b. **Choose dispatch mode:**
+      - Will Nathan want to review the subagent's output later? → vault-mediated
+      - Quick subtask within a larger flow? → inline
+   
+   c. **Dispatch subagent** (if specialist needed):
+      - Read the role template from the plugin's `skills/ceo/agents/<role>.md`
+      - Replace `TASK_DESCRIPTION` with the specific step's task
+      - Replace `SCOPED_CONTEXT` with:
+        - `$VAULT/CEO/AGENTS.md` (global rules)
+        - Relevant training file for the domain
+        - Task-specific context (repo path, PR number, vault files, etc.)
+      - For vault-mediated: create `$VAULT/CEO/delegations/<timestamp>-<role>-<slug>.md` with task details
+      - Dispatch via Agent tool
+      - Collect the result
+      - For vault-mediated: write result to the delegation record's `## Result` section
+   
+   d. **Process subagent result:**
+      - If result contains high-stakes recommendations → propose to user (interactive) or write to pending.md (cron)
+      - If result is actionable low-stakes → continue playbook with the result
+      - If result is a draft (Writer, Code Reviewer) → present to user for review
+   
+   e. **Handle directly** (if no specialist needed):
+      - Execute the step respecting authority tiers (unchanged from current behavior)
 
 8. **Log results** — append to `$VAULT/CEO/log/YYYY-MM-DD.md`:
 
@@ -58,6 +88,8 @@ The user provides a task description after the command, e.g.:
    - <deviations from playbook, if any>
    **Errors:**
    - <errors encountered, if any>
+   **Delegations:**
+   - <role>: <task summary> — <status>
    ```
 
 9. **Report back** — summarize what was done to the user.
