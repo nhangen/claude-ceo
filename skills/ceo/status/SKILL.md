@@ -32,7 +32,11 @@ Set `$VAULT` to the vault_path value.
 5. **Check for errors** — scan today's and yesterday's logs for entries with `**Status:** failed` or `**Errors:**` sections.
    - Surface any unresolved errors.
 
-6. **Present status report**:
+6. **Check delegations** — scan `$VAULT/CEO/delegations/` for files from the last 7 days.
+   - Count by status: in-progress, completed, failed
+   - List any in-progress delegations
+
+7. **Present status report**:
    ```
    ## CEO Status
    
@@ -46,6 +50,10 @@ Set `$VAULT` to the vault_path value.
    
    ### Errors
    - None
+   
+   ### Delegations (last 7 days)
+   - N completed, N in-progress, N failed
+   - [in-progress] code-reviewer: PR #6980 review (started 10:03)
    
    ### Pending Questions (from Pending.md)
    - What is Slava's exact title at OM?
