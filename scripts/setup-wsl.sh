@@ -108,6 +108,7 @@ if [ -f "$CEO_CRON" ]; then
   echo "=== Cron Setup ==="
   echo "Add these entries to your crontab (crontab -e):"
   echo ""
+  echo "*/15 * * * *  $CEO_CRON inbox"
   echo "57 8 * * 1-5  $CEO_CRON morning-brief"
   echo "3 10 * * 1-5  $CEO_CRON pr-triage"
   echo "33 9 * * *    $CEO_CRON pending-drip"
@@ -117,6 +118,7 @@ if [ -f "$CEO_CRON" ]; then
   read -p "Install these cron entries now? (y/n) " INSTALL_CRON
   if [ "$INSTALL_CRON" = "y" ]; then
     (crontab -l 2>/dev/null || true; echo "# CEO Agent
+*/15 * * * *  $CEO_CRON inbox
 57 8 * * 1-5  $CEO_CRON morning-brief
 3 10 * * 1-5  $CEO_CRON pr-triage
 33 9 * * *    $CEO_CRON pending-drip
