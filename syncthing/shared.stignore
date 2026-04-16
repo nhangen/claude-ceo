@@ -1,0 +1,32 @@
+// Syncthing ignore for Obsidian vault — same file on Mac and WSL
+// Copy to: ~/Documents/Obsidian/.stignore
+
+// Obsidian internals
+.obsidian
+.trash
+
+// OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+// Editor temp files
+*.swp
+*.swo
+*~
+
+// Syncthing metadata (don't sync its own state)
+.stfolder
+.stversions
+
+// Git repos inside vault (if any)
+.git
+
+// Node/build artifacts (if any tools run inside vault)
+node_modules
+
+// CEO runtime files that are machine-local (not vault state)
+CEO/log/.last-run-*
+CEO/log/.retry-*.json
+CEO/log/.config-hash
+CEO/log/.fail-count
