@@ -8,15 +8,15 @@ echo "=== CEO Agent — WSL Setup ==="
 echo ""
 
 # 1. System packages
-echo "[1/7] Installing system packages..."
+echo "[1/9] Installing system packages..."
 sudo apt update -qq
 sudo apt install -y -qq git curl jq
 
 # 2. GitHub CLI
 if command -v gh &>/dev/null; then
-  echo "[2/7] gh CLI already installed ($(gh --version | head -1))"
+  echo "[2/9] gh CLI already installed ($(gh --version | head -1))"
 else
-  echo "[2/7] Installing GitHub CLI..."
+  echo "[2/9] Installing GitHub CLI..."
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
   sudo apt update -qq && sudo apt install -y -qq gh
@@ -33,9 +33,9 @@ fi
 # 3. SSH key for GitHub
 SSH_KEY="$HOME/.ssh/github_ceo"
 if [ -f "$SSH_KEY" ]; then
-  echo "[3/7] SSH key already exists at $SSH_KEY"
+  echo "[3/9] SSH key already exists at $SSH_KEY"
 else
-  echo "[3/7] Generating SSH key..."
+  echo "[3/9] Generating SSH key..."
   mkdir -p "$HOME/.ssh"
   ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "ceo-agent@wsl"
 
@@ -66,29 +66,29 @@ SSHEOF
 fi
 
 # 4. Git config
-echo "[4/7] Configuring git..."
+echo "[4/9] Configuring git..."
 git config --global user.name "Nathan Hangen (CEO Agent)"
 git config --global user.email "nhangen@users.noreply.github.com"
 
 # 5. Syncthing
 # Syncthing — must be installed and configured separately (see README.md)
 if command -v syncthing &>/dev/null; then
-  echo "[5/7] Syncthing found"
+  echo "[5/9] Syncthing found"
 else
-  echo "[5/7] WARNING: Syncthing not found."
+  echo "[5/9] WARNING: Syncthing not found."
   echo "  Install Syncthing on all machines before proceeding."
   echo "  See README.md and syncthing/README.md for setup instructions."
 fi
 
 # 6. Repo directory
-echo "[6/7] Creating repo directory..."
+echo "[6/9] Creating repo directory..."
 mkdir -p "$HOME/repos"
 
 # 7. Claude Code
 if command -v claude &>/dev/null; then
-  echo "[7/7] Claude Code already installed ($(claude --version 2>/dev/null || echo 'unknown version'))"
+  echo "[7/9] Claude Code already installed ($(claude --version 2>/dev/null || echo 'unknown version'))"
 else
-  echo "[7/7] Claude Code not found."
+  echo "[7/9] Claude Code not found."
   echo "  Install it manually: https://claude.ai/download"
   echo "  After installing, run: claude login"
 fi
@@ -97,10 +97,10 @@ fi
 VAULT="$HOME/Documents/Obsidian"
 if [ -d "$VAULT/CEO" ]; then
   echo ""
-  echo "CEO vault structure found at $VAULT/CEO/"
+  echo "[8/9] CEO vault structure found at $VAULT/CEO/"
 else
   echo ""
-  echo "WARNING: CEO vault structure not found at $VAULT/CEO/"
+  echo "[8/9] WARNING: CEO vault structure not found at $VAULT/CEO/"
   echo "  Make sure Syncthing is configured and the vault has synced."
 fi
 
@@ -110,7 +110,7 @@ CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
 if [ -f "$CEO_CRON" ]; then
   echo ""
-  echo "=== Cron Setup ==="
+  echo "[9/9] Cron Setup"
   echo "Add these entries to your crontab (crontab -e):"
   echo ""
   echo "*/15 * * * *  $CEO_CRON inbox"
@@ -133,7 +133,7 @@ if [ -f "$CEO_CRON" ]; then
   fi
 else
   echo ""
-  echo "WARNING: ceo-cron.sh not found at $CEO_CRON"
+  echo "[9/9] WARNING: ceo-cron.sh not found at $CEO_CRON"
 fi
 
 echo ""
@@ -141,4 +141,8 @@ echo "=== Setup Complete ==="
 echo "Next steps:"
 echo "  1. Verify Syncthing is syncing the vault"
 echo "  2. Run: claude login (if not already authenticated)"
-echo "  3. Test: $CEO_CRON morning-brief"
+if [ -f "$CEO_CRON" ]; then
+  echo "  3. Test: $CEO_CRON morning-brief"
+else
+  echo "  3. Test: ~/claude-ceo/scripts/ceo-cron.sh morning-brief"
+fi
