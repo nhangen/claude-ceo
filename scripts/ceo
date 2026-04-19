@@ -20,6 +20,7 @@ if [ -z "$VAULT" ]; then
   done
 fi
 : "${VAULT:=$HOME/Documents/Obsidian}"
+export CEO_VAULT="$VAULT"
 
 CEO_DIR="$VAULT/CEO"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
