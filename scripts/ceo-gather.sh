@@ -36,8 +36,8 @@ export NOW=$(date +%H:%M)
 # --- Pending approvals ---
 PENDING_FILE="$CEO_DIR/approvals/pending.md"
 if [ -f "$PENDING_FILE" ]; then
-  export PENDING_COUNT=$(grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null || echo 0)
-  export APPROVED_COUNT=$(grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null || echo 0)
+  export PENDING_COUNT=$(grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null; true)
+  export APPROVED_COUNT=$(grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null; true)
 else
   export PENDING_COUNT=0
   export APPROVED_COUNT=0
