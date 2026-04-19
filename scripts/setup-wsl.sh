@@ -48,7 +48,13 @@ else
 fi
 
 # Configure SSH to use this key
-if ! grep -q "github_ceo" "$HOME/.ssh/config" 2>/dev/null; then
+if grep -q "github_ceo" "$HOME/.ssh/config" 2>/dev/null; then
+  echo "  SSH config already references github_ceo"
+elif grep -q "^Host github.com" "$HOME/.ssh/config" 2>/dev/null; then
+  # Existing Host block — inject the CEO key as an additional IdentityFile
+  sed -i '/^Host github.com/a\  IdentityFile ~/.ssh/github_ceo' "$HOME/.ssh/config"
+  echo "  Added github_ceo key to existing Host github.com block"
+else
   cat >> "$HOME/.ssh/config" << 'SSHEOF'
 
 Host github.com
@@ -65,15 +71,14 @@ git config --global user.name "Nathan Hangen (CEO Agent)"
 git config --global user.email "nhangen@users.noreply.github.com"
 
 # 5. Syncthing
+# Syncthing — must be installed and configured separately (see README.md)
 if command -v syncthing &>/dev/null; then
-  echo "[5/7] Syncthing already installed"
+  echo "[5/7] Syncthing found"
 else
-  echo "[5/7] Installing Syncthing..."
-  sudo apt install -y -qq syncthing
+  echo "[5/7] WARNING: Syncthing not found."
+  echo "  Install Syncthing on all machines before proceeding."
+  echo "  See README.md and syncthing/README.md for setup instructions."
 fi
-echo "  Configure Syncthing to sync your Obsidian vault with your Mac."
-echo "  Vault path on this machine: ~/Documents/Obsidian/"
-echo "  See the CEO spec for write-domain rules."
 
 # 6. Repo directory
 echo "[6/7] Creating repo directory..."

@@ -10,9 +10,14 @@ Display the CEO's execution log entries.
 
 ## Config
 
-Read vault path from the obsidian plugin config: `~/.claude/plugins/cache/nhangen/obsidian/*/obsidian.local.md`
+Resolve `$VAULT` using this fallback chain (first match wins):
+1. Environment variable `$CEO_VAULT` (if set)
+2. Obsidian plugin config: `~/.claude/plugins/cache/nhangen/obsidian/*/obsidian.local.md` → read `vault_path`
+3. Default: `~/Documents/Obsidian`
 
-Set `$VAULT` to the vault_path value.
+If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vault is installed and use that path.
+
+Resolve `$CEO_PLUGIN_DIR` by finding the latest version directory: `~/.claude/plugins/cache/nhangen/claude-ceo/*/`
 
 ## Arguments
 
@@ -25,7 +30,7 @@ Optional date argument:
 
 1. **Run the log script** — execute the shell script that handles all log display:
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/ceo-log.sh" <date-argument>
+   bash "$CEO_PLUGIN_DIR/scripts/ceo-log.sh" <date-argument>
    ```
    - No argument or "today" → today's log
    - "yesterday" → yesterday's log

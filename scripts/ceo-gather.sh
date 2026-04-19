@@ -34,7 +34,7 @@ fi
 
 # --- GitHub PRs (if gh available) ---
 if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-  # Build repo args from repos.md (column 2 = repo name like org/repo)
+  # Build repo list from repos.md (column 2 = repo name like org/repo)
   REPOS_FILE="$CEO_DIR/repos.md"
   REPO_NAMES=()
   if [ -f "$REPOS_FILE" ]; then
@@ -44,15 +44,27 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     done < <(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $2}')
   fi
 
-  # Build gh command args
-  GH_REPO_FLAGS=""
-  for RN in "${REPO_NAMES[@]+"${REPO_NAMES[@]}"}"; do
-    GH_REPO_FLAGS="$GH_REPO_FLAGS --repo $RN"
-  done
+  # Fetch PRs per-repo then merge (gh pr list only accepts one --repo)
+  _REVIEW_PARTS="[]"
+  _AUTHORED_PARTS="[]"
+  if [ ${#REPO_NAMES[@]} -gt 0 ]; then
+    for RN in "${REPO_NAMES[@]}"; do
+      _R=$(timeout 30 gh pr list --state open --search "review-requested:@me" \
+        --json number,title,createdAt,repository --limit 20 --repo "$RN" 2>/dev/null || echo "[]")
+      _REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_R" | jq -s 'add' 2>/dev/null || echo "$_REVIEW_PARTS")
 
-  # Fetch PRs (with timeout to avoid hanging cron)
-  export PR_REVIEW_REQUESTED=$(eval timeout 30 gh pr list --state open --search "\"review-requested:@me\"" --json number,title,createdAt,repository --limit 20 "$GH_REPO_FLAGS" 2>/dev/null || echo "[]")
-  export PR_AUTHORED=$(eval timeout 30 gh pr list --state open --author @me --json number,title,createdAt,repository --limit 10 "$GH_REPO_FLAGS" 2>/dev/null || echo "[]")
+      _A=$(timeout 30 gh pr list --state open --author @me \
+        --json number,title,createdAt,repository --limit 10 --repo "$RN" 2>/dev/null || echo "[]")
+      _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_A" | jq -s 'add' 2>/dev/null || echo "$_AUTHORED_PARTS")
+    done
+  else
+    _REVIEW_PARTS=$(timeout 30 gh pr list --state open --search "review-requested:@me" \
+      --json number,title,createdAt,repository --limit 20 2>/dev/null || echo "[]")
+    _AUTHORED_PARTS=$(timeout 30 gh pr list --state open --author @me \
+      --json number,title,createdAt,repository --limit 10 2>/dev/null || echo "[]")
+  fi
+  export PR_REVIEW_REQUESTED="$_REVIEW_PARTS"
+  export PR_AUTHORED="$_AUTHORED_PARTS"
 
   export PR_REVIEW_COUNT=$(echo "$PR_REVIEW_REQUESTED" | jq 'length' 2>/dev/null || echo 0)
   export PR_AUTHORED_COUNT=$(echo "$PR_AUTHORED" | jq 'length' 2>/dev/null || echo 0)

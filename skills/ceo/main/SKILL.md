@@ -10,11 +10,12 @@ Read the vault, understand priorities, propose actions by authority tier.
 
 ## Config
 
-Read vault path from the obsidian plugin config: `~/.claude/plugins/cache/nhangen/obsidian/*/obsidian.local.md`
+Resolve `$VAULT` using this fallback chain (first match wins):
+1. Environment variable `$CEO_VAULT` (if set)
+2. Obsidian plugin config: `~/.claude/plugins/cache/nhangen/obsidian/*/obsidian.local.md` → read `vault_path`
+3. Default: `~/Documents/Obsidian`
 
-If obsidian.local.md does not exist, tell the user: "CEO requires the Obsidian plugin. Run `/obsidian:setup` first."
-
-Set `$VAULT` to the vault_path value.
+If `$VAULT/CEO/AGENTS.md` does not exist at the resolved path, ask the user where their Obsidian vault is installed and use that path.
 
 ## Steps
 
