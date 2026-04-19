@@ -17,9 +17,10 @@
 
 # --- Base paths ---
 if [ -z "${CEO_VAULT:-}" ]; then
+  _user="${USER:-$(whoami)}"
   for _candidate in \
-    "/mnt/z/Users/$USER/Documents/Obsidian" \
-    "/mnt/c/Users/$USER/Documents/Obsidian" \
+    "/mnt/z/Users/$_user/Documents/Obsidian" \
+    "/mnt/c/Users/$_user/Documents/Obsidian" \
     "$HOME/Documents/Obsidian" \
     "$HOME/Obsidian"
   do

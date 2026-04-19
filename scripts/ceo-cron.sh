@@ -18,9 +18,10 @@ TRIGGER="${1:?Usage: ceo-cron.sh <trigger>}"
 # Resolve vault: explicit env var wins, then common WSL/Linux locations
 VAULT="${CEO_VAULT:-}"
 if [ -z "$VAULT" ]; then
+  _user="${USER:-$(whoami)}"
   for candidate in \
-    "/mnt/z/Users/$USER/Documents/Obsidian" \
-    "/mnt/c/Users/$USER/Documents/Obsidian" \
+    "/mnt/z/Users/$_user/Documents/Obsidian" \
+    "/mnt/c/Users/$_user/Documents/Obsidian" \
     "$HOME/Documents/Obsidian" \
     "$HOME/Obsidian"
   do
