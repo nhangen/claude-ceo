@@ -6,7 +6,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
-VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
+
+VAULT="${CEO_VAULT:-}"
+if [ -z "$VAULT" ]; then
+  for candidate in \
+    "/mnt/z/Users/$USER/Documents/Obsidian" \
+    "/mnt/c/Users/$USER/Documents/Obsidian" \
+    "$HOME/Documents/Obsidian" \
+    "$HOME/Obsidian"
+  do
+    [ -d "$candidate/CEO" ] && { VAULT="$candidate"; break; }
+  done
+fi
+: "${VAULT:=$HOME/Documents/Obsidian}"
+
 CEO_DIR="$VAULT/CEO"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
