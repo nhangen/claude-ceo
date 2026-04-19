@@ -136,13 +136,33 @@ else
   echo "[9/9] WARNING: ceo-cron.sh not found at $CEO_CRON"
 fi
 
+# Write next steps to a file (claude login clears terminal history)
+NEXT_STEPS="$HOME/claude-ceo-next-steps.txt"
+{
+  echo "=== CEO Agent — Next Steps ==="
+  echo ""
+  echo "Setup finished $(date). Pick up here after claude login."
+  echo ""
+  echo "  1. Verify Syncthing is syncing the vault"
+  echo "  2. Run: claude login  (if not already authenticated)"
+  echo "  3. Run: claude plugin add nhangen/claude-ceo"
+  echo "  4. Test interactive:  cd ~/Documents/Obsidian && claude"
+  echo "     Then type:  /ceo"
+  if [ -f "$CEO_CRON" ]; then
+    echo "  5. Test cron:  $CEO_CRON morning-brief"
+  else
+    echo "  5. Test cron:  ~/claude-ceo/scripts/ceo-cron.sh morning-brief"
+  fi
+  echo "  6. Check output:  cat ~/Documents/Obsidian/CEO/log/$(date +%Y-%m-%d).md"
+  echo "  7. Enable cron:  crontab -e  (entries were offered during setup)"
+  echo ""
+  echo "This file: $NEXT_STEPS  (safe to delete after you're done)"
+} > "$NEXT_STEPS"
+
 echo ""
 echo "=== Setup Complete ==="
-echo "Next steps:"
-echo "  1. Verify Syncthing is syncing the vault"
-echo "  2. Run: claude login (if not already authenticated)"
-if [ -f "$CEO_CRON" ]; then
-  echo "  3. Test: $CEO_CRON morning-brief"
-else
-  echo "  3. Test: ~/claude-ceo/scripts/ceo-cron.sh morning-brief"
-fi
+echo ""
+cat "$NEXT_STEPS"
+echo ""
+echo "NOTE: 'claude login' will clear your terminal."
+echo "These steps are saved to: $NEXT_STEPS"
