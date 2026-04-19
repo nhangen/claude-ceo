@@ -1,0 +1,203 @@
+#!/bin/bash
+set -euo pipefail
+
+# ceo — CLI for the CEO agent system.
+# Usage: ceo <command> [args]
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
+VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
+CEO_DIR="$VAULT/CEO"
+CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
+
+cmd_help() {
+  cat <<'USAGE'
+Usage: ceo <command>
+
+Commands:
+  setup       Provision this machine (install deps, configure git/ssh, cron)
+  next        Show post-setup instructions (survives terminal clear)
+  test        Run a quick smoke test of the CEO system
+  doctor      Check system health (deps, vault, cron, auth)
+  cron        Run a cron trigger manually (e.g. ceo cron morning-brief)
+  help        Show this message
+
+Examples:
+  ceo setup           # First-time machine setup
+  ceo next            # Redisplay next steps after claude login
+  ceo test            # Smoke test: run morning-brief, check log
+  ceo doctor          # Verify everything is configured correctly
+  ceo cron pr-triage  # Manually trigger pr-triage playbook
+USAGE
+}
+
+cmd_next() {
+  local next_file="$INSTALL_DIR/next-steps.txt"
+  if [ -f "$next_file" ]; then
+    cat "$next_file"
+  else
+    echo "No saved next steps found. Run 'ceo setup' first."
+    echo ""
+    echo "Post-setup checklist:"
+    echo "  1. Run: claude login"
+    echo "  2. Run: claude plugin add nhangen/claude-ceo"
+    echo "  3. Test: cd $VAULT && claude"
+    echo "     Then type: /ceo"
+    echo "  4. Test cron: ceo test"
+    echo "  5. Enable cron: ceo doctor (shows if cron is installed)"
+  fi
+}
+
+cmd_doctor() {
+  local ok=0
+  local warn=0
+  local fail=0
+
+  echo "=== CEO Doctor ==="
+  echo ""
+
+  # gh
+  if command -v gh &>/dev/null; then
+    if gh auth status &>/dev/null 2>&1; then
+      echo "  ✓ gh CLI authenticated"
+      ok=$((ok + 1))
+    else
+      echo "  ✗ gh CLI installed but not authenticated — run: gh auth login"
+      fail=$((fail + 1))
+    fi
+  else
+    echo "  ✗ gh CLI not found — install: https://cli.github.com"
+    fail=$((fail + 1))
+  fi
+
+  # claude
+  if command -v claude &>/dev/null; then
+    echo "  ✓ Claude Code installed ($(claude --version 2>/dev/null || echo '?'))"
+    ok=$((ok + 1))
+  else
+    echo "  ✗ Claude Code not found — install: https://claude.ai/download"
+    fail=$((fail + 1))
+  fi
+
+  # syncthing
+  if command -v syncthing &>/dev/null; then
+    echo "  ✓ Syncthing installed"
+    ok=$((ok + 1))
+  else
+    echo "  ! Syncthing not found — see README.md for install instructions"
+    warn=$((warn + 1))
+  fi
+
+  # vault
+  if [ -f "$CEO_DIR/AGENTS.md" ]; then
+    echo "  ✓ CEO vault found at $CEO_DIR/"
+    ok=$((ok + 1))
+  else
+    echo "  ✗ CEO vault not found at $CEO_DIR/"
+    echo "    Check Syncthing sync or set CEO_VAULT env var"
+    fail=$((fail + 1))
+  fi
+
+  # ssh key
+  if [ -f "$HOME/.ssh/github_ceo" ]; then
+    echo "  ✓ SSH key exists at ~/.ssh/github_ceo"
+    ok=$((ok + 1))
+  else
+    echo "  ! SSH key not found — run: ceo setup"
+    warn=$((warn + 1))
+  fi
+
+  # cron
+  if crontab -l 2>/dev/null | grep -q "ceo-cron.sh"; then
+    local count
+    count=$(crontab -l 2>/dev/null | grep -c "ceo-cron.sh")
+    echo "  ✓ Cron entries installed ($count triggers)"
+    ok=$((ok + 1))
+  else
+    echo "  ! No ceo-cron entries in crontab — run: ceo setup"
+    warn=$((warn + 1))
+  fi
+
+  # plugin
+  if claude plugin list 2>/dev/null | grep -q "ceo"; then
+    echo "  ✓ CEO plugin installed in Claude Code"
+    ok=$((ok + 1))
+  else
+    echo "  ! CEO plugin not found — run: claude plugin add nhangen/claude-ceo"
+    warn=$((warn + 1))
+  fi
+
+  # sync conflicts
+  local conflicts
+  conflicts=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs)
+  if [ "$conflicts" -gt 0 ]; then
+    echo "  ! $conflicts Syncthing conflict files found"
+    warn=$((warn + 1))
+  fi
+
+  echo ""
+  echo "Result: $ok ok, $warn warnings, $fail failures"
+  [ "$fail" -gt 0 ] && return 1
+  return 0
+}
+
+cmd_test() {
+  echo "=== CEO Smoke Test ==="
+  echo ""
+
+  # Pre-flight
+  cmd_doctor || true
+  echo ""
+
+  if [ ! -f "$CEO_CRON" ]; then
+    echo "ERROR: ceo-cron.sh not found at $CEO_CRON"
+    exit 1
+  fi
+
+  echo "Running morning-brief trigger..."
+  "$CEO_CRON" morning-brief
+  local exit_code=$?
+
+  echo ""
+  if [ $exit_code -eq 0 ]; then
+    local today
+    today=$(date +%Y-%m-%d)
+    local log_file="$CEO_DIR/log/$today.md"
+    if [ -f "$log_file" ]; then
+      echo "Log written to: $log_file"
+      echo ""
+      tail -20 "$log_file"
+    else
+      echo "WARNING: Trigger succeeded but no log file found at $log_file"
+    fi
+  else
+    echo "FAILED (exit code: $exit_code)"
+    echo "Check: $CEO_DIR/log/cron-skips.log"
+    echo "Check: $CEO_DIR/log/cron-raw.log"
+  fi
+}
+
+cmd_setup() {
+  bash "$SCRIPT_DIR/setup-wsl.sh"
+}
+
+cmd_cron() {
+  local trigger="${1:?Usage: ceo cron <trigger>}"
+  "$CEO_CRON" "$trigger"
+}
+
+# Dispatch
+case "${1:-help}" in
+  setup)    cmd_setup ;;
+  next)     cmd_next ;;
+  doctor)   cmd_doctor ;;
+  test)     cmd_test ;;
+  cron)     shift; cmd_cron "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *)
+    echo "Unknown command: $1"
+    echo ""
+    cmd_help
+    exit 1
+    ;;
+esac

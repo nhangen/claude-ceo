@@ -30,16 +30,30 @@ After installing on all machines:
 
 See `syncthing/README.md` for write-domain rules and conflict handling.
 
-## Commands
+## CLI
+
+The `scripts/ceo` CLI manages the agent system outside of Claude Code:
+
+```
+ceo setup       # First-time machine setup (deps, git, ssh, cron)
+ceo next        # Redisplay post-setup steps (survives terminal clear)
+ceo doctor      # Check system health (deps, vault, cron, auth)
+ceo test        # Smoke test: trigger morning-brief, check log
+ceo cron <name> # Manually run a cron trigger (e.g. ceo cron pr-triage)
+```
+
+Add `scripts/` to your PATH or alias it: `alias ceo=/path/to/claude-ceo/scripts/ceo`
+
+## Skills (inside Claude Code)
 
 | Command | Description |
 |---------|-------------|
 | `/ceo` | Read vault, propose prioritized actions |
 | `/ceo:status` | Show pending approvals, recent log, blocked items |
-| `/ceo:brief` | Generate morning briefing (Phase 2b) |
-| `/ceo:delegate` | Hand off a task (Phase 2b) |
-| `/ceo:train` | Add a training rule or playbook (Phase 2b) |
-| `/ceo:log` | Show today's execution log (Phase 2b) |
+| `/ceo:brief` | Generate morning briefing |
+| `/ceo:delegate` | Hand off a task |
+| `/ceo:train` | Add a training rule or playbook |
+| `/ceo:log` | Show today's execution log |
 
 ## Vault Structure
 
