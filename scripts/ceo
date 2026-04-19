@@ -182,8 +182,12 @@ cmd_setup() {
 }
 
 cmd_cron() {
-  local trigger="${1:?Usage: ceo cron <trigger>}"
-  "$CEO_CRON" "$trigger"
+  if [ $# -eq 0 ]; then
+    echo "Usage: ceo cron <trigger>"
+    echo "Triggers: inbox, morning-brief, pr-triage, pending-drip, eod-summary, cleanup"
+    exit 1
+  fi
+  "$CEO_CRON" "$1"
 }
 
 # Dispatch
