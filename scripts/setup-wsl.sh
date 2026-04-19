@@ -140,6 +140,36 @@ else
   echo "[9/9] WARNING: ceo-cron.sh not found at $CEO_CRON"
 fi
 
+# 10. Add ceo CLI to PATH
+CEO_CLI="$SCRIPT_DIR/ceo"
+if [ -f "$CEO_CLI" ]; then
+  # Check if already on PATH
+  if command -v ceo &>/dev/null && [ "$(command -v ceo)" = "$CEO_CLI" ]; then
+    echo ""
+    echo "[10] ceo CLI already on PATH"
+  elif command -v ceo &>/dev/null; then
+    echo ""
+    echo "[10] WARNING: 'ceo' already exists on PATH at $(command -v ceo)"
+    echo "  Skipping — add an alias manually if needed:"
+    echo "  echo 'alias ceo=\"$CEO_CLI\"' >> ~/.bashrc"
+  else
+    echo ""
+    echo "[10] Add 'ceo' command to PATH?"
+    echo "  This creates a symlink in ~/.local/bin/ so you can run 'ceo' from anywhere."
+    read -p "  Add to PATH? (y/n) " ADD_PATH
+    if [ "$ADD_PATH" = "y" ]; then
+      mkdir -p "$HOME/.local/bin"
+      ln -sf "$CEO_CLI" "$HOME/.local/bin/ceo"
+      echo "  Symlinked: ~/.local/bin/ceo → $CEO_CLI"
+      if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+        echo "  NOTE: ~/.local/bin is not in your PATH yet."
+        echo "  Add this to your ~/.bashrc or ~/.zshrc:"
+        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+      fi
+    fi
+  fi
+fi
+
 # Write next steps to a file (claude login clears terminal history)
 NEXT_STEPS="$INSTALL_DIR/next-steps.txt"
 {
@@ -150,17 +180,13 @@ NEXT_STEPS="$INSTALL_DIR/next-steps.txt"
   echo "  1. Verify Syncthing is syncing the vault"
   echo "  2. Run: claude login  (if not already authenticated)"
   echo "  3. Run: claude plugin add nhangen/claude-ceo"
-  echo "  4. Test interactive:  cd ~/Documents/Obsidian && claude"
+  echo "  4. Run: ceo doctor  (verify everything is configured)"
+  echo "  5. Test interactive:  cd ~/Documents/Obsidian && claude"
   echo "     Then type:  /ceo"
-  if [ -f "$CEO_CRON" ]; then
-    echo "  5. Test cron:  $CEO_CRON morning-brief"
-  else
-    echo "  5. Test cron:  $INSTALL_DIR/scripts/ceo-cron.sh morning-brief"
-  fi
-  echo "  6. Check output:  cat ~/Documents/Obsidian/CEO/log/$(date +%Y-%m-%d).md"
+  echo "  6. Test cron:  ceo test"
   echo "  7. Enable cron:  crontab -e  (entries were offered during setup)"
   echo ""
-  echo "This file: $NEXT_STEPS  (safe to delete after you're done)"
+  echo "Redisplay:  ceo next"
 } > "$NEXT_STEPS"
 
 echo ""
@@ -169,5 +195,5 @@ echo ""
 cat "$NEXT_STEPS"
 echo ""
 echo "NOTE: 'claude login' will clear your terminal."
-echo "To redisplay these steps:  $SCRIPT_DIR/ceo next"
-echo "To check system health:    $SCRIPT_DIR/ceo doctor"
+echo "To redisplay:  ceo next"
+echo "To verify:     ceo doctor"
