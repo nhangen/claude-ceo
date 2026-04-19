@@ -14,7 +14,24 @@ set -euo pipefail
 # High-stakes actions are written to CEO/approvals/pending.md, not executed.
 
 TRIGGER="${1:?Usage: ceo-cron.sh <trigger>}"
-VAULT="$HOME/Documents/Obsidian"
+
+# Resolve vault: explicit env var wins, then common WSL/Linux locations
+VAULT="${CEO_VAULT:-}"
+if [ -z "$VAULT" ]; then
+  for candidate in \
+    "/mnt/z/Users/$USER/Documents/Obsidian" \
+    "/mnt/c/Users/$USER/Documents/Obsidian" \
+    "$HOME/Documents/Obsidian" \
+    "$HOME/Obsidian"
+  do
+    [ -d "$candidate/CEO" ] && { VAULT="$candidate"; break; }
+  done
+fi
+if [ -z "$VAULT" ]; then
+  echo "ERROR: CEO vault not found. Set CEO_VAULT=/path/to/Obsidian" >&2
+  exit 1
+fi
+
 CEO_DIR="$VAULT/CEO"
 LOG_DIR="$CEO_DIR/log"
 TODAY=$(date +%Y-%m-%d)
