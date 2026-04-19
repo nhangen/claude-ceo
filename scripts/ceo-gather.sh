@@ -16,6 +16,16 @@
 #   DAILY_NOTE_TOP3, DAILY_NOTE_TASKS
 
 # --- Base paths ---
+if [ -z "${CEO_VAULT:-}" ]; then
+  for _candidate in \
+    "/mnt/z/Users/$USER/Documents/Obsidian" \
+    "/mnt/c/Users/$USER/Documents/Obsidian" \
+    "$HOME/Documents/Obsidian" \
+    "$HOME/Obsidian"
+  do
+    [ -d "$_candidate/CEO" ] && { export CEO_VAULT="$_candidate"; break; }
+  done
+fi
 export VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
 export CEO_DIR="$VAULT/CEO"
 export LOG_DIR="$CEO_DIR/log"
