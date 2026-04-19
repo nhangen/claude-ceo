@@ -80,9 +80,14 @@ else
   echo "  See README.md and syncthing/README.md for setup instructions."
 fi
 
-# 6. Repo directory
-echo "[6/9] Creating repo directory..."
-mkdir -p "$HOME/repos"
+# Derive install root from script location (works regardless of clone path)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
+
+# 6. Repo directory (sibling of the plugin clone)
+REPOS_DIR="$(dirname "$INSTALL_DIR")/repos"
+echo "[6/9] Creating repo directory at $REPOS_DIR..."
+mkdir -p "$REPOS_DIR"
 
 # 7. Claude Code
 if command -v claude &>/dev/null; then
@@ -105,7 +110,6 @@ else
 fi
 
 # 9. Install cron
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
 if [ -f "$CEO_CRON" ]; then
@@ -137,7 +141,7 @@ else
 fi
 
 # Write next steps to a file (claude login clears terminal history)
-NEXT_STEPS="$HOME/claude-ceo-next-steps.txt"
+NEXT_STEPS="$INSTALL_DIR/next-steps.txt"
 {
   echo "=== CEO Agent — Next Steps ==="
   echo ""
@@ -151,7 +155,7 @@ NEXT_STEPS="$HOME/claude-ceo-next-steps.txt"
   if [ -f "$CEO_CRON" ]; then
     echo "  5. Test cron:  $CEO_CRON morning-brief"
   else
-    echo "  5. Test cron:  ~/claude-ceo/scripts/ceo-cron.sh morning-brief"
+    echo "  5. Test cron:  $INSTALL_DIR/scripts/ceo-cron.sh morning-brief"
   fi
   echo "  6. Check output:  cat ~/Documents/Obsidian/CEO/log/$(date +%Y-%m-%d).md"
   echo "  7. Enable cron:  crontab -e  (entries were offered during setup)"
