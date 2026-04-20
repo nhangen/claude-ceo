@@ -300,6 +300,7 @@ $PLAYBOOK_CONTENT
 
 Execute ONLY the following pre-approved actions. Do NOT execute anything else.
 Do NOT run: git push, gh pr merge, gh pr create, gh issue close, or any command that modifies remote state.
+Do NOT use the Write or Edit tools to write to CEO/log/ — the shell will write your log entry from the LOG_ENTRY block you output below.
 
 PRE-APPROVED ACTIONS:
 $SAFE_ACTIONS
