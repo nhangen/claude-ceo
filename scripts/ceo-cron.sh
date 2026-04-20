@@ -310,7 +310,7 @@ LOG_ENTRY:
 - {any errors, or 'none'}
 END_LOG_ENTRY"
 
-  EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | timeout 600 claude --print --max-turns 20 2>&1)
+  EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | timeout 600 claude --print --max-turns 20 --dangerouslySkipPermissions 2>&1)
   EXEC_EXIT=$?
 
   if [ $EXEC_EXIT -ne 0 ]; then
