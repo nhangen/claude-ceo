@@ -14,6 +14,14 @@ LOG_DIR="$CEO_DIR/log"
 REPOS_FILE="$CEO_DIR/repos.md"
 TODAY=$(date +%Y-%m-%d)
 
+# Read branch prefix from settings
+SETTINGS_FILE="$CEO_DIR/settings.json"
+if command -v jq &>/dev/null && [ -f "$SETTINGS_FILE" ]; then
+  BRANCH_PREFIX=$(jq -r '.branch_prefix // "ceo/"' "$SETTINGS_FILE" 2>/dev/null || echo "ceo/")
+else
+  BRANCH_PREFIX="ceo/"
+fi
+
 echo "CLEANUP_DATE: $TODAY"
 echo ""
 
@@ -23,6 +31,9 @@ ORPHAN_BRANCHES=""
 HAS_REPOS=false
 
 if [ -f "$REPOS_FILE" ]; then
+  if ! head -1 "$REPOS_FILE" | grep -q "Local Path"; then
+    echo "WARNING: repos.md header doesn't contain 'Local Path' column — column parsing may be wrong"
+  fi
   while IFS= read -r REPO_PATH; do
     REPO_PATH=$(echo "$REPO_PATH" | xargs)
     [ -z "$REPO_PATH" ] && continue
@@ -38,7 +49,7 @@ if [ -f "$REPOS_FILE" ]; then
     WORKTREES=$(git -C "$REPO_PATH" worktree list --porcelain 2>/dev/null | grep "^worktree" | grep -v "$REPO_PATH$" || true)
 
     # List CEO branches
-    CEO_BRANCHES=$(git -C "$REPO_PATH" branch --list "ceo/*" 2>/dev/null | sed 's/^[* ]*//' || true)
+    CEO_BRANCHES=$(git -C "$REPO_PATH" branch --list "${BRANCH_PREFIX}*" 2>/dev/null | sed 's/^[* ]*//' || true)
 
     if [ -z "$CEO_BRANCHES" ]; then
       echo "  BRANCHES: none"
