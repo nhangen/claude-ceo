@@ -299,7 +299,8 @@ PLAYBOOK ($TRIGGER):
 $PLAYBOOK_CONTENT
 
 Execute ONLY the following pre-approved actions. Do NOT execute anything else.
-Do NOT run: git push, gh pr merge, gh pr create, gh issue close, or any command that modifies remote state.
+Do NOT run any `gh` command — all GitHub data is in PRE-GATHERED DATA below. The shell already fetched it.
+Do NOT run: git push, git commit, or any command that modifies remote state.
 Do NOT use the Write or Edit tools to write to CEO/log/ — the shell will write your log entry from the LOG_ENTRY block you output below.
 
 PRE-APPROVED ACTIONS:
