@@ -169,8 +169,10 @@ cmd_test() {
     exit 1
   fi
 
-  echo "Running morning-brief trigger..."
-  "$CEO_CRON" morning-brief
+  echo "Running morning-brief trigger (bypassing cooldown)..."
+  echo "  This calls claude --print which may take 1-2 minutes."
+  echo ""
+  CEO_FORCE=1 "$CEO_CRON" morning-brief
   local exit_code=$?
 
   echo ""

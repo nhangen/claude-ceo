@@ -62,8 +62,8 @@ else
   trap "rmdir '$LOCK_DIR' 2>/dev/null" EXIT
 fi
 
-# --- Per-trigger runaway protection ---
-if [ -f "$LAST_RUN_FILE" ]; then
+# --- Per-trigger runaway protection (skip with --force) ---
+if [ "${CEO_FORCE:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
   LAST_RUN=$(cat "$LAST_RUN_FILE")
   NOW_EPOCH=$(date +%s)
   if [ $((NOW_EPOCH - LAST_RUN)) -lt 1800 ]; then
