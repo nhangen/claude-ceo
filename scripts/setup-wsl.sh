@@ -82,7 +82,16 @@ fi
 
 # Derive install root from script location (works regardless of clone path)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Find repo root by walking up from scripts/ to find .claude-plugin/
+INSTALL_DIR="$SCRIPT_DIR"
+while [ "$INSTALL_DIR" != "/" ]; do
+  [ -d "$INSTALL_DIR/.claude-plugin" ] && break
+  INSTALL_DIR="$(dirname "$INSTALL_DIR")"
+done
+if [ "$INSTALL_DIR" = "/" ]; then
+  INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
+fi
 
 # 6. Repo directory (sibling of the plugin clone)
 REPOS_DIR="$(dirname "$INSTALL_DIR")/repos"
