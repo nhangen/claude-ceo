@@ -204,7 +204,8 @@ cmd_cron() {
     echo "Triggers: inbox, morning-brief, pr-triage, pending-drip, eod-summary, cleanup"
     exit 1
   fi
-  "$CEO_CRON" "$1"
+  # Interactive invocation — bypass cooldown. Real cron calls ceo-cron.sh directly.
+  CEO_FORCE=1 CEO_VERBOSE=1 "$CEO_CRON" "$1"
 }
 
 # Dispatch
