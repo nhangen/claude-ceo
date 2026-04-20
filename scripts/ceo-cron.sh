@@ -45,6 +45,19 @@ FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
 _v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*"; }
 
+# --- Require jq ---
+if ! command -v jq &>/dev/null; then
+  echo "$(date): FATAL — jq not installed. Run: sudo apt install jq" >&2
+  exit 1
+fi
+
+# --- Settings reader (safe fallback on missing file/bad JSON/no jq) ---
+SETTINGS_FILE="$CEO_DIR/settings.json"
+_cfg() {
+  local key="$1" default="$2"
+  jq -r "$key // \"$default\"" "$SETTINGS_FILE" 2>/dev/null || echo "$default"
+}
+
 # --- Ensure log directory exists before any writes ---
 mkdir -p "$LOG_DIR"
 
@@ -69,7 +82,8 @@ fi
 if [ "${CEO_FORCE:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
   LAST_RUN=$(cat "$LAST_RUN_FILE")
   NOW_EPOCH=$(date +%s)
-  if [ $((NOW_EPOCH - LAST_RUN)) -lt 1800 ]; then
+  COOLDOWN=$(_cfg '.cooldown_seconds' '1800')
+  if [ $((NOW_EPOCH - LAST_RUN)) -lt "$COOLDOWN" ]; then
     echo "$(date): Skipping $TRIGGER — last run too recent ($(( (NOW_EPOCH - LAST_RUN) / 60 ))m ago)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
@@ -101,6 +115,39 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/ceo-gather.sh"
 _v "  PRs for review: $PR_REVIEW_COUNT | PRs authored: $PR_AUTHORED_COUNT"
 
+# --- Preflight functions (pure shell, no AI) ---
+BRANCH_PREFIX=$(_cfg '.branch_prefix' 'ceo/')
+
+preflight_none() { return 0; }
+
+preflight_has_unchecked_inbox() {
+  [ -f "$CEO_DIR/inbox.md" ] && grep -q "^- \[ \]" "$CEO_DIR/inbox.md"
+}
+
+preflight_has_prs_to_review() {
+  [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]
+}
+
+preflight_has_pending_items() {
+  [ "${PENDING_COUNT:-0}" -gt 0 ]
+}
+
+preflight_has_log_entries_after_4pm() {
+  local hour
+  hour=$(date +%H)
+  [ "$hour" -ge 16 ] && [ -f "$LOG_FILE" ] && grep -q "^## " "$LOG_FILE"
+}
+
+preflight_has_ceo_branches() {
+  local repos_file="$CEO_DIR/repos.md"
+  [ -f "$repos_file" ] || return 1
+  while IFS= read -r repo_path; do
+    repo_path=$(echo "$repo_path" | xargs)
+    [ -d "$repo_path" ] && git -C "$repo_path" branch --list "${BRANCH_PREFIX}*" 2>/dev/null | grep -q . && return 0
+  done < <(grep "^|" "$repos_file" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $3}')
+  return 1
+}
+
 # --- Match trigger to playbook ---
 MATCHED_ROW=$(grep "^| $TRIGGER " "$CEO_DIR/SKILLS.md" || true)
 
@@ -111,7 +158,11 @@ if [ -z "$MATCHED_ROW" ]; then
 fi
 
 PLAYBOOK_REL=$(echo "$MATCHED_ROW" | awk -F'|' '{print $3}' | xargs)
-STATUS=$(echo "$MATCHED_ROW" | awk -F'|' '{print $6}' | xargs)
+MODEL=$(echo "$MATCHED_ROW" | awk -F'|' '{print $6}' | xargs)
+PREFLIGHT=$(echo "$MATCHED_ROW" | awk -F'|' '{print $7}' | xargs)
+STATUS=$(echo "$MATCHED_ROW" | awk -F'|' '{print $8}' | xargs)
+MODEL="${MODEL:-sonnet}"
+PREFLIGHT="${PREFLIGHT:-none}"
 
 if [ -z "$PLAYBOOK_REL" ]; then
   echo "$(date): ERROR — Matched trigger '$TRIGGER' but could not parse playbook path. SKILLS.md may be malformed." >> "$LOG_DIR/cron-skips.log"
@@ -131,6 +182,20 @@ fi
 if [ "$STATUS" != "active" ]; then
   echo "$(date): Playbook '$TRIGGER' is not active (status: $STATUS)" >> "$LOG_DIR/cron-skips.log"
   exit 0
+fi
+
+# --- Run preflight check ---
+PREFLIGHT_FN="preflight_${PREFLIGHT}"
+if type "$PREFLIGHT_FN" &>/dev/null; then
+  if ! "$PREFLIGHT_FN"; then
+    _v "Preflight '$PREFLIGHT' says no work to do. Skipping."
+    echo "$(date): Skipping $TRIGGER — preflight '$PREFLIGHT' returned no-work" >> "$LOG_DIR/cron-skips.log"
+    date +%s > "$LAST_RUN_FILE"
+    exit 0
+  fi
+  _v "Preflight '$PREFLIGHT' passed"
+else
+  _v "WARNING: Unknown preflight '$PREFLIGHT' — running anyway"
 fi
 
 # --- Read context files (with size limits for injection safety) ---
@@ -217,8 +282,9 @@ Output ONLY ACTION: lines. No other text."
 
 _v "Phase 1: Planning (read-only, max 5 min)..."
 PLAN_EXIT=0
+_v "Using model: $MODEL"
 PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | timeout 300 claude --print --max-turns 1 \
-  --disallowedTools "Bash,Write,Edit" 2>&1) || PLAN_EXIT=$?
+  --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$LOG_DIR/cron-stderr.log") || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
@@ -333,7 +399,8 @@ END_LOG_ENTRY"
 
   _v "Phase 3: Executing $SAFE_COUNT safe actions (max 10 min)..."
   EXEC_EXIT=0
-  EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | timeout 600 claude --print --max-turns 20 2>&1) || EXEC_EXIT=$?
+  EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | timeout 600 claude --print --max-turns 20 \
+    --model "$MODEL" 2>>"$LOG_DIR/cron-stderr.log") || EXEC_EXIT=$?
 
   _v "Phase 3 done (exit: $EXEC_EXIT)"
   if [ $EXEC_EXIT -ne 0 ]; then
