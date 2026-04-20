@@ -218,7 +218,7 @@ Output ONLY ACTION: lines. No other text."
 _v "Phase 1: Planning (read-only, max 5 min)..."
 PLAN_EXIT=0
 PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | timeout 300 claude --print --max-turns 1 \
-  --disallowedTools "Bash,Write,Edit" 2>&1) || PLAN_EXIT=$?
+  --disallowedTools "Bash,Write,Edit" --dangerouslySkipPermissions 2>&1) || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
