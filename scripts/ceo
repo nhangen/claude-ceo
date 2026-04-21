@@ -107,6 +107,15 @@ cmd_doctor() {
     fail=$((fail + 1))
   fi
 
+  # yq
+  if command -v yq &>/dev/null; then
+    echo "  ✓ yq installed"
+    ok=$((ok + 1))
+  else
+    echo "  ✗ yq not found — install: sudo snap install yq (or brew install yq)"
+    fail=$((fail + 1))
+  fi
+
   # syncthing
   if command -v syncthing &>/dev/null; then
     echo "  ✓ Syncthing installed"
@@ -261,7 +270,7 @@ cmd_preflight() {
   echo "  Data: Pending=$PENDING_COUNT | Approved=$APPROVED_COUNT"
   echo ""
 
-  jq -r '.playbooks[] | "\(.name)|\(.model)|\(.preflight)|\(.status)"' "$registry_file" | while IFS='|' read -r name model preflight status; do
+  while IFS='|' read -r name model preflight status; do
     [ "$status" != "active" ] && continue
 
     local fn="preflight_${preflight:-none}"
@@ -269,17 +278,21 @@ cmd_preflight() {
     if type "$fn" &>/dev/null; then
       if "$fn" 2>/dev/null; then
         result="RUN"
+        would_run=$((would_run + 1))
       else
         result="SKIP"
+        would_skip=$((would_skip + 1))
       fi
     else
       result="RUN (unknown preflight)"
+      would_run=$((would_run + 1))
     fi
 
     printf "  %-18s %-8s %-30s → %s\n" "$name" "$model" "$preflight" "$result"
-  done
+  done < <(jq -r '.playbooks[] | "\(.name)|\(.model)|\(.preflight)|\(.status)"' "$registry_file")
 
   echo ""
+  echo "Result: $would_run would run, $would_skip would skip"
   echo "Estimated API calls: $((would_run * 2)) (plan + execute per trigger)"
 }
 
@@ -325,7 +338,7 @@ cmd_playbook_scan() {
     old_registry=$(cat "$registry_file")
   fi
 
-  local new_registry='{"playbooks":[]}'
+  local new_registry='{"generated":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","playbooks":[]}'
   local found=0
   local skipped=0
 
@@ -360,7 +373,7 @@ cmd_playbook_scan() {
       --arg preflight "$preflight" \
       --arg tier "$tier" \
       --arg status "$status" \
-      --arg file "$basename" \
+      --arg file "playbooks/$basename" \
       '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
@@ -512,7 +525,7 @@ cmd_playbook_info() {
 
   local playbook_file
   playbook_file=$(echo "$entry" | jq -r '.file')
-  local full_path="$CEO_DIR/playbooks/$playbook_file"
+  local full_path="$CEO_DIR/$playbook_file"
   if [ -f "$full_path" ]; then
     echo ""
     echo "--- Body ---"

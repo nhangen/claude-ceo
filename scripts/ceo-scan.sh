@@ -30,7 +30,11 @@ VAULT_CHANGES_RAW=$(find "$VAULT" -newer "$LAST_SCAN_MARKER" -type f -name "*.md
   -not -name "*.sync-conflict-*" \
   2>/dev/null || true)
 
-export VAULT_CHANGES_COUNT=$(echo "$VAULT_CHANGES_RAW" | grep -c "." 2>/dev/null || echo 0)
+if [ -z "$VAULT_CHANGES_RAW" ]; then
+  export VAULT_CHANGES_COUNT=0
+else
+  export VAULT_CHANGES_COUNT=$(echo "$VAULT_CHANGES_RAW" | wc -l | xargs)
+fi
 
 # Categorize by domain (path prefix relative to vault)
 VAULT_CHANGES_BY_DOMAIN=""

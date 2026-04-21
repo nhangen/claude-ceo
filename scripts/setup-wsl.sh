@@ -126,35 +126,21 @@ else
   echo "  Make sure Syncthing is configured and the vault has synced."
 fi
 
-# 10. Install cron
-CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
-
-if [ -f "$CEO_CRON" ]; then
+# 10. Install cron via playbook scan
+CEO_CLI="$SCRIPT_DIR/ceo"
+if [ -f "$CEO_CLI" ] && command -v yq &>/dev/null; then
   echo ""
   echo "[10/10] Cron Setup"
-  echo "Add these entries to your crontab (crontab -e):"
-  echo ""
-  echo "*/15 * * * *  $CEO_CRON inbox"
-  echo "57 8 * * 1-5  $CEO_CRON morning-brief"
-  echo "3 10 * * 1-5  $CEO_CRON pr-triage"
-  echo "33 9 * * *    $CEO_CRON pending-drip"
-  echo "47 17 * * 1-5 $CEO_CRON eod-summary"
-  echo "7 3 * * 0     $CEO_CRON cleanup"
-  echo ""
-  read -p "Install these cron entries now? (y/n) " INSTALL_CRON
+  read -p "  Scan playbooks and install cron entries? (y/n) " INSTALL_CRON
   if [ "$INSTALL_CRON" = "y" ]; then
-    (crontab -l 2>/dev/null || true; echo "# CEO Agent
-*/15 * * * *  $CEO_CRON inbox
-57 8 * * 1-5  $CEO_CRON morning-brief
-3 10 * * 1-5  $CEO_CRON pr-triage
-33 9 * * *    $CEO_CRON pending-drip
-47 17 * * 1-5 $CEO_CRON eod-summary
-7 3 * * 0     $CEO_CRON cleanup") | crontab -
-    echo "Cron entries installed."
+    bash "$CEO_CLI" playbook scan
+  else
+    echo "  Skipped. Run 'ceo playbook scan' later to install cron entries."
   fi
 else
   echo ""
-  echo "[10/10] WARNING: ceo-cron.sh not found at $CEO_CRON"
+  echo "[10/10] Skipping cron setup (ceo CLI or yq not available)."
+  echo "  Run 'ceo playbook scan' after installing yq."
 fi
 
 # 11. Add ceo CLI to PATH

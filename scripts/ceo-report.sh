@@ -39,11 +39,15 @@ if command -v flock &>/dev/null; then
   flock -w 10 201 || { echo "ERROR: Could not acquire report lock" >&2; exit 1; }
 else
   LOCK_DIR="${LOCK_FILE}.d"
+  _acquired=false
   for _i in $(seq 1 10); do
-    mkdir "$LOCK_DIR" 2>/dev/null && break
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      _acquired=true
+      break
+    fi
     sleep 1
   done
-  [ -d "$LOCK_DIR" ] || { echo "ERROR: Could not acquire report lock" >&2; exit 1; }
+  $_acquired || { echo "ERROR: Could not acquire report lock" >&2; exit 1; }
   trap "rmdir '$LOCK_DIR' 2>/dev/null" EXIT
 fi
 
