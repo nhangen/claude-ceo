@@ -9,6 +9,8 @@ Autonomous CEO agent for Claude Code. Reads your Obsidian vault, understands you
 - [Obsidian plugin](https://github.com/nhangen/claude-obsidian-plugin) v1.4.0+ with `VAULT.md` in your vault root
 - `Profile.md` in your vault root (created by the Chief of Staff knowledge layer)
 - `gh` CLI authenticated
+- `jq` for JSON processing
+- `yq` for YAML frontmatter parsing ([install](https://github.com/mikefarah/yq#install))
 - Claude Code with a subscription (`claude --print`)
 
 ### Syncthing Setup
