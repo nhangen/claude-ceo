@@ -1,12 +1,12 @@
 ---
 name: ceo
-description: Read the Obsidian vault and propose prioritized actions. Triggers on "/ceo", "what should I work on", "prioritize my work".
-version: 0.1.0
+description: Read the vault and today's report, open a triage conversation. Triggers on "/ceo", "what should I work on", "prioritize my work".
+version: 0.2.0
 ---
 
 # CEO Agent
 
-Read the vault, understand priorities, propose actions by authority tier.
+Your operational layer across all domains. Read the vault, understand what's happening, have a conversation about priorities.
 
 ## Config
 
@@ -15,47 +15,42 @@ Resolve `$VAULT` using this fallback chain (first match wins):
 2. Obsidian plugin config: `~/.claude/plugins/cache/nhangen/obsidian/*/obsidian.local.md` → read `vault_path`
 3. Default: `~/Documents/Obsidian`
 
-If `$VAULT/CEO/AGENTS.md` does not exist at the resolved path, ask the user where their Obsidian vault is installed and use that path.
+If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vault is installed.
 
 ## Steps
 
-1. **Read global agent rules** — read `$VAULT/CEO/AGENTS.md`. This defines authority tiers and universal constraints for all agents. Follow it exactly.
+1. **Read global agent rules** — `$VAULT/CEO/AGENTS.md`
+2. **Read CEO identity** — `$VAULT/CEO/IDENTITY.md`
+3. **Read training** — `$VAULT/CEO/TRAINING.md` and any domain-specific training files in `$VAULT/CEO/training/`
+4. **Read today's report** — `$VAULT/CEO/reports/YYYY-MM-DD.md` (today's date)
 
-2. **Read CEO identity** — read `$VAULT/CEO/IDENTITY.md`. This defines who you specifically are, your personality, and your relationship to the user.
+### If a report exists with an [intake] entry:
 
-3. **Read training** — read `$VAULT/CEO/TRAINING.md` for general rules. Note any rules that apply to the current context.
+5. Check if a `[report]` (triage) entry already exists today.
+   - **No triage yet:** Present the intake findings. Open a conversation: "Here's what I've seen today. What do you want to tackle?" Work through items that need decisions. Build priorities collaboratively.
+   - **Already triaged:** Read the full report. Show what's been done since triage, what's still open. Ask: "What's next?"
 
-4. **Read user profile** — read `$VAULT/Profile.md` for the user's identity, active domains, priorities, and constraints.
-
-5. **Read today's context** — check for today's daily note at `$VAULT/Daily/YYYY-MM-DD.md`. Read the Top 3 and Tasks sections if they exist.
-
-6. **Check pending approvals** — read `$VAULT/CEO/approvals/pending.md`. If there are approved items (marked `[x]`), surface them — they await the next cron cycle for auto-execution, or the user can explicitly delegate them now.
-
-7. **Check pending questions** — read `$VAULT/Pending.md`. Note 1-2 questions relevant to the current context (don't ask all).
-
-8. **Scan GitHub** — if `gh` is available, run:
+6. When the triage conversation concludes, write a `[report]` entry to the daily report using:
    ```bash
-   gh pr list --state open --search "review-requested:@me" --limit 10
-   gh pr list --state open --author @me --limit 10
+   bash "$CEO_PLUGIN_DIR/scripts/ceo-report.sh" report triage "<content>"
    ```
+   Where `$CEO_PLUGIN_DIR` is resolved from `~/.claude/plugins/cache/nhangen/claude-ceo/*/`
 
-9. **Read skills dispatch table** — read `$VAULT/CEO/SKILLS.md` to understand what playbooks are available.
+### If no report exists yet:
 
-10. **Propose action list** — present a prioritized list of actions, each tagged with its tier:
-   ```
-   ## Proposed Actions
-   
-   1. [read] Generate morning brief — no brief in today's log yet
-   2. [low-stakes write] Review PR #6980 — requested 3 days ago, CI green
-   3. [high-stakes] Merge PR #6955 — approved by 2 reviewers, all checks pass
-   4. [read] Ask: What is Slava's exact title at OM? (from Pending.md)
-   ```
+5. Read the vault state yourself — today's daily note, yesterday's daily note, `CEO/approvals/pending.md`, `Pending.md`, `CEO/inbox.md`. Check open PRs if `gh` is available.
+6. Present findings and open the triage conversation as above.
+7. Write both an `[intake]` and `[report]` entry via `ceo-report.sh`.
 
-11. **Wait for user direction** — the user picks which actions to execute, or gives new instructions. Do not execute anything without direction during interactive sessions.
+## Constraints
+
+- Read `CEO/AGENTS.md` authority tiers. In interactive sessions, propose actions and wait for direction. Do not auto-execute.
+- Don't assume specific vault structure (heading names, section formats). Read whatever is there.
+- Don't nag about items that have been surfaced before and not addressed — mention briefly unless urgency escalated.
+- Match Nathan's communication style: direct, concise, no filler.
 
 ## If No CEO/ Folder Exists
 
-If `$VAULT/CEO/` does not exist, tell the user:
-"CEO vault structure not found. Would you like me to create it? This will add CEO/AGENTS.md, CEO/IDENTITY.md, CEO/SKILLS.md, CEO/TRAINING.md, and supporting folders to your Obsidian vault."
+Tell the user: "CEO vault structure not found. Would you like me to create it?"
 
-If they confirm, create the structure (AGENTS.md, IDENTITY.md, SKILLS.md, TRAINING.md, training/, playbooks/, approvals/, log/, repos.md).
+If they confirm, create the structure (AGENTS.md, IDENTITY.md, TRAINING.md, training/, playbooks/, approvals/, reports/, log/, repos.md, inbox.md, settings.json).
