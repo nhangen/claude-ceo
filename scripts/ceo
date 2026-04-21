@@ -45,6 +45,7 @@ Commands:
   doctor      Check system health (deps, vault, cron, auth)
   preflight   Show which triggers would run vs skip (zero API calls)
   cron        Run a cron trigger manually (e.g. ceo cron morning-brief)
+  playbook    Manage playbooks (scan, list, info)
   help        Show this message
 
 Examples:
@@ -54,6 +55,7 @@ Examples:
   ceo doctor          # Verify everything is configured correctly
   ceo preflight       # Preview what cron would do right now
   ceo cron pr-triage  # Manually trigger pr-triage playbook
+  ceo playbook scan   # Discover playbooks, update registry + crontab
 USAGE
 }
 
@@ -286,6 +288,243 @@ cmd_preflight() {
   echo "Estimated API calls: $((would_run * 2)) (plan + execute per trigger)"
 }
 
+cmd_playbook() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+  case "$subcmd" in
+    scan) cmd_playbook_scan ;;
+    list) cmd_playbook_list ;;
+    info) cmd_playbook_info "$@" ;;
+    help|--help|-h)
+      echo "Usage: ceo playbook <scan|list|info>"
+      echo ""
+      echo "  scan        Discover playbooks, update registry + crontab"
+      echo "  list        Show all registered playbooks"
+      echo "  info <name> Show details for one playbook"
+      ;;
+    *)
+      echo "Unknown playbook command: $subcmd"
+      echo "Run: ceo playbook help"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_playbook_scan() {
+  if ! command -v yq &>/dev/null; then
+    echo "ERROR: yq is required for playbook scanning."
+    echo "Install: brew install yq (macOS) or snap install yq (Linux)"
+    exit 1
+  fi
+
+  local playbook_dir="$CEO_DIR/playbooks"
+  local registry_file="$CEO_DIR/registry.json"
+
+  if [ ! -d "$playbook_dir" ]; then
+    echo "ERROR: Playbooks directory not found at $playbook_dir"
+    exit 1
+  fi
+
+  local old_registry='{"playbooks":[]}'
+  if [ -f "$registry_file" ]; then
+    old_registry=$(cat "$registry_file")
+  fi
+
+  local new_registry='{"playbooks":[]}'
+  local found=0
+  local skipped=0
+
+  for f in "$playbook_dir"/*.md; do
+    [ -f "$f" ] || continue
+    local basename
+    basename=$(basename "$f")
+
+    local name description trigger schedule model preflight tier status
+    name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
+    if [ -z "$name" ]; then
+      echo "  SKIP  $basename (no name in frontmatter)"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    description=$(yq --front-matter=extract '.description // ""' "$f" 2>/dev/null || echo "")
+    trigger=$(yq --front-matter=extract '.trigger // ""' "$f" 2>/dev/null || echo "")
+    schedule=$(yq --front-matter=extract '.schedule // ""' "$f" 2>/dev/null || echo "")
+    model=$(yq --front-matter=extract '.model // ""' "$f" 2>/dev/null || echo "")
+    preflight=$(yq --front-matter=extract '.preflight // ""' "$f" 2>/dev/null || echo "")
+    tier=$(yq --front-matter=extract '.tier // ""' "$f" 2>/dev/null || echo "")
+    status=$(yq --front-matter=extract '.status // ""' "$f" 2>/dev/null || echo "")
+
+    local entry
+    entry=$(jq -n \
+      --arg name "$name" \
+      --arg description "$description" \
+      --arg trigger "$trigger" \
+      --arg schedule "$schedule" \
+      --arg model "$model" \
+      --arg preflight "$preflight" \
+      --arg tier "$tier" \
+      --arg status "$status" \
+      --arg file "$basename" \
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, file:$file}')
+
+    new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
+    found=$((found + 1))
+  done
+
+  # Compare old vs new
+  local added=0 updated=0 removed=0 unchanged=0
+  local old_names new_names
+  old_names=$(echo "$old_registry" | jq -r '.playbooks[].name' 2>/dev/null | sort)
+  new_names=$(echo "$new_registry" | jq -r '.playbooks[].name' | sort)
+
+  while IFS= read -r n; do
+    [ -z "$n" ] && continue
+    if ! echo "$old_names" | grep -qx "$n"; then
+      echo "  ADD   $n"
+      added=$((added + 1))
+    else
+      local old_hash new_hash
+      old_hash=$(echo "$old_registry" | jq -r --arg n "$n" '.playbooks[] | select(.name==$n) | del(.file) | tojson' | md5 2>/dev/null || echo "$old_registry" | jq -r --arg n "$n" '.playbooks[] | select(.name==$n) | del(.file) | tojson' | md5sum 2>/dev/null | awk '{print $1}')
+      new_hash=$(echo "$new_registry" | jq -r --arg n "$n" '.playbooks[] | select(.name==$n) | del(.file) | tojson' | md5 2>/dev/null || echo "$new_registry" | jq -r --arg n "$n" '.playbooks[] | select(.name==$n) | del(.file) | tojson' | md5sum 2>/dev/null | awk '{print $1}')
+      if [ "$old_hash" = "$new_hash" ]; then
+        unchanged=$((unchanged + 1))
+      else
+        echo "  UPD   $n"
+        updated=$((updated + 1))
+      fi
+    fi
+  done <<< "$new_names"
+
+  while IFS= read -r n; do
+    [ -z "$n" ] && continue
+    if ! echo "$new_names" | grep -qx "$n"; then
+      echo "  DEL   $n"
+      removed=$((removed + 1))
+    fi
+  done <<< "$old_names"
+
+  echo "$new_registry" | jq '.' > "$registry_file"
+
+  echo ""
+  echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped)"
+  echo "Wrote: $registry_file"
+
+  _playbook_update_crontab "$new_registry"
+}
+
+_playbook_update_crontab() {
+  local registry="$1"
+  local marker_start="# CEO Agent START"
+  local marker_end="# CEO Agent END"
+
+  local cron_block="$marker_start"
+  local cron_count=0
+
+  while IFS= read -r row; do
+    local p_name p_trigger p_schedule p_status
+    p_name=$(echo "$row" | jq -r '.name')
+    p_trigger=$(echo "$row" | jq -r '.trigger')
+    p_schedule=$(echo "$row" | jq -r '.schedule')
+    p_status=$(echo "$row" | jq -r '.status')
+
+    if [ "$p_trigger" = "cron" ] && [ "$p_status" = "active" ] && [ -n "$p_schedule" ]; then
+      cron_block="$cron_block
+$p_schedule $CEO_CRON $p_name  # ceo:$p_name"
+      cron_count=$((cron_count + 1))
+    fi
+  done < <(echo "$registry" | jq -c '.playbooks[]')
+
+  cron_block="$cron_block
+$marker_end"
+
+  local existing
+  existing=$(crontab -l 2>/dev/null || true)
+
+  if echo "$existing" | grep -qF "$marker_start"; then
+    local new_crontab
+    new_crontab=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
+    new_crontab="$new_crontab
+$cron_block"
+    echo "$new_crontab" | crontab -
+  else
+    if [ -n "$existing" ]; then
+      printf '%s\n%s\n' "$existing" "$cron_block" | crontab -
+    else
+      echo "$cron_block" | crontab -
+    fi
+  fi
+
+  echo "Crontab: $cron_count entries installed"
+}
+
+cmd_playbook_list() {
+  local registry_file="$CEO_DIR/registry.json"
+  if [ ! -f "$registry_file" ]; then
+    echo "No registry found. Run: ceo playbook scan"
+    exit 1
+  fi
+
+  printf "%-16s %-10s %-20s %-10s %-8s\n" "NAME" "TRIGGER" "SCHEDULE" "MODEL" "STATUS"
+  printf "%-16s %-10s %-20s %-10s %-8s\n" "----" "-------" "--------" "-----" "------"
+
+  while IFS= read -r row; do
+    local p_name p_trigger p_schedule p_model p_status
+    p_name=$(echo "$row" | jq -r '.name')
+    p_trigger=$(echo "$row" | jq -r '.trigger')
+    p_schedule=$(echo "$row" | jq -r '.schedule // "-"')
+    p_model=$(echo "$row" | jq -r '.model // "-"')
+    p_status=$(echo "$row" | jq -r '.status // "-"')
+    [ "$p_schedule" = "" ] && p_schedule="-"
+    [ "$p_model" = "" ] && p_model="-"
+    printf "%-16s %-10s %-20s %-10s %-8s\n" "$p_name" "$p_trigger" "$p_schedule" "$p_model" "$p_status"
+  done < <(jq -c '.playbooks[]' "$registry_file")
+}
+
+cmd_playbook_info() {
+  local target="${1:-}"
+  if [ -z "$target" ]; then
+    echo "Usage: ceo playbook info <name>"
+    exit 1
+  fi
+
+  local registry_file="$CEO_DIR/registry.json"
+  if [ ! -f "$registry_file" ]; then
+    echo "No registry found. Run: ceo playbook scan"
+    exit 1
+  fi
+
+  local entry
+  entry=$(jq -r --arg n "$target" '.playbooks[] | select(.name==$n)' "$registry_file")
+  if [ -z "$entry" ]; then
+    echo "Playbook not found: $target"
+    echo "Available: $(jq -r '.playbooks[].name' "$registry_file" | tr '\n' ' ')"
+    exit 1
+  fi
+
+  echo "=== Playbook: $target ==="
+  echo ""
+  echo "$entry" | jq -r 'to_entries[] | "  \(.key): \(.value)"'
+
+  local last_run_file="$CEO_DIR/log/.last-run-$target"
+  if [ -f "$last_run_file" ]; then
+    echo ""
+    echo "  last_run: $(cat "$last_run_file")"
+  else
+    echo ""
+    echo "  last_run: never"
+  fi
+
+  local playbook_file
+  playbook_file=$(echo "$entry" | jq -r '.file')
+  local full_path="$CEO_DIR/playbooks/$playbook_file"
+  if [ -f "$full_path" ]; then
+    echo ""
+    echo "--- Body ---"
+    sed '1{/^---$/!q;};1,/^---$/d' "$full_path"
+  fi
+}
+
 cmd_setup() {
   bash "$SCRIPT_DIR/setup-wsl.sh"
 }
@@ -308,6 +547,7 @@ case "${1:-help}" in
   preflight) cmd_preflight ;;
   test)     cmd_test ;;
   cron)     shift; cmd_cron "$@" ;;
+  playbook) shift; cmd_playbook "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     echo "Unknown command: $1"
