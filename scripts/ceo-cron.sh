@@ -377,6 +377,8 @@ fi
 # --- Phase 3: EXECUTE (only safe actions) ---
 if [ -z "$SAFE_ACTIONS" ]; then
   _v "No safe actions to execute (all high-stakes). Done."
+  _v ""
+  _v "All actions were high-stakes — written to CEO/approvals/pending.md"
   "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (no safe actions to execute)
 **Playbook:** $PLAYBOOK_REL
 **Actions:** none (all actions were high-stakes, written to approvals)"
@@ -444,7 +446,11 @@ END_LOG_ENTRY"
     LOG_ENTRY=$(echo "$EXEC_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
 
     if [ -n "$LOG_ENTRY" ]; then
-      _v "Log entry captured via ceo-report.sh"
+      _v ""
+      _v "--- Output ---"
+      [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
+      _v "--- End ---"
+      _v ""
       "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "$LOG_ENTRY"
     else
       _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
