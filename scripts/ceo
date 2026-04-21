@@ -43,6 +43,7 @@ Commands:
   next        Show post-setup instructions (survives terminal clear)
   test        Run a quick smoke test of the CEO system
   doctor      Check system health (deps, vault, cron, auth)
+  preflight   Show which triggers would run vs skip (zero API calls)
   cron        Run a cron trigger manually (e.g. ceo cron morning-brief)
   help        Show this message
 
@@ -51,6 +52,7 @@ Examples:
   ceo next            # Redisplay next steps after claude login
   ceo test            # Smoke test: run morning-brief, check log
   ceo doctor          # Verify everything is configured correctly
+  ceo preflight       # Preview what cron would do right now
   ceo cron pr-triage  # Manually trigger pr-triage playbook
 USAGE
 }
@@ -203,6 +205,87 @@ cmd_test() {
   fi
 }
 
+cmd_preflight() {
+  echo "=== CEO Preflight Check ==="
+  echo ""
+
+  # Gather data (same as cron does)
+  source "$SCRIPT_DIR/ceo-gather.sh"
+
+  # Settings
+  local settings_file="$CEO_DIR/settings.json"
+  local branch_prefix="ceo/"
+  if command -v jq &>/dev/null && [ -f "$settings_file" ]; then
+    branch_prefix=$(jq -r '.branch_prefix // "ceo/"' "$settings_file" 2>/dev/null || echo "ceo/")
+  fi
+  local log_file="$CEO_DIR/log/$(date +%Y-%m-%d).md"
+
+  # Define preflights inline (can't source from ceo-cron.sh mid-script)
+  preflight_none() { return 0; }
+  preflight_has_unchecked_inbox() {
+    [ -f "$CEO_DIR/inbox.md" ] && grep -q "^- \[ \]" "$CEO_DIR/inbox.md"
+  }
+  preflight_has_prs_to_review() {
+    [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]
+  }
+  preflight_has_pending_items() {
+    [ "${PENDING_COUNT:-0}" -gt 0 ]
+  }
+  preflight_has_log_entries_after_4pm() {
+    local hour
+    hour=$(date +%H)
+    [ "$hour" -ge 16 ] && [ -f "$log_file" ] && grep -q "^## " "$log_file"
+  }
+  preflight_has_ceo_branches() {
+    local repos_file="$CEO_DIR/repos.md"
+    [ -f "$repos_file" ] || return 1
+    while IFS= read -r repo_path; do
+      repo_path=$(echo "$repo_path" | xargs)
+      [ -d "$repo_path" ] && git -C "$repo_path" branch --list "${branch_prefix}*" 2>/dev/null | grep -q . && return 0
+    done < <(grep "^|" "$repos_file" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $3}')
+    return 1
+  }
+
+  # Parse SKILLS.md and check each trigger
+  local would_run=0
+  local would_skip=0
+
+  echo "  Data: PRs for review=$PR_REVIEW_COUNT | PRs authored=$PR_AUTHORED_COUNT"
+  echo "  Data: Pending=$PENDING_COUNT | Approved=$APPROVED_COUNT"
+  echo ""
+
+  while IFS= read -r row; do
+    local trigger=$(echo "$row" | awk -F'|' '{print $2}' | xargs)
+    local model=$(echo "$row" | awk -F'|' '{print $6}' | xargs)
+    local preflight=$(echo "$row" | awk -F'|' '{print $7}' | xargs)
+    local status=$(echo "$row" | awk -F'|' '{print $8}' | xargs)
+
+    [ -z "$trigger" ] && continue
+    [ "$status" != "active" ] && continue
+
+    local fn="preflight_${preflight:-none}"
+    local result="?"
+    if type "$fn" &>/dev/null; then
+      if "$fn" 2>/dev/null; then
+        result="RUN"
+        would_run=$((would_run + 1))
+      else
+        result="SKIP"
+        would_skip=$((would_skip + 1))
+      fi
+    else
+      result="RUN (unknown preflight)"
+      would_run=$((would_run + 1))
+    fi
+
+    printf "  %-16s %-8s %-30s → %s\n" "$trigger" "$model" "$preflight" "$result"
+  done < <(grep "^|" "$CEO_DIR/SKILLS.md" | grep -v "^| Task Type\|^|---")
+
+  echo ""
+  echo "Result: $would_run would run, $would_skip would skip"
+  echo "Estimated API calls: $((would_run * 2)) (plan + execute per trigger)"
+}
+
 cmd_setup() {
   bash "$SCRIPT_DIR/setup-wsl.sh"
 }
@@ -222,6 +305,7 @@ case "${1:-help}" in
   setup)    cmd_setup ;;
   next)     cmd_next ;;
   doctor)   cmd_doctor ;;
+  preflight) cmd_preflight ;;
   test)     cmd_test ;;
   cron)     shift; cmd_cron "$@" ;;
   help|-h|--help) cmd_help ;;
