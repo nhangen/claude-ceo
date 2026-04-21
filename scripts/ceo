@@ -248,7 +248,12 @@ cmd_preflight() {
     return 1
   }
 
-  # Parse SKILLS.md and check each trigger
+  local registry_file="$CEO_DIR/registry.json"
+  if [ ! -f "$registry_file" ]; then
+    echo "No registry found. Run: ceo playbook scan"
+    exit 1
+  fi
+
   local would_run=0
   local would_skip=0
 
@@ -256,13 +261,7 @@ cmd_preflight() {
   echo "  Data: Pending=$PENDING_COUNT | Approved=$APPROVED_COUNT"
   echo ""
 
-  while IFS= read -r row; do
-    local trigger=$(echo "$row" | awk -F'|' '{print $2}' | xargs)
-    local model=$(echo "$row" | awk -F'|' '{print $6}' | xargs)
-    local preflight=$(echo "$row" | awk -F'|' '{print $7}' | xargs)
-    local status=$(echo "$row" | awk -F'|' '{print $8}' | xargs)
-
-    [ -z "$trigger" ] && continue
+  jq -r '.playbooks[] | "\(.name)|\(.model)|\(.preflight)|\(.status)"' "$registry_file" | while IFS='|' read -r name model preflight status; do
     [ "$status" != "active" ] && continue
 
     local fn="preflight_${preflight:-none}"
@@ -270,21 +269,17 @@ cmd_preflight() {
     if type "$fn" &>/dev/null; then
       if "$fn" 2>/dev/null; then
         result="RUN"
-        would_run=$((would_run + 1))
       else
         result="SKIP"
-        would_skip=$((would_skip + 1))
       fi
     else
       result="RUN (unknown preflight)"
-      would_run=$((would_run + 1))
     fi
 
-    printf "  %-16s %-8s %-30s → %s\n" "$trigger" "$model" "$preflight" "$result"
-  done < <(grep "^|" "$CEO_DIR/SKILLS.md" | grep -v "^| Task Type\|^|---")
+    printf "  %-18s %-8s %-30s → %s\n" "$name" "$model" "$preflight" "$result"
+  done
 
   echo ""
-  echo "Result: $would_run would run, $would_skip would skip"
   echo "Estimated API calls: $((would_run * 2)) (plan + execute per trigger)"
 }
 
