@@ -51,6 +51,12 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
+# --- Require yq ---
+if ! command -v yq &>/dev/null; then
+  echo "$(date): FATAL — yq not installed. Run: sudo snap install yq" >&2
+  exit 1
+fi
+
 # --- Settings reader (safe fallback on missing file/bad JSON/no jq) ---
 SETTINGS_FILE="$CEO_DIR/settings.json"
 _cfg() {

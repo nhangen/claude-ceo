@@ -8,15 +8,15 @@ echo "=== CEO Agent — WSL Setup ==="
 echo ""
 
 # 1. System packages
-echo "[1/9] Installing system packages..."
+echo "[1/10] Installing system packages..."
 sudo apt update -qq
 sudo apt install -y -qq git curl jq
 
 # 2. GitHub CLI
 if command -v gh &>/dev/null; then
-  echo "[2/9] gh CLI already installed ($(gh --version | head -1))"
+  echo "[2/10] gh CLI already installed ($(gh --version | head -1))"
 else
-  echo "[2/9] Installing GitHub CLI..."
+  echo "[2/10] Installing GitHub CLI..."
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
   sudo apt update -qq && sudo apt install -y -qq gh
@@ -33,9 +33,9 @@ fi
 # 3. SSH key for GitHub
 SSH_KEY="$HOME/.ssh/github_ceo"
 if [ -f "$SSH_KEY" ]; then
-  echo "[3/9] SSH key already exists at $SSH_KEY"
+  echo "[3/10] SSH key already exists at $SSH_KEY"
 else
-  echo "[3/9] Generating SSH key..."
+  echo "[3/10] Generating SSH key..."
   mkdir -p "$HOME/.ssh"
   ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "ceo-agent@wsl"
 
@@ -66,18 +66,26 @@ SSHEOF
 fi
 
 # 4. Git config
-echo "[4/9] Configuring git..."
+echo "[4/10] Configuring git..."
 git config --global user.name "Nathan Hangen (CEO Agent)"
 git config --global user.email "nhangen@users.noreply.github.com"
 
 # 5. Syncthing
 # Syncthing — must be installed and configured separately (see README.md)
 if command -v syncthing &>/dev/null; then
-  echo "[5/9] Syncthing found"
+  echo "[5/10] Syncthing found"
 else
-  echo "[5/9] WARNING: Syncthing not found."
+  echo "[5/10] WARNING: Syncthing not found."
   echo "  Install Syncthing on all machines before proceeding."
   echo "  See README.md and syncthing/README.md for setup instructions."
+fi
+
+# 6. yq (YAML parser for playbook frontmatter)
+if command -v yq &>/dev/null; then
+  echo "[6/10] yq found ($(yq --version 2>/dev/null || echo 'unknown'))"
+else
+  echo "[6/10] WARNING: yq not found."
+  echo "  Install: sudo snap install yq  (or: brew install yq on Mac)"
 fi
 
 # Derive install root from script location (works regardless of clone path)
@@ -93,37 +101,37 @@ if [ "$INSTALL_DIR" = "/" ]; then
   INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
 fi
 
-# 6. Repo directory (sibling of the plugin clone)
+# 7. Repo directory (sibling of the plugin clone)
 REPOS_DIR="$(dirname "$INSTALL_DIR")/repos"
-echo "[6/9] Creating repo directory at $REPOS_DIR..."
+echo "[7/10] Creating repo directory at $REPOS_DIR..."
 mkdir -p "$REPOS_DIR"
 
-# 7. Claude Code
+# 8. Claude Code
 if command -v claude &>/dev/null; then
-  echo "[7/9] Claude Code already installed ($(claude --version 2>/dev/null || echo 'unknown version'))"
+  echo "[8/10] Claude Code already installed ($(claude --version 2>/dev/null || echo 'unknown version'))"
 else
-  echo "[7/9] Claude Code not found."
+  echo "[8/10] Claude Code not found."
   echo "  Install it manually: https://claude.ai/download"
   echo "  After installing, run: claude login"
 fi
 
-# 8. Vault directory
+# 9. Vault directory
 VAULT="$HOME/Documents/Obsidian"
 if [ -d "$VAULT/CEO" ]; then
   echo ""
-  echo "[8/9] CEO vault structure found at $VAULT/CEO/"
+  echo "[9/10] CEO vault structure found at $VAULT/CEO/"
 else
   echo ""
-  echo "[8/9] WARNING: CEO vault structure not found at $VAULT/CEO/"
+  echo "[9/10] WARNING: CEO vault structure not found at $VAULT/CEO/"
   echo "  Make sure Syncthing is configured and the vault has synced."
 fi
 
-# 9. Install cron
+# 10. Install cron
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
 if [ -f "$CEO_CRON" ]; then
   echo ""
-  echo "[9/9] Cron Setup"
+  echo "[10/10] Cron Setup"
   echo "Add these entries to your crontab (crontab -e):"
   echo ""
   echo "*/15 * * * *  $CEO_CRON inbox"
@@ -146,24 +154,24 @@ if [ -f "$CEO_CRON" ]; then
   fi
 else
   echo ""
-  echo "[9/9] WARNING: ceo-cron.sh not found at $CEO_CRON"
+  echo "[10/10] WARNING: ceo-cron.sh not found at $CEO_CRON"
 fi
 
-# 10. Add ceo CLI to PATH
+# 11. Add ceo CLI to PATH
 CEO_CLI="$SCRIPT_DIR/ceo"
 if [ -f "$CEO_CLI" ]; then
   # Check if already on PATH
   if command -v ceo &>/dev/null && [ "$(command -v ceo)" = "$CEO_CLI" ]; then
     echo ""
-    echo "[10] ceo CLI already on PATH"
+    echo "[11] ceo CLI already on PATH"
   elif command -v ceo &>/dev/null; then
     echo ""
-    echo "[10] WARNING: 'ceo' already exists on PATH at $(command -v ceo)"
+    echo "[11] WARNING: 'ceo' already exists on PATH at $(command -v ceo)"
     echo "  Skipping — add an alias manually if needed:"
     echo "  echo 'alias ceo=\"$CEO_CLI\"' >> ~/.bashrc"
   else
     echo ""
-    echo "[10] Add 'ceo' command to PATH?"
+    echo "[11] Add 'ceo' command to PATH?"
     echo "  This creates a symlink in ~/.local/bin/ so you can run 'ceo' from anywhere."
     read -p "  Add to PATH? (y/n) " ADD_PATH
     if [ "$ADD_PATH" = "y" ]; then
