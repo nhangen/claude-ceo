@@ -44,7 +44,8 @@ Commands:
   test        Run a quick smoke test of the CEO system
   doctor      Check system health (deps, vault, cron, auth)
   preflight   Show which triggers would run vs skip (zero API calls)
-  cron        Run a cron trigger manually (e.g. ceo cron morning-brief)
+  chat        Interactive CEO conversation for a playbook (e.g. ceo chat inbox)
+  cron        Run a cron trigger autonomously (e.g. ceo cron pr-triage)
   playbook    Manage playbooks (scan, list, info)
   help        Show this message
 
@@ -54,7 +55,9 @@ Examples:
   ceo test            # Smoke test: run morning-brief, check log
   ceo doctor          # Verify everything is configured correctly
   ceo preflight       # Preview what cron would do right now
-  ceo cron pr-triage  # Manually trigger pr-triage playbook
+  ceo chat inbox      # Interactive conversation to process inbox
+  ceo chat morning-scan  # Morning triage conversation
+  ceo cron pr-triage  # Autonomous cron trigger (no conversation)
   ceo playbook scan   # Discover playbooks, update registry + crontab
 USAGE
 }
@@ -547,6 +550,111 @@ cmd_cron() {
   CEO_FORCE=1 CEO_VERBOSE=1 "$CEO_CRON" "$1"
 }
 
+cmd_chat() {
+  local name="${1:-triage}"
+  local registry_file="$CEO_DIR/registry.json"
+
+  if [ ! -f "$registry_file" ]; then
+    echo "No registry found. Run: ceo playbook scan"
+    exit 1
+  fi
+
+  local model="sonnet"
+  local playbook_content=""
+
+  if [ "$name" = "triage" ]; then
+    # No playbook — general triage conversation
+    playbook_content="You are in triage mode. Read today's report and the vault state. Present what needs attention and work through priorities with Nathan."
+  else
+    local entry
+    entry=$(jq -r --arg n "$name" '.playbooks[] | select(.name == $n)' "$registry_file" 2>/dev/null)
+    if [ -z "$entry" ]; then
+      echo "Playbook '$name' not found in registry."
+      echo "Run 'ceo playbook list' to see available playbooks."
+      echo "Or run 'ceo chat' with no args for general triage."
+      exit 1
+    fi
+
+    local playbook_rel
+    playbook_rel=$(echo "$entry" | jq -r '.file')
+    model=$(echo "$entry" | jq -r '.model // "sonnet"')
+    local playbook_file="$CEO_DIR/$playbook_rel"
+
+    if [ ! -f "$playbook_file" ]; then
+      echo "Playbook file not found: $playbook_file"
+      exit 1
+    fi
+    playbook_content=$(head -c 10000 "$playbook_file" 2>/dev/null || echo "")
+  fi
+
+  # Gather context
+  source "$SCRIPT_DIR/ceo-gather.sh"
+  if [ "$name" = "morning-scan" ] && [ -f "$SCRIPT_DIR/ceo-scan.sh" ]; then
+    source "$SCRIPT_DIR/ceo-scan.sh"
+  fi
+
+  # Build system prompt from vault context + playbook
+  local agents_content identity_content training_content
+  agents_content=$(head -c 10000 "$CEO_DIR/AGENTS.md" 2>/dev/null || echo "")
+  identity_content=$(head -c 10000 "$CEO_DIR/IDENTITY.md" 2>/dev/null || echo "")
+  training_content=$(head -c 10000 "$CEO_DIR/TRAINING.md" 2>/dev/null || echo "")
+
+  # Today's report for context
+  local today_report=""
+  local report_file="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  [ -f "$report_file" ] && today_report=$(head -c 10000 "$report_file")
+
+  local sys_prompt="You are the CEO agent in interactive mode. You are having a conversation with Nathan.
+
+GLOBAL AGENT RULES:
+$agents_content
+
+CEO IDENTITY:
+$identity_content
+
+TRAINING:
+$training_content
+
+PLAYBOOK ($name):
+$playbook_content
+
+PRE-GATHERED DATA:
+- Pending approvals: $PENDING_COUNT pending, $APPROVED_COUNT approved
+- PRs for review: $PR_REVIEW_COUNT | PRs authored: $PR_AUTHORED_COUNT
+- PR data (review requested): $PR_REVIEW_REQUESTED
+- PR data (authored): $PR_AUTHORED
+
+TODAY'S REPORT SO FAR:
+${today_report:-No report yet today.}
+
+You are in INTERACTIVE mode. Have a conversation. Ask questions. Wait for responses. Work through items collaboratively. Do not auto-execute high-stakes actions — propose them and wait for approval."
+
+  # Add scan data if available
+  if [ -n "${VAULT_CHANGES_BY_DOMAIN:-}" ]; then
+    sys_prompt="$sys_prompt
+
+VAULT SCAN DATA:
+- Changes since last scan: $VAULT_CHANGES_COUNT files
+- By domain:
+$(printf '%b' "$VAULT_CHANGES_BY_DOMAIN")
+- Yesterday's daily note:
+$YESTERDAY_DAILY_NOTE
+- Today's daily note:
+$TODAY_DAILY_NOTE
+- Pending questions:
+$PENDING_QUESTIONS
+- Pending approvals (unchecked):
+$PENDING_APPROVALS_UNCHECKED
+- Yesterday's report:
+$YESTERDAY_REPORT"
+  fi
+
+  echo "Starting CEO chat ($name, model: $model)..."
+  echo ""
+
+  cd "$VAULT" && claude --model "$model" --system-prompt "$sys_prompt"
+}
+
 # Dispatch
 case "${1:-help}" in
   setup)    cmd_setup ;;
@@ -554,6 +662,7 @@ case "${1:-help}" in
   doctor)   cmd_doctor ;;
   preflight) cmd_preflight ;;
   test)     cmd_test ;;
+  chat)     shift; cmd_chat "$@" ;;
   cron)     shift; cmd_cron "$@" ;;
   playbook) shift; cmd_playbook "$@" ;;
   help|-h|--help) cmd_help ;;
