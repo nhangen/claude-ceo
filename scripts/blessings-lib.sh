@@ -1,4 +1,3 @@
-#!/bin/bash
 # blessings-lib.sh — shared helpers for count-blessings.sh and ceo-gather.sh.
 # Source this file; do not execute directly.
 

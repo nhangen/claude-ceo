@@ -52,6 +52,10 @@ test_harness_works() {
 
 # --- runner ---
 tests=$(declare -F | awk '{print $3}' | grep '^test_' || true)
+if [[ -z "$tests" ]]; then
+  printf 'no tests discovered\n' >&2
+  exit 1
+fi
 for t in $tests; do
   CURRENT_TEST="$t"
   printf 'RUN %s\n' "$t"
