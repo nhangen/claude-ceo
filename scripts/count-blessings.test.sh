@@ -97,6 +97,36 @@ test_add_ensures_trailing_newline_before_append() {
   assert_eq "$lines" "2" "both bullets present on their own lines"
 }
 
+test_list_shows_numbered_bullets() {
+  bash "$CLI" add "first" >/dev/null
+  bash "$CLI" add "second" >/dev/null
+  bash "$CLI" add "third" >/dev/null
+  local out
+  out=$(bash "$CLI" list)
+  assert_contains "$out" "- first" "first present"
+  assert_contains "$out" "- second" "second present"
+  assert_contains "$out" "- third" "third present"
+  # nl -ba adds line numbers; we accept any numeric prefix style
+  assert_contains "$out" "1" "numbered"
+}
+
+test_list_strips_frontmatter() {
+  bash "$CLI" add "only-one" >/dev/null
+  local out
+  out=$(bash "$CLI" list)
+  [[ "$out" != *"type: ea-blessings"* ]] || {
+    printf '  FAIL [%s] frontmatter leaked into list output\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  }
+}
+
+test_list_on_missing_file_is_empty() {
+  local out
+  out=$(bash "$CLI" list 2>&1 || true)
+  # Missing file is not an error — just empty output.
+  assert_eq "$out" "" "empty output on missing file"
+}
+
 # --- runner ---
 tests=$(declare -F | awk '{print $3}' | grep '^test_' || true)
 if [[ -z "$tests" ]]; then

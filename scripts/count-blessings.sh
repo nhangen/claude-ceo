@@ -75,12 +75,18 @@ cmd_add() {
   with_blessings_lock _do_add
 }
 
+cmd_list() {
+  require_ceo_dir
+  [[ -f "$BLESSINGS_FILE" ]] || return 0
+  strip_frontmatter "$BLESSINGS_FILE" | grep '^- ' | nl -ba
+}
+
 cmd="${1:-}"
 shift || true
 
 case "$cmd" in
   add)    cmd_add "${1:-}" ;;
-  list)   die "not implemented" ;;
+  list)   cmd_list ;;
   show)   die "not implemented" ;;
   repick) die "not implemented" ;;
   ""|-h|--help) usage; exit 0 ;;
