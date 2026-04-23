@@ -23,8 +23,9 @@ ensure_blessings_cache() {
     return 0
   fi
 
+  local tmp
   if [[ ! -f "$src" ]]; then
-    local tmp="$cache.tmp.$$"
+    tmp=$(mktemp "$cache.tmp.XXXXXX")
     printf -- '---\ndate: %s\n---\n' "$today" > "$tmp"
     mv -f "$tmp" "$cache"
     return 0
@@ -38,7 +39,7 @@ ensure_blessings_cache() {
     | cut -f2- \
     | head -3)
 
-  local tmp="$cache.tmp.$$"
+  tmp=$(mktemp "$cache.tmp.XXXXXX")
   {
     printf -- '---\ndate: %s\n---\n' "$today"
     if [[ -n "$picks" ]]; then
