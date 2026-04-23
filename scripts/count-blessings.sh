@@ -78,7 +78,7 @@ cmd_add() {
 cmd_list() {
   require_ceo_dir
   [[ -f "$BLESSINGS_FILE" ]] || return 0
-  strip_frontmatter "$BLESSINGS_FILE" | grep '^- ' | nl -ba
+  strip_frontmatter "$BLESSINGS_FILE" | { grep '^- ' || true; } | nl -ba
 }
 
 cmd="${1:-}"

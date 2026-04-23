@@ -106,8 +106,7 @@ test_list_shows_numbered_bullets() {
   assert_contains "$out" "- first" "first present"
   assert_contains "$out" "- second" "second present"
   assert_contains "$out" "- third" "third present"
-  # nl -ba adds line numbers; we accept any numeric prefix style
-  assert_contains "$out" "1" "numbered"
+  assert_contains "$out" "     1	" "numbered"
 }
 
 test_list_strips_frontmatter() {
@@ -125,6 +124,16 @@ test_list_on_missing_file_is_empty() {
   out=$(bash "$CLI" list 2>&1 || true)
   # Missing file is not an error — just empty output.
   assert_eq "$out" "" "empty output on missing file"
+}
+
+test_list_on_empty_body_is_empty() {
+  # File exists with frontmatter but no bullets yet.
+  printf -- '---\ntype: ea-blessings\n---\n\n' > "$CEO_DIR/blessings.md"
+  local out
+  out=$(bash "$CLI" list 2>&1)
+  local rc=$?
+  assert_eq "$rc" "0" "exit 0 on empty body"
+  assert_eq "$out" "" "empty output on empty body"
 }
 
 # --- runner ---
