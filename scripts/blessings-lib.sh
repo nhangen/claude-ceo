@@ -12,5 +12,38 @@ strip_frontmatter() {
 }
 
 ensure_blessings_cache() {
-  : # filled in Task 4
+  require_ceo_dir || return 1
+  local src="$CEO_DIR/blessings.md"
+  local cache="$CEO_DIR/cache/blessings-today.md"
+  local today; today=$(date +%Y-%m-%d)
+
+  mkdir -p "$CEO_DIR/cache"
+
+  if [[ -f "$cache" ]] && head -3 "$cache" | grep -q "^date: $today\$"; then
+    return 0
+  fi
+
+  if [[ ! -f "$src" ]]; then
+    local tmp="$cache.tmp.$$"
+    printf -- '---\ndate: %s\n---\n' "$today" > "$tmp"
+    mv -f "$tmp" "$cache"
+    return 0
+  fi
+
+  local picks
+  picks=$(strip_frontmatter "$src" \
+    | { grep '^- ' || true; } \
+    | awk 'BEGIN{srand()} {print rand()"\t"$0}' \
+    | sort -k1,1n \
+    | cut -f2- \
+    | head -3)
+
+  local tmp="$cache.tmp.$$"
+  {
+    printf -- '---\ndate: %s\n---\n' "$today"
+    if [[ -n "$picks" ]]; then
+      printf '%s\n' "$picks"
+    fi
+  } > "$tmp"
+  mv -f "$tmp" "$cache"
 }

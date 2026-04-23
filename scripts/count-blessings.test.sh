@@ -136,6 +136,90 @@ test_list_on_empty_body_is_empty() {
   assert_eq "$out" "" "empty output on empty body"
 }
 
+test_cache_picks_three_when_many_available() {
+  # shellcheck source=../blessings-lib.sh
+  source "$LIB"
+  mkdir -p "$CEO_DIR"
+  {
+    printf -- '---\ntype: ea-blessings\n---\n\n'
+    for i in 1 2 3 4 5 6 7 8 9 10; do printf -- '- entry %d\n' "$i"; done
+  } > "$CEO_DIR/blessings.md"
+
+  ensure_blessings_cache
+
+  local cache="$CEO_DIR/cache/blessings-today.md"
+  [[ -f "$cache" ]] || { printf '  FAIL [%s] cache not created\n' "$CURRENT_TEST"; FAILS=$((FAILS+1)); return; }
+
+  local today; today=$(date +%Y-%m-%d)
+  assert_contains "$(cat "$cache")" "date: $today" "today stamped"
+
+  local bullet_count
+  bullet_count=$(grep -c '^- ' "$cache")
+  assert_eq "$bullet_count" "3" "exactly three picks"
+}
+
+test_cache_picks_all_when_fewer_than_three() {
+  source "$LIB"
+  mkdir -p "$CEO_DIR"
+  printf -- '---\ntype: ea-blessings\n---\n\n- only-one\n' > "$CEO_DIR/blessings.md"
+  ensure_blessings_cache
+  local count
+  count=$(grep -c '^- ' "$CEO_DIR/cache/blessings-today.md")
+  assert_eq "$count" "1" "one-entry file yields one pick"
+}
+
+test_cache_no_op_when_already_today() {
+  source "$LIB"
+  mkdir -p "$CEO_DIR/cache"
+  printf -- '- first\n- second\n- third\n' > "$CEO_DIR/blessings.md"
+  local today; today=$(date +%Y-%m-%d)
+  printf -- '---\ndate: %s\n---\n- cached-sentinel\n' "$today" > "$CEO_DIR/cache/blessings-today.md"
+  ensure_blessings_cache
+  # sentinel must still be present — helper skipped regen
+  assert_contains "$(cat "$CEO_DIR/cache/blessings-today.md")" "cached-sentinel" "cache preserved"
+}
+
+test_cache_regenerates_when_stale() {
+  source "$LIB"
+  mkdir -p "$CEO_DIR/cache"
+  printf -- '- a\n- b\n- c\n' > "$CEO_DIR/blessings.md"
+  printf -- '---\ndate: 1999-01-01\n---\n- stale-sentinel\n' > "$CEO_DIR/cache/blessings-today.md"
+  ensure_blessings_cache
+  local content
+  content=$(cat "$CEO_DIR/cache/blessings-today.md")
+  [[ "$content" != *"stale-sentinel"* ]] || {
+    printf '  FAIL [%s] stale cache was not replaced\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  }
+}
+
+test_cache_handles_missing_source_file() {
+  source "$LIB"
+  ensure_blessings_cache  # no blessings.md exists
+  local cache="$CEO_DIR/cache/blessings-today.md"
+  [[ -f "$cache" ]] || { printf '  FAIL [%s] expected empty cache file\n' "$CURRENT_TEST"; FAILS=$((FAILS+1)); return; }
+  local bullet_count
+  bullet_count=$(grep -c '^- ' "$cache" 2>/dev/null || true)
+  assert_eq "$bullet_count" "0" "no bullets when source missing"
+}
+
+test_cache_strips_frontmatter_before_picking() {
+  source "$LIB"
+  mkdir -p "$CEO_DIR"
+  {
+    printf -- '---\ntype: ea-blessings\n---\n\n'
+    printf -- '- real-entry\n'
+  } > "$CEO_DIR/blessings.md"
+  ensure_blessings_cache
+  local content
+  content=$(cat "$CEO_DIR/cache/blessings-today.md")
+  [[ "$content" != *"type: ea-blessings"* ]] || {
+    printf '  FAIL [%s] frontmatter bled into cache\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  }
+  assert_contains "$content" "- real-entry" "real entry picked"
+}
+
 # --- runner ---
 tests=$(declare -F | awk '{print $3}' | grep '^test_' || true)
 if [[ -z "$tests" ]]; then
