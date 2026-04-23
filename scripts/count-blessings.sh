@@ -81,14 +81,26 @@ cmd_list() {
   strip_frontmatter "$BLESSINGS_FILE" | { grep '^- ' || true; } | nl -ba
 }
 
+cmd_show() {
+  require_ceo_dir
+  [[ -f "$CACHE_FILE" ]] || return 0
+  cat "$CACHE_FILE"
+}
+
+cmd_repick() {
+  require_ceo_dir
+  rm -f "$CACHE_FILE"
+  ensure_blessings_cache
+}
+
 cmd="${1:-}"
 shift || true
 
 case "$cmd" in
   add)    cmd_add "${1:-}" ;;
   list)   cmd_list ;;
-  show)   die "not implemented" ;;
-  repick) die "not implemented" ;;
+  show)   cmd_show ;;
+  repick) cmd_repick ;;
   ""|-h|--help) usage; exit 0 ;;
   *)      usage >&2; exit 2 ;;
 esac

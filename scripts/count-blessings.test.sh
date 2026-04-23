@@ -220,6 +220,40 @@ test_cache_strips_frontmatter_before_picking() {
   assert_contains "$content" "- real-entry" "real entry picked"
 }
 
+test_show_outputs_cache_file() {
+  bash "$CLI" add "a" >/dev/null
+  bash "$CLI" add "b" >/dev/null
+  bash "$CLI" add "c" >/dev/null
+  bash "$CLI" repick >/dev/null
+  local out
+  out=$(bash "$CLI" show)
+  local today; today=$(date +%Y-%m-%d)
+  assert_contains "$out" "date: $today" "cache date visible"
+}
+
+test_show_on_missing_cache_is_empty() {
+  local out
+  out=$(bash "$CLI" show 2>&1 || true)
+  assert_eq "$out" "" "empty on no cache"
+}
+
+test_repick_forces_regeneration() {
+  bash "$CLI" add "a" >/dev/null
+  bash "$CLI" add "b" >/dev/null
+  bash "$CLI" add "c" >/dev/null
+  bash "$CLI" repick >/dev/null
+  # overwrite cache with sentinel so we can detect a re-pick
+  local today; today=$(date +%Y-%m-%d)
+  printf -- '---\ndate: %s\n---\n- sentinel\n' "$today" > "$CEO_DIR/cache/blessings-today.md"
+  bash "$CLI" repick >/dev/null
+  local content
+  content=$(cat "$CEO_DIR/cache/blessings-today.md")
+  [[ "$content" != *"sentinel"* ]] || {
+    printf '  FAIL [%s] repick did not regenerate\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  }
+}
+
 # --- runner ---
 tests=$(declare -F | awk '{print $3}' | grep '^test_' || true)
 if [[ -z "$tests" ]]; then
