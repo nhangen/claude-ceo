@@ -14,6 +14,7 @@
 #   DELEGATION_COMPLETED, DELEGATION_IN_PROGRESS, DELEGATION_FAILED
 #   SYNC_CONFLICT_COUNT
 #   DAILY_NOTE_TOP3, DAILY_NOTE_TASKS
+#   BLESSINGS_TODAY
 
 # --- Base paths ---
 if [ -z "${CEO_VAULT:-}" ]; then
@@ -139,4 +140,16 @@ if [ -f "$DAILY_NOTE" ]; then
 else
   export DAILY_NOTE_TOP3=""
   export DAILY_NOTE_TASKS=""
+fi
+
+# --- Blessings (EA) ---
+GATHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=blessings-lib.sh
+source "$GATHER_DIR/blessings-lib.sh"
+ensure_blessings_cache || true
+
+if [ -f "$CEO_DIR/cache/blessings-today.md" ]; then
+  export BLESSINGS_TODAY=$(strip_frontmatter "$CEO_DIR/cache/blessings-today.md")
+else
+  export BLESSINGS_TODAY=""
 fi
