@@ -64,7 +64,7 @@ cmd_add() {
   [[ -n "$text" ]]              || die "usage: count-blessings add \"text\""
   [[ "$text" != *$'\n'* ]]      || die "no newlines allowed in blessing text"
   [[ ${#text} -le 500 ]]        || die "entry too long (max 500 chars)"
-  require_ceo_dir
+  : "${CEO_DIR:?CEO_DIR must be set}"
 
   ensure_blessings_file_exists
 

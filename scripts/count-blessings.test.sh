@@ -58,6 +58,15 @@ test_add_writes_bullet_to_blessings_file() {
   assert_contains "$content" "type: ea-blessings" "frontmatter created"
 }
 
+test_add_bootstraps_missing_ceo_dir() {
+  # Fresh vault — setup created $CEO_DIR/cache, remove entire CEO tree to simulate first-run.
+  rm -rf "$CEO_DIR"
+  [[ ! -d "$CEO_DIR" ]] || { printf '  FAIL [%s] precondition: CEO_DIR should not exist\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); return; }
+  bash "$CLI" add "first-blessing" >/dev/null
+  [[ -d "$CEO_DIR" ]] || { printf '  FAIL [%s] CEO_DIR was not created\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); return; }
+  assert_contains "$(cat "$CEO_DIR/blessings.md")" "- first-blessing" "bullet landed"
+}
+
 test_add_appends_without_overwriting() {
   bash "$CLI" add "first" >/dev/null
   bash "$CLI" add "second" >/dev/null
