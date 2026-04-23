@@ -50,6 +50,53 @@ test_harness_works() {
   assert_eq "1" "1" "arithmetic still works"
 }
 
+test_add_writes_bullet_to_blessings_file() {
+  bash "$CLI" add "family" >/dev/null
+  local content
+  content=$(cat "$CEO_DIR/blessings.md")
+  assert_contains "$content" "- family" "bullet written"
+  assert_contains "$content" "type: ea-blessings" "frontmatter created"
+}
+
+test_add_appends_without_overwriting() {
+  bash "$CLI" add "first" >/dev/null
+  bash "$CLI" add "second" >/dev/null
+  local content
+  content=$(cat "$CEO_DIR/blessings.md")
+  assert_contains "$content" "- first" "first preserved"
+  assert_contains "$content" "- second" "second appended"
+}
+
+test_add_rejects_empty_argument() {
+  assert_fails "empty add should fail" bash "$CLI" add ""
+}
+
+test_add_rejects_newline_in_argument() {
+  assert_fails "newline smuggling rejected" bash "$CLI" add $'line1\nline2'
+}
+
+test_add_rejects_overlong_argument() {
+  local long
+  long=$(printf 'x%.0s' {1..501})
+  assert_fails "501-char entry rejected" bash "$CLI" add "$long"
+}
+
+test_add_handles_shell_metacharacters_literally() {
+  bash "$CLI" add "\$(rm -rf /tmp/should-not-happen); echo pwned" >/dev/null
+  local content
+  content=$(cat "$CEO_DIR/blessings.md")
+  assert_contains "$content" '$(rm -rf /tmp/should-not-happen); echo pwned' "metachars stored verbatim"
+}
+
+test_add_ensures_trailing_newline_before_append() {
+  # pre-seed a file without trailing newline
+  printf -- '---\ntype: ea-blessings\n---\n\n- existing' > "$CEO_DIR/blessings.md"
+  bash "$CLI" add "new" >/dev/null
+  local lines
+  lines=$(grep -c '^- ' "$CEO_DIR/blessings.md")
+  assert_eq "$lines" "2" "both bullets present on their own lines"
+}
+
 # --- runner ---
 tests=$(declare -F | awk '{print $3}' | grep '^test_' || true)
 if [[ -z "$tests" ]]; then
