@@ -4,7 +4,7 @@ set -euo pipefail
 # ceo — CLI for the CEO agent system.
 # Usage: ceo <command> [args]
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 
 # Load shared config library
 # shellcheck source=ceo-config.sh

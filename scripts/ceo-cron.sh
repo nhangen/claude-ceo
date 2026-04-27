@@ -15,7 +15,7 @@ set -euo pipefail
 
 TRIGGER="${1:?Usage: ceo-cron.sh <trigger>}"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
 

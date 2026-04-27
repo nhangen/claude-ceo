@@ -8,7 +8,7 @@ set -euo pipefail
 # Entry types: intake, report, action
 # Creates the report file with frontmatter if it doesn't exist.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
 
