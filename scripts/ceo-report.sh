@@ -8,6 +8,10 @@ set -euo pipefail
 # Entry types: intake, report, action
 # Creates the report file with frontmatter if it doesn't exist.
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ceo-config.sh
+source "$SCRIPT_DIR/ceo-config.sh"
+
 ENTRY_TYPE="${1:?Usage: ceo-report.sh <intake|report|action> <trigger-name> [content]}"
 TRIGGER_NAME="${2:?Usage: ceo-report.sh <intake|report|action> <trigger-name> [content]}"
 CONTENT="${3:-}"
@@ -23,6 +27,7 @@ if [ -z "$CONTENT" ]; then
 fi
 
 # Resolve vault
+ceo_load_config || true
 VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
 CEO_DIR="$VAULT/CEO"
 REPORT_DIR="$CEO_DIR/reports"

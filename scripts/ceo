@@ -6,6 +6,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Load shared config library
+# shellcheck source=ceo-config.sh
+source "$SCRIPT_DIR/ceo-config.sh"
+ceo_load_config || true
+
 # Find repo root by walking up from scripts/ to find .claude-plugin/
 INSTALL_DIR="$SCRIPT_DIR"
 while [ "$INSTALL_DIR" != "/" ]; do
@@ -16,20 +21,8 @@ if [ "$INSTALL_DIR" = "/" ]; then
   INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
 fi
 
-VAULT="${CEO_VAULT:-}"
-if [ -z "$VAULT" ]; then
-  _user="${USER:-$(whoami)}"
-  for candidate in \
-    "/mnt/z/Users/$_user/Documents/Obsidian" \
-    "/mnt/c/Users/$_user/Documents/Obsidian" \
-    "$HOME/Documents/Obsidian" \
-    "$HOME/Obsidian"
-  do
-    [ -d "$candidate/CEO" ] && { VAULT="$candidate"; break; }
-  done
-fi
-: "${VAULT:=$HOME/Documents/Obsidian}"
-export CEO_VAULT="$VAULT"
+# Vault discovery handled by ceo-config.sh (ceo_load_config called above).
+VAULT="$CEO_VAULT"
 
 CEO_DIR="$VAULT/CEO"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
@@ -86,6 +79,17 @@ cmd_doctor() {
 
   echo "=== CEO Doctor ==="
   echo ""
+
+  # config file
+  local _cfg_path
+  _cfg_path="$(ceo_config_path)"
+  if [ -f "$_cfg_path" ]; then
+    echo "  ✓ Config file found ($HOME/.ceo/config)"
+    ok=$((ok + 1))
+  else
+    echo "  ! Config file not found ($HOME/.ceo/config) — run: ceo setup"
+    warn=$((warn + 1))
+  fi
 
   # gh
   if command -v gh &>/dev/null; then
@@ -328,6 +332,8 @@ cmd_playbook_scan() {
     exit 1
   fi
 
+  ceo_validate_vault || exit 1
+
   local playbook_dir="$CEO_DIR/playbooks"
   local registry_file="$CEO_DIR/registry.json"
 
@@ -546,12 +552,14 @@ cmd_cron() {
     echo "Triggers: inbox, morning-brief, pr-triage, pending-drip, eod-summary, cleanup"
     exit 1
   fi
+  ceo_validate_vault || exit 1
   # Interactive invocation — bypass cooldown. Real cron calls ceo-cron.sh directly.
   CEO_FORCE=1 CEO_VERBOSE=1 "$CEO_CRON" "$1"
 }
 
 cmd_chat() {
   local name="${1:-triage}"
+  ceo_validate_vault || exit 1
   local registry_file="$CEO_DIR/registry.json"
 
   if [ ! -f "$registry_file" ]; then

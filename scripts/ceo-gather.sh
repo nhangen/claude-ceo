@@ -16,19 +16,14 @@
 #   DAILY_NOTE_TOP3, DAILY_NOTE_TASKS
 #   BLESSINGS_TODAY
 
+# Load shared config library
+GATHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=ceo-config.sh
+source "$GATHER_DIR/ceo-config.sh"
+
 # --- Base paths ---
-if [ -z "${CEO_VAULT:-}" ]; then
-  _user="${USER:-$(whoami)}"
-  for _candidate in \
-    "/mnt/z/Users/$_user/Documents/Obsidian" \
-    "/mnt/c/Users/$_user/Documents/Obsidian" \
-    "$HOME/Documents/Obsidian" \
-    "$HOME/Obsidian"
-  do
-    [ -d "$_candidate/CEO" ] && { export CEO_VAULT="$_candidate"; break; }
-  done
-fi
-export VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
+ceo_load_config || { echo "ERROR: CEO config not found. Set CEO_VAULT or run: ceo setup" >&2; return 1; }
+export VAULT="$CEO_VAULT"
 export CEO_DIR="$VAULT/CEO"
 export LOG_DIR="$CEO_DIR/log"
 export TODAY=$(date +%Y-%m-%d)

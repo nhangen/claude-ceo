@@ -81,3 +81,30 @@ CEO/
 | Read | Scan vault, read PRs, generate briefings | Auto |
 | Low-stakes write | Create branches, run tests, post PR comments | Auto + report |
 | High-stakes | Push code, merge PRs, create PRs | Propose + wait |
+
+## Troubleshooting
+
+### Vault Path Detection Issues
+
+As of v0.5.0, the CEO system uses a persistent config file at `~/.ceo/config` to store the vault path, instead of relying on environment-specific path discovery.
+
+**If vault path detection fails during `ceo setup`:**
+1. Verify Syncthing is running and the vault has synced: `ls $VAULT/CEO/inbox.md`
+2. Run `ceo setup` again to write the config file
+3. Verify the config was created: `cat ~/.ceo/config`
+4. Verify vault detection: `ceo doctor`
+
+**If you need to roll back to inline discovery loops** (temporarily, for debugging):
+
+```bash
+cd /path/to/claude-ceo
+git checkout HEAD -- \
+  scripts/ceo \
+  scripts/ceo-cron.sh \
+  scripts/ceo-gather.sh \
+  scripts/ceo-report.sh
+```
+
+This restores the hardcoded discovery loops in each script. This is a **temporary measure** for debugging only. After restoring, re-run `ceo setup` to regenerate the config file and re-enable the persistent config system.
+
+For production issues, file a bug report with your OS, WSL version (if applicable), and the output of `ceo doctor`.

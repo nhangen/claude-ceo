@@ -1,0 +1,112 @@
+#!/bin/bash
+# ceo-config.sh — Shared vault config library for the CEO agent system.
+# Source this file; do not execute it directly.
+#
+# Provides:
+#   ceo_detect_os()      — prints: wsl | linux | macos | unknown
+#   ceo_config_path()    — prints path to ~/.ceo/config
+#   ceo_load_config()    — resolves CEO_VAULT; returns 0 on success, 1 if empty
+#   ceo_validate_vault() — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
+#
+# Resolution order in ceo_load_config():
+#   1. CEO_VAULT already set in environment → use it as-is, return 0 (bypass mode)
+#   2. ~/.ceo/config exists → source it, CEO_VAULT from that file
+#   3. Legacy discovery loop (fallback — remove after 2026-05-26)
+#   4. Hard fallback: $HOME/Documents/Obsidian
+#
+# Idempotency guard — safe to source multiple times.
+[ -n "${_CEO_CONFIG_LOADED:-}" ] && return 0
+_CEO_CONFIG_LOADED=1
+
+# ---------------------------------------------------------------------------
+# ceo_detect_os — detect the runtime environment
+# ---------------------------------------------------------------------------
+ceo_detect_os() {
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    echo "wsl"
+  elif [ "$(uname)" = "Darwin" ]; then
+    echo "macos"
+  elif [ "$(uname)" = "Linux" ]; then
+    echo "linux"
+  else
+    echo "unknown"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# ceo_config_path — canonical path for the persisted config file
+# ---------------------------------------------------------------------------
+ceo_config_path() {
+  echo "$HOME/.ceo/config"
+}
+
+# ---------------------------------------------------------------------------
+# ceo_load_config — resolve CEO_VAULT and export it.
+#
+# Returns:
+#   0  CEO_VAULT is set (env bypass, config file, discovery, or hard fallback)
+#   1  CEO_VAULT is still empty after all resolution steps
+# ---------------------------------------------------------------------------
+ceo_load_config() {
+  # Step 1: CEO_VAULT already set in environment → bypass mode.
+  if [ -n "${CEO_VAULT:-}" ]; then
+    export CEO_VAULT
+    return 0
+  fi
+
+  # Step 2: Persisted config file → source it.
+  local _cfg
+  _cfg="$(ceo_config_path)"
+  if [ -f "$_cfg" ]; then
+    # shellcheck source=/dev/null
+    source "$_cfg"
+    if [ -n "${CEO_VAULT:-}" ]; then
+      export CEO_VAULT
+      return 0
+    fi
+  fi
+
+  # Step 3: Legacy discovery loop — kept as fallback until 2026-05-26.
+  # TODO: Remove this block after 2026-05-26 once all machines have ~/.ceo/config.
+  local _user="${USER:-$(whoami)}"
+  local _candidate
+  for _candidate in \
+    "/mnt/z/Users/$_user/Documents/Obsidian" \
+    "/mnt/c/Users/$_user/Documents/Obsidian" \
+    "$HOME/Documents/Obsidian" \
+    "$HOME/Obsidian"
+  do
+    if [ -d "$_candidate/CEO" ]; then
+      export CEO_VAULT="$_candidate"
+      break
+    fi
+  done
+
+  # Step 4: Hard fallback — CEO_VAULT always ends up set.
+  if [ -z "${CEO_VAULT:-}" ]; then
+    export CEO_VAULT="$HOME/Documents/Obsidian"
+  fi
+
+  [ -n "${CEO_VAULT:-}" ]
+}
+
+# ---------------------------------------------------------------------------
+# ceo_validate_vault — verify the vault is ready (CEO/inbox.md must exist).
+# Call after ceo_load_config.
+#
+# Returns:
+#   0  CEO/inbox.md exists — vault is synced and structurally valid
+#   1  missing — vault not synced, CEO_VAULT wrong, or Syncthing not running
+# ---------------------------------------------------------------------------
+ceo_validate_vault() {
+  if [ -z "${CEO_VAULT:-}" ]; then
+    echo "ERROR: CEO_VAULT is not set. Run ceo_load_config first." >&2
+    return 1
+  fi
+  if [ ! -f "$CEO_VAULT/CEO/inbox.md" ]; then
+    echo "ERROR: CEO vault not ready — $CEO_VAULT/CEO/inbox.md not found." >&2
+    echo "  Is Syncthing running? Is CEO_VAULT set correctly? (current: $CEO_VAULT)" >&2
+    return 1
+  fi
+  return 0
+}

@@ -4,6 +4,11 @@ set -euo pipefail
 # setup-wsl.sh — Provision a WSL box as the CEO agent's execution environment.
 # Run this once, interactively, on the WSL machine.
 
+# Source config library for ceo_detect_os
+SCRIPT_DIR_EARLY="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ceo-config.sh
+source "$SCRIPT_DIR_EARLY/ceo-config.sh"
+
 echo "=== CEO Agent — WSL Setup ==="
 echo ""
 
@@ -115,16 +120,53 @@ else
   echo "  After installing, run: claude login"
 fi
 
-# 9. Vault directory
-VAULT="$HOME/Documents/Obsidian"
-if [ -d "$VAULT/CEO" ]; then
-  echo ""
-  echo "[9/10] CEO vault structure found at $VAULT/CEO/"
+# 9. Vault directory — ask user, validate, write ~/.ceo/config
+echo ""
+echo "[9/10] Vault configuration"
+CEO_OS="$(ceo_detect_os)"
+
+# Suggest detected location, let user override
+_detected_vault=""
+_user="${USER:-$(whoami)}"
+for _c in \
+  "/mnt/z/Users/$_user/Documents/Obsidian" \
+  "/mnt/c/Users/$_user/Documents/Obsidian" \
+  "$HOME/Documents/Obsidian" \
+  "$HOME/Obsidian"
+do
+  if [ -d "$_c/CEO" ]; then
+    _detected_vault="$_c"
+    break
+  fi
+done
+
+if [ -n "$_detected_vault" ]; then
+  echo "  Detected vault: $_detected_vault"
+  read -rp "  Vault path [press Enter to accept, or type a different path]: " _input_vault
+  VAULT="${_input_vault:-$_detected_vault}"
 else
-  echo ""
-  echo "[9/10] WARNING: CEO vault structure not found at $VAULT/CEO/"
-  echo "  Make sure Syncthing is configured and the vault has synced."
+  echo "  No vault auto-detected. Enter the full path to your Obsidian vault."
+  read -rp "  Vault path (e.g. /mnt/z/Users/$_user/Documents/Obsidian): " VAULT
 fi
+
+# Validate
+if [ -f "$VAULT/CEO/inbox.md" ]; then
+  echo "  Vault OK — CEO/inbox.md found at $VAULT/CEO/"
+else
+  echo "  WARNING: CEO/inbox.md not found at $VAULT/CEO/"
+  echo "  Make sure Syncthing is running and the vault has fully synced."
+  echo "  You can re-run 'ceo setup' after syncing to update the config."
+fi
+
+# Write ~/.ceo/config
+mkdir -p "$HOME/.ceo"
+cat > "$HOME/.ceo/config" << CEOCONF
+# CEO agent configuration — written by ceo setup on $(date)
+# Edit this file to change the vault path or OS hint.
+CEO_VAULT="$VAULT"
+CEO_OS="$CEO_OS"
+CEOCONF
+echo "  Config written: $HOME/.ceo/config"
 
 # 10. Install cron via playbook scan
 CEO_CLI="$SCRIPT_DIR/ceo"
@@ -186,7 +228,7 @@ NEXT_STEPS="$INSTALL_DIR/next-steps.txt"
   echo "  4. Run: claude plugin add nhangen/claude-ceo"
   echo "  5. Run: ceo doctor  (verify everything is configured)"
   echo "  6. Run: ceo playbook scan  (register playbooks + install cron)"
-  echo "  7. Test interactive:  cd ~/Documents/Obsidian && claude"
+  echo "  7. Test interactive:  cd $VAULT && claude"
   echo "     Then type:  /ceo"
   echo "  8. Test cron:  ceo test"
   echo ""

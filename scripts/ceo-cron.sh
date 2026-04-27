@@ -15,23 +15,13 @@ set -euo pipefail
 
 TRIGGER="${1:?Usage: ceo-cron.sh <trigger>}"
 
-# Resolve vault: explicit env var wins, then common WSL/Linux locations
-VAULT="${CEO_VAULT:-}"
-if [ -z "$VAULT" ]; then
-  _user="${USER:-$(whoami)}"
-  for candidate in \
-    "/mnt/z/Users/$_user/Documents/Obsidian" \
-    "/mnt/c/Users/$_user/Documents/Obsidian" \
-    "$HOME/Documents/Obsidian" \
-    "$HOME/Obsidian"
-  do
-    [ -d "$candidate/CEO" ] && { VAULT="$candidate"; break; }
-  done
-fi
-if [ -z "$VAULT" ]; then
-  echo "ERROR: CEO vault not found. Set CEO_VAULT=/path/to/Obsidian" >&2
-  exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ceo-config.sh
+source "$SCRIPT_DIR/ceo-config.sh"
+
+# Vault resolution delegated to ceo-config.sh
+ceo_load_config || { echo "FATAL — CEO config not found. Set CEO_VAULT or run: ceo setup" >&2; exit 1; }
+VAULT="$CEO_VAULT"
 
 CEO_DIR="$VAULT/CEO"
 LOG_DIR="$CEO_DIR/log"
