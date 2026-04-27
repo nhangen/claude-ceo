@@ -1,10 +1,12 @@
 ---
 date: 2026-04-22
-status: approved
+status: shipped
 topic: count-blessings
 ---
 
 # Count Blessings — Design Spec
+
+> **Update 2026-04-23:** Shipped as PR [#2](https://github.com/nhangen/claude-ceo/pull/2) (merge `2ea9723`). Post-merge revision dropped the `skills/ea/count-blessings/SKILL.md` slash skill — Claude Code surfaces plugin skills as `<plugin>:<skill>`, so the bare `/count-blessings` was unreachable, and `/ceo:count-blessings` was more keystrokes than running the CLI in a terminal. The CLI is the canonical interface.
 
 ## Goal
 
@@ -23,7 +25,7 @@ Framing note: this is an EA-flavored feature, not a CEO-flavored one. It lives i
 **Plugin (`/Users/nhangen/ML-AI/claude/ceo/`):**
 
 - `scripts/count-blessings.sh` — CLI + internal helpers
-- `skills/ea/count-blessings/SKILL.md` — slash-command wrapper for `/count-blessings <sub>`
+- ~~`skills/ea/count-blessings/SKILL.md`~~ — removed post-merge; CLI is the canonical interface (see top-of-doc note).
 
 **Vault (`~/Documents/Obsidian/CEO/`):**
 
@@ -210,27 +212,7 @@ This changes morning-brief's output contract from "flat 10-bullet list" to "flat
 
 ## Slash command skill
 
-`skills/ea/count-blessings/SKILL.md`:
-
-```markdown
----
-name: count-blessings
-description: EA skill — maintain a gratitude list surfaced in the morning brief. Subcommands: add, list, show.
-version: 0.1.0
----
-
-# Count Blessings
-
-Thin wrapper over `scripts/count-blessings.sh`. Dispatch on the first argument.
-
-## Commands
-
-- `/count-blessings add "text"` — append a blessing
-- `/count-blessings list` — show all blessings numbered
-- `/count-blessings show` — show today's three picks
-
-Invoke the script via `bash <plugin-root>/scripts/count-blessings.sh "$@"`.
-```
+**Removed post-merge.** Claude Code plugin skills surface as `<plugin>:<skill>`, not bare. The skill at `skills/ea/count-blessings/` would have been ignored by the plugin's skill scanner (which expects `skills/<plugin-name>/...`), and moving it to `skills/ceo/count-blessings/` would only get `/ceo:count-blessings` — strictly more keystrokes than the CLI. The CLI is the canonical interface; symlink it to `~/bin/count-blessings`.
 
 ## Security / trust boundaries
 
