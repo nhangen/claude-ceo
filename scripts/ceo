@@ -162,6 +162,17 @@ cmd_doctor() {
     warn=$((warn + 1))
   fi
 
+  # duplicate cron triggers
+  local dup_count
+  dup_count=$(crontab -l 2>/dev/null | grep "ceo-cron\.sh" | sed 's/.*ceo-cron\.sh //' | sort | uniq -d | wc -l | xargs || true)
+  if [ "${dup_count:-0}" -gt 0 ]; then
+    echo "  ✗ Duplicate cron triggers detected — run: ceo playbook scan"
+    fail=$((fail + 1))
+  else
+    echo "  ✓ No duplicate cron triggers"
+    ok=$((ok + 1))
+  fi
+
   # plugin
   if claude plugin list 2>/dev/null | grep -q "ceo"; then
     echo "  ✓ CEO plugin installed in Claude Code"
@@ -458,18 +469,15 @@ $marker_end"
   local existing
   existing=$(crontab -l 2>/dev/null || true)
 
-  if echo "$existing" | grep -qF "$marker_start"; then
-    local new_crontab
-    new_crontab=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
-    new_crontab="$new_crontab
-$cron_block"
-    echo "$new_crontab" | crontab -
+  local new_crontab
+  new_crontab=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
+  new_crontab=$(echo "$new_crontab" | grep -v "ceo-cron\.sh" || true)
+  new_crontab=$(echo "$new_crontab" | grep -v "^# CEO Agent$" || true)
+
+  if [ -n "$new_crontab" ]; then
+    printf '%s\n%s\n' "$new_crontab" "$cron_block" | crontab -
   else
-    if [ -n "$existing" ]; then
-      printf '%s\n%s\n' "$existing" "$cron_block" | crontab -
-    else
-      echo "$cron_block" | crontab -
-    fi
+    echo "$cron_block" | crontab -
   fi
 
   echo "Crontab: $cron_count entries installed"
