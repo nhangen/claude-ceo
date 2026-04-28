@@ -73,6 +73,7 @@ cmd_add() {
     printf -- '- %s\n' "$text" >> "$BLESSINGS_FILE"
   }
   with_blessings_lock _do_add
+  echo "Added: $text"
 }
 
 cmd_list() {
