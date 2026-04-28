@@ -33,7 +33,7 @@ LAST_RUN_FILE="$LOG_DIR/.last-run-${TRIGGER}"
 FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
 
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
-_v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*"; }
+_v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }
 
 # --- Require jq ---
 if ! command -v jq &>/dev/null; then
