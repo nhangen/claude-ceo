@@ -390,7 +390,7 @@ cmd_playbook_scan() {
     local basename
     basename=$(basename "$f")
 
-    local name description trigger schedule model preflight tier status bin
+    local name description trigger schedule model preflight tier status bin runner script
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -406,6 +406,8 @@ cmd_playbook_scan() {
     tier=$(yq --front-matter=extract '.tier // ""' "$f" 2>/dev/null || echo "")
     status=$(yq --front-matter=extract '.status // ""' "$f" 2>/dev/null || echo "")
     bin=$(yq --front-matter=extract '.bin // ""' "$f" 2>/dev/null || echo "")
+    runner=$(yq --front-matter=extract '.runner // ""' "$f" 2>/dev/null || echo "")
+    script=$(yq --front-matter=extract '.script // ""' "$f" 2>/dev/null || echo "")
 
     local entry
     entry=$(jq -n \
@@ -418,8 +420,10 @@ cmd_playbook_scan() {
       --arg tier "$tier" \
       --arg status "$status" \
       --arg bin "$bin" \
+      --arg runner "$runner" \
+      --arg script "$script" \
       --arg file "playbooks/$basename" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))

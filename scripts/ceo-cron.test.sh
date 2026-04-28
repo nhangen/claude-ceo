@@ -119,8 +119,11 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   local entry runner
   entry=$(jq -r '.playbooks[] | select(.name=="fake-claude")' "$CEO_DIR/registry.json")
-  runner=$(echo "$entry" | jq -r '.runner // "claude"')
-  assert_eq "$runner" "claude" "default runner must remain claude"
+  runner=$(echo "$entry" | jq -r '.runner // ""')
+  # Empty string means "use default" — dispatcher treats unset and empty identically.
+  if [ -n "$runner" ] && [ "$runner" != "claude" ]; then
+    assert_eq "$runner" "claude" "default runner must be claude or empty"
+  fi
 }
 
 test_runner_script_missing_script_field_fails() {
