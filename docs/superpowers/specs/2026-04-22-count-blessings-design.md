@@ -24,7 +24,8 @@ Framing note: this is an EA-flavored feature, not a CEO-flavored one. It lives i
 
 **Plugin (`/Users/nhangen/ML-AI/claude/ceo/`):**
 
-- `scripts/count-blessings.sh` — CLI + internal helpers
+- `scripts/count-blessings.sh` — CLI entrypoint
+- `scripts/blessings-lib.sh` — shared library (`ensure_blessings_cache`, `strip_frontmatter`, `require_ceo_dir`)
 - ~~`skills/ea/count-blessings/SKILL.md`~~ — removed post-merge; CLI is the canonical interface (see top-of-doc note).
 
 **Vault (`~/Documents/Obsidian/CEO/`):**
@@ -109,11 +110,11 @@ cat "$CEO_DIR/cache/blessings-today.md"
 
 ### `repick`
 
-Deletes `cache/blessings-today.md`, then calls `ensure_blessings_cache` (the shared helper in `ceo-gather.sh`). The delete bypasses the fast-path date check, giving a clean regen even on the same day. Hidden from `--help`; for testing and manual re-rolls.
+Deletes `cache/blessings-today.md`, then calls `ensure_blessings_cache` (the shared helper in `scripts/blessings-lib.sh`). The delete bypasses the fast-path date check, giving a clean regen even on the same day. Hidden from `--help`; for testing and manual re-rolls.
 
 ## Selection + cache algorithm
 
-Lives as a function `ensure_blessings_cache()` in `ceo-gather.sh`. Shared with `count-blessings.sh repick`. Called on every invocation of `ceo-gather.sh`; no-op if cache is already today's.
+Lives as a function `ensure_blessings_cache()` in `scripts/blessings-lib.sh`. Sourced by both `ceo-gather.sh` (on every cron run) and `count-blessings.sh` (`repick` subcommand). No-op if cache is already today's.
 
 ```sh
 ensure_blessings_cache() {
@@ -144,7 +145,7 @@ ensure_blessings_cache() {
 
   # atomic write — tmp + mv
   mkdir -p "$CEO_DIR/cache"
-  local tmp="$cache.tmp.$$"
+  local tmp; tmp=$(mktemp "$cache.tmp.XXXXXX")
   {
     printf -- '---\ndate: %s\n---\n' "$today"
     printf '%s\n' "$picks"

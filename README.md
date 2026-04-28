@@ -89,7 +89,7 @@ See `syncthing/README.md` for write-domain rules and conflict handling.
    ln -s "$(pwd)/scripts/ceo"             ~/bin/ceo
    ln -s "$(pwd)/scripts/count-blessings.sh" ~/bin/count-blessings
    ```
-4. Run `scripts/ceo doctor` to verify everything resolves (jq, yq, gh auth, vault, cron).
+4. Run `scripts/ceo doctor` to verify everything resolves (yq, gh auth, vault, cron).
 5. Run `ceo playbook scan` to build `registry.json` and install the crontab entries.
 
 ## Daily flow
@@ -131,7 +131,6 @@ A small executive-assistant feature: keep a gratitude list in your vault and hav
 count-blessings add "text"   Append a blessing to the list
 count-blessings list         Show all blessings, numbered
 count-blessings show         Show today's three picks
-count-blessings repick       Force regenerate today's picks (testing)
 ```
 
 **Data files** (in your Obsidian vault):
@@ -140,7 +139,7 @@ count-blessings repick       Force regenerate today's picks (testing)
 
 **How it surfaces:**
 1. `ceo-gather.sh` calls `ensure_blessings_cache` (in `scripts/blessings-lib.sh`) on every cron run. Picks 3 at random into the cache file once per day; idempotent fast path on same-day cache.
-2. `BLESSINGS_TODAY` is exported into the brief's prompt inside an `<external-data>` block (sealed against prompt injection by the existing untrusted-content guard).
+2. `BLESSINGS_TODAY` is exported into the read-tier `SINGLE_PROMPT` inside a separate `<external-data>` block (sealed against prompt injection by the existing untrusted-content guard). Three-phase playbooks (`tier: low-stakes-write` and above) do not receive blessings data.
 3. The `morning-brief` playbook renders the bullets verbatim under `## Personal / ### Blessings` with a footer pointing at the CLI.
 
 **First-run UX:** `count-blessings add "..."` works on a fresh machine — it bootstraps `$CEO_DIR` automatically. No `ceo setup` required just to seed blessings.
@@ -220,7 +219,7 @@ To disable a playbook without deleting it: change `status: active` → `status: 
 bash scripts/count-blessings.test.sh   # 22 self-contained TDD tests for the CLI + cache
 ```
 
-The harness is portable across BSD (macOS) and GNU (Linux/WSL) userlands. No `shuf`, no `sort -R`, no `flock`. Each test runs in an isolated `mktemp -d` directory.
+The harness is portable across BSD (macOS) and GNU (Linux/WSL) userlands. `count-blessings.sh` and `blessings-lib.sh` use no `shuf`, no `sort -R`, no `flock`, no GNU-only extensions. Each test runs in an isolated `mktemp -d` directory.
 
 ## Troubleshooting
 
