@@ -95,7 +95,7 @@ SH
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  CEO_VERBOSE=0 bash "$CRON" fake-intake >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" fake-intake >/dev/null 2>&1
   assert_file_exists "$TEST_HOME/script-fired.txt" "script must have executed"
 
   rm -f "$SCRIPT_DIR/fake-intake.sh"
@@ -142,7 +142,7 @@ PB
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  CEO_VERBOSE=0 bash "$CRON" bad-intake >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" bad-intake >/dev/null 2>&1
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips_log" "runner:script but no script field" "missing-script error must be logged"

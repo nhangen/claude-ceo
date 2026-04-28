@@ -180,6 +180,9 @@ PREFLIGHT=$(echo "$ENTRY" | jq -r '.preflight // "none"')
 STATUS=$(echo "$ENTRY" | jq -r '.status // "active"')
 TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
 TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
+RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
+[ -z "$RUNNER" ] && RUNNER="claude"
+SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
 
 # Chat-only playbooks cannot run via cron
 if [ "$TRIGGER_TYPE" = "chat" ]; then
@@ -214,6 +217,36 @@ if type "$PREFLIGHT_FN" &>/dev/null; then
   _v "Preflight '$PREFLIGHT' passed"
 else
   _v "WARNING: Unknown preflight '$PREFLIGHT' — running anyway"
+fi
+
+# --- Script-runner branch: exec named script, skip claude --print ---
+if [ "$RUNNER" = "script" ]; then
+  if [ -z "$SCRIPT_PATH" ]; then
+    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
+    _v "ERROR: runner:script requires a script field"
+    exit 1
+  fi
+  SCRIPT_FULL="$SCRIPT_DIR/$SCRIPT_PATH"
+  if [ ! -f "$SCRIPT_FULL" ]; then
+    echo "$(date): ERROR — Script not found: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
+    _v "ERROR: Script not found at $SCRIPT_FULL"
+    exit 1
+  fi
+  if [ ! -x "$SCRIPT_FULL" ]; then
+    echo "$(date): ERROR — Script not executable: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
+    _v "ERROR: Script not executable at $SCRIPT_FULL"
+    exit 1
+  fi
+  _v "Runner: script — exec $SCRIPT_PATH"
+  export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
+  SCRIPT_EXIT=0
+  "$SCRIPT_FULL" || SCRIPT_EXIT=$?
+  if [ "$SCRIPT_EXIT" -ne 0 ]; then
+    _v "FAILED (exit: $SCRIPT_EXIT)"
+    echo "$(date): Script exited $SCRIPT_EXIT for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+  fi
+  date +%s > "$LAST_RUN_FILE"
+  exit "$SCRIPT_EXIT"
 fi
 
 # --- Read context files (with size limits for injection safety) ---
