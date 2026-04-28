@@ -92,6 +92,8 @@ cmd_repick() {
   require_ceo_dir
   rm -f "$CACHE_FILE"
   ensure_blessings_cache
+  echo "Repicked. Today's blessings:"
+  cat "$CACHE_FILE"
 }
 
 cmd="${1:-}"

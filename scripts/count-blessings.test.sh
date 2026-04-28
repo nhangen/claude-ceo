@@ -252,6 +252,16 @@ test_show_on_missing_cache_is_empty() {
   assert_eq "$out" "" "empty on no cache"
 }
 
+test_repick_prints_todays_picks() {
+  bash "$CLI" add "a" >/dev/null
+  bash "$CLI" add "b" >/dev/null
+  bash "$CLI" add "c" >/dev/null
+  local out
+  out=$(bash "$CLI" repick)
+  assert_contains "$out" "Repicked" "confirmation line present"
+  assert_contains "$out" "- " "picks listed in output"
+}
+
 test_repick_forces_regeneration() {
   bash "$CLI" add "a" >/dev/null
   bash "$CLI" add "b" >/dev/null
