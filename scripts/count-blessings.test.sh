@@ -106,6 +106,12 @@ test_add_ensures_trailing_newline_before_append() {
   assert_eq "$lines" "2" "both bullets present on their own lines"
 }
 
+test_add_prints_confirmation() {
+  local out
+  out=$(bash "$CLI" add "gratitude")
+  assert_contains "$out" "Added: gratitude" "confirmation printed to stdout"
+}
+
 test_list_shows_numbered_bullets() {
   bash "$CLI" add "first" >/dev/null
   bash "$CLI" add "second" >/dev/null
