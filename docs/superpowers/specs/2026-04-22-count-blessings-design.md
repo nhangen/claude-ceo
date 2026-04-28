@@ -1,10 +1,12 @@
 ---
 date: 2026-04-22
-status: approved
+status: shipped
 topic: count-blessings
 ---
 
 # Count Blessings — Design Spec
+
+> **Update 2026-04-23:** Shipped as PR [#2](https://github.com/nhangen/claude-ceo/pull/2) (merge `2ea9723`). Post-merge revision dropped the `skills/ea/count-blessings/SKILL.md` slash skill — Claude Code surfaces plugin skills as `<plugin>:<skill>`, so the bare `/count-blessings` was unreachable, and `/ceo:count-blessings` was more keystrokes than running the CLI in a terminal. The CLI is the canonical interface.
 
 ## Goal
 
@@ -22,8 +24,9 @@ Framing note: this is an EA-flavored feature, not a CEO-flavored one. It lives i
 
 **Plugin (`/Users/nhangen/ML-AI/claude/ceo/`):**
 
-- `scripts/count-blessings.sh` — CLI + internal helpers
-- `skills/ea/count-blessings/SKILL.md` — slash-command wrapper for `/count-blessings <sub>`
+- `scripts/count-blessings.sh` — CLI entrypoint
+- `scripts/blessings-lib.sh` — shared library (`ensure_blessings_cache`, `strip_frontmatter`, `require_ceo_dir`)
+- ~~`skills/ea/count-blessings/SKILL.md`~~ — removed post-merge; CLI is the canonical interface (see top-of-doc note).
 
 **Vault (`~/Documents/Obsidian/CEO/`):**
 
@@ -107,11 +110,11 @@ cat "$CEO_DIR/cache/blessings-today.md"
 
 ### `repick`
 
-Deletes `cache/blessings-today.md`, then calls `ensure_blessings_cache` (the shared helper in `ceo-gather.sh`). The delete bypasses the fast-path date check, giving a clean regen even on the same day. Hidden from `--help`; for testing and manual re-rolls.
+Deletes `cache/blessings-today.md`, then calls `ensure_blessings_cache` (the shared helper in `scripts/blessings-lib.sh`). The delete bypasses the fast-path date check, giving a clean regen even on the same day. Hidden from `--help`; for testing and manual re-rolls.
 
 ## Selection + cache algorithm
 
-Lives as a function `ensure_blessings_cache()` in `ceo-gather.sh`. Shared with `count-blessings.sh repick`. Called on every invocation of `ceo-gather.sh`; no-op if cache is already today's.
+Lives as a function `ensure_blessings_cache()` in `scripts/blessings-lib.sh`. Sourced by both `ceo-gather.sh` (on every cron run) and `count-blessings.sh` (`repick` subcommand). No-op if cache is already today's.
 
 ```sh
 ensure_blessings_cache() {
@@ -142,7 +145,7 @@ ensure_blessings_cache() {
 
   # atomic write — tmp + mv
   mkdir -p "$CEO_DIR/cache"
-  local tmp="$cache.tmp.$$"
+  local tmp; tmp=$(mktemp "$cache.tmp.XXXXXX")
   {
     printf -- '---\ndate: %s\n---\n' "$today"
     printf '%s\n' "$picks"
@@ -210,27 +213,7 @@ This changes morning-brief's output contract from "flat 10-bullet list" to "flat
 
 ## Slash command skill
 
-`skills/ea/count-blessings/SKILL.md`:
-
-```markdown
----
-name: count-blessings
-description: EA skill — maintain a gratitude list surfaced in the morning brief. Subcommands: add, list, show.
-version: 0.1.0
----
-
-# Count Blessings
-
-Thin wrapper over `scripts/count-blessings.sh`. Dispatch on the first argument.
-
-## Commands
-
-- `/count-blessings add "text"` — append a blessing
-- `/count-blessings list` — show all blessings numbered
-- `/count-blessings show` — show today's three picks
-
-Invoke the script via `bash <plugin-root>/scripts/count-blessings.sh "$@"`.
-```
+**Removed post-merge.** Claude Code plugin skills surface as `<plugin>:<skill>`, not bare. The skill at `skills/ea/count-blessings/` would have been ignored by the plugin's skill scanner (which expects `skills/<plugin-name>/...`), and moving it to `skills/ceo/count-blessings/` would only get `/ceo:count-blessings` — strictly more keystrokes than the CLI. The CLI is the canonical interface; symlink it to `~/bin/count-blessings`.
 
 ## Security / trust boundaries
 

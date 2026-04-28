@@ -1,5 +1,7 @@
 # Count Blessings Implementation Plan
 
+> **Update 2026-04-23:** Plan executed and shipped (PR [#2](https://github.com/nhangen/claude-ceo/pull/2), merge `2ea9723`). Task 9 (slash skill at `skills/ea/count-blessings/SKILL.md`) was reverted post-merge — the plugin skill scanner expects `skills/<plugin-name>/...` and bare slash commands are reserved for built-ins. The CLI is the canonical interface.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a gratitude-list feature to the CEO plugin that picks 3 random blessings per day and renders them in the morning brief's new `## Personal / ### Blessings` section. Adds are via CLI only.
@@ -21,7 +23,7 @@
 | `scripts/count-blessings.sh` | CLI entrypoint; dispatches `add`/`list`/`show`/`repick` |
 | `scripts/blessings-lib.sh` | Pure helpers: `ensure_blessings_cache`, `strip_frontmatter`, `require_ceo_dir` |
 | `scripts/count-blessings.test.sh` | Self-contained test suite (temp-dir, no network) |
-| `skills/ea/count-blessings/SKILL.md` | Slash-command wrapper for `/count-blessings <sub>` |
+| ~~`skills/ea/count-blessings/SKILL.md`~~ | ~~Slash-command wrapper~~ — reverted post-merge (see top-of-doc note) |
 
 ### Modified
 
@@ -855,10 +857,14 @@ No commit in the plugin repo for this step — the playbook lives in the vault, 
 
 ---
 
-## Task 9: Add the `/count-blessings` slash command skill
+## Task 9: ~~Add the `/count-blessings` slash command skill~~ (REVERTED)
+
+**Status:** Reverted in the post-merge cleanup PR. Claude Code plugin skills surface as `<plugin>:<skill>`, not bare. The CLI (`count-blessings add|list|show|repick`) is the canonical interface.
+
+The original task body is preserved below for historical reference, but do **not** re-implement.
 
 **Files:**
-- Create: `skills/ea/count-blessings/SKILL.md`
+- ~~Create: `skills/ea/count-blessings/SKILL.md`~~
 
 - [ ] **Step 9.1: Create the skill file**
 
@@ -968,7 +974,7 @@ No commit — this task is verification only.
    - `ceo-gather.sh` wiring — Task 6. ✓
    - `ceo-cron.sh` `<external-data>` injection — Task 7. ✓
    - Morning-brief Output Format change — Task 8. ✓
-   - `skills/ea/count-blessings/SKILL.md` — Task 9. ✓
+   - ~~`skills/ea/count-blessings/SKILL.md` — Task 9~~. Reverted post-merge.
    - Portability (no `sort -R`, awk state machine, mkdir lock, printf append, trailing-newline) — Tasks 2, 4. ✓
    - Security (`<external-data>` wrap, newline/length reject, printf-safe append, `set -euo pipefail`, `CEO_DIR` guard) — Tasks 1, 2, 7. ✓
    - Known issues (WSL path, WSL cron, dead preflight, output-format contract, srand granularity) — documented in spec; not fixed in this plan by design. ✓
