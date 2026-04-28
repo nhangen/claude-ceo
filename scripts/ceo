@@ -190,6 +190,29 @@ cmd_doctor() {
     warn=$((warn + 1))
   fi
 
+  # bin symlinks for playbooks
+  local registry_file="$CEO_DIR/registry.json"
+  if [ -f "$registry_file" ] && command -v jq &>/dev/null; then
+    local missing_bins=0 bin_total=0
+    while IFS= read -r row; do
+      local p_name p_bin
+      p_name=$(echo "$row" | jq -r '.name')
+      p_bin=$(echo "$row" | jq -r '.bin // ""')
+      [ -z "$p_bin" ] && continue
+      bin_total=$((bin_total + 1))
+      local link_name="${p_bin%.sh}"
+      if [ ! -L "$HOME/.local/bin/$link_name" ]; then
+        echo "  ! Missing bin symlink: ~/.local/bin/$link_name (playbook: $p_name) — run: ceo playbook scan"
+        missing_bins=$((missing_bins + 1))
+        warn=$((warn + 1))
+      fi
+    done < <(jq -c '.playbooks[] | select(.status=="active")' "$registry_file" 2>/dev/null)
+    if [ "$bin_total" -gt 0 ] && [ "$missing_bins" -eq 0 ]; then
+      echo "  ✓ Playbook bin symlinks present ($bin_total)"
+      ok=$((ok + 1))
+    fi
+  fi
+
   echo ""
   echo "Result: $ok ok, $warn warnings, $fail failures"
   [ "$fail" -gt 0 ] && return 1
@@ -367,7 +390,7 @@ cmd_playbook_scan() {
     local basename
     basename=$(basename "$f")
 
-    local name description trigger schedule model preflight tier status
+    local name description trigger schedule model preflight tier status bin
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -382,6 +405,7 @@ cmd_playbook_scan() {
     preflight=$(yq --front-matter=extract '.preflight // ""' "$f" 2>/dev/null || echo "")
     tier=$(yq --front-matter=extract '.tier // ""' "$f" 2>/dev/null || echo "")
     status=$(yq --front-matter=extract '.status // ""' "$f" 2>/dev/null || echo "")
+    bin=$(yq --front-matter=extract '.bin // ""' "$f" 2>/dev/null || echo "")
 
     local entry
     entry=$(jq -n \
@@ -393,8 +417,9 @@ cmd_playbook_scan() {
       --arg preflight "$preflight" \
       --arg tier "$tier" \
       --arg status "$status" \
+      --arg bin "$bin" \
       --arg file "playbooks/$basename" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))
@@ -439,6 +464,55 @@ cmd_playbook_scan() {
   echo "Wrote: $registry_file"
 
   _playbook_update_crontab "$new_registry"
+  _playbook_sync_bins "$new_registry"
+}
+
+_playbook_sync_bins() {
+  local registry="$1"
+  local bin_dir="$HOME/.local/bin"
+  mkdir -p "$bin_dir"
+
+  local created=0
+  local removed=0
+
+  # Create/update symlinks for active playbooks that declare a bin
+  while IFS= read -r row; do
+    local p_name p_bin p_status
+    p_name=$(echo "$row" | jq -r '.name')
+    p_bin=$(echo "$row" | jq -r '.bin // ""')
+    p_status=$(echo "$row" | jq -r '.status')
+
+    [ -z "$p_bin" ] && continue
+    [ "$p_status" != "active" ] && continue
+
+    local link_name="${p_bin%.sh}"
+    local link_path="$bin_dir/$link_name"
+    local target="$SCRIPT_DIR/$p_bin"
+
+    ln -sf "$target" "$link_path"
+    echo "  BIN   $link_name -> $target"
+    created=$((created + 1))
+  done < <(echo "$registry" | jq -c '.playbooks[]')
+
+  # Remove stale symlinks into SCRIPT_DIR that no active playbook declares
+  local declared_bins
+  declared_bins=$(echo "$registry" | jq -r '[.playbooks[] | select(.status=="active") | select(.bin != null and .bin != "") | .bin | ltrimstr("") | if endswith(".sh") then .[:-3] else . end] | join("\n")' 2>/dev/null || true)
+
+  for link in "$bin_dir"/*; do
+    [ -L "$link" ] || continue
+    local tgt
+    tgt=$(readlink "$link")
+    [[ "$tgt" == "$SCRIPT_DIR/"* ]] || continue
+    local link_name
+    link_name=$(basename "$link")
+    if ! printf '%s\n' "$declared_bins" | grep -qx "$link_name"; then
+      rm -f "$link"
+      echo "  UNBIN $link_name (removed)"
+      removed=$((removed + 1))
+    fi
+  done
+
+  echo "Bins: $created created/updated, $removed removed"
 }
 
 _playbook_update_crontab() {
