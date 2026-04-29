@@ -214,6 +214,12 @@ TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
 TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
 RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
 [ -z "$RUNNER" ] && RUNNER="claude"
+case "$RUNNER" in
+  claude|script) ;;
+  *)
+    _record_failure "Unknown runner '$RUNNER' for $TRIGGER (expected: claude|script)"
+    exit 1 ;;
+esac
 SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
 
 # Chat-only playbooks cannot run via cron

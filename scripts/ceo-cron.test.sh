@@ -345,6 +345,59 @@ PB
   fi
 }
 
+test_runner_unknown_value_skipped_at_scan() {
+  cat > "$CEO_DIR/playbooks/typo-runner.md" << 'PB'
+---
+name: typo-runner
+description: Playbook with a typo in the runner field
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: scrpt
+script: typo-runner.sh
+---
+PB
+
+  local scan_out
+  scan_out=$(bash "$CEO_CLI" playbook scan 2>&1 || true)
+  assert_contains "$scan_out" "unknown runner: 'scrpt'" "scan must skip unknown runner with diagnostic"
+
+  local entry
+  entry=$(jq -r '.playbooks[] | select(.name=="typo-runner")' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  assert_eq "$entry" "" "skipped playbook must not appear in registry.json"
+}
+
+test_runner_unknown_value_rejected_at_dispatch() {
+  cat > "$CEO_DIR/playbooks/forced-typo.md" << 'PB'
+---
+name: forced-typo
+description: Valid playbook
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  jq '(.playbooks[] | select(.name=="forced-typo") | .runner) |= "scrpt"' \
+    "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
+  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" forced-typo >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "dispatcher must reject unknown runner with exit 1"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "Unknown runner 'scrpt'" "skips log must record unknown-runner rejection"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---

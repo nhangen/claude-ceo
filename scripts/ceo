@@ -409,6 +409,14 @@ cmd_playbook_scan() {
     runner=$(yq --front-matter=extract '.runner // ""' "$f" 2>/dev/null || echo "")
     script=$(yq --front-matter=extract '.script // ""' "$f" 2>/dev/null || echo "")
 
+    case "$runner" in
+      ""|claude|script) ;;
+      *)
+        echo "  SKIP  $basename (unknown runner: '$runner', expected: claude|script)"
+        skipped=$((skipped + 1))
+        continue ;;
+    esac
+
     local entry
     entry=$(jq -n \
       --arg name "$name" \
