@@ -35,6 +35,38 @@ FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
 _v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }
 
+# Single source of truth for terminal-exit bookkeeping. Every success path
+# calls _record_success; every failure path calls _record_failure. Deferral
+# paths (chat-only, status-not-active, missing playbook, preflight no-work)
+# are not failures and exit directly without invoking either helper.
+_record_success() {
+  echo 0 > "$FAIL_COUNT_FILE"
+  date +%s > "$LAST_RUN_FILE"
+  [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
+  echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+}
+
+_record_failure() {
+  local reason="$1"
+  echo "$(date): ERROR — $reason" >> "$LOG_DIR/cron-skips.log"
+  local fails
+  fails=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
+  fails=$((fails + 1))
+  echo "$fails" > "$FAIL_COUNT_FILE"
+  if [ "$fails" -ge 3 ]; then
+    cat >> "$CEO_DIR/approvals/pending.md" << ALERTEOF
+
+## $TODAY $NOW — ALERT
+
+- [ ] **CEO cron failing repeatedly** — $fails consecutive failures
+  - trigger: $TRIGGER
+  - last error: $reason
+  - action needed: check cron-raw.log and cron-skips.log
+ALERTEOF
+  fi
+  date +%s > "$LAST_RUN_FILE"
+}
+
 # --- Require jq ---
 if ! command -v jq &>/dev/null; then
   echo "$(date): FATAL — jq not installed. Run: sudo apt install jq" >&2
@@ -243,10 +275,11 @@ if [ "$RUNNER" = "script" ]; then
   "$SCRIPT_FULL" || SCRIPT_EXIT=$?
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
-    echo "$(date): Script exited $SCRIPT_EXIT for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    exit "$SCRIPT_EXIT"
   fi
-  date +%s > "$LAST_RUN_FILE"
-  exit "$SCRIPT_EXIT"
+  _record_success
+  exit 0
 fi
 
 # --- Read context files (with size limits for injection safety) ---
@@ -380,31 +413,29 @@ END_LOG_ENTRY"
     echo "$(date) [$TRIGGER] Single-call output:" >> "$LOG_DIR/cron-raw.log"
     echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
     echo "---" >> "$LOG_DIR/cron-raw.log"
-  else
-    LOG_ENTRY=$(echo "$SINGLE_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
-    if [ -n "$LOG_ENTRY" ]; then
-      _v ""
-      _v "--- Output ---"
-      [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
-      _v "--- End ---"
-      _v ""
-      "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
-    else
-      _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-      "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)
-**Playbook:** $PLAYBOOK_REL
-**Note:** Execution succeeded but log format could not be parsed."
-      echo "$(date) [$TRIGGER] Unparseable output:" >> "$LOG_DIR/cron-raw.log"
-      echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
-      echo "---" >> "$LOG_DIR/cron-raw.log"
-    fi
+    _record_failure "Single-call execution failed for $TRIGGER (exit: $SINGLE_EXIT)"
+    exit "$SINGLE_EXIT"
   fi
 
-  # Update timestamps and exit
-  echo 0 > "$FAIL_COUNT_FILE"
-  date +%s > "$LAST_RUN_FILE"
-  [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
-  echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+  LOG_ENTRY=$(echo "$SINGLE_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
+  if [ -n "$LOG_ENTRY" ]; then
+    _v ""
+    _v "--- Output ---"
+    [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
+    _v "--- End ---"
+    _v ""
+    "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
+  else
+    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
+    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)
+**Playbook:** $PLAYBOOK_REL
+**Note:** Execution succeeded but log format could not be parsed."
+    echo "$(date) [$TRIGGER] Unparseable output:" >> "$LOG_DIR/cron-raw.log"
+    echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
+    echo "---" >> "$LOG_DIR/cron-raw.log"
+  fi
+
+  _record_success
   exit 0
 fi
 
@@ -461,32 +492,12 @@ PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | timeout 300 claude --print --
 
 if [ $PLAN_EXIT -ne 0 ]; then
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
-  echo "$(date): ERROR — Phase 1 (plan) failed for $TRIGGER (exit: $PLAN_EXIT)" >> "$LOG_DIR/cron-skips.log"
   echo "$(date) [$TRIGGER] Plan output:" >> "$LOG_DIR/cron-raw.log"
   echo "$PLAN_OUTPUT" >> "$LOG_DIR/cron-raw.log"
   echo "---" >> "$LOG_DIR/cron-raw.log"
-
-  # Track consecutive failures
-  FAILS=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
-  FAILS=$((FAILS + 1))
-  echo "$FAILS" > "$FAIL_COUNT_FILE"
-  if [ "$FAILS" -ge 3 ]; then
-    PENDING="$CEO_DIR/approvals/pending.md"
-    cat >> "$PENDING" << ALERTEOF
-
-## $TODAY $NOW — ALERT
-
-- [ ] **CEO cron failing repeatedly** — $FAILS consecutive failures
-  - trigger: $TRIGGER
-  - last error: exit code $PLAN_EXIT
-  - action needed: check cron-raw.log and cron-skips.log
-ALERTEOF
-  fi
+  _record_failure "Phase 1 (plan) failed for $TRIGGER (exit: $PLAN_EXIT)"
   exit 1
 fi
-
-# Reset fail count on success
-echo 0 > "$FAIL_COUNT_FILE"
 
 # --- Phase 2: FILTER (shell strips high-stakes actions) ---
 _v "Phase 1 done. Filtering actions..."
@@ -581,6 +592,8 @@ END_LOG_ENTRY"
     echo "$(date) [$TRIGGER] Exec output:" >> "$LOG_DIR/cron-raw.log"
     echo "$EXEC_OUTPUT" >> "$LOG_DIR/cron-raw.log"
     echo "---" >> "$LOG_DIR/cron-raw.log"
+    _record_failure "Phase 3 (exec) failed for $TRIGGER (exit: $EXEC_EXIT)"
+    exit "$EXEC_EXIT"
   else
     # Extract structured log entry
     LOG_ENTRY=$(echo "$EXEC_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
@@ -604,11 +617,4 @@ END_LOG_ENTRY"
   fi
 fi
 
-# --- Update per-trigger last-run timestamp ---
-date +%s > "$LAST_RUN_FILE"
-
-if [ "$TRIGGER" = "morning-scan" ]; then
-  touch "$LOG_DIR/.last-scan"
-fi
-
-echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+_record_success
