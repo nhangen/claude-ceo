@@ -91,6 +91,16 @@ ceo_load_config() {
 }
 
 # ---------------------------------------------------------------------------
+# ceo_augment_path — prepend common user-tool prefixes to PATH so cron-invoked
+# scripts can find Homebrew binaries, bun-installed CLIs, and ~/.local/bin
+# symlinks. Cron starts with PATH=/usr/bin:/bin; this is the single source of
+# truth for the prefix list across ceo-cron.sh and any runner:script playbook.
+# ---------------------------------------------------------------------------
+ceo_augment_path() {
+  export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+}
+
+# ---------------------------------------------------------------------------
 # ceo_validate_vault — verify the vault is ready (CEO/inbox.md must exist).
 # Call after ceo_load_config.
 #
