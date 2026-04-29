@@ -136,6 +136,39 @@ PB
   fi
 }
 
+test_script_stderr_redirected_to_log() {
+  cat > "$CEO_DIR/playbooks/stderr-intake.md" << 'PB'
+---
+name: stderr-intake
+description: Test playbook to verify script stderr is captured
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: stderr-intake.sh
+---
+PB
+
+  cat > "$SCRIPT_DIR/stderr-intake.sh" << 'SH'
+#!/bin/bash
+echo "synthetic-script-stderr-sentinel" >&2
+exit 4
+SH
+  chmod +x "$SCRIPT_DIR/stderr-intake.sh"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" stderr-intake >/dev/null 2>&1 || true
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "synthetic-script-stderr-sentinel" \
+    "script stderr must be appended to cron-stderr.log"
+
+  rm -f "$SCRIPT_DIR/stderr-intake.sh"
+}
+
 test_script_failure_increments_fail_count() {
   cat > "$CEO_DIR/playbooks/fail-intake.md" << 'PB'
 ---

@@ -272,7 +272,7 @@ if [ "$RUNNER" = "script" ]; then
   _v "Runner: script — exec $SCRIPT_PATH"
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
   SCRIPT_EXIT=0
-  "$SCRIPT_FULL" || SCRIPT_EXIT=$?
+  "$SCRIPT_FULL" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
     _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
