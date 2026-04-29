@@ -72,6 +72,17 @@ echo "ACTION: 1 | read | noop | n/a"
 STUB
   chmod +x "$TEST_HOME/bin/claude"
 
+  # macOS lacks `timeout` from GNU coreutils; the dispatcher uses
+  # `timeout N claude ...`. Stub it as a transparent passthrough.
+  if ! command -v timeout >/dev/null 2>&1; then
+    cat > "$TEST_HOME/bin/timeout" << 'STUB'
+#!/bin/bash
+shift  # discard the duration arg
+exec "$@"
+STUB
+    chmod +x "$TEST_HOME/bin/timeout"
+  fi
+
   export PATH="$TEST_HOME/bin:$PATH"
 }
 
@@ -107,15 +118,20 @@ SH
 
   CEO_VERBOSE=1 bash "$CRON" fake-intake >/dev/null 2>&1
   assert_file_exists "$TEST_HOME/script-fired.txt" "script must have executed"
+  if [ -f "$HOME/claude-invoked.txt" ]; then
+    printf '  FAIL [%s] claude was invoked but the script-runner branch must skip it\n' \
+      "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
 
   rm -f "$SCRIPT_DIR/fake-intake.sh"
 }
 
-test_runner_default_claude_unchanged() {
+test_runner_default_invokes_claude() {
   cat > "$CEO_DIR/playbooks/fake-claude.md" << 'PB'
 ---
 name: fake-claude
-description: Existing-shape playbook
+description: Default-runner playbook
 trigger: cron
 schedule: "0 9 * * *"
 model: haiku
@@ -127,13 +143,39 @@ status: active
 PB
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local entry runner
-  entry=$(jq -r '.playbooks[] | select(.name=="fake-claude")' "$CEO_DIR/registry.json")
-  runner=$(echo "$entry" | jq -r '.runner // ""')
-  # Empty string means "use default" — dispatcher treats unset and empty identically.
-  if [ -n "$runner" ] && [ "$runner" != "claude" ]; then
-    assert_eq "$runner" "claude" "default runner must be claude or empty"
-  fi
+  CEO_VERBOSE=1 bash "$CRON" fake-claude >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "default runner must invoke claude"
+}
+
+test_v_safe_under_set_e() {
+  cat > "$CEO_DIR/playbooks/v-test.md" << 'PB'
+---
+name: v-test
+description: Exercises _v under set -e with CEO_VERBOSE unset
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: v-test.sh
+---
+PB
+
+  cat > "$SCRIPT_DIR/v-test.sh" << SH
+#!/bin/bash
+echo "ran" > "$TEST_HOME/v-test-fired.txt"
+SH
+  chmod +x "$SCRIPT_DIR/v-test.sh"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  unset CEO_VERBOSE
+  bash "$CRON" v-test >/dev/null 2>&1
+  assert_file_exists "$TEST_HOME/v-test-fired.txt" \
+    "script must run end-to-end with CEO_VERBOSE unset (regression guard for a528fde)"
+
+  rm -f "$SCRIPT_DIR/v-test.sh"
 }
 
 test_script_stderr_redirected_to_log() {
@@ -414,7 +456,10 @@ PB
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  CEO_VERBOSE=1 bash "$CRON" bad-intake >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" bad-intake >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "missing-script field must exit 1"
+
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips_log" "runner:script but no script field" "missing-script error must be logged"
