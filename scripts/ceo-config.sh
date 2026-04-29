@@ -78,16 +78,14 @@ ceo_load_config() {
   do
     if [ -d "$_candidate/CEO" ]; then
       export CEO_VAULT="$_candidate"
-      break
+      return 0
     fi
   done
 
-  # Step 4: Hard fallback — CEO_VAULT always ends up set.
-  if [ -z "${CEO_VAULT:-}" ]; then
-    export CEO_VAULT="$HOME/Documents/Obsidian"
-  fi
-
-  [ -n "${CEO_VAULT:-}" ]
+  # No source resolved CEO_VAULT — return non-zero so callers' `|| exit 1`
+  # guards actually fire instead of silently provisioning under
+  # $HOME/Documents/Obsidian on a misconfigured host.
+  return 1
 }
 
 # ---------------------------------------------------------------------------
