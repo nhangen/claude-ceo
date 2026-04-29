@@ -6,7 +6,7 @@
 #
 # Invoked by ceo-cron.sh when the token-intake playbook (runner:script) fires.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=ceo-config.sh
@@ -35,24 +35,30 @@ capture() {
   if command -v "$1" >/dev/null 2>&1; then
     "$@" 2>&1 || printf '\n[command exited non-zero]\n'
   else
-    printf '%s unavailable on $PATH\n' "$1"
+    printf '%s unavailable on PATH=%s\n' "$1" "$PATH"
   fi
   printf '```\n'
 }
 
-{
+if ! {
   printf -- '---\ndate: %s\ntype: ceo-token-intake\n---\n\n' "$TODAY"
   printf '# Token Report — %s\n' "$TODAY"
   capture "RTK — global savings" rtk gain
   capture "RTK — current project" rtk gain -p
   capture "RTK — Claude Code economics" rtk cc-economics
   capture "token-scope — last 24h" token-scope --since 1d
-} > "$REPORT_FILE"
+} > "$REPORT_FILE"; then
+  echo "ERROR: failed to write $REPORT_FILE" >&2
+  exit 1
+fi
+[ -s "$REPORT_FILE" ] || { echo "ERROR: empty report $REPORT_FILE" >&2; exit 1; }
 
-# Idempotently append the inbox line.
-# `--` guards against the leading `-` in the pattern being parsed as an option flag.
+# Idempotently append the inbox line. Dedupe on the wikilink target
+# rather than the full line so a `[x]` checkoff doesn't re-trigger the
+# append.
 touch "$INBOX_FILE"
-if ! grep -qF -- "$INBOX_LINE" "$INBOX_FILE"; then
+WIKILINK="[[CEO/reports/token/$TODAY]]"
+if ! grep -qF -- "$WIKILINK" "$INBOX_FILE"; then
   printf '%s\n' "$INBOX_LINE" >> "$INBOX_FILE"
 fi
 
