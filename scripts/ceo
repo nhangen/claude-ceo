@@ -21,10 +21,10 @@ if [ "$INSTALL_DIR" = "/" ]; then
   INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
 fi
 
-# Vault discovery handled by ceo-config.sh (ceo_load_config called above).
-VAULT="$CEO_VAULT"
-
-CEO_DIR="$VAULT/CEO"
+# Vault may be unset on a fresh host; help/setup/doctor/next must remain reachable.
+# Vault-requiring subcommands call ceo_require_vault in the dispatcher below.
+VAULT="${CEO_VAULT:-}"
+CEO_DIR="${VAULT:+$VAULT/CEO}"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
 cmd_help() {
@@ -745,16 +745,19 @@ $YESTERDAY_REPORT"
   cd "$VAULT" && claude --model "$model" --system-prompt "$sys_prompt"
 }
 
+# Bind vault globals after ceo_require_vault has set CEO_VAULT.
+_bind_vault() { VAULT="$CEO_VAULT"; CEO_DIR="$VAULT/CEO"; }
+
 # Dispatch
 case "${1:-help}" in
   setup)    cmd_setup ;;
   next)     cmd_next ;;
   doctor)   cmd_doctor ;;
-  preflight) cmd_preflight ;;
-  test)     cmd_test ;;
-  chat)     shift; cmd_chat "$@" ;;
-  cron)     shift; cmd_cron "$@" ;;
-  playbook) shift; cmd_playbook "$@" ;;
+  preflight) ceo_require_vault; _bind_vault; cmd_preflight ;;
+  test)     ceo_require_vault; _bind_vault; cmd_test ;;
+  chat)     ceo_require_vault; _bind_vault; shift; cmd_chat "$@" ;;
+  cron)     ceo_require_vault; _bind_vault; shift; cmd_cron "$@" ;;
+  playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     echo "Unknown command: $1"
