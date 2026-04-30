@@ -454,6 +454,9 @@ test_ceo_augment_path_prepends_user_tool_prefixes() {
   assert_contains "$out" "/usr/local/bin"   "PATH must include /usr/local/bin"
   assert_contains "$out" "/fake/.local/bin"  "PATH must include ~/.local/bin"
   assert_contains "$out" "/usr/bin"         "original PATH must be preserved"
+
+  local first_segment="${out%%:*}"
+  assert_eq "$first_segment" "/fake/.bun/bin" "augmented prefix must be FIRST on PATH"
 }
 
 test_ceo_augment_path_idempotent() {
