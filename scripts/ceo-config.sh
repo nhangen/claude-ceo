@@ -83,9 +83,7 @@ ceo_load_config() {
     fi
   done
 
-  # No source resolved CEO_VAULT — return non-zero so callers' `|| exit 1`
-  # guards actually fire instead of silently provisioning under
-  # $HOME/Documents/Obsidian on a misconfigured host.
+  # Postcondition: CEO_VAULT remains unset on rc=1; ceo_require_vault() turns this into exit 1.
   return 1
 }
 
