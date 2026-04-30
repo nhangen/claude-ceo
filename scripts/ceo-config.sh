@@ -6,13 +6,14 @@
 #   ceo_detect_os()      — prints: wsl | linux | macos | unknown
 #   ceo_config_path()    — prints path to ~/.ceo/config
 #   ceo_load_config()    — resolves CEO_VAULT; returns 0 on success, 1 if empty
+#   ceo_require_vault()  — load config; exit 1 with operator guidance if unresolved
 #   ceo_validate_vault() — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
 #
 # Resolution order in ceo_load_config():
 #   1. CEO_VAULT already set in environment → use it as-is, return 0 (bypass mode)
 #   2. ~/.ceo/config exists → source it, CEO_VAULT from that file
 #   3. Legacy discovery loop (fallback — remove after 2026-05-26)
-#   4. Hard fallback: $HOME/Documents/Obsidian
+# Returns 1 if none of the above resolved CEO_VAULT.
 #
 # Idempotency guard — safe to source multiple times.
 [ -n "${_CEO_CONFIG_LOADED:-}" ] && return 0
@@ -44,7 +45,7 @@ ceo_config_path() {
 # ceo_load_config — resolve CEO_VAULT and export it.
 #
 # Returns:
-#   0  CEO_VAULT is set (env bypass, config file, discovery, or hard fallback)
+#   0  CEO_VAULT is set (env bypass, config file, or legacy discovery)
 #   1  CEO_VAULT is still empty after all resolution steps
 # ---------------------------------------------------------------------------
 ceo_load_config() {
