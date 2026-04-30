@@ -597,6 +597,79 @@ PB
   assert_file_exists "$CEO_DIR/registry.json" "registry must be written when no gate is configured"
 }
 
+test_playbook_scan_typoed_primary_host_field_emits_warning() {
+  cat > "$CEO_DIR/playbooks/probe.md" << 'PB'
+---
+name: probe
+description: probe
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  printf '{"promary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
+  rm -f "$CEO_DIR/registry.json"
+
+  local rc=0 out
+  out=$(CEO_HOSTNAME=beta bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
+  assert_eq "$rc" "0" "typo'd key falls through to no-gate (backward-compat) but must warn"
+  assert_contains "$out" "unknown key 'promary_host'" "typo'd key must surface a warning so operator notices"
+  assert_file_exists "$CEO_DIR/registry.json" "scan continues despite typo (gate is not configured from parser's view)"
+}
+
+test_playbook_scan_malformed_settings_json_fails_loud() {
+  cat > "$CEO_DIR/playbooks/probe.md" << 'PB'
+---
+name: probe
+description: probe
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  printf 'not valid json\n' > "$CEO_DIR/settings.json"
+  rm -f "$CEO_DIR/registry.json"
+
+  local rc=0 out
+  out=$(CEO_HOSTNAME=anyhost bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
+  assert_eq "$rc" "1" "malformed settings.json must fail loud, not silently fall through"
+  assert_contains "$out" "not valid JSON" "error must name the JSON parse failure"
+  if [ -f "$CEO_DIR/registry.json" ]; then
+    printf '  FAIL [%s] registry written despite malformed settings.json\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_playbook_scan_missing_jq_with_settings_fails_loud() {
+  cat > "$CEO_DIR/playbooks/probe.md" << 'PB'
+---
+name: probe
+description: probe
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  printf '{"primary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
+  rm -f "$CEO_DIR/registry.json"
+
+  local rc=0 out
+  out=$(CEO_JQ_BIN=jq-deliberately-missing-for-test CEO_HOSTNAME=anyhost \
+        bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
+  assert_eq "$rc" "1" "missing jq with settings.json must fail loud"
+  assert_contains "$out" "jq is not installed" "error must name the missing dependency"
+  if [ -f "$CEO_DIR/registry.json" ]; then
+    printf '  FAIL [%s] registry written despite missing-jq error\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

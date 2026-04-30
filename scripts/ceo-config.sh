@@ -161,3 +161,72 @@ ceo_inbox_has_unchecked() {
   fi
   return 1
 }
+
+# ---------------------------------------------------------------------------
+# ceo_assert_primary_host — gate writes to Syncthing-shared state behind the
+# host configured as primary in CEO/settings.json.
+#
+# The invariant: only the primary host overwrites Syncthing-shared registry
+# state. The gate is opt-in — settings.json absent means no gate.
+#
+# Returns 0 (host is allowed to proceed) when:
+#   - CEO/settings.json is absent (backward-compatible, no gate configured)
+#   - settings.json is present, parseable, and primary_host is empty
+#   - settings.json is present, parseable, and primary_host == this host
+#
+# Returns 1 (host MUST NOT proceed) when:
+#   - settings.json is present but jq is not installed (cannot evaluate gate)
+#   - settings.json is present but malformed JSON
+#   - this host cannot be resolved (CEO_HOSTNAME unset and `hostname -s` empty)
+#   - primary_host is set and does not match this host
+#
+# Unknown top-level keys in settings.json emit a warning to stderr (typo
+# defense — see ~/.claude/rules/enum-config-typo-fallback.md). Failing-open
+# on a typo is the silent-regression shape this helper exists to prevent.
+# ---------------------------------------------------------------------------
+ceo_assert_primary_host() {
+  : "${CEO_DIR:?CEO_DIR must be set before ceo_assert_primary_host}"
+  local settings_file="$CEO_DIR/settings.json"
+  local jq_bin="${CEO_JQ_BIN:-jq}"
+
+  [ -f "$settings_file" ] || return 0
+
+  if ! command -v "$jq_bin" &>/dev/null; then
+    echo "ERROR: $settings_file exists but jq is not installed; cannot evaluate primary_host gate." >&2
+    echo "  Install jq (brew install jq | sudo apt install jq) or remove $settings_file." >&2
+    return 1
+  fi
+
+  if ! "$jq_bin" empty "$settings_file" 2>/dev/null; then
+    echo "ERROR: $settings_file is not valid JSON; refusing to evaluate primary_host gate." >&2
+    return 1
+  fi
+
+  local known_keys=" primary_host "
+  local k
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    case "$known_keys" in
+      *" $k "*) ;;
+      *) echo "WARNING: $settings_file contains unknown key '$k' — ignored. Known keys: primary_host" >&2 ;;
+    esac
+  done < <("$jq_bin" -r 'keys[]' "$settings_file" 2>/dev/null || true)
+
+  local primary_host
+  primary_host=$("$jq_bin" -r '.primary_host // ""' "$settings_file" 2>/dev/null || echo "")
+  [ -n "$primary_host" ] || return 0
+
+  local this_host="${CEO_HOSTNAME:-$(hostname -s)}"
+  if [ -z "$this_host" ]; then
+    echo "ERROR: cannot determine this host (CEO_HOSTNAME unset and 'hostname -s' returned empty)." >&2
+    return 1
+  fi
+
+  if [ "$this_host" != "$primary_host" ]; then
+    echo "ERROR: this operation must run on the primary host ($primary_host); this host is '$this_host'." >&2
+    echo "  Either run on $primary_host, or unset 'primary_host' in $settings_file." >&2
+    return 1
+  fi
+
+  return 0
+}
