@@ -484,6 +484,27 @@ test_ceo_augment_path_empty_home_aborts() {
   fi
 }
 
+test_ceo_cron_invokes_ceo_augment_path_at_dispatch() {
+  cat > "$CEO_DIR/playbooks/path-strip.md" << 'PB'
+---
+name: path-strip
+description: stripped-PATH wiring guard
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" path-strip >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo-cron must invoke ceo_augment_path so dispatcher resolves binaries under stripped PATH"
+  assert_file_exists "$HOME/claude-invoked.txt" "claude stub must fire (proves PATH augmentation reached dispatcher)"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---
