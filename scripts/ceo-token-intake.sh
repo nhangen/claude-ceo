@@ -1,8 +1,9 @@
 #!/bin/bash
 # ceo-token-intake.sh — Daily RTK + token-scope spend intake.
-# Captures four command outputs to CEO/reports/token/<TODAY>.md and idempotently
-# appends one inbox line linking to it. The chat-triggered inbox playbook
-# surfaces the line for morning discussion via `ceo chat inbox`.
+# Captures four command outputs to CEO/reports/token/<TODAY>-<host>.md and
+# idempotently appends one inbox line to CEO/inbox/<host>.md linking to it.
+# Per-host filenames keep two Syncthing peers from racing on the same path.
+# The chat-triggered inbox playbook surfaces the line via `ceo chat inbox`.
 #
 # Invoked by ceo-cron.sh when the token-intake playbook (runner:script) fires.
 
@@ -17,13 +18,17 @@ ceo_augment_path
 
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
-INBOX_FILE="$CEO_DIR/inbox.md"
+HOST="${CEO_HOSTNAME:-$(hostname -s)}"
+: "${HOST:?HOST resolution failed; set CEO_HOSTNAME or fix hostname}"
+INBOX_DIR="$CEO_DIR/inbox"
+INBOX_FILE="$INBOX_DIR/$HOST.md"
 TOKEN_DIR="$CEO_DIR/reports/token"
 TODAY=$(date +%Y-%m-%d)
-REPORT_FILE="$TOKEN_DIR/$TODAY.md"
-INBOX_LINE="- [ ] Review daily token report [[CEO/reports/token/$TODAY]]"
+REPORT_FILE="$TOKEN_DIR/$TODAY-$HOST.md"
+WIKILINK="[[CEO/reports/token/$TODAY-$HOST]]"
+INBOX_LINE="- [ ] Review daily token report $WIKILINK"
 
-mkdir -p "$TOKEN_DIR"
+mkdir -p "$TOKEN_DIR" "$INBOX_DIR"
 
 # capture <label> <cmd> [args...] — run a command and wrap its output in a fenced block.
 # Falls back to "<cmd> unavailable" so the inbox link always resolves to readable content.
@@ -55,7 +60,6 @@ fi
 # rather than the full line so a `[x]` checkoff doesn't re-trigger the
 # append.
 touch "$INBOX_FILE"
-WIKILINK="[[CEO/reports/token/$TODAY]]"
 if ! grep -qF -- "$WIKILINK" "$INBOX_FILE"; then
   printf '%s\n' "$INBOX_LINE" >> "$INBOX_FILE"
 fi

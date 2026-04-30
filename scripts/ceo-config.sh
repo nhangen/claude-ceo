@@ -130,3 +130,34 @@ ceo_validate_vault() {
   fi
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# ceo_inbox_has_unchecked — scan legacy CEO/inbox.md and per-host
+# CEO/inbox/<host>.md shadow files for any unchecked todo line.
+#
+# Per-host shadow files exist because Syncthing peers cannot safely share a
+# single inbox.md writer; see issue #5. The legacy inbox.md remains supported
+# for user-curated entries.
+#
+# Reads CEO_DIR from the environment (callers already have it set).
+#
+# Returns:
+#   0  at least one "- [ ]" line exists in any inbox source
+#   1  no unchecked items, or no inbox sources present
+# ---------------------------------------------------------------------------
+ceo_inbox_has_unchecked() {
+  local dir="${CEO_DIR:?CEO_DIR must be set before ceo_inbox_has_unchecked}"
+  if [ -f "$dir/inbox.md" ] && grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null; then
+    return 0
+  fi
+  if [ -d "$dir/inbox" ]; then
+    local f
+    for f in "$dir/inbox/"*.md; do
+      [ -f "$f" ] || continue
+      if grep -q "^- \[ \]" "$f" 2>/dev/null; then
+        return 0
+      fi
+    done
+  fi
+  return 1
+}

@@ -275,7 +275,7 @@ cmd_preflight() {
   # Define preflights inline (can't source from ceo-cron.sh mid-script)
   preflight_none() { return 0; }
   preflight_has_unchecked_inbox() {
-    [ -f "$CEO_DIR/inbox.md" ] && grep -q "^- \[ \]" "$CEO_DIR/inbox.md"
+    ceo_inbox_has_unchecked
   }
   preflight_has_prs_to_review() {
     [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]
