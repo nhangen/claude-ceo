@@ -153,7 +153,7 @@ BRANCH_PREFIX=$(_cfg '.branch_prefix' 'ceo/')
 preflight_none() { return 0; }
 
 preflight_has_unchecked_inbox() {
-  [ -f "$CEO_DIR/inbox.md" ] && grep -q "^- \[ \]" "$CEO_DIR/inbox.md"
+  ceo_inbox_has_unchecked
 }
 
 preflight_has_prs_to_review() {

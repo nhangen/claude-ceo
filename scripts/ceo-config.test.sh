@@ -101,6 +101,68 @@ test_ceo_help_works_on_fresh_host() {
   assert_eq "$rc" "0" "ceo help must exit 0 on a host with no CEO_VAULT"
 }
 
+# ceo_inbox_has_unchecked — preflight helper that scans both the legacy
+# CEO/inbox.md (user-curated) and per-host CEO/inbox/<host>.md shadow files.
+# Used by morning-brief and inbox cron preflights.
+
+_inbox_check() {
+  local ceo_dir="$1"
+  bash -c "
+    set -uo pipefail
+    source '$LIB'
+    CEO_DIR='$ceo_dir' ceo_inbox_has_unchecked
+  " >/dev/null 2>&1
+}
+
+test_inbox_has_unchecked_returns_nonzero_when_no_files_exist() {
+  local rc=0
+  mkdir -p "$TEST_HOME/CEO"
+  _inbox_check "$TEST_HOME/CEO" || rc=$?
+  assert_eq "$rc" "1" "no inbox files anywhere → nothing to do"
+}
+
+test_inbox_has_unchecked_finds_legacy_inbox_md() {
+  local rc=0
+  mkdir -p "$TEST_HOME/CEO"
+  printf -- '- [ ] something\n' > "$TEST_HOME/CEO/inbox.md"
+  _inbox_check "$TEST_HOME/CEO" || rc=$?
+  assert_eq "$rc" "0" "unchecked item in legacy inbox.md must trigger preflight"
+}
+
+test_inbox_has_unchecked_skips_legacy_when_all_checked() {
+  local rc=0
+  mkdir -p "$TEST_HOME/CEO"
+  printf -- '- [x] done\n' > "$TEST_HOME/CEO/inbox.md"
+  _inbox_check "$TEST_HOME/CEO" || rc=$?
+  assert_eq "$rc" "1" "all-checked legacy inbox.md must not trigger preflight"
+}
+
+test_inbox_has_unchecked_finds_per_host_shadow_file() {
+  local rc=0
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [ ] from-mac\n' > "$TEST_HOME/CEO/inbox/mac-mini.md"
+  _inbox_check "$TEST_HOME/CEO" || rc=$?
+  assert_eq "$rc" "0" "unchecked item in per-host shadow must trigger preflight"
+}
+
+test_inbox_has_unchecked_skips_per_host_when_all_checked() {
+  local rc=0
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [x] done-on-mac\n' > "$TEST_HOME/CEO/inbox/mac-mini.md"
+  printf -- '- [x] done-on-wsl\n' > "$TEST_HOME/CEO/inbox/wsl-host.md"
+  _inbox_check "$TEST_HOME/CEO" || rc=$?
+  assert_eq "$rc" "1" "all-checked per-host shadow files must not trigger preflight"
+}
+
+test_inbox_has_unchecked_with_legacy_clean_and_shadow_dirty() {
+  local rc=0
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [x] legacy-done\n' > "$TEST_HOME/CEO/inbox.md"
+  printf -- '- [ ] shadow-pending\n' > "$TEST_HOME/CEO/inbox/host-b.md"
+  _inbox_check "$TEST_HOME/CEO" || rc=$?
+  assert_eq "$rc" "0" "must find unchecked items even when legacy is clean"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
