@@ -194,11 +194,20 @@ preflight_has_auto_review_prs() {
 
 # --- Look up trigger in registry ---
 REGISTRY_FILE="$CEO_DIR/registry.json"
-if [ ! -f "$REGISTRY_FILE" ]; then
-  echo "$(date): FATAL — registry.json not found. Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
-  _v "FATAL: registry.json not found. Run: ceo playbook scan"
-  exit 1
-fi
+REGISTRY_RC=0
+ceo_registry_validate "$REGISTRY_FILE" || REGISTRY_RC=$?
+case "$REGISTRY_RC" in
+  0) ;;
+  1)
+    echo "$(date): FATAL — registry.json not found. Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    _v "FATAL: registry.json not found. Run: ceo playbook scan"
+    exit 1 ;;
+  2)
+    echo "$(date): FATAL — registry.json schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?)"
+    _v "FATAL: registry.json schema_version too old. Run: ceo playbook scan"
+    exit 1 ;;
+esac
 
 ENTRY=$(jq -r --arg t "$TRIGGER" '.playbooks[] | select(.name == $t)' "$REGISTRY_FILE" 2>/dev/null)
 if [ -z "$ENTRY" ]; then

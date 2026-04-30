@@ -27,6 +27,25 @@ VAULT="${CEO_VAULT:-}"
 CEO_DIR="${VAULT:+$VAULT/CEO}"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
+_registry_schema_error() {
+  local rc="$1"
+  case "$rc" in
+    1) echo "No registry found. Run: ceo playbook scan" ;;
+    2) echo "Registry schema_version missing, malformed, or below $CEO_REGISTRY_SCHEMA_VERSION. Run: ceo playbook scan" ;;
+    *) echo "Registry validation failed (rc=$rc)" ;;
+  esac
+}
+
+_require_registry_current() {
+  local registry_file="$1"
+  local rc=0
+  ceo_registry_validate "$registry_file" || rc=$?
+  if [ "$rc" != "0" ]; then
+    _registry_schema_error "$rc"
+    exit 1
+  fi
+}
+
 cmd_help() {
   cat <<'USAGE'
 Usage: ceo <command>
@@ -193,23 +212,30 @@ cmd_doctor() {
   # bin symlinks for playbooks
   local registry_file="$CEO_DIR/registry.json"
   if [ -f "$registry_file" ] && command -v jq &>/dev/null; then
-    local missing_bins=0 bin_total=0
-    while IFS= read -r row; do
-      local p_name p_bin
-      p_name=$(echo "$row" | jq -r '.name')
-      p_bin=$(echo "$row" | jq -r '.bin // ""')
-      [ -z "$p_bin" ] && continue
-      bin_total=$((bin_total + 1))
-      local link_name="${p_bin%.sh}"
-      if [ ! -L "$HOME/.local/bin/$link_name" ]; then
-        echo "  ! Missing bin symlink: ~/.local/bin/$link_name (playbook: $p_name) — run: ceo playbook scan"
-        missing_bins=$((missing_bins + 1))
-        warn=$((warn + 1))
+    local registry_rc=0
+    ceo_registry_validate "$registry_file" || registry_rc=$?
+    if [ "$registry_rc" != "0" ]; then
+      echo "  ✗ $(_registry_schema_error "$registry_rc")"
+      fail=$((fail + 1))
+    else
+      local missing_bins=0 bin_total=0
+      while IFS= read -r row; do
+        local p_name p_bin
+        p_name=$(echo "$row" | jq -r '.name')
+        p_bin=$(echo "$row" | jq -r '.bin // ""')
+        [ -z "$p_bin" ] && continue
+        bin_total=$((bin_total + 1))
+        local link_name="${p_bin%.sh}"
+        if [ ! -L "$HOME/.local/bin/$link_name" ]; then
+          echo "  ! Missing bin symlink: ~/.local/bin/$link_name (playbook: $p_name) — run: ceo playbook scan"
+          missing_bins=$((missing_bins + 1))
+          warn=$((warn + 1))
+        fi
+      done < <(jq -c '.playbooks[] | select(.status=="active")' "$registry_file" 2>/dev/null)
+      if [ "$bin_total" -gt 0 ] && [ "$missing_bins" -eq 0 ]; then
+        echo "  ✓ Playbook bin symlinks present ($bin_total)"
+        ok=$((ok + 1))
       fi
-    done < <(jq -c '.playbooks[] | select(.status=="active")' "$registry_file" 2>/dev/null)
-    if [ "$bin_total" -gt 0 ] && [ "$missing_bins" -eq 0 ]; then
-      echo "  ✓ Playbook bin symlinks present ($bin_total)"
-      ok=$((ok + 1))
     fi
   fi
 
@@ -299,10 +325,7 @@ cmd_preflight() {
   }
 
   local registry_file="$CEO_DIR/registry.json"
-  if [ ! -f "$registry_file" ]; then
-    echo "No registry found. Run: ceo playbook scan"
-    exit 1
-  fi
+  _require_registry_current "$registry_file"
 
   local would_run=0
   local would_skip=0
@@ -379,10 +402,32 @@ cmd_playbook_scan() {
 
   local old_registry='{"playbooks":[]}'
   if [ -f "$registry_file" ]; then
+    if ! jq -e 'type == "object"' "$registry_file" >/dev/null 2>&1; then
+      echo "ERROR: refusing to overwrite unparseable registry: $registry_file"
+      exit 1
+    fi
+    if jq -e 'has("schema_version")' "$registry_file" >/dev/null 2>&1; then
+      local existing_v
+      existing_v=$(ceo_registry_version "$registry_file")
+      if [ -z "$existing_v" ]; then
+        echo "ERROR: refusing to overwrite registry with malformed schema_version."
+        echo "Fix or remove $registry_file, then rerun ceo playbook scan."
+        exit 1
+      fi
+      if [ "$existing_v" -gt "$CEO_REGISTRY_SCHEMA_VERSION" ]; then
+        echo "ERROR: refusing to downgrade registry (on-disk schema_version=$existing_v, this binary writes $CEO_REGISTRY_SCHEMA_VERSION)."
+        echo "Update this host's claude-ceo binary first."
+        exit 1
+      fi
+    fi
     old_registry=$(cat "$registry_file")
   fi
 
-  local new_registry='{"generated":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","playbooks":[]}'
+  local new_registry
+  new_registry=$(jq -n \
+    --argjson v "$CEO_REGISTRY_SCHEMA_VERSION" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schema_version: $v, generated: $ts, playbooks: []}')
   local found=0
   local skipped=0
 
@@ -470,7 +515,9 @@ cmd_playbook_scan() {
     fi
   done <<< "$old_names"
 
-  echo "$new_registry" | jq '.' > "$registry_file"
+  local registry_tmp="$registry_file.tmp"
+  echo "$new_registry" | jq '.' > "$registry_tmp"
+  mv "$registry_tmp" "$registry_file"
 
   echo ""
   echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped)"
@@ -572,10 +619,7 @@ $marker_end"
 
 cmd_playbook_list() {
   local registry_file="$CEO_DIR/registry.json"
-  if [ ! -f "$registry_file" ]; then
-    echo "No registry found. Run: ceo playbook scan"
-    exit 1
-  fi
+  _require_registry_current "$registry_file"
 
   printf "%-16s %-10s %-20s %-10s %-8s\n" "NAME" "TRIGGER" "SCHEDULE" "MODEL" "STATUS"
   printf "%-16s %-10s %-20s %-10s %-8s\n" "----" "-------" "--------" "-----" "------"
@@ -601,10 +645,7 @@ cmd_playbook_info() {
   fi
 
   local registry_file="$CEO_DIR/registry.json"
-  if [ ! -f "$registry_file" ]; then
-    echo "No registry found. Run: ceo playbook scan"
-    exit 1
-  fi
+  _require_registry_current "$registry_file"
 
   local entry
   entry=$(jq -r --arg n "$target" '.playbooks[] | select(.name==$n)' "$registry_file")
@@ -657,10 +698,7 @@ cmd_chat() {
   ceo_validate_vault || exit 1
   local registry_file="$CEO_DIR/registry.json"
 
-  if [ ! -f "$registry_file" ]; then
-    echo "No registry found. Run: ceo playbook scan"
-    exit 1
-  fi
+  _require_registry_current "$registry_file"
 
   local model="sonnet"
   local playbook_content=""

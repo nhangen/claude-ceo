@@ -101,6 +101,45 @@ test_ceo_help_works_on_fresh_host() {
   assert_eq "$rc" "0" "ceo help must exit 0 on a host with no CEO_VAULT"
 }
 
+test_registry_validate_accepts_integer_current_schema() {
+  local registry="$TEST_HOME/registry.json"
+  printf '{"schema_version":2,"playbooks":[]}\n' > "$registry"
+
+  local rc=0
+  env -i PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate '$registry'
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "integer schema_version at current version must validate"
+}
+
+test_registry_validate_rejects_non_integer_schema() {
+  local registry="$TEST_HOME/registry.json"
+  printf '{"schema_version":1.5,"playbooks":[]}\n' > "$registry"
+
+  local rc=0
+  env -i PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate '$registry'
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "2" "float schema_version must reject instead of falling through"
+}
+
+test_registry_validate_rejects_string_schema() {
+  local registry="$TEST_HOME/registry.json"
+  printf '{"schema_version":"2","playbooks":[]}\n' > "$registry"
+
+  local rc=0
+  env -i PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate '$registry'
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "2" "string schema_version must reject instead of coercing"
+}
+
 # ceo_inbox_has_unchecked — preflight helper that scans both the legacy
 # CEO/inbox.md (user-curated) and per-host CEO/inbox/<host>.md shadow files.
 # Used by morning-brief and inbox cron preflights.
