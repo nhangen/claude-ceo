@@ -96,7 +96,10 @@ ceo_load_config() {
 # symlinks. Cron starts with PATH=/usr/bin:/bin.
 # ---------------------------------------------------------------------------
 ceo_augment_path() {
+  [ -n "${_CEO_PATH_AUGMENTED:-}" ] && return 0
+  : "${HOME:?HOME must be set before ceo_augment_path}"
   export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+  export _CEO_PATH_AUGMENTED=1
 }
 
 # ---------------------------------------------------------------------------

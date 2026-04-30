@@ -456,6 +456,31 @@ test_ceo_augment_path_prepends_user_tool_prefixes() {
   assert_contains "$out" "/usr/bin"         "original PATH must be preserved"
 }
 
+test_ceo_augment_path_idempotent() {
+  local out
+  out=$(env HOME=/fake bash -c '
+    set -uo pipefail
+    PATH=/usr/bin:/bin
+    source '"$SCRIPT_DIR"'/ceo-config.sh
+    ceo_augment_path; first="$PATH"
+    ceo_augment_path; second="$PATH"
+    [ "$first" = "$second" ] && echo idempotent || echo diverged
+  ')
+  assert_eq "$out" "idempotent" "ceo_augment_path must not drift PATH on repeated calls"
+}
+
+test_ceo_augment_path_empty_home_aborts() {
+  local rc=0
+  HOME="" bash -c '
+    source '"$SCRIPT_DIR"'/ceo-config.sh
+    ceo_augment_path
+  ' >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] expected non-zero rc with HOME="", got 0\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---
