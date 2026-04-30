@@ -44,17 +44,17 @@ setup() {
   mkdir -p "$CEO_DIR/reports/token"
   : > "$CEO_DIR/inbox.md"
 
-  mkdir -p "$TEST_HOME/bin"
-  cat > "$TEST_HOME/bin/rtk" << 'STUB'
+  mkdir -p "$TEST_HOME/.bun/bin"
+  cat > "$TEST_HOME/.bun/bin/rtk" << 'STUB'
 #!/bin/bash
 echo "rtk-stub: $*"
 STUB
-  cat > "$TEST_HOME/bin/token-scope" << 'STUB'
+  cat > "$TEST_HOME/.bun/bin/token-scope" << 'STUB'
 #!/bin/bash
 echo "token-scope-stub: $*"
 STUB
-  chmod +x "$TEST_HOME/bin/rtk" "$TEST_HOME/bin/token-scope"
-  export PATH="$TEST_HOME/bin:$PATH"
+  chmod +x "$TEST_HOME/.bun/bin/rtk" "$TEST_HOME/.bun/bin/token-scope"
+  export PATH="$TEST_HOME/.bun/bin:$PATH"
 }
 
 teardown() {
@@ -95,6 +95,16 @@ test_does_not_re_append_after_inbox_checkoff() {
   local count
   count=$(grep -c -F "[[CEO/reports/token/$today]]" "$CEO_DIR/inbox.md")
   assert_eq "$count" "1" "checked-off line must not trigger re-append"
+}
+
+test_invokes_ceo_augment_path() {
+  PATH=/usr/bin:/bin bash "$INTAKE" >/dev/null 2>&1
+  local today report body
+  today=$(date +%Y-%m-%d)
+  report="$CEO_DIR/reports/token/$today.md"
+  assert_file_exists "$report" "report file must exist"
+  body=$(cat "$report")
+  assert_contains "$body" "rtk-stub:" "report must contain stub rtk output (proves ceo_augment_path resolved \$HOME/.bun/bin)"
 }
 
 test_aborts_on_unwritable_report_dir() {

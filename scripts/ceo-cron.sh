@@ -21,6 +21,7 @@ source "$SCRIPT_DIR/ceo-config.sh"
 
 # Vault resolution delegated to ceo-config.sh
 ceo_load_config || { echo "FATAL — CEO config not found. Set CEO_VAULT or run: ceo setup" >&2; exit 1; }
+ceo_augment_path
 VAULT="$CEO_VAULT"
 
 CEO_DIR="$VAULT/CEO"

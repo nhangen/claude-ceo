@@ -50,8 +50,8 @@ setup() {
   : > "$CEO_DIR/inbox.md"
 
   # Stub crontab so playbook scan's cron install can't touch the user's real crontab.
-  mkdir -p "$TEST_HOME/bin"
-  cat > "$TEST_HOME/bin/crontab" << 'STUB'
+  mkdir -p "$TEST_HOME/.bun/bin"
+  cat > "$TEST_HOME/.bun/bin/crontab" << 'STUB'
 #!/bin/bash
 # no-op stub for tests
 if [ "${1:-}" = "-l" ]; then
@@ -60,30 +60,30 @@ if [ "${1:-}" = "-l" ]; then
 fi
 cat > "$HOME/.fake-crontab"
 STUB
-  chmod +x "$TEST_HOME/bin/crontab"
+  chmod +x "$TEST_HOME/.bun/bin/crontab"
   : > "$HOME/.fake-crontab"
 
   # Stub claude on PATH so dispatcher invocations are detectable. Default behavior
-  # is success — individual tests override $TEST_HOME/bin/claude to simulate failure.
-  cat > "$TEST_HOME/bin/claude" << 'STUB'
+  # is success — individual tests override $TEST_HOME/.bun/bin/claude to simulate failure.
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 echo "claude-fired" > "$HOME/claude-invoked.txt"
 echo "ACTION: 1 | read | noop | n/a"
 STUB
-  chmod +x "$TEST_HOME/bin/claude"
+  chmod +x "$TEST_HOME/.bun/bin/claude"
 
   # macOS lacks `timeout` from GNU coreutils; the dispatcher uses
   # `timeout N claude ...`. Stub it as a transparent passthrough.
   if ! command -v timeout >/dev/null 2>&1; then
-    cat > "$TEST_HOME/bin/timeout" << 'STUB'
+    cat > "$TEST_HOME/.bun/bin/timeout" << 'STUB'
 #!/bin/bash
 shift  # discard the duration arg
 exec "$@"
 STUB
-    chmod +x "$TEST_HOME/bin/timeout"
+    chmod +x "$TEST_HOME/.bun/bin/timeout"
   fi
 
-  export PATH="$TEST_HOME/bin:$PATH"
+  export PATH="$TEST_HOME/.bun/bin:$PATH"
 }
 
 teardown() {
@@ -306,12 +306,12 @@ SH
 }
 
 test_read_tier_failure_increments_fail_count() {
-  cat > "$TEST_HOME/bin/claude" << 'STUB'
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 echo "synthetic stderr from claude stub" >&2
 exit 2
 STUB
-  chmod +x "$TEST_HOME/bin/claude"
+  chmod +x "$TEST_HOME/.bun/bin/claude"
 
   cat > "$CEO_DIR/playbooks/read-tier-fail.md" << 'PB'
 ---
@@ -344,7 +344,7 @@ PB
 test_phase3_failure_does_not_log_completed() {
   # Stateful stub: succeeds on Phase-1 (with ACTION line low-stakes-write),
   # fails on Phase-3.
-  cat > "$TEST_HOME/bin/claude" << STUB
+  cat > "$TEST_HOME/.bun/bin/claude" << STUB
 #!/bin/bash
 COUNT_FILE="$TEST_HOME/.claude-call-count"
 n=\$(cat "\$COUNT_FILE" 2>/dev/null || echo 0)
@@ -357,7 +357,7 @@ fi
 echo "synthetic phase-3 failure" >&2
 exit 3
 STUB
-  chmod +x "$TEST_HOME/bin/claude"
+  chmod +x "$TEST_HOME/.bun/bin/claude"
 
   cat > "$CEO_DIR/playbooks/phase3-fail.md" << 'PB'
 ---
@@ -438,6 +438,71 @@ PB
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips_log" "Unknown runner 'scrpt'" "skips log must record unknown-runner rejection"
+}
+
+test_ceo_augment_path_prepends_user_tool_prefixes() {
+  local out
+  out=$(env HOME=/fake bash -c '
+    set -uo pipefail
+    PATH=/usr/bin:/bin
+    source '"$SCRIPT_DIR"'/ceo-config.sh
+    ceo_augment_path
+    echo "$PATH"
+  ')
+  assert_contains "$out" "/fake/.bun/bin"  "PATH must include ~/.bun/bin"
+  assert_contains "$out" "/opt/homebrew/bin" "PATH must include Homebrew prefix"
+  assert_contains "$out" "/usr/local/bin"   "PATH must include /usr/local/bin"
+  assert_contains "$out" "/fake/.local/bin"  "PATH must include ~/.local/bin"
+  assert_contains "$out" "/usr/bin"         "original PATH must be preserved"
+
+  local first_segment="${out%%:*}"
+  assert_eq "$first_segment" "/fake/.bun/bin" "augmented prefix must be FIRST on PATH"
+}
+
+test_ceo_augment_path_idempotent() {
+  local out
+  out=$(env HOME=/fake bash -c '
+    set -uo pipefail
+    PATH=/usr/bin:/bin
+    source '"$SCRIPT_DIR"'/ceo-config.sh
+    ceo_augment_path; first="$PATH"
+    ceo_augment_path; second="$PATH"
+    [ "$first" = "$second" ] && echo idempotent || echo diverged
+  ')
+  assert_eq "$out" "idempotent" "ceo_augment_path must not drift PATH on repeated calls"
+}
+
+test_ceo_augment_path_empty_home_aborts() {
+  local rc=0
+  HOME="" bash -c '
+    source '"$SCRIPT_DIR"'/ceo-config.sh
+    ceo_augment_path
+  ' >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] expected non-zero rc with HOME="", got 0\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_ceo_cron_invokes_ceo_augment_path_at_dispatch() {
+  cat > "$CEO_DIR/playbooks/path-strip.md" << 'PB'
+---
+name: path-strip
+description: stripped-PATH wiring guard
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" path-strip >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo-cron must invoke ceo_augment_path so dispatcher resolves binaries under stripped PATH"
+  assert_file_exists "$HOME/claude-invoked.txt" "claude stub must fire (proves PATH augmentation reached dispatcher)"
 }
 
 test_runner_script_missing_script_field_fails() {

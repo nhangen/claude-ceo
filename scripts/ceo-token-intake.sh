@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/ceo-config.sh"
 
 ceo_load_config || { echo "ERROR: CEO config not found" >&2; exit 1; }
+ceo_augment_path
 
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
@@ -21,9 +22,6 @@ TOKEN_DIR="$CEO_DIR/reports/token"
 TODAY=$(date +%Y-%m-%d)
 REPORT_FILE="$TOKEN_DIR/$TODAY.md"
 INBOX_LINE="- [ ] Review daily token report [[CEO/reports/token/$TODAY]]"
-
-# bun lives in ~/.bun/bin; homebrew in /opt/homebrew/bin (Mac) or /usr/local/bin (Linux/WSL)
-export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 mkdir -p "$TOKEN_DIR"
 
