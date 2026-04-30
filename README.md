@@ -205,6 +205,34 @@ Run `ceo playbook scan` after editing any playbook to refresh `registry.json` an
 
 To disable a playbook without deleting it: change `status: active` → `status: inactive` and rescan.
 
+### Shell-only playbooks (`runner: script`)
+
+A playbook can declare `runner: script` to dispatch a shell script directly, skipping the LLM call. Use this for deterministic intakes — token reports, status snapshots, scheduled file moves — where an AI summary would just be wasted tokens.
+
+```yaml
+---
+name: token-intake
+trigger: cron
+schedule: "45 8 * * 1-5"
+preflight: none
+tier: read
+status: active
+runner: script
+script: ceo-token-intake.sh   # resolved against scripts/ in the plugin clone
+---
+```
+
+The script receives `CEO_VAULT`, `CEO_DIR`, `LOG_DIR`, `TODAY`, `NOW`, and `TRIGGER` as exported environment variables. It is responsible for whatever output it produces — the dispatcher does not parse stdout or write to the daily report. Exit code 0 = success; non-zero is logged to `cron-skips.log`.
+
+The default runner is `claude` — every existing playbook is unaffected.
+
+A starter shell-only playbook ships at `docs/playbooks/token-intake.md`. Copy it into the vault to enable:
+
+```bash
+cp docs/playbooks/token-intake.md "$CEO_VAULT/CEO/playbooks/"
+ceo playbook scan
+```
+
 ## Authority tiers
 
 | Tier | Actions | Execution path | Approval |
@@ -266,6 +294,13 @@ jq '.playbooks[] | select(.name == "<name>")' ~/Documents/Obsidian/CEO/registry.
 If the playbook frontmatter changed but `registry.json` is stale: `ceo playbook scan`.
 If `status: inactive` in `registry.json`: flip frontmatter and rescan.
 If preflight is gating the run: `ceo preflight <name>` to see why.
+
+### Script-runner playbook not firing
+
+1. Run `ceo playbook info <name>` and confirm `runner: script` and `script: <filename>`.
+2. Confirm the file exists and is executable: `ls -l scripts/<filename>`.
+3. Check `CEO/log/cron-skips.log` for `ERROR — Script not found` or `Script not executable`.
+4. If the cron tick fired but nothing happened, run the script manually with `CEO_VAULT` set: `CEO_VAULT="$HOME/Documents/Obsidian" bash scripts/<filename>`.
 
 ### count-blessings produces no Personal section in the brief
 

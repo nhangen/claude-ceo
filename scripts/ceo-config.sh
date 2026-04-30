@@ -3,11 +3,12 @@
 # Source this file; do not execute it directly.
 #
 # Provides:
-#   ceo_detect_os()      — prints: wsl | linux | macos | unknown
-#   ceo_config_path()    — prints path to ~/.ceo/config
-#   ceo_load_config()    — resolves CEO_VAULT; returns 0 on success, 1 if empty
-#   ceo_require_vault()  — load config; exit 1 with operator guidance if unresolved
-#   ceo_validate_vault() — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
+#   ceo_detect_os()         — prints: wsl | linux | macos | unknown
+#   ceo_config_path()       — prints path to ~/.ceo/config
+#   ceo_load_config()       — resolves CEO_VAULT; returns 0 on success, 1 if empty
+#   ceo_require_vault()     — load config; exit 1 with operator guidance if unresolved
+#   ceo_validate_vault()    — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
+#   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
 #
 # Resolution order in ceo_load_config():
 #   1. CEO_VAULT already set in environment → use it as-is, return 0 (bypass mode)
@@ -99,6 +100,61 @@ ceo_require_vault() {
 }
 
 # ---------------------------------------------------------------------------
+# ceo_augment_path — prepend common user-tool prefixes to PATH so cron-invoked
+# scripts can find Homebrew binaries, bun-installed CLIs, and ~/.local/bin
+# symlinks. Cron starts with PATH=/usr/bin:/bin.
+# ---------------------------------------------------------------------------
+ceo_augment_path() {
+  [ -n "${_CEO_PATH_AUGMENTED:-}" ] && return 0
+  : "${HOME:?HOME must be set before ceo_augment_path}"
+  export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+  export _CEO_PATH_AUGMENTED=1
+}
+
+# ---------------------------------------------------------------------------
+# Registry schema. Bump CEO_REGISTRY_SCHEMA_VERSION whenever the on-disk
+# shape of registry.json changes — a peer host running an older binary will
+# then refuse to dispatch instead of silently downgrading the registry on
+# the next `ceo playbook scan`.
+#
+# Version history:
+#   2 — adds runner, script fields (PR #4)
+#   1 — implicit (pre-runner-script registry; missing field treated as <2)
+# ---------------------------------------------------------------------------
+CEO_REGISTRY_SCHEMA_VERSION=2
+
+# ceo_registry_version <registry_file>
+#   Prints the integer schema_version, or nothing if missing/malformed.
+ceo_registry_version() {
+  local registry_file="${1:-${CEO_DIR:-}/registry.json}"
+  jq -r '
+    if has("schema_version")
+      and (.schema_version | type) == "number"
+      and (.schema_version | floor == .)
+    then .schema_version
+    else empty
+    end
+  ' "$registry_file" 2>/dev/null
+}
+
+# ceo_registry_validate <registry_file>
+#   0 — schema_version is an integer >= CEO_REGISTRY_SCHEMA_VERSION
+#   1 — registry file does not exist
+#   2 — schema_version missing, malformed, or below current
+ceo_registry_validate() {
+  local registry_file="${1:-${CEO_DIR:-}/registry.json}"
+  if [ ! -f "$registry_file" ]; then
+    return 1
+  fi
+  local v
+  v=$(ceo_registry_version "$registry_file")
+  if ! [ "$v" -ge "$CEO_REGISTRY_SCHEMA_VERSION" ] 2>/dev/null; then
+    return 2
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # ceo_validate_vault — verify the vault is ready (CEO/inbox.md must exist).
 # Call after ceo_load_config.
 #
@@ -116,5 +172,105 @@ ceo_validate_vault() {
     echo "  Is Syncthing running? Is CEO_VAULT set correctly? (current: $CEO_VAULT)" >&2
     return 1
   fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# ceo_inbox_has_unchecked — scan legacy CEO/inbox.md and per-host
+# CEO/inbox/<host>.md shadow files for any unchecked todo line.
+#
+# Per-host shadow files exist because Syncthing peers cannot safely share a
+# single inbox.md writer; see issue #5. The legacy inbox.md remains supported
+# for user-curated entries.
+#
+# Reads CEO_DIR from the environment (callers already have it set).
+#
+# Returns:
+#   0  at least one "- [ ]" line exists in any inbox source
+#   1  no unchecked items, or no inbox sources present
+# ---------------------------------------------------------------------------
+ceo_inbox_has_unchecked() {
+  local dir="${CEO_DIR:?CEO_DIR must be set before ceo_inbox_has_unchecked}"
+  if [ -f "$dir/inbox.md" ] && grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null; then
+    return 0
+  fi
+  if [ -d "$dir/inbox" ]; then
+    local f
+    for f in "$dir/inbox/"*.md; do
+      [ -f "$f" ] || continue
+      if grep -q "^- \[ \]" "$f" 2>/dev/null; then
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# ceo_assert_primary_host — gate writes to Syncthing-shared state behind the
+# host configured as primary in CEO/settings.json.
+#
+# The invariant: only the primary host overwrites Syncthing-shared registry
+# state. The gate is opt-in — settings.json absent means no gate.
+#
+# Returns 0 (host is allowed to proceed) when:
+#   - CEO/settings.json is absent (backward-compatible, no gate configured)
+#   - settings.json is present, parseable, and primary_host is empty
+#   - settings.json is present, parseable, and primary_host == this host
+#
+# Returns 1 (host MUST NOT proceed) when:
+#   - settings.json is present but jq is not installed (cannot evaluate gate)
+#   - settings.json is present but malformed JSON
+#   - this host cannot be resolved (CEO_HOSTNAME unset and `hostname -s` empty)
+#   - primary_host is set and does not match this host
+#
+# Unknown top-level keys in settings.json emit a warning to stderr (typo
+# defense — see ~/.claude/rules/enum-config-typo-fallback.md). Failing-open
+# on a typo is the silent-regression shape this helper exists to prevent.
+# ---------------------------------------------------------------------------
+ceo_assert_primary_host() {
+  : "${CEO_DIR:?CEO_DIR must be set before ceo_assert_primary_host}"
+  local settings_file="$CEO_DIR/settings.json"
+  local jq_bin="${CEO_JQ_BIN:-jq}"
+
+  [ -f "$settings_file" ] || return 0
+
+  if ! command -v "$jq_bin" &>/dev/null; then
+    echo "ERROR: $settings_file exists but jq is not installed; cannot evaluate primary_host gate." >&2
+    echo "  Install jq (brew install jq | sudo apt install jq) or remove $settings_file." >&2
+    return 1
+  fi
+
+  if ! "$jq_bin" empty "$settings_file" 2>/dev/null; then
+    echo "ERROR: $settings_file is not valid JSON; refusing to evaluate primary_host gate." >&2
+    return 1
+  fi
+
+  local known_keys=" primary_host "
+  local k
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    case "$known_keys" in
+      *" $k "*) ;;
+      *) echo "WARNING: $settings_file contains unknown key '$k' — ignored. Known keys: primary_host" >&2 ;;
+    esac
+  done < <("$jq_bin" -r 'keys[]' "$settings_file" 2>/dev/null || true)
+
+  local primary_host
+  primary_host=$("$jq_bin" -r '.primary_host // ""' "$settings_file" 2>/dev/null || echo "")
+  [ -n "$primary_host" ] || return 0
+
+  local this_host="${CEO_HOSTNAME:-$(hostname -s)}"
+  if [ -z "$this_host" ]; then
+    echo "ERROR: cannot determine this host (CEO_HOSTNAME unset and 'hostname -s' returned empty)." >&2
+    return 1
+  fi
+
+  if [ "$this_host" != "$primary_host" ]; then
+    echo "ERROR: this operation must run on the primary host ($primary_host); this host is '$this_host'." >&2
+    echo "  Either run on $primary_host, or unset 'primary_host' in $settings_file." >&2
+    return 1
+  fi
+
   return 0
 }

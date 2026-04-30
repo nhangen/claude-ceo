@@ -21,6 +21,7 @@ source "$SCRIPT_DIR/ceo-config.sh"
 
 # Vault resolution delegated to ceo-config.sh
 ceo_require_vault
+ceo_augment_path
 VAULT="$CEO_VAULT"
 
 CEO_DIR="$VAULT/CEO"
@@ -33,7 +34,39 @@ LAST_RUN_FILE="$LOG_DIR/.last-run-${TRIGGER}"
 FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
 
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
-_v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*"; }
+_v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }
+
+# Single source of truth for terminal-exit bookkeeping. Every success path
+# calls _record_success; every failure path calls _record_failure. Deferral
+# paths (chat-only, status-not-active, missing playbook, preflight no-work)
+# are not failures and exit directly without invoking either helper.
+_record_success() {
+  echo 0 > "$FAIL_COUNT_FILE"
+  date +%s > "$LAST_RUN_FILE"
+  [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
+  echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+}
+
+_record_failure() {
+  local reason="$1"
+  echo "$(date): ERROR — $reason" >> "$LOG_DIR/cron-skips.log"
+  local fails
+  fails=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
+  fails=$((fails + 1))
+  echo "$fails" > "$FAIL_COUNT_FILE"
+  if [ "$fails" -ge 3 ]; then
+    cat >> "$CEO_DIR/approvals/pending.md" << ALERTEOF
+
+## $TODAY $NOW — ALERT
+
+- [ ] **CEO cron failing repeatedly** — $fails consecutive failures
+  - trigger: $TRIGGER
+  - last error: $reason
+  - action needed: check cron-raw.log and cron-skips.log
+ALERTEOF
+  fi
+  date +%s > "$LAST_RUN_FILE"
+}
 
 # --- Require jq ---
 if ! command -v jq &>/dev/null; then
@@ -120,7 +153,7 @@ BRANCH_PREFIX=$(_cfg '.branch_prefix' 'ceo/')
 preflight_none() { return 0; }
 
 preflight_has_unchecked_inbox() {
-  [ -f "$CEO_DIR/inbox.md" ] && grep -q "^- \[ \]" "$CEO_DIR/inbox.md"
+  ceo_inbox_has_unchecked
 }
 
 preflight_has_prs_to_review() {
@@ -161,11 +194,20 @@ preflight_has_auto_review_prs() {
 
 # --- Look up trigger in registry ---
 REGISTRY_FILE="$CEO_DIR/registry.json"
-if [ ! -f "$REGISTRY_FILE" ]; then
-  echo "$(date): FATAL — registry.json not found. Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
-  _v "FATAL: registry.json not found. Run: ceo playbook scan"
-  exit 1
-fi
+REGISTRY_RC=0
+ceo_registry_validate "$REGISTRY_FILE" || REGISTRY_RC=$?
+case "$REGISTRY_RC" in
+  0) ;;
+  1)
+    echo "$(date): FATAL — registry.json not found. Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    _v "FATAL: registry.json not found. Run: ceo playbook scan"
+    exit 1 ;;
+  2)
+    echo "$(date): FATAL — registry.json schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?)"
+    _v "FATAL: registry.json schema_version too old. Run: ceo playbook scan"
+    exit 1 ;;
+esac
 
 ENTRY=$(jq -r --arg t "$TRIGGER" '.playbooks[] | select(.name == $t)' "$REGISTRY_FILE" 2>/dev/null)
 if [ -z "$ENTRY" ]; then
@@ -180,6 +222,15 @@ PREFLIGHT=$(echo "$ENTRY" | jq -r '.preflight // "none"')
 STATUS=$(echo "$ENTRY" | jq -r '.status // "active"')
 TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
 TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
+RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
+[ -z "$RUNNER" ] && RUNNER="claude"
+case "$RUNNER" in
+  claude|script) ;;
+  *)
+    _record_failure "Unknown runner '$RUNNER' for $TRIGGER (expected: claude|script)"
+    exit 1 ;;
+esac
+SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
 
 # Chat-only playbooks cannot run via cron
 if [ "$TRIGGER_TYPE" = "chat" ]; then
@@ -214,6 +265,37 @@ if type "$PREFLIGHT_FN" &>/dev/null; then
   _v "Preflight '$PREFLIGHT' passed"
 else
   _v "WARNING: Unknown preflight '$PREFLIGHT' — running anyway"
+fi
+
+# --- Script-runner branch: exec named script, skip claude --print ---
+if [ "$RUNNER" = "script" ]; then
+  if [ -z "$SCRIPT_PATH" ]; then
+    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
+    _v "ERROR: runner:script requires a script field"
+    exit 1
+  fi
+  SCRIPT_FULL="$SCRIPT_DIR/$SCRIPT_PATH"
+  if [ ! -f "$SCRIPT_FULL" ]; then
+    echo "$(date): ERROR — Script not found: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
+    _v "ERROR: Script not found at $SCRIPT_FULL"
+    exit 1
+  fi
+  if [ ! -x "$SCRIPT_FULL" ]; then
+    echo "$(date): ERROR — Script not executable: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
+    _v "ERROR: Script not executable at $SCRIPT_FULL"
+    exit 1
+  fi
+  _v "Runner: script — exec $SCRIPT_PATH"
+  export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
+  SCRIPT_EXIT=0
+  "$SCRIPT_FULL" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
+  if [ "$SCRIPT_EXIT" -ne 0 ]; then
+    _v "FAILED (exit: $SCRIPT_EXIT)"
+    _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    exit "$SCRIPT_EXIT"
+  fi
+  _record_success
+  exit 0
 fi
 
 # --- Read context files (with size limits for injection safety) ---
@@ -347,31 +429,29 @@ END_LOG_ENTRY"
     echo "$(date) [$TRIGGER] Single-call output:" >> "$LOG_DIR/cron-raw.log"
     echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
     echo "---" >> "$LOG_DIR/cron-raw.log"
-  else
-    LOG_ENTRY=$(echo "$SINGLE_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
-    if [ -n "$LOG_ENTRY" ]; then
-      _v ""
-      _v "--- Output ---"
-      [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
-      _v "--- End ---"
-      _v ""
-      "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
-    else
-      _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-      "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)
-**Playbook:** $PLAYBOOK_REL
-**Note:** Execution succeeded but log format could not be parsed."
-      echo "$(date) [$TRIGGER] Unparseable output:" >> "$LOG_DIR/cron-raw.log"
-      echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
-      echo "---" >> "$LOG_DIR/cron-raw.log"
-    fi
+    _record_failure "Single-call execution failed for $TRIGGER (exit: $SINGLE_EXIT)"
+    exit "$SINGLE_EXIT"
   fi
 
-  # Update timestamps and exit
-  echo 0 > "$FAIL_COUNT_FILE"
-  date +%s > "$LAST_RUN_FILE"
-  [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
-  echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+  LOG_ENTRY=$(echo "$SINGLE_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
+  if [ -n "$LOG_ENTRY" ]; then
+    _v ""
+    _v "--- Output ---"
+    [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
+    _v "--- End ---"
+    _v ""
+    "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
+  else
+    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
+    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)
+**Playbook:** $PLAYBOOK_REL
+**Note:** Execution succeeded but log format could not be parsed."
+    echo "$(date) [$TRIGGER] Unparseable output:" >> "$LOG_DIR/cron-raw.log"
+    echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
+    echo "---" >> "$LOG_DIR/cron-raw.log"
+  fi
+
+  _record_success
   exit 0
 fi
 
@@ -428,32 +508,12 @@ PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | timeout 300 claude --print --
 
 if [ $PLAN_EXIT -ne 0 ]; then
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
-  echo "$(date): ERROR — Phase 1 (plan) failed for $TRIGGER (exit: $PLAN_EXIT)" >> "$LOG_DIR/cron-skips.log"
   echo "$(date) [$TRIGGER] Plan output:" >> "$LOG_DIR/cron-raw.log"
   echo "$PLAN_OUTPUT" >> "$LOG_DIR/cron-raw.log"
   echo "---" >> "$LOG_DIR/cron-raw.log"
-
-  # Track consecutive failures
-  FAILS=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
-  FAILS=$((FAILS + 1))
-  echo "$FAILS" > "$FAIL_COUNT_FILE"
-  if [ "$FAILS" -ge 3 ]; then
-    PENDING="$CEO_DIR/approvals/pending.md"
-    cat >> "$PENDING" << ALERTEOF
-
-## $TODAY $NOW — ALERT
-
-- [ ] **CEO cron failing repeatedly** — $FAILS consecutive failures
-  - trigger: $TRIGGER
-  - last error: exit code $PLAN_EXIT
-  - action needed: check cron-raw.log and cron-skips.log
-ALERTEOF
-  fi
+  _record_failure "Phase 1 (plan) failed for $TRIGGER (exit: $PLAN_EXIT)"
   exit 1
 fi
-
-# Reset fail count on success
-echo 0 > "$FAIL_COUNT_FILE"
 
 # --- Phase 2: FILTER (shell strips high-stakes actions) ---
 _v "Phase 1 done. Filtering actions..."
@@ -548,6 +608,8 @@ END_LOG_ENTRY"
     echo "$(date) [$TRIGGER] Exec output:" >> "$LOG_DIR/cron-raw.log"
     echo "$EXEC_OUTPUT" >> "$LOG_DIR/cron-raw.log"
     echo "---" >> "$LOG_DIR/cron-raw.log"
+    _record_failure "Phase 3 (exec) failed for $TRIGGER (exit: $EXEC_EXIT)"
+    exit "$EXEC_EXIT"
   else
     # Extract structured log entry
     LOG_ENTRY=$(echo "$EXEC_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
@@ -571,11 +633,4 @@ END_LOG_ENTRY"
   fi
 fi
 
-# --- Update per-trigger last-run timestamp ---
-date +%s > "$LAST_RUN_FILE"
-
-if [ "$TRIGGER" = "morning-scan" ]; then
-  touch "$LOG_DIR/.last-scan"
-fi
-
-echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+_record_success
