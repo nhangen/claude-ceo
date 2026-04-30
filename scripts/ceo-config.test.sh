@@ -61,6 +61,46 @@ test_load_config_finds_legacy_candidate() {
   assert_eq "$vault_path" "$TEST_HOME/Documents/Obsidian" "must export the discovered vault path"
 }
 
+test_require_vault_exits_when_unresolved() {
+  local rc=0
+  env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_require_vault
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "ceo_require_vault must exit 1 when no source resolves CEO_VAULT"
+}
+
+test_require_vault_returns_zero_when_resolved() {
+  local rc=0
+  env -i HOME="$TEST_HOME/empty" CEO_VAULT="$TEST_HOME/explicit" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_require_vault
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo_require_vault must return 0 when CEO_VAULT resolves"
+}
+
+test_ceo_report_fails_loud_on_unresolved_vault() {
+  local rc=0 out
+  out=$(env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo-report.sh" intake test-trigger "content" 2>&1) || rc=$?
+  assert_eq "$rc" "1" "ceo-report.sh must exit 1 when no vault resolves"
+  case "$out" in
+    *FATAL*) ;;
+    *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
+  esac
+  if [ -d "$TEST_HOME/empty/Documents/Obsidian/CEO" ]; then
+    printf '  FAIL [%s] silent provision under default path\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_ceo_help_works_on_fresh_host() {
+  local rc=0
+  env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo" help >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo help must exit 0 on a host with no CEO_VAULT"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

@@ -89,6 +89,17 @@ ceo_load_config() {
 }
 
 # ---------------------------------------------------------------------------
+# ceo_require_vault — load config; exit 1 with operator guidance if unresolved.
+# For executed scripts only. Sourced scripts must call ceo_load_config and
+# `return 1` on failure (exit would kill the caller's shell).
+# ---------------------------------------------------------------------------
+ceo_require_vault() {
+  ceo_load_config && return 0
+  echo "FATAL — CEO_VAULT unresolved. Run 'ceo setup' to initialize." >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
 # ceo_validate_vault — verify the vault is ready (CEO/inbox.md must exist).
 # Call after ceo_load_config.
 #
