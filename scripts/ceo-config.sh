@@ -93,8 +93,7 @@ ceo_load_config() {
 # ---------------------------------------------------------------------------
 # ceo_augment_path — prepend common user-tool prefixes to PATH so cron-invoked
 # scripts can find Homebrew binaries, bun-installed CLIs, and ~/.local/bin
-# symlinks. Cron starts with PATH=/usr/bin:/bin; this is the single source of
-# truth for the prefix list across ceo-cron.sh and any runner:script playbook.
+# symlinks. Cron starts with PATH=/usr/bin:/bin.
 # ---------------------------------------------------------------------------
 ceo_augment_path() {
   export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"

@@ -441,9 +441,6 @@ PB
 }
 
 test_ceo_augment_path_prepends_user_tool_prefixes() {
-  # Regression guard for #9: the helper is the single source of truth for
-  # cron PATH augmentation. ceo-cron.sh and runner:script playbooks rely on
-  # it; if the prefix list drifts here, every consumer drifts.
   local out
   out=$(env HOME=/fake bash -c '
     set -uo pipefail
@@ -458,7 +455,6 @@ test_ceo_augment_path_prepends_user_tool_prefixes() {
   assert_contains "$out" "/fake/.local/bin"  "PATH must include ~/.local/bin"
   assert_contains "$out" "/usr/bin"         "original PATH must be preserved"
 }
-
 
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
