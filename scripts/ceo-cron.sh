@@ -204,6 +204,7 @@ case "$REGISTRY_RC" in
     exit 1 ;;
   2)
     echo "$(date): FATAL — registry.json schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?)"
     _v "FATAL: registry.json schema_version too old. Run: ceo playbook scan"
     exit 1 ;;
 esac

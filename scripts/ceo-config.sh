@@ -123,19 +123,32 @@ ceo_augment_path() {
 # ---------------------------------------------------------------------------
 CEO_REGISTRY_SCHEMA_VERSION=2
 
+# ceo_registry_version <registry_file>
+#   Prints the integer schema_version, or nothing if missing/malformed.
+ceo_registry_version() {
+  local registry_file="${1:-${CEO_DIR:-}/registry.json}"
+  jq -r '
+    if has("schema_version")
+      and (.schema_version | type) == "number"
+      and (.schema_version | floor == .)
+    then .schema_version
+    else empty
+    end
+  ' "$registry_file" 2>/dev/null
+}
+
 # ceo_registry_validate <registry_file>
-#   0 — schema_version >= CEO_REGISTRY_SCHEMA_VERSION
+#   0 — schema_version is an integer >= CEO_REGISTRY_SCHEMA_VERSION
 #   1 — registry file does not exist
-#   2 — schema_version missing or below current
+#   2 — schema_version missing, malformed, or below current
 ceo_registry_validate() {
   local registry_file="${1:-${CEO_DIR:-}/registry.json}"
   if [ ! -f "$registry_file" ]; then
     return 1
   fi
   local v
-  v=$(jq -r '.schema_version // 0 | tonumber? // 0' "$registry_file" 2>/dev/null)
-  [ -z "$v" ] && v=0
-  if [ "$v" -lt "$CEO_REGISTRY_SCHEMA_VERSION" ] 2>/dev/null; then
+  v=$(ceo_registry_version "$registry_file")
+  if ! [ "$v" -ge "$CEO_REGISTRY_SCHEMA_VERSION" ] 2>/dev/null; then
     return 2
   fi
   return 0
