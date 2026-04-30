@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/ceo-config.sh"
 
 # Vault resolution delegated to ceo-config.sh
-ceo_load_config || { echo "FATAL — CEO config not found. Set CEO_VAULT or run: ceo setup" >&2; exit 1; }
+ceo_require_vault
 ceo_augment_path
 VAULT="$CEO_VAULT"
 

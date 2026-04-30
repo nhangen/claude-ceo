@@ -26,9 +26,9 @@ if [ -z "$CONTENT" ]; then
   exit 1
 fi
 
-# Resolve vault
-ceo_load_config || true
-VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
+# Resolve vault — fail loud if unset (no silent provision under default).
+ceo_require_vault
+VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 REPORT_DIR="$CEO_DIR/reports"
 TODAY=$(date +%Y-%m-%d)

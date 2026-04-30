@@ -6,13 +6,14 @@
 #   ceo_detect_os()      — prints: wsl | linux | macos | unknown
 #   ceo_config_path()    — prints path to ~/.ceo/config
 #   ceo_load_config()    — resolves CEO_VAULT; returns 0 on success, 1 if empty
+#   ceo_require_vault()  — load config; exit 1 with operator guidance if unresolved
 #   ceo_validate_vault() — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
 #
 # Resolution order in ceo_load_config():
 #   1. CEO_VAULT already set in environment → use it as-is, return 0 (bypass mode)
 #   2. ~/.ceo/config exists → source it, CEO_VAULT from that file
 #   3. Legacy discovery loop (fallback — remove after 2026-05-26)
-#   4. Hard fallback: $HOME/Documents/Obsidian
+# Returns 1 if none of the above resolved CEO_VAULT.
 #
 # Idempotency guard — safe to source multiple times.
 [ -n "${_CEO_CONFIG_LOADED:-}" ] && return 0
@@ -44,7 +45,7 @@ ceo_config_path() {
 # ceo_load_config — resolve CEO_VAULT and export it.
 #
 # Returns:
-#   0  CEO_VAULT is set (env bypass, config file, discovery, or hard fallback)
+#   0  CEO_VAULT is set (env bypass, config file, or legacy discovery)
 #   1  CEO_VAULT is still empty after all resolution steps
 # ---------------------------------------------------------------------------
 ceo_load_config() {
@@ -78,16 +79,23 @@ ceo_load_config() {
   do
     if [ -d "$_candidate/CEO" ]; then
       export CEO_VAULT="$_candidate"
-      break
+      return 0
     fi
   done
 
-  # Step 4: Hard fallback — CEO_VAULT always ends up set.
-  if [ -z "${CEO_VAULT:-}" ]; then
-    export CEO_VAULT="$HOME/Documents/Obsidian"
-  fi
+  # Postcondition: CEO_VAULT remains unset on rc=1; ceo_require_vault() turns this into exit 1.
+  return 1
+}
 
-  [ -n "${CEO_VAULT:-}" ]
+# ---------------------------------------------------------------------------
+# ceo_require_vault — load config; exit 1 with operator guidance if unresolved.
+# For executed scripts only. Sourced scripts must call ceo_load_config and
+# `return 1` on failure (exit would kill the caller's shell).
+# ---------------------------------------------------------------------------
+ceo_require_vault() {
+  ceo_load_config && return 0
+  echo "FATAL — CEO_VAULT unresolved. Run 'ceo setup' to initialize." >&2
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
