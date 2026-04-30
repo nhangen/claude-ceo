@@ -301,7 +301,7 @@ cmd_preflight() {
   # Define preflights inline (can't source from ceo-cron.sh mid-script)
   preflight_none() { return 0; }
   preflight_has_unchecked_inbox() {
-    [ -f "$CEO_DIR/inbox.md" ] && grep -q "^- \[ \]" "$CEO_DIR/inbox.md"
+    ceo_inbox_has_unchecked
   }
   preflight_has_prs_to_review() {
     [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]
@@ -390,6 +390,7 @@ cmd_playbook_scan() {
   fi
 
   ceo_validate_vault || exit 1
+  ceo_assert_primary_host || exit 1
 
   local playbook_dir="$CEO_DIR/playbooks"
   local registry_file="$CEO_DIR/registry.json"
