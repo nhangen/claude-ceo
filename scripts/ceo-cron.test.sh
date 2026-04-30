@@ -530,6 +530,73 @@ PB
   assert_contains "$skips_log" "runner:script but no script field" "missing-script error must be logged"
 }
 
+test_playbook_scan_blocks_non_primary_host() {
+  cat > "$CEO_DIR/playbooks/probe.md" << 'PB'
+---
+name: probe
+description: probe
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  printf '{"primary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
+  rm -f "$CEO_DIR/registry.json"
+
+  local rc=0 out
+  out=$(CEO_HOSTNAME=beta bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
+  assert_eq "$rc" "1" "non-primary host must be refused"
+  assert_contains "$out" "primary host" "error must mention primary host gating"
+  if [ -f "$CEO_DIR/registry.json" ]; then
+    printf '  FAIL [%s] non-primary host wrote registry.json (must not)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_playbook_scan_succeeds_on_primary_host() {
+  cat > "$CEO_DIR/playbooks/probe.md" << 'PB'
+---
+name: probe
+description: probe
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  printf '{"primary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
+  rm -f "$CEO_DIR/registry.json"
+
+  local rc=0
+  CEO_HOSTNAME=alpha bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "primary host must be allowed to scan"
+  assert_file_exists "$CEO_DIR/registry.json" "registry must be written by primary host"
+}
+
+test_playbook_scan_unrestricted_when_primary_host_unset() {
+  cat > "$CEO_DIR/playbooks/probe.md" << 'PB'
+---
+name: probe
+description: probe
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  printf '{}\n' > "$CEO_DIR/settings.json"
+  rm -f "$CEO_DIR/registry.json"
+
+  local rc=0
+  CEO_HOSTNAME=anyhost bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "no primary_host setting → backward-compatible (any host can scan)"
+  assert_file_exists "$CEO_DIR/registry.json" "registry must be written when no gate is configured"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

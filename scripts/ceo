@@ -368,6 +368,24 @@ cmd_playbook_scan() {
 
   ceo_validate_vault || exit 1
 
+  # Primary-host write gate: registry.json is Syncthing-shared, so only one
+  # host may rewrite it. Peers running an older binary would silently drop
+  # newer fields. Configure via settings.json: {"primary_host": "<host>"}.
+  # Unset → backward-compatible (any host may scan).
+  local settings_file="$CEO_DIR/settings.json"
+  if [ -f "$settings_file" ] && command -v jq &>/dev/null; then
+    local primary_host
+    primary_host=$(jq -r '.primary_host // ""' "$settings_file" 2>/dev/null)
+    if [ -n "$primary_host" ]; then
+      local this_host="${CEO_HOSTNAME:-$(hostname -s)}"
+      if [ "$this_host" != "$primary_host" ]; then
+        echo "ERROR: 'ceo playbook scan' must run on the primary host ($primary_host); this host is '$this_host'." >&2
+        echo "  Either run on $primary_host, or unset 'primary_host' in $settings_file." >&2
+        exit 1
+      fi
+    fi
+  fi
+
   local playbook_dir="$CEO_DIR/playbooks"
   local registry_file="$CEO_DIR/registry.json"
 
