@@ -381,7 +381,11 @@ cmd_playbook_scan() {
     old_registry=$(cat "$registry_file")
   fi
 
-  local new_registry='{"generated":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","playbooks":[]}'
+  local new_registry
+  new_registry=$(jq -n \
+    --argjson v "$CEO_REGISTRY_SCHEMA_VERSION" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schema_version: $v, generated: $ts, playbooks: []}')
   local found=0
   local skipped=0
 
@@ -571,10 +575,12 @@ $marker_end"
 
 cmd_playbook_list() {
   local registry_file="$CEO_DIR/registry.json"
-  if [ ! -f "$registry_file" ]; then
-    echo "No registry found. Run: ceo playbook scan"
-    exit 1
-  fi
+  local rc=0
+  ceo_registry_validate "$registry_file" || rc=$?
+  case "$rc" in
+    1) echo "No registry found. Run: ceo playbook scan"; exit 1 ;;
+    2) echo "Registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?). Run: ceo playbook scan"; exit 1 ;;
+  esac
 
   printf "%-16s %-10s %-20s %-10s %-8s\n" "NAME" "TRIGGER" "SCHEDULE" "MODEL" "STATUS"
   printf "%-16s %-10s %-20s %-10s %-8s\n" "----" "-------" "--------" "-----" "------"
@@ -600,10 +606,12 @@ cmd_playbook_info() {
   fi
 
   local registry_file="$CEO_DIR/registry.json"
-  if [ ! -f "$registry_file" ]; then
-    echo "No registry found. Run: ceo playbook scan"
-    exit 1
-  fi
+  local rc=0
+  ceo_registry_validate "$registry_file" || rc=$?
+  case "$rc" in
+    1) echo "No registry found. Run: ceo playbook scan"; exit 1 ;;
+    2) echo "Registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?). Run: ceo playbook scan"; exit 1 ;;
+  esac
 
   local entry
   entry=$(jq -r --arg n "$target" '.playbooks[] | select(.name==$n)' "$registry_file")

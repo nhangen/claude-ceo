@@ -3,11 +3,12 @@
 # Source this file; do not execute it directly.
 #
 # Provides:
-#   ceo_detect_os()      — prints: wsl | linux | macos | unknown
-#   ceo_config_path()    — prints path to ~/.ceo/config
-#   ceo_load_config()    — resolves CEO_VAULT; returns 0 on success, 1 if empty
-#   ceo_require_vault()  — load config; exit 1 with operator guidance if unresolved
-#   ceo_validate_vault() — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
+#   ceo_detect_os()         — prints: wsl | linux | macos | unknown
+#   ceo_config_path()       — prints path to ~/.ceo/config
+#   ceo_load_config()       — resolves CEO_VAULT; returns 0 on success, 1 if empty
+#   ceo_require_vault()     — load config; exit 1 with operator guidance if unresolved
+#   ceo_validate_vault()    — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
+#   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
 #
 # Resolution order in ceo_load_config():
 #   1. CEO_VAULT already set in environment → use it as-is, return 0 (bypass mode)
@@ -108,6 +109,36 @@ ceo_augment_path() {
   : "${HOME:?HOME must be set before ceo_augment_path}"
   export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
   export _CEO_PATH_AUGMENTED=1
+}
+
+# ---------------------------------------------------------------------------
+# Registry schema. Bump CEO_REGISTRY_SCHEMA_VERSION whenever the on-disk
+# shape of registry.json changes — a peer host running an older binary will
+# then refuse to dispatch instead of silently downgrading the registry on
+# the next `ceo playbook scan`.
+#
+# Version history:
+#   2 — adds runner, script fields (PR #4)
+#   1 — implicit (pre-runner-script registry; missing field treated as <2)
+# ---------------------------------------------------------------------------
+CEO_REGISTRY_SCHEMA_VERSION=2
+
+# ceo_registry_validate <registry_file>
+#   0 — schema_version >= CEO_REGISTRY_SCHEMA_VERSION
+#   1 — registry file does not exist
+#   2 — schema_version missing or below current
+ceo_registry_validate() {
+  local registry_file="${1:-${CEO_DIR:-}/registry.json}"
+  if [ ! -f "$registry_file" ]; then
+    return 1
+  fi
+  local v
+  v=$(jq -r '.schema_version // 0 | tonumber? // 0' "$registry_file" 2>/dev/null)
+  [ -z "$v" ] && v=0
+  if [ "$v" -lt "$CEO_REGISTRY_SCHEMA_VERSION" ] 2>/dev/null; then
+    return 2
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------

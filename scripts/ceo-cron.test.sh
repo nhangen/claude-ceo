@@ -505,6 +505,85 @@ PB
   assert_file_exists "$HOME/claude-invoked.txt" "claude stub must fire (proves PATH augmentation reached dispatcher)"
 }
 
+test_playbook_scan_writes_schema_version_2() {
+  cat > "$CEO_DIR/playbooks/example.md" << 'PB'
+---
+name: example
+description: schema-version regression seed
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  local v
+  v=$(jq -r '.schema_version // "missing"' "$CEO_DIR/registry.json")
+  assert_eq "$v" "2" "playbook scan must write schema_version=2 into registry.json"
+}
+
+test_cron_skips_on_missing_schema_version() {
+  cat > "$CEO_DIR/playbooks/example.md" << 'PB'
+---
+name: example
+description: noop
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  jq 'del(.schema_version)' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
+  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+
+  local rc=0
+  bash "$CRON" example >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "cron must exit 1 when registry has no schema_version"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "schema_version" "cron-skips.log must record schema_version reason"
+
+  if [ -f "$HOME/claude-invoked.txt" ]; then
+    printf '  FAIL [%s] claude must NOT fire when schema gate trips\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_cron_skips_on_old_schema_version() {
+  cat > "$CEO_DIR/playbooks/example.md" << 'PB'
+---
+name: example
+description: noop
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
+  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+
+  local rc=0
+  bash "$CRON" example >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "cron must exit 1 when registry schema_version is below current"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "schema_version" "cron-skips.log must record schema_version reason"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---
