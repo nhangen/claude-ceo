@@ -54,7 +54,24 @@ STUB
 echo "token-scope-stub: $*"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/rtk" "$TEST_HOME/.bun/bin/token-scope"
-  export PATH="$TEST_HOME/.bun/bin:$PATH"
+
+  # Stage a getent stub so ceo_pin_home_or_warn (via ceo_resolve_real_home)
+  # resolves to $TEST_HOME instead of the developer's real ~/. Without this,
+  # the script's HOME re-export would point PATH augmentation at the user's
+  # actual ~/.bun/bin and bypass the test stubs above.
+  local user
+  user=$(id -un)
+  mkdir -p "$TEST_HOME/stubs"
+  cat > "$TEST_HOME/stubs/getent" << EOF
+#!/bin/bash
+if [ "\$1" = "passwd" ] && [ "\$2" = "$user" ]; then
+  printf '%s:x:0:0::%s:/bin/bash\n' "$user" "$TEST_HOME"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$TEST_HOME/stubs/getent"
+  export PATH="$TEST_HOME/stubs:$TEST_HOME/.bun/bin:$PATH"
 }
 
 teardown() {
@@ -126,13 +143,57 @@ test_two_hosts_write_disjoint_files() {
 }
 
 test_invokes_ceo_augment_path() {
-  PATH=/usr/bin:/bin bash "$INTAKE" >/dev/null 2>&1
+  # Keep the getent stub on PATH so ceo_pin_home_or_warn resolves to
+  # $TEST_HOME instead of the developer's real ~/. Without it, dscl on Mac
+  # would return the real user's home and PATH augmentation would prefer the
+  # real ~/.bun/bin/rtk over the test stub.
+  PATH="$TEST_HOME/stubs:/usr/bin:/bin" bash "$INTAKE" >/dev/null 2>&1
   local today report body
   today=$(date +%Y-%m-%d)
   report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
   assert_file_exists "$report" "report file must exist"
   body=$(cat "$report")
   assert_contains "$body" "rtk-stub:" "report must contain stub rtk output (proves ceo_augment_path resolved \$HOME/.bun/bin)"
+}
+
+test_pins_home_to_resolved_user_home_before_capture() {
+  local pinned="$TEST_HOME/pinned-home"
+  mkdir -p "$pinned/.bun/bin"
+  cat > "$pinned/.bun/bin/rtk" << 'STUB'
+#!/bin/bash
+echo "rtk-saw-HOME=$HOME"
+STUB
+  chmod +x "$pinned/.bun/bin/rtk"
+  cp "$TEST_HOME/.bun/bin/token-scope" "$pinned/.bun/bin/token-scope"
+
+  local stub_dir="$TEST_HOME/stubs" user
+  mkdir -p "$stub_dir"
+  user=$(id -un)
+  cat > "$stub_dir/getent" << EOF
+#!/bin/bash
+if [ "\$1" = "passwd" ] && [ "\$2" = "$user" ]; then
+  printf '%s:x:0:0::%s:/bin/bash\n' "$user" "$pinned"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$stub_dir/getent"
+
+  local sandbox="$TEST_HOME/scrubbed"
+  mkdir -p "$sandbox"
+  HOME="$sandbox" PATH="$stub_dir:$TEST_HOME/.bun/bin:/usr/bin:/bin" \
+    bash "$INTAKE" >/dev/null 2>&1
+
+  local today report body
+  today=$(date +%Y-%m-%d)
+  report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
+  if [ ! -f "$report" ]; then
+    printf '  FAIL [%s] report missing at %q\n' "$CURRENT_TEST" "$report"
+    FAILS=$((FAILS + 1)); return
+  fi
+  body=$(cat "$report")
+  assert_contains "$body" "rtk-saw-HOME=$pinned" \
+    "rtk must see HOME=$pinned (resolver target), not the sandbox HOME the caller passed"
 }
 
 test_aborts_on_unwritable_report_dir() {

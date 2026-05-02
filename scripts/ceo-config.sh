@@ -8,6 +8,11 @@
 #   ceo_load_config()       — resolves CEO_VAULT; returns 0 on success, 1 if empty
 #   ceo_require_vault()     — load config; exit 1 with operator guidance if unresolved
 #   ceo_validate_vault()    — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
+#   ceo_augment_path()      — prepend bun/Homebrew/.local prefixes to PATH (idempotent)
+#   ceo_resolve_real_home() — print passwd-canonical $HOME for running user; rc=0/1
+#   ceo_pin_home_or_warn()  — resolve+export $HOME from passwd; warn-and-rc=1 on fail
+#   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1
+#   ceo_assert_primary_host() — gate Syncthing-shared writes; rc=0 allowed/1 deny
 #   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
 #
 # Resolution order in ceo_load_config():
@@ -109,6 +114,58 @@ ceo_augment_path() {
   : "${HOME:?HOME must be set before ceo_augment_path}"
   export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
   export _CEO_PATH_AUGMENTED=1
+}
+
+# ---------------------------------------------------------------------------
+# ceo_resolve_real_home — print the running user's canonical home from passwd,
+# ignoring $HOME. Use when a script needs access to real-user state (rtk DB,
+# ccusage data, keyring tokens) and may be invoked from contexts that scrubbed
+# or sandboxed $HOME (env -i, sudo without -E, test harness with HOME=mktemp).
+# Prints the resolved path on stdout.
+#
+# Returns:
+#   0  resolved path printed
+#   1  one of: id -un failed (no usable user identity); both getent and dscl
+#      unavailable; resolver returned an empty string (e.g. Homebrew gnu-getent
+#      which is host-only); resolved path failed [ -d ] check (stale passwd
+#      entry, mobile-account home migration, etc.).
+# ---------------------------------------------------------------------------
+ceo_resolve_real_home() {
+  local user resolved=""
+  user=$(id -un 2>/dev/null) || return 1
+  if command -v getent >/dev/null 2>&1; then
+    resolved=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
+  fi
+  if [ -z "$resolved" ] && [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
+    resolved=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')
+  fi
+  if [ -n "$resolved" ] && [ -d "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# ceo_pin_home_or_warn — resolve passwd-canonical $HOME and export it; warn on
+# failure. Use when a script needs access to real-user state (rtk DB, ccusage)
+# and may be invoked from contexts that scrubbed or sandboxed $HOME (env -i,
+# sudo without -E, test harness with HOME=mktemp).
+#
+# Returns 0 on success (HOME re-exported); 1 if ceo_resolve_real_home failed.
+# On failure $HOME is left as the caller passed it and a WARN line goes to
+# stderr with diagnostic context. Folds resolve+export+warn into one call so
+# future callers can't copy a silent if-block.
+# ---------------------------------------------------------------------------
+ceo_pin_home_or_warn() {
+  local real_home
+  if real_home=$(ceo_resolve_real_home); then
+    export HOME="$real_home"
+    return 0
+  fi
+  printf 'WARN: ceo_pin_home_or_warn: passwd resolution failed; HOME=%q (id=%s, uname=%s)\n' \
+    "${HOME:-<unset>}" "$(id -un 2>/dev/null || echo \?)" "$(uname)" >&2
+  return 1
 }
 
 # ---------------------------------------------------------------------------

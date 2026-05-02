@@ -14,6 +14,14 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/ceo-config.sh"
 
 ceo_load_config || { echo "ERROR: CEO config not found" >&2; exit 1; }
+
+# rtk and ccusage discover their state via $HOME-rooted paths
+# (Library/Application Support/rtk/history.db on Mac, .local/share on Linux).
+# Pin $HOME BEFORE ceo_augment_path so PATH augmentation reads the real
+# user's home (~/.bun/bin etc.) instead of a scrubbed/sandboxed value. The
+# helper warns to stderr on resolver failure; we proceed regardless so
+# cron-invoked runs aren't blocked by an unresolvable user identity.
+ceo_pin_home_or_warn || true
 ceo_augment_path
 
 VAULT="$CEO_VAULT"

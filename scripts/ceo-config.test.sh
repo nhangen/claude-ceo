@@ -202,6 +202,87 @@ test_inbox_has_unchecked_with_legacy_clean_and_shadow_dirty() {
   assert_eq "$rc" "0" "must find unchecked items even when legacy is clean"
 }
 
+test_resolve_real_home_ignores_env_HOME() {
+  # Regression guard: rtk and ccusage discover state via $HOME-rooted paths.
+  # When the script is invoked from env -i / sandbox / sudo without -E, $HOME
+  # may point somewhere that doesn't have the real user's DBs. The helper
+  # must resolve from passwd, not from $HOME.
+  local got expected
+  expected=$(eval echo "~$(id -un)")
+  if [ ! -d "$expected" ]; then
+    if [ -n "${CI:-}" ]; then
+      printf '  FAIL [%s] CI environment must have a real home for the test user\n' "$CURRENT_TEST"
+      FAILS=$((FAILS + 1))
+      return 0
+    fi
+    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
+    return 0
+  fi
+  got=$(env -i HOME=/tmp/this-is-not-the-real-home PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_real_home
+  ")
+  assert_eq "$got" "$expected" "ceo_resolve_real_home must use passwd, not \$HOME"
+}
+
+test_resolve_real_home_falls_back_to_dscl_when_getent_returns_empty() {
+  # Verifies the elif → if fix: when getent is on PATH but produces empty
+  # output (Homebrew gnu-getent is host-resolution only, not passwd), the
+  # resolver must fall through to dscl on Darwin. With the old elif shape
+  # the dscl branch was unreachable once command -v getent succeeded.
+  if [ "$(uname)" != "Darwin" ]; then
+    printf "  SKIP [%s] non-Darwin\n" "$CURRENT_TEST"
+    return 0
+  fi
+  local stub_dir="$TEST_HOME/stubs"
+  mkdir -p "$stub_dir"
+  cat > "$stub_dir/getent" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "$stub_dir/getent"
+
+  local got expected
+  expected=$(eval echo "~$(id -un)")
+  if [ ! -d "$expected" ]; then
+    if [ -n "${CI:-}" ]; then
+      printf '  FAIL [%s] CI environment must have a real home for the test user\n' "$CURRENT_TEST"
+      FAILS=$((FAILS + 1))
+      return 0
+    fi
+    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
+    return 0
+  fi
+  got=$(env -i HOME=/tmp/fake PATH="$stub_dir:/usr/bin:/bin" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_real_home
+  ")
+  assert_eq "$got" "$expected" "must fall through to dscl when getent on PATH returns empty"
+}
+
+test_pin_home_or_warn_emits_warn_on_resolver_failure() {
+  # Force ceo_resolve_real_home to fail by stripping all binaries from PATH:
+  # id, getent, and dscl are all unqualified inside the helper. Use absolute
+  # /bin/bash because env(1) needs to locate bash itself before applying the
+  # stripped PATH to the child process.
+  local empty_dir="$TEST_HOME/empty"
+  mkdir -p "$empty_dir"
+  local stderr rc=0
+  stderr=$(env -i HOME=/tmp/fake PATH="$empty_dir" /bin/bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_pin_home_or_warn
+  " 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "1" "ceo_pin_home_or_warn must return 1 when resolver fails"
+  case "$stderr" in
+    *"WARN: ceo_pin_home_or_warn"*"passwd resolution failed"*) ;;
+    *) printf '  FAIL [%s] expected WARN line on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
+       FAILS=$((FAILS + 1)) ;;
+  esac
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
