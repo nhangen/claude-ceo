@@ -221,6 +221,27 @@ test_resolve_real_home_ignores_env_HOME() {
   assert_eq "$got" "$expected" "ceo_resolve_real_home must use passwd, not \$HOME"
 }
 
+test_pin_home_or_warn_emits_warn_on_resolver_failure() {
+  # Force ceo_resolve_real_home to fail by stripping all binaries from PATH:
+  # id, getent, and dscl are all unqualified inside the helper. Use absolute
+  # /bin/bash because env(1) needs to locate bash itself before applying the
+  # stripped PATH to the child process.
+  local empty_dir="$TEST_HOME/empty"
+  mkdir -p "$empty_dir"
+  local stderr rc=0
+  stderr=$(env -i HOME=/tmp/fake PATH="$empty_dir" /bin/bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_pin_home_or_warn
+  " 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "1" "ceo_pin_home_or_warn must return 1 when resolver fails"
+  case "$stderr" in
+    *"WARN: ceo_pin_home_or_warn"*"passwd resolution failed"*) ;;
+    *) printf '  FAIL [%s] expected WARN line on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
+       FAILS=$((FAILS + 1)) ;;
+  esac
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

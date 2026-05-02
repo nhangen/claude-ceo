@@ -8,6 +8,7 @@
 #   ceo_load_config()       — resolves CEO_VAULT; returns 0 on success, 1 if empty
 #   ceo_require_vault()     — load config; exit 1 with operator guidance if unresolved
 #   ceo_validate_vault()    — verifies CEO/inbox.md exists; returns 0 on pass, 1 on fail
+#   ceo_pin_home_or_warn()  — resolve+export $HOME from passwd; warn-and-rc=1 on fail
 #   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
 #
 # Resolution order in ceo_load_config():
@@ -130,6 +131,28 @@ ceo_resolve_real_home() {
     printf '%s\n' "$resolved"
     return 0
   fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# ceo_pin_home_or_warn — resolve passwd-canonical $HOME and export it; warn on
+# failure. Use when a script needs access to real-user state (rtk DB, ccusage)
+# and may be invoked from contexts that scrubbed or sandboxed $HOME (env -i,
+# sudo without -E, test harness with HOME=mktemp).
+#
+# Returns 0 on success (HOME re-exported); 1 if ceo_resolve_real_home failed.
+# On failure $HOME is left as the caller passed it and a WARN line goes to
+# stderr with diagnostic context. Folds resolve+export+warn into one call so
+# future callers can't copy a silent if-block.
+# ---------------------------------------------------------------------------
+ceo_pin_home_or_warn() {
+  local real_home
+  if real_home=$(ceo_resolve_real_home); then
+    export HOME="$real_home"
+    return 0
+  fi
+  printf 'WARN: ceo_pin_home_or_warn: passwd resolution failed; HOME=%q (id=%s, uname=%s)\n' \
+    "${HOME:-<unset>}" "$(id -un 2>/dev/null || echo \?)" "$(uname)" >&2
   return 1
 }
 
