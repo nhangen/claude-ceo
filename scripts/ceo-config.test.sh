@@ -202,6 +202,25 @@ test_inbox_has_unchecked_with_legacy_clean_and_shadow_dirty() {
   assert_eq "$rc" "0" "must find unchecked items even when legacy is clean"
 }
 
+test_resolve_real_home_ignores_env_HOME() {
+  # Regression guard: rtk and ccusage discover state via $HOME-rooted paths.
+  # When the script is invoked from env -i / sandbox / sudo without -E, $HOME
+  # may point somewhere that doesn't have the real user's DBs. The helper
+  # must resolve from passwd, not from $HOME.
+  local got expected
+  expected=$(eval echo "~$(id -un)")
+  if [ ! -d "$expected" ]; then
+    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
+    return 0
+  fi
+  got=$(env -i HOME=/tmp/this-is-not-the-real-home PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_real_home
+  ")
+  assert_eq "$got" "$expected" "ceo_resolve_real_home must use passwd, not \$HOME"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

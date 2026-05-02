@@ -16,6 +16,15 @@ source "$SCRIPT_DIR/ceo-config.sh"
 ceo_load_config || { echo "ERROR: CEO config not found" >&2; exit 1; }
 ceo_augment_path
 
+# rtk and ccusage discover their state via $HOME-rooted paths
+# (Library/Application Support/rtk/history.db on Mac, .local/share on Linux).
+# Pin $HOME to the running user's canonical home so we read the real DBs even
+# if invoked from a context that scrubbed or sandboxed $HOME. Without this,
+# rtk silently returns "No tracking data yet" and the report ships empty.
+if real_home=$(ceo_resolve_real_home); then
+  export HOME="$real_home"
+fi
+
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 HOST="${CEO_HOSTNAME:-$(hostname -s)}"

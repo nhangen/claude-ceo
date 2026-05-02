@@ -112,6 +112,28 @@ ceo_augment_path() {
 }
 
 # ---------------------------------------------------------------------------
+# ceo_resolve_real_home — print the running user's canonical home from passwd,
+# ignoring $HOME. Use when a script needs access to real-user state (rtk DB,
+# ccusage data, keyring tokens) and may be invoked from contexts that scrubbed
+# or sandboxed $HOME (env -i, sudo without -E, test harness with HOME=mktemp).
+# Prints the resolved path on stdout. Returns 0 on success, 1 if unable.
+# ---------------------------------------------------------------------------
+ceo_resolve_real_home() {
+  local user resolved=""
+  user=$(id -un 2>/dev/null) || return 1
+  if command -v getent >/dev/null 2>&1; then
+    resolved=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
+  elif [ "$(uname)" = "Darwin" ] && command -v dscl >/dev/null 2>&1; then
+    resolved=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '/^NFSHomeDirectory:/ {print $2}')
+  fi
+  if [ -n "$resolved" ] && [ -d "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # Registry schema. Bump CEO_REGISTRY_SCHEMA_VERSION whenever the on-disk
 # shape of registry.json changes — a peer host running an older binary will
 # then refuse to dispatch instead of silently downgrading the registry on
