@@ -210,6 +210,11 @@ test_resolve_real_home_ignores_env_HOME() {
   local got expected
   expected=$(eval echo "~$(id -un)")
   if [ ! -d "$expected" ]; then
+    if [ -n "${CI:-}" ]; then
+      printf '  FAIL [%s] CI environment must have a real home for the test user\n' "$CURRENT_TEST"
+      FAILS=$((FAILS + 1))
+      return 0
+    fi
     printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
     return 0
   fi
@@ -219,6 +224,42 @@ test_resolve_real_home_ignores_env_HOME() {
     ceo_resolve_real_home
   ")
   assert_eq "$got" "$expected" "ceo_resolve_real_home must use passwd, not \$HOME"
+}
+
+test_resolve_real_home_falls_back_to_dscl_when_getent_returns_empty() {
+  # Verifies the elif → if fix: when getent is on PATH but produces empty
+  # output (Homebrew gnu-getent is host-resolution only, not passwd), the
+  # resolver must fall through to dscl on Darwin. With the old elif shape
+  # the dscl branch was unreachable once command -v getent succeeded.
+  if [ "$(uname)" != "Darwin" ]; then
+    printf "  SKIP [%s] non-Darwin\n" "$CURRENT_TEST"
+    return 0
+  fi
+  local stub_dir="$TEST_HOME/stubs"
+  mkdir -p "$stub_dir"
+  cat > "$stub_dir/getent" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "$stub_dir/getent"
+
+  local got expected
+  expected=$(eval echo "~$(id -un)")
+  if [ ! -d "$expected" ]; then
+    if [ -n "${CI:-}" ]; then
+      printf '  FAIL [%s] CI environment must have a real home for the test user\n' "$CURRENT_TEST"
+      FAILS=$((FAILS + 1))
+      return 0
+    fi
+    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
+    return 0
+  fi
+  got=$(env -i HOME=/tmp/fake PATH="$stub_dir:/usr/bin:/bin" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_real_home
+  ")
+  assert_eq "$got" "$expected" "must fall through to dscl when getent on PATH returns empty"
 }
 
 test_pin_home_or_warn_emits_warn_on_resolver_failure() {
