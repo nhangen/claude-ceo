@@ -419,7 +419,7 @@ LOG_ENTRY:
 END_LOG_ENTRY"
 
   SINGLE_EXIT=0
-  SINGLE_OUTPUT=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | timeout 300 claude --print --max-turns 1 \
+  SINGLE_OUTPUT=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | timeout 300 claude --print --max-turns 5 \
     --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
 
   if [ $SINGLE_EXIT -ne 0 ]; then
@@ -504,7 +504,7 @@ Output ONLY ACTION: lines. No other text."
 _v "Phase 1: Planning (read-only, max 5 min)..."
 PLAN_EXIT=0
 _v "Using model: $MODEL"
-PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | timeout 300 claude --print --max-turns 1 \
+PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | timeout 300 claude --print --max-turns 5 \
   --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$LOG_DIR/cron-stderr.log") || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
