@@ -99,6 +99,7 @@ if command -v flock &>/dev/null; then
     echo "$(date): Skipping $TRIGGER — another CEO cron is running" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
+  trap "rm -f '$LOCK_FILE' 2>/dev/null" EXIT
 else
   # macOS fallback: mkdir-based lock
   LOCK_DIR="${LOCK_FILE}.d"

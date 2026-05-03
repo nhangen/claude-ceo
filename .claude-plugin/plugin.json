@@ -1,6 +1,6 @@
 {
   "name": "ceo",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Autonomous CEO agent for Claude Code. Reads your Obsidian vault, prioritizes work, dispatches 6 specialized subagents, and learns from corrections via playbooks and training files.",
   "author": {
     "name": "nhangen"
