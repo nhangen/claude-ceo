@@ -1,0 +1,12 @@
+# Force LF on every shell script and bare-named CLI on checkout, regardless of
+# the cloning machine's core.autocrlf setting. Windows defaults to autocrlf=true,
+# which converts LF -> CRLF on checkout and breaks /bin/bash with
+# "bad interpreter: /bin/bash^M: no such file or directory". WSL clones from
+# the Windows-side filesystem hit the same break.
+*               text=auto eol=lf
+*.sh            text eol=lf
+ceo             text eol=lf
+*.md            text eol=lf
+*.json          text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
