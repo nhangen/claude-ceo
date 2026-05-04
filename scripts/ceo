@@ -528,6 +528,7 @@ cmd_playbook_scan() {
 }
 
 _playbook_sync_bins() {
+  : "${HOME:?HOME must be set before _playbook_sync_bins}"
   local registry="$1"
   local bin_dir="$HOME/.local/bin"
   local manifest_dir="$HOME/.ceo"
