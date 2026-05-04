@@ -577,9 +577,16 @@ _playbook_sync_bins() {
     done < "$manifest"
   fi
 
-  local manifest_tmp="$manifest.tmp"
-  printf '%s' "$declared_names" > "$manifest_tmp"
-  mv -f "$manifest_tmp" "$manifest"
+  local manifest_tmp
+  manifest_tmp=$(mktemp "$manifest.XXXXXX") || {
+    echo "WARN: mktemp failed for manifest" >&2
+    return 1
+  }
+  if ! printf '%s' "$declared_names" > "$manifest_tmp" || ! mv -f "$manifest_tmp" "$manifest"; then
+    rm -f "$manifest_tmp"
+    echo "WARN: manifest update failed" >&2
+    return 1
+  fi
 
   echo "Bins: $created created/updated, $removed removed"
 }
