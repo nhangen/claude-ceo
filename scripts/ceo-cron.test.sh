@@ -902,6 +902,53 @@ PB
   fi
 }
 
+test_playbook_scan_prunes_dropped_bin_but_keeps_user_bins() {
+  cat > "$CEO_DIR/playbooks/blessings-cli.md" << 'PB'
+---
+name: blessings-cli
+description: declares a bin
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+bin: count-blessings.sh
+---
+PB
+  mkdir -p "$HOME/.local/bin"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  if [ ! -L "$HOME/.local/bin/count-blessings" ]; then
+    printf '  FAIL [%s] declared bin should be symlinked on first scan\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+    return
+  fi
+
+  ln -s "$SCRIPT_DIR/ceo" "$HOME/.local/bin/ceo"
+
+  cat > "$CEO_DIR/playbooks/blessings-cli.md" << 'PB'
+---
+name: blessings-cli
+description: dropped the bin
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  if [ -L "$HOME/.local/bin/count-blessings" ]; then
+    printf '  FAIL [%s] manifest-driven prune should remove dropped bin\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [ ! -L "$HOME/.local/bin/ceo" ]; then
+    printf '  FAIL [%s] user-installed ceo symlink should survive prune\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
