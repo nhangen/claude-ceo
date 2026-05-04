@@ -530,12 +530,14 @@ cmd_playbook_scan() {
 _playbook_sync_bins() {
   local registry="$1"
   local bin_dir="$HOME/.local/bin"
-  mkdir -p "$bin_dir"
+  local manifest_dir="$HOME/.ceo"
+  local manifest="$manifest_dir/managed-bins"
+  mkdir -p "$bin_dir" "$manifest_dir"
 
   local created=0
   local removed=0
+  local declared_names=""
 
-  # Create/update symlinks for active playbooks that declare a bin
   while IFS= read -r row; do
     local p_name p_bin p_status
     p_name=$(echo "$row" | jq -r '.name')
@@ -551,26 +553,32 @@ _playbook_sync_bins() {
 
     ln -sf "$target" "$link_path"
     echo "  BIN   $link_name -> $target"
+    declared_names+="$link_name"$'\n'
     created=$((created + 1))
   done < <(echo "$registry" | jq -c '.playbooks[]')
 
-  # Remove stale symlinks into SCRIPT_DIR that no active playbook declares
-  local declared_bins
-  declared_bins=$(echo "$registry" | jq -r '[.playbooks[] | select(.status=="active") | select(.bin != null and .bin != "") | .bin | ltrimstr("") | if endswith(".sh") then .[:-3] else . end] | join("\n")' 2>/dev/null || true)
-
-  for link in "$bin_dir"/*; do
-    [ -L "$link" ] || continue
-    local tgt
-    tgt=$(readlink "$link")
-    [[ "$tgt" == "$SCRIPT_DIR/"* ]] || continue
-    local link_name
-    link_name=$(basename "$link")
-    if ! printf '%s\n' "$declared_bins" | grep -qx "$link_name"; then
+  # Prune only entries this function created previously. The manifest lists
+  # link names from the most recent successful sync; user-installed CLIs
+  # (e.g. ~/.local/bin/ceo, ~/.local/bin/count-blessings) are never recorded
+  # there and so survive every scan.
+  if [ -f "$manifest" ]; then
+    while IFS= read -r prev_name; do
+      [ -z "$prev_name" ] && continue
+      printf '%s' "$declared_names" | grep -qx "$prev_name" && continue
+      local link="$bin_dir/$prev_name"
+      [ -L "$link" ] || continue
+      local tgt
+      tgt=$(readlink "$link")
+      [[ "$tgt" == "$SCRIPT_DIR/"* ]] || continue
       rm -f "$link"
-      echo "  UNBIN $link_name (removed)"
+      echo "  UNBIN $prev_name (removed)"
       removed=$((removed + 1))
-    fi
-  done
+    done < "$manifest"
+  fi
+
+  local manifest_tmp="$manifest.tmp"
+  printf '%s' "$declared_names" > "$manifest_tmp"
+  mv -f "$manifest_tmp" "$manifest"
 
   echo "Bins: $created created/updated, $removed removed"
 }
