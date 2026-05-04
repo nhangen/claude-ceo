@@ -59,18 +59,21 @@ Commands:
   chat        Interactive CEO conversation for a playbook (e.g. ceo chat inbox)
   cron        Run a cron trigger autonomously (e.g. ceo cron pr-triage)
   playbook    Manage playbooks (scan, list, info)
+  schedule    List/edit per-user playbook schedules (overrides frontmatter)
   help        Show this message
 
 Examples:
-  ceo setup           # First-time machine setup
-  ceo next            # Redisplay next steps after claude login
-  ceo test            # Smoke test: run morning-brief, check log
-  ceo doctor          # Verify everything is configured correctly
-  ceo preflight       # Preview what cron would do right now
-  ceo chat inbox      # Interactive conversation to process inbox
-  ceo chat morning-scan  # Morning triage conversation
-  ceo cron pr-triage  # Autonomous cron trigger (no conversation)
-  ceo playbook scan   # Discover playbooks, update registry + crontab
+  ceo setup                    # First-time machine setup
+  ceo next                     # Redisplay next steps after claude login
+  ceo test                     # Smoke test: run morning-brief, check log
+  ceo doctor                   # Verify everything is configured correctly
+  ceo preflight                # Preview what cron would do right now
+  ceo chat inbox               # Interactive conversation to process inbox
+  ceo chat morning-scan        # Morning triage conversation
+  ceo cron pr-triage           # Autonomous cron trigger (no conversation)
+  ceo playbook scan            # Discover playbooks, update registry + crontab
+  ceo schedule                 # List effective schedules + collisions
+  ceo schedule morning-scan    # Reschedule one playbook (interactive)
 USAGE
 }
 
@@ -515,6 +518,18 @@ cmd_playbook_scan() {
     fi
   done <<< "$old_names"
 
+  # Apply schedule overrides — registry should reflect effective schedules.
+  new_registry=$(_playbook_apply_schedule_overrides "$new_registry")
+
+  # Update crontab FIRST. If collision detection refuses, abort before
+  # touching the registry on disk — otherwise a refused scan would persist
+  # the conflicting state into registry.json and confuse later `ceo schedule`
+  # listings.
+  if ! _playbook_update_crontab "$new_registry"; then
+    echo "Aborted: registry not updated. Resolve collisions and re-run." >&2
+    return 1
+  fi
+
   local registry_tmp="$registry_file.tmp"
   echo "$new_registry" | jq '.' > "$registry_tmp"
   mv "$registry_tmp" "$registry_file"
@@ -523,7 +538,6 @@ cmd_playbook_scan() {
   echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped)"
   echo "Wrote: $registry_file"
 
-  _playbook_update_crontab "$new_registry"
   _playbook_sync_bins "$new_registry"
 }
 
@@ -591,10 +605,83 @@ _playbook_sync_bins() {
   echo "Bins: $created created/updated, $removed removed"
 }
 
+# Apply per-user schedule overrides from $CEO_DIR/schedules.json.
+# Frontmatter `schedule:` is the default; values in schedules.json win.
+# Echoes the merged registry (or the input registry unchanged if no overrides).
+# Validation: file must be valid JSON, override key must name a known playbook,
+# value must be a 5-field cron expression. Anything else is warned-and-ignored
+# per the enum-config-typo-fallback rule — never silently coerced.
+_playbook_apply_schedule_overrides() {
+  local registry="$1"
+  local overrides_file="$CEO_DIR/schedules.json"
+
+  if [ ! -f "$overrides_file" ]; then
+    echo "$registry"
+    return 0
+  fi
+
+  if ! jq empty "$overrides_file" 2>/dev/null; then
+    echo "WARNING: $overrides_file is not valid JSON; ignoring all overrides" >&2
+    echo "$registry"
+    return 0
+  fi
+
+  local known_playbooks
+  known_playbooks=$(echo "$registry" | jq -r '.playbooks[].name')
+
+  local override_keys
+  override_keys=$(jq -r 'keys[]' "$overrides_file")
+
+  while IFS= read -r override_name; do
+    [ -z "$override_name" ] && continue
+
+    if ! echo "$known_playbooks" | grep -qFx "$override_name"; then
+      echo "WARNING: $overrides_file references unknown playbook '$override_name' — ignored" >&2
+      continue
+    fi
+
+    local override_schedule
+    override_schedule=$(jq -r --arg n "$override_name" '.[$n]' "$overrides_file")
+    if [ -z "$override_schedule" ] || [ "$override_schedule" = "null" ]; then
+      continue
+    fi
+
+    if [ "$(echo "$override_schedule" | awk '{print NF}')" != "5" ]; then
+      echo "WARNING: $overrides_file: '$override_name' has invalid cron expression '$override_schedule' (need 5 space-separated fields) — ignored" >&2
+      continue
+    fi
+
+    registry=$(echo "$registry" | jq --arg n "$override_name" --arg s "$override_schedule" \
+      '.playbooks |= map(if .name == $n then .schedule = $s else . end)')
+  done <<< "$override_keys"
+
+  echo "$registry"
+}
+
 _playbook_update_crontab() {
   local registry="$1"
   local marker_start="# CEO Agent START"
   local marker_end="# CEO Agent END"
+
+  # Collision detection — refuse to install duplicate schedules.
+  # Two playbooks at the same minute fight for the global lock; one always
+  # loses silently. Better to fail loud at scan time than skip-with-reason
+  # at run time.
+  local collisions
+  collisions=$(echo "$registry" | jq -r '
+    [.playbooks[] | select(.trigger == "cron" and .status == "active" and .schedule != "")]
+    | group_by(.schedule)
+    | map(select(length > 1))
+    | .[] | "  \(.[0].schedule)  →  \([.[].name] | join(", "))"
+  ')
+
+  if [ -n "$collisions" ]; then
+    echo "ERROR: schedule collision(s) detected — refusing to install crontab" >&2
+    echo "$collisions" >&2
+    echo "" >&2
+    echo "Resolve via 'ceo schedule <playbook>' or by editing \$CEO_DIR/schedules.json." >&2
+    return 1
+  fi
 
   local cron_block="$marker_start"
   local cron_count=0
@@ -624,13 +711,188 @@ $marker_end"
   new_crontab=$(echo "$new_crontab" | grep -v "ceo-cron\.sh" || true)
   new_crontab=$(echo "$new_crontab" | grep -v "^# CEO Agent$" || true)
 
+  # crontab(1) can fail for non-collision reasons too: locked spool, quota,
+  # read-only filesystem, missing crontab binary. Capture its rc explicitly
+  # — without this, a refused install would still echo "installed" while
+  # the caller wrote the new registry, leaving registry-on-disk diverged
+  # from the running cron. The reorder in cmd_playbook_scan only protects
+  # against the collision case; this catches the rest.
+  local crontab_bin="${CEO_CRONTAB_BIN:-crontab}"
+  local crontab_payload
   if [ -n "$new_crontab" ]; then
-    printf '%s\n%s\n' "$new_crontab" "$cron_block" | crontab -
+    crontab_payload=$(printf '%s\n%s\n' "$new_crontab" "$cron_block")
   else
-    echo "$cron_block" | crontab -
+    crontab_payload="$cron_block"
+  fi
+
+  local crontab_err
+  crontab_err=$(echo "$crontab_payload" | "$crontab_bin" - 2>&1)
+  local crontab_rc=$?
+  if [ "$crontab_rc" -ne 0 ]; then
+    echo "ERROR: crontab install failed (rc=$crontab_rc): $crontab_err" >&2
+    return 1
   fi
 
   echo "Crontab: $cron_count entries installed"
+}
+
+# Validate a 5-field cron expression. Lightweight syntax check — verifies
+# field count and that each field uses only [0-9*,/-] characters. Rejects
+# obvious typos; does not enforce range correctness (cron itself rejects
+# out-of-range values when the line is installed).
+#
+# Uses `read -ra` instead of `for field in $expr` because the cron syntax
+# includes literal `*` characters which would otherwise glob-expand against
+# the current working directory (`*` → files in CWD), breaking validation
+# in unpredictable ways.
+_validate_cron_expr() {
+  local expr="$1"
+  if [ "$(echo "$expr" | awk '{print NF}')" != "5" ]; then
+    echo "invalid: need 5 space-separated fields, got '$expr'"
+    return 1
+  fi
+  local -a fields
+  read -ra fields <<< "$expr"
+  local i=0
+  for field in "${fields[@]}"; do
+    i=$((i + 1))
+    case "$field" in
+      *[!0-9*,/-]*)
+        echo "invalid: field $i ('$field') contains unsupported characters"
+        return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# Determine where the effective schedule for $1 came from.
+# Echoes "override" if schedules.json has a value, "frontmatter" otherwise.
+_schedule_source() {
+  local name="$1"
+  local overrides_file="$CEO_DIR/schedules.json"
+  [ -f "$overrides_file" ] || { echo "frontmatter"; return; }
+  jq -e --arg n "$name" '.[$n] // empty' "$overrides_file" >/dev/null 2>&1 \
+    && echo "override" || echo "frontmatter"
+}
+
+cmd_schedule() {
+  local registry_file="$CEO_DIR/registry.json"
+  local overrides_file="$CEO_DIR/schedules.json"
+
+  if [ ! -f "$registry_file" ]; then
+    echo "ERROR: registry not found at $registry_file" >&2
+    echo "Run: ceo playbook scan" >&2
+    return 1
+  fi
+
+  local target="${1:-}"
+
+  if [ -z "$target" ]; then
+    _schedule_list "$registry_file"
+    return 0
+  fi
+
+  _schedule_one "$target" "$registry_file" "$overrides_file"
+}
+
+_schedule_list() {
+  local registry_file="$1"
+  local registry
+  registry=$(cat "$registry_file")
+
+  printf "%-20s %-22s %-12s %s\n" "PLAYBOOK" "SCHEDULE" "SOURCE" "STATUS"
+  printf "%-20s %-22s %-12s %s\n" "--------" "--------" "------" "------"
+
+  local rows
+  rows=$(echo "$registry" | jq -r '
+    .playbooks[]
+    | select(.trigger == "cron")
+    | "\(.name)\t\(.schedule)\t\(.status)"
+  ')
+
+  # Compute collisions for this view.
+  local collision_schedules
+  collision_schedules=$(echo "$registry" | jq -r '
+    [.playbooks[] | select(.trigger == "cron" and .status == "active" and .schedule != "")]
+    | group_by(.schedule)
+    | map(select(length > 1))
+    | .[].[0].schedule
+  ')
+
+  while IFS=$'\t' read -r name sched status; do
+    [ -z "$name" ] && continue
+    local source flag
+    source=$(_schedule_source "$name")
+    flag=""
+    if [ -n "$collision_schedules" ] && echo "$collision_schedules" | grep -qFx "$sched"; then
+      flag=" ⚠ collides"
+    fi
+    printf "%-20s %-22s %-12s %s%s\n" "$name" "${sched:--}" "$source" "$status" "$flag"
+  done <<< "$rows"
+}
+
+_schedule_one() {
+  local name="$1"
+  local registry_file="$2"
+  local overrides_file="$3"
+
+  local exists
+  exists=$(jq -r --arg n "$name" '.playbooks[] | select(.name == $n) | .name' "$registry_file")
+  if [ -z "$exists" ]; then
+    echo "ERROR: no playbook named '$name' in registry" >&2
+    echo "Run 'ceo schedule' (no args) to list active playbooks." >&2
+    return 1
+  fi
+
+  local current trigger
+  current=$(jq -r --arg n "$name" '.playbooks[] | select(.name == $n) | .schedule // ""' "$registry_file")
+  trigger=$(jq -r --arg n "$name" '.playbooks[] | select(.name == $n) | .trigger' "$registry_file")
+
+  if [ "$trigger" != "cron" ] && [ "$trigger" != "both" ]; then
+    echo "ERROR: '$name' has trigger '$trigger' (need 'cron' or 'both')" >&2
+    return 1
+  fi
+
+  echo "Current schedule for '$name': ${current:-<none>}"
+  printf "New schedule (cron expr, e.g. '50 8 * * 1-5') or empty to cancel: "
+  read -r new_schedule
+
+  if [ -z "$new_schedule" ]; then
+    echo "Cancelled."
+    return 0
+  fi
+
+  local err
+  err=$(_validate_cron_expr "$new_schedule")
+  if [ $? -ne 0 ]; then
+    echo "ERROR: $err" >&2
+    return 1
+  fi
+
+  # Read or initialize overrides file.
+  local overrides
+  if [ -f "$overrides_file" ]; then
+    overrides=$(cat "$overrides_file")
+    if ! echo "$overrides" | jq empty 2>/dev/null; then
+      echo "ERROR: $overrides_file is not valid JSON; refusing to write" >&2
+      return 1
+    fi
+  else
+    overrides='{}'
+  fi
+
+  # Apply the override.
+  local updated
+  updated=$(echo "$overrides" | jq --arg n "$name" --arg s "$new_schedule" '.[$n] = $s')
+
+  local tmp="$overrides_file.tmp"
+  echo "$updated" | jq '.' > "$tmp"
+  mv "$tmp" "$overrides_file"
+
+  echo "Wrote $overrides_file"
+  echo "Re-running scan to apply…"
+  echo ""
+  cmd_playbook_scan
 }
 
 cmd_playbook_list() {
@@ -816,6 +1078,12 @@ $YESTERDAY_REPORT"
 _bind_vault() { VAULT="$CEO_VAULT"; CEO_DIR="$VAULT/CEO"; }
 
 # Dispatch
+# Sourcing guard: when CEO_LIB_ONLY=1, skip the dispatch table so test
+# harnesses can pull in helper functions without firing a command.
+if [ "${CEO_LIB_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 case "${1:-help}" in
   setup)    cmd_setup ;;
   next)     cmd_next ;;
@@ -825,6 +1093,7 @@ case "${1:-help}" in
   chat)     ceo_require_vault; _bind_vault; shift; cmd_chat "$@" ;;
   cron)     ceo_require_vault; _bind_vault; shift; cmd_cron "$@" ;;
   playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
+  schedule) ceo_require_vault; _bind_vault; shift; cmd_schedule "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     echo "Unknown command: $1"

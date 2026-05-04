@@ -113,14 +113,15 @@ All output lands in `CEO/reports/YYYY-MM-DD.md` via `ceo-report.sh`. The interac
 ### `ceo` — agent system management
 
 ```
-ceo setup        First-time machine setup (deps, git, ssh, cron)
-ceo next         Redisplay post-setup steps (survives terminal clear)
-ceo doctor       Check system health (deps, vault, cron, auth)
-ceo test         Smoke test: trigger morning-brief, check log
-ceo cron <name>  Manually run a cron trigger (e.g. ceo cron pr-triage)
-ceo chat [name]  Interactive playbook (no cron); empty arg = triage conversation
-ceo playbook scan|list|info  Self-registering playbook management
-ceo preflight    Preview what cron would run vs skip
+ceo setup            First-time machine setup (deps, git, ssh, cron)
+ceo next             Redisplay post-setup steps (survives terminal clear)
+ceo doctor           Check system health (deps, vault, cron, auth)
+ceo test             Smoke test: trigger morning-brief, check log
+ceo cron <name>      Manually run a cron trigger (e.g. ceo cron pr-triage)
+ceo chat [name]      Interactive playbook (no cron); empty arg = triage conversation
+ceo playbook scan|list|info   Self-registering playbook management
+ceo schedule [name]  List effective schedules; with name, reschedule one (interactive)
+ceo preflight        Preview what cron would run vs skip
 ```
 
 ### `count-blessings` — gratitude list (EA feature)
@@ -232,6 +233,25 @@ A starter shell-only playbook ships at `docs/playbooks/token-intake.md`. Copy it
 cp docs/playbooks/token-intake.md "$CEO_VAULT/CEO/playbooks/"
 ceo playbook scan
 ```
+
+### Scheduling
+
+Playbook frontmatter `schedule:` is the **default** — what ships with the playbook author's intent. Per-user overrides live in `$CEO_DIR/schedules.json`:
+
+```json
+{
+  "morning-scan": "50 8 * * 1-5",
+  "morning-brief": "57 8 * * 1-5"
+}
+```
+
+Top-level keys are playbook names; values are cron expressions. Overrides win over frontmatter at scan time. Unknown playbook names and invalid cron syntax are warned to stderr and ignored — never silently coerced.
+
+Two playbooks at the same minute share the global `/tmp/ceo-cron.lock`; one always loses silently. To prevent that, `ceo playbook scan` performs **collision detection** before installing the crontab and refuses if any two active cron-trigger playbooks share a schedule. Resolve via `ceo schedule <playbook>` (interactive prompt, validates the cron expression, writes `schedules.json`, re-runs scan) or by editing `schedules.json` directly.
+
+`ceo schedule` (no args) lists all cron-trigger playbooks with their effective schedule, source (`frontmatter` | `override`), status, and a collision flag if applicable.
+
+The registry is only written after a successful crontab install — a refused scan leaves the previous good state intact.
 
 ## Authority tiers
 
