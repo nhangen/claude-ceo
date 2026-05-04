@@ -564,7 +564,7 @@ _playbook_sync_bins() {
   if [ -f "$manifest" ]; then
     while IFS= read -r prev_name; do
       [ -z "$prev_name" ] && continue
-      printf '%s' "$declared_names" | grep -qx "$prev_name" && continue
+      printf '%s' "$declared_names" | grep -Fqx "$prev_name" && continue
       local link="$bin_dir/$prev_name"
       [ -L "$link" ] || continue
       local tgt
