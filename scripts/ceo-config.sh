@@ -303,13 +303,13 @@ ceo_assert_primary_host() {
     return 1
   fi
 
-  local known_keys=" primary_host "
+  local known_keys=" primary_host cooldown_seconds branch_prefix notify_events "
   local k
   while IFS= read -r k; do
     [ -n "$k" ] || continue
     case "$known_keys" in
       *" $k "*) ;;
-      *) echo "WARNING: $settings_file contains unknown key '$k' — ignored. Known keys: primary_host" >&2 ;;
+      *) echo "WARNING: $settings_file contains unknown key '$k' — ignored. Known keys:$known_keys" >&2 ;;
     esac
   done < <("$jq_bin" -r 'keys[]' "$settings_file" 2>/dev/null || true)
 

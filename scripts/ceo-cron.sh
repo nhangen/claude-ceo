@@ -45,6 +45,7 @@ _record_success() {
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
   echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+  [ -x "$SCRIPT_DIR/ceo-notify.sh" ] && "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || true
 }
 
 _record_failure() {
@@ -66,6 +67,7 @@ _record_failure() {
 ALERTEOF
   fi
   date +%s > "$LAST_RUN_FILE"
+  [ -x "$SCRIPT_DIR/ceo-notify.sh" ] && "$SCRIPT_DIR/ceo-notify.sh" failure "$TRIGGER" "$reason" >/dev/null 2>&1 || true
 }
 
 # --- Require jq ---
