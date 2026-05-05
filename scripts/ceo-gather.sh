@@ -148,3 +148,37 @@ if [ -f "$CEO_DIR/cache/blessings-today.md" ]; then
 else
   export BLESSINGS_TODAY=""
 fi
+
+# --- Briefing-specific training (capped at 10KB) ---
+# Read CEO/training/briefings.md so the read-tier morning brief can synthesize
+# without an extra tool call. Falls back to empty if file is absent.
+GATHER_MAX_FILE=10000
+_gather_safe_read() {
+  local file="$1"
+  if [ -f "$file" ]; then
+    head -c "$GATHER_MAX_FILE" "$file"
+  fi
+}
+
+export BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
+
+# --- Profile.md Active Domains (extract section, not whole file) ---
+# Profile.md may contain personal context; we want only the priority-ordering
+# section. If the section header isn't present, skip rather than dumping the
+# whole file.
+PROFILE_FILE="$VAULT/Profile.md"
+if [ -f "$PROFILE_FILE" ]; then
+  export ACTIVE_DOMAINS_CONTENT=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null | head -c "$GATHER_MAX_FILE")
+else
+  export ACTIVE_DOMAINS_CONTENT=""
+fi
+
+# --- Pending.md [ask] questions (top entries only) ---
+# Morning brief asks Claude to "pick 1-2 [ask] questions". Pre-extract them
+# so Claude doesn't need to read the full file. Cap at 20 lines to bound cost.
+PENDING_FILE="$VAULT/Pending.md"
+if [ -f "$PENDING_FILE" ]; then
+  export PENDING_ASK_QUESTIONS=$(grep -n '\[ask\]' "$PENDING_FILE" 2>/dev/null | head -20)
+else
+  export PENDING_ASK_QUESTIONS=""
+fi

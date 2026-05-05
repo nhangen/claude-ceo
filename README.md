@@ -234,6 +234,32 @@ cp docs/playbooks/token-intake.md "$CEO_VAULT/CEO/playbooks/"
 ceo playbook scan
 ```
 
+### Pre-gathered data (read-tier playbooks)
+
+Read-tier playbooks (`tier: read`) run through a single Claude call with `--max-turns 5` and `--disallowedTools "Bash,Write,Edit"`. The design intent is **synthesis, not exploration**: the shell pre-gathers everything Claude needs and injects it into the prompt as `<external-data>` blocks. Claude reads from the prompt, not the filesystem.
+
+`scripts/ceo-gather.sh` exports (and `scripts/ceo-cron.sh` injects):
+
+| Variable | Source | Purpose |
+|---|---|---|
+| `PR_REVIEW_REQUESTED`, `PR_AUTHORED`, `PR_REVIEW_COUNT`, `PR_AUTHORED_COUNT` | `gh pr list` per repo | PR queue |
+| `PENDING_COUNT`, `APPROVED_COUNT` | `CEO/approvals/pending.md` | approval queue counts |
+| `TODAY_LOG_SUMMARY`, `YESTERDAY_LOG_SUMMARY` | `CEO/log/<date>.md` | log activity counts |
+| `DAILY_NOTE_TOP3`, `DAILY_NOTE_TASKS` | `Daily/<date>.md` | today's priorities |
+| `BRIEFINGS_TRAINING` | `CEO/training/briefings.md` | briefing-specific rules |
+| `ACTIVE_DOMAINS_CONTENT` | `Profile.md` → `## Active Domains` section | priority-domain order |
+| `PENDING_ASK_QUESTIONS` | `Pending.md` lines containing `[ask]` | top 20 open questions |
+| `BLESSINGS_TODAY` | `CEO/cache/blessings-today.md` | EA blessings rotation |
+| `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (only set when scan ran) | morning-scan output |
+
+When writing or editing a read-tier playbook, **do not ask Claude to `Read` files**. Reference the pre-gathered values directly in the playbook's Steps section. If a new file genuinely needs to be in the prompt, add an export to `ceo-gather.sh` and an inject site to `ceo-cron.sh`'s `SINGLE_PROMPT`. Each tool call burns a turn; 5 turns vanish fast across reasoning + multi-file reads.
+
+The non-read tiers (low-stakes-write, high-stakes) use the three-phase pipeline (PLAN → FILTER → EXEC) and have higher turn caps (`--max-turns 20` on EXEC). Pre-gather is still preferred for known-shape data, but those tiers can call tools when discovery is genuinely needed.
+
+### Portable timeout
+
+`ceo-cron.sh` wraps Claude calls with a wall-clock timeout. `timeout` (Linux) and `gtimeout` (macOS via `brew install coreutils`) are both supported. If neither is installed, the wrapper degrades to running the command without a wall-clock cap (`--max-turns` and the API's own timeout still apply); a `WARN` is logged to stderr suggesting `brew install coreutils`.
+
 ### Scheduling
 
 Playbook frontmatter `schedule:` is the **default** — what ships with the playbook author's intent. Per-user overrides live in `$CEO_DIR/schedules.json`:

@@ -9,7 +9,7 @@
     {
       "name": "ceo",
       "description": "Autonomous CEO agent. Reads Obsidian vault, dispatches 6 specialized subagents, proposes actions by authority tier, learns from corrections.",
-      "version": "0.9.0",
+      "version": "0.10.0",
       "author": {
         "name": "nhangen"
       },
