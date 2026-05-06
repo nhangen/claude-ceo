@@ -439,7 +439,7 @@ cmd_playbook_scan() {
     local basename
     basename=$(basename "$f")
 
-    local name description trigger schedule model preflight tier status bin runner script
+    local name description trigger schedule model preflight tier status bin runner script inputs
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -457,6 +457,32 @@ cmd_playbook_scan() {
     bin=$(yq --front-matter=extract '.bin // ""' "$f" 2>/dev/null || echo "")
     runner=$(yq --front-matter=extract '.runner // ""' "$f" 2>/dev/null || echo "")
     script=$(yq --front-matter=extract '.script // ""' "$f" 2>/dev/null || echo "")
+    # `inputs` is an optional array of pre-gather keys to inject into the prompt.
+    # Absent → all keys (backward-compatible default). [] → none. Non-array →
+    # warn and treat as absent (per enum-config-typo-fallback rule). yq emits
+    # a JSON array as a "compact" string when shaped right; we capture raw JSON.
+    inputs=$(yq --front-matter=extract --output-format=json '.inputs // null' "$f" 2>/dev/null || echo "null")
+    case "$inputs" in
+      "null"|"") inputs="null" ;;
+      \[*\])
+        # Validate each entry is a known canonical key. Unknown keys produce
+        # a warn-and-keep — the dispatcher sees the typoed key and skips it.
+        # This matches the enum-config-typo-fallback rule: validate at parse,
+        # gate at dispatch, never silently coerce.
+        local unknown_keys
+        unknown_keys=$(echo "$inputs" | jq -r '
+          ["pr_data","pending_count","today_log","yesterday_log","daily_note","briefings_training","active_domains","pending_ask","scan_data","blessings"] as $valid
+          | .[]? | select(. as $k | $valid | index($k) | not)
+        ' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+        if [ -n "$unknown_keys" ]; then
+          echo "  WARN  $basename: 'inputs' contains unknown key(s): $unknown_keys — ignored at dispatch. Known: pr_data, pending_count, today_log, yesterday_log, daily_note, briefings_training, active_domains, pending_ask, scan_data, blessings" >&2
+        fi
+        ;;
+      *)
+        echo "  WARN  $basename: 'inputs' must be an array (got: $(echo "$inputs" | head -c 60)) — defaulting to all" >&2
+        inputs="null"
+        ;;
+    esac
 
     case "$runner" in
       ""|claude|script) ;;
@@ -479,8 +505,9 @@ cmd_playbook_scan() {
       --arg bin "$bin" \
       --arg runner "$runner" \
       --arg script "$script" \
+      --argjson inputs "$inputs" \
       --arg file "playbooks/$basename" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, inputs:$inputs, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))

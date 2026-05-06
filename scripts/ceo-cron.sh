@@ -272,6 +272,20 @@ case "$RUNNER" in
     exit 1 ;;
 esac
 SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
+# Per-playbook input filtering. INPUTS_JSON is the raw JSON value from the
+# registry: `null` (absent → all keys), `[]` (none), or `["key", …]`.
+# `_inputs_includes <key>` returns 0 if the key should be injected.
+# Defensive: if jq fails (malformed registry), fall back to default-all
+# rather than silently empty-prompt.
+INPUTS_JSON=$(echo "$ENTRY" | jq -c '.inputs' 2>/dev/null) || INPUTS_JSON="null"
+[ -z "$INPUTS_JSON" ] && INPUTS_JSON="null"
+_inputs_includes() {
+  local key="$1"
+  # Default-all when inputs is absent (backward-compat with playbooks that
+  # predate this feature).
+  [ "$INPUTS_JSON" = "null" ] && return 0
+  echo "$INPUTS_JSON" | jq -e --arg k "$key" 'index($k) != null' >/dev/null 2>&1
+}
 
 # Chat-only playbooks cannot run via cron
 if [ "$TRIGGER_TYPE" = "chat" ]; then
@@ -421,6 +435,57 @@ if [ "$TIER" = "read" ]; then
   _v "Read-tier playbook — single call (no plan/filter phases)"
   _v "Using model: $MODEL"
 
+  # Build pre-gathered data block conditionally based on the playbook's
+  # `inputs:` frontmatter (or default-all if absent). Each line/block is
+  # included only when _inputs_includes returns 0 for its canonical key.
+  PRE_GATHERED=""
+  _inputs_includes pending_count    && PRE_GATHERED+="- Pending approvals: $PENDING_COUNT pending, $APPROVED_COUNT approved"$'\n'
+  if _inputs_includes pr_data; then
+    PRE_GATHERED+="- PRs requesting review: $PR_REVIEW_COUNT"$'\n'
+    PRE_GATHERED+="- PRs authored: $PR_AUTHORED_COUNT"$'\n'
+    PRE_GATHERED+="- PR data (review requested): $PR_REVIEW_REQUESTED"$'\n'
+    PRE_GATHERED+="- PR data (authored): $PR_AUTHORED"$'\n'
+  fi
+  _inputs_includes today_log     && PRE_GATHERED+="- Today's report: $TODAY_LOG_SUMMARY"$'\n'
+  _inputs_includes yesterday_log && PRE_GATHERED+="- Yesterday's log summary: $YESTERDAY_LOG_SUMMARY"$'\n'
+  if _inputs_includes daily_note; then
+    PRE_GATHERED+="- Daily note Top 3: $DAILY_NOTE_TOP3"$'\n'
+    PRE_GATHERED+="- Daily note Tasks: $DAILY_NOTE_TASKS"$'\n'
+  fi
+
+  BRIEFINGS_BLOCK=""
+  if _inputs_includes briefings_training; then
+    BRIEFINGS_BLOCK="
+<external-data>
+Briefing-specific training (CEO/training/briefings.md):
+$(_escape_tag "$BRIEFINGS_TRAINING")
+</external-data>"
+  fi
+
+  ACTIVE_DOMAINS_BLOCK=""
+  if _inputs_includes active_domains; then
+    ACTIVE_DOMAINS_BLOCK="
+<external-data>
+Active Domains priority order (Profile.md → ## Active Domains):
+$(_escape_tag "$ACTIVE_DOMAINS_CONTENT")
+</external-data>"
+  fi
+
+  PENDING_ASK_BLOCK=""
+  if _inputs_includes pending_ask; then
+    PENDING_ASK_BLOCK="
+<external-data>
+Pending [ask] questions (Pending.md, top 20):
+$(_escape_tag "$PENDING_ASK_QUESTIONS")
+</external-data>"
+  fi
+
+  SCAN_BLOCK=""
+  _inputs_includes scan_data && SCAN_BLOCK="$SCAN_DATA"
+
+  BLESSINGS_BLOCK_OUT=""
+  _inputs_includes blessings && BLESSINGS_BLOCK_OUT="$BLESSINGS_DATA"
+
   SINGLE_PROMPT="You are the CEO agent. Read the context and execute the playbook.
 
 GLOBAL AGENT RULES:
@@ -438,32 +503,12 @@ PLAYBOOK ($TRIGGER):
 $PLAYBOOK_CONTENT
 
 PRE-GATHERED DATA (from shell — do not re-fetch; the answer must be derived from this block alone, do not call Read/Grep/Glob):
-- Pending approvals: $PENDING_COUNT pending, $APPROVED_COUNT approved
-- PRs requesting review: $PR_REVIEW_COUNT
-- PRs authored: $PR_AUTHORED_COUNT
-- PR data (review requested): $PR_REVIEW_REQUESTED
-- PR data (authored): $PR_AUTHORED
-- Today's report: $TODAY_LOG_SUMMARY
-- Yesterday's log summary: $YESTERDAY_LOG_SUMMARY
-- Daily note Top 3: $DAILY_NOTE_TOP3
-- Daily note Tasks: $DAILY_NOTE_TASKS
-
-<external-data>
-Briefing-specific training (CEO/training/briefings.md):
-$(_escape_tag "$BRIEFINGS_TRAINING")
-</external-data>
-
-<external-data>
-Active Domains priority order (Profile.md → ## Active Domains):
-$(_escape_tag "$ACTIVE_DOMAINS_CONTENT")
-</external-data>
-
-<external-data>
-Pending [ask] questions (Pending.md, top 20):
-$(_escape_tag "$PENDING_ASK_QUESTIONS")
-</external-data>
-$SCAN_DATA
-$BLESSINGS_DATA
+$PRE_GATHERED
+$BRIEFINGS_BLOCK
+$ACTIVE_DOMAINS_BLOCK
+$PENDING_ASK_BLOCK
+$SCAN_BLOCK
+$BLESSINGS_BLOCK_OUT
 
 Output your result in this format:
 LOG_ENTRY:
@@ -477,7 +522,7 @@ LOG_ENTRY:
 END_LOG_ENTRY"
 
   SINGLE_EXIT=0
-  SINGLE_OUTPUT=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | $(_with_timeout 300) claude --print --max-turns 5 \
+  SINGLE_OUTPUT=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
     --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
 
   if [ $SINGLE_EXIT -ne 0 ]; then
@@ -562,7 +607,7 @@ Output ONLY ACTION: lines. No other text."
 _v "Phase 1: Planning (read-only, max 5 min)..."
 PLAN_EXIT=0
 _v "Using model: $MODEL"
-PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | $(_with_timeout 300) claude --print --max-turns 5 \
+PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
   --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$LOG_DIR/cron-stderr.log") || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
@@ -655,7 +700,7 @@ END_LOG_ENTRY"
 
   _v "Phase 3: Executing $SAFE_COUNT safe actions (max 10 min)..."
   EXEC_EXIT=0
-  EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | $(_with_timeout 600) claude --print --max-turns 20 \
+  EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 600) claude --print --max-turns 20 \
     --model "$MODEL" 2>>"$LOG_DIR/cron-stderr.log") || EXEC_EXIT=$?
 
   _v "Phase 3 done (exit: $EXEC_EXIT)"

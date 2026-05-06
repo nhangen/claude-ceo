@@ -949,6 +949,173 @@ PB
   fi
 }
 
+# --- inputs: per-playbook injection filter (0.11.0) ---
+
+# Helper: stub claude to capture stdin (the SINGLE_PROMPT) for inspection.
+# Removes any prior capture file so a stale read can't pass an assertion if
+# the run errors out before the stub fires.
+_stub_claude_capture_stdin() {
+  rm -f "$HOME/claude-stdin.txt" "$HOME/claude-invoked.txt"
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat > "$HOME/claude-stdin.txt"
+echo "claude-fired" > "$HOME/claude-invoked.txt"
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+}
+
+test_inputs_absent_injects_all_blocks() {
+  cat > "$CEO_DIR/playbooks/inputs-default.md" << 'PB'
+---
+name: inputs-default
+description: No inputs field — should get all blocks
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+---
+PB
+
+  _stub_claude_capture_stdin
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" inputs-default >/dev/null 2>&1 || true
+
+  assert_file_exists "$HOME/claude-stdin.txt" "claude must have been invoked"
+  local prompt
+  prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
+  assert_contains "$prompt" "Pending approvals:" "default-all: pending_count line present"
+  assert_contains "$prompt" "PRs requesting review:" "default-all: pr_data line present"
+  assert_contains "$prompt" "Briefing-specific training" "default-all: briefings_training block present"
+  assert_contains "$prompt" "Active Domains priority order" "default-all: active_domains block present"
+}
+
+test_inputs_empty_array_excludes_all_blocks() {
+  cat > "$CEO_DIR/playbooks/inputs-empty.md" << 'PB'
+---
+name: inputs-empty
+description: inputs:[] explicitly opts out of all gather blocks
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+inputs: []
+---
+PB
+
+  _stub_claude_capture_stdin
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" inputs-empty >/dev/null 2>&1 || true
+
+  local prompt
+  prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
+  if [[ "$prompt" == *"Pending approvals:"* ]]; then
+    printf '  FAIL [%s] inputs:[] should suppress pending_count line\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [[ "$prompt" == *"Briefing-specific training"* ]]; then
+    printf '  FAIL [%s] inputs:[] should suppress briefings_training block\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [[ "$prompt" == *"PRs requesting review:"* ]]; then
+    printf '  FAIL [%s] inputs:[] should suppress pr_data lines\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_inputs_subset_includes_only_listed() {
+  cat > "$CEO_DIR/playbooks/inputs-subset.md" << 'PB'
+---
+name: inputs-subset
+description: Only pr_data and blessings — others must be absent
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+inputs:
+  - pr_data
+  - blessings
+---
+PB
+
+  _stub_claude_capture_stdin
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" inputs-subset >/dev/null 2>&1 || true
+
+  local prompt
+  prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
+  assert_contains "$prompt" "PRs requesting review:" "subset: pr_data line present"
+  if [[ "$prompt" == *"Briefing-specific training"* ]]; then
+    printf '  FAIL [%s] subset: briefings_training must be absent (not in inputs list)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [[ "$prompt" == *"Pending approvals:"* ]]; then
+    printf '  FAIL [%s] subset: pending_count must be absent (not in inputs list)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [[ "$prompt" == *"Active Domains priority order"* ]]; then
+    printf '  FAIL [%s] subset: active_domains must be absent\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_inputs_unknown_key_warns_at_scan() {
+  cat > "$CEO_DIR/playbooks/inputs-typo.md" << 'PB'
+---
+name: inputs-typo
+description: Has a typo'd input key
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+inputs:
+  - pr_data
+  - bogus_key
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  assert_contains "$out" "unknown key" "scan must warn on typo'd input key"
+  assert_contains "$out" "bogus_key" "warning must name the offending key"
+}
+
+test_inputs_non_array_warns_and_defaults_to_all() {
+  cat > "$CEO_DIR/playbooks/inputs-scalar.md" << 'PB'
+---
+name: inputs-scalar
+description: Inputs is a scalar — should warn and default to all
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+inputs: pr_data
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  assert_contains "$out" "must be an array" "scan must warn when inputs is not an array"
+
+  # Default-all behavior should hold — verify by running and checking the prompt
+  _stub_claude_capture_stdin
+  CEO_VERBOSE=1 bash "$CRON" inputs-scalar >/dev/null 2>&1 || true
+  local prompt
+  prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
+  assert_contains "$prompt" "Briefing-specific training" "non-array inputs must default to all (briefings present)"
+  assert_contains "$prompt" "PRs requesting review:" "non-array inputs must default to all (pr_data present)"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
