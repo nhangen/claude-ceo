@@ -396,7 +396,7 @@ cmd_playbook_scan() {
   ceo_assert_primary_host || exit 1
 
   local playbook_dir="$CEO_DIR/playbooks"
-  local repo_playbook_dir="$INSTALL_DIR/docs/playbooks"
+  local repo_playbook_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
   local registry_file="$CEO_DIR/registry.json"
 
   if [ ! -d "$playbook_dir" ]; then
@@ -435,7 +435,8 @@ cmd_playbook_scan() {
   local found=0
   local skipped=0
 
-  local seen_names=""
+  local seen_names_vault=""
+  local seen_names_repo=""
   local shadowed=0
 
   local scan_dirs=( "$playbook_dir" )
@@ -457,7 +458,15 @@ cmd_playbook_scan() {
       continue
     fi
 
-    if grep -qxF "$name" <<< "$seen_names"; then
+    case "$name" in
+      *$'\n'*)
+        echo "  SKIP  $basename (name contains newline; YAML block scalars not supported)"
+        skipped=$((skipped + 1))
+        continue
+        ;;
+    esac
+
+    if grep -qxF "$name" <<< "$seen_names_vault"; then
       if [ "$from_repo" = "1" ]; then
         echo "  SHADOW $basename (vault override of repo playbook '$name')"
         shadowed=$((shadowed + 1))
@@ -467,7 +476,16 @@ cmd_playbook_scan() {
       fi
       continue
     fi
-    seen_names="${seen_names}${name}"$'\n'
+    if grep -qxF "$name" <<< "$seen_names_repo"; then
+      echo "  DUP    $basename (duplicate name '$name')"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if [ "$from_repo" = "1" ]; then
+      seen_names_repo="${seen_names_repo}${name}"$'\n'
+    else
+      seen_names_vault="${seen_names_vault}${name}"$'\n'
+    fi
 
     description=$(yq --front-matter=extract '.description // ""' "$f" 2>/dev/null || echo "")
     trigger=$(yq --front-matter=extract '.trigger // ""' "$f" 2>/dev/null || echo "")
