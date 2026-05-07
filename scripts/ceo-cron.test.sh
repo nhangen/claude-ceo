@@ -1116,6 +1116,72 @@ PB
   assert_contains "$prompt" "PRs requesting review:" "non-array inputs must default to all (pr_data present)"
 }
 
+test_repo_playbook_auto_registers_with_absolute_file_path() {
+  local repo_dir="$SCRIPT_DIR/../docs/playbooks"
+  local repo_pb="$repo_dir/_test-repo-pb.md"
+  mkdir -p "$repo_dir"
+  cat > "$repo_pb" << 'PB'
+---
+name: _test-repo-pb
+description: Repo-side playbook for scan test
+trigger: chat
+preflight: none
+tier: read
+status: active
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  rm -f "$repo_pb"
+
+  assert_contains "$out" "ADD   _test-repo-pb" "repo playbook must be picked up by scan"
+
+  local file_field
+  file_field=$(jq -r '.playbooks[] | select(.name=="_test-repo-pb") | .file' "$CEO_DIR/registry.json")
+  assert_eq "${file_field:0:1}" "/" "repo playbook .file must be absolute"
+  assert_contains "$file_field" "docs/playbooks/_test-repo-pb.md" "repo playbook .file must point at repo path"
+}
+
+test_vault_playbook_shadows_repo_playbook_with_same_name() {
+  local repo_dir="$SCRIPT_DIR/../docs/playbooks"
+  local repo_pb="$repo_dir/_test-shadow.md"
+  mkdir -p "$repo_dir"
+  cat > "$repo_pb" << 'PB'
+---
+name: _test-shadow
+description: Repo version
+trigger: chat
+preflight: none
+tier: read
+status: active
+---
+PB
+
+  cat > "$CEO_DIR/playbooks/_test-shadow.md" << 'PB'
+---
+name: _test-shadow
+description: Vault override
+trigger: chat
+preflight: none
+tier: read
+status: inactive
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  rm -f "$repo_pb"
+
+  assert_contains "$out" "SHADOW" "scan must report shadowing"
+
+  local desc status
+  desc=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .description' "$CEO_DIR/registry.json")
+  status=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .status' "$CEO_DIR/registry.json")
+  assert_eq "$desc" "Vault override" "vault entry must win on collision"
+  assert_eq "$status" "inactive" "vault status must override repo status"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

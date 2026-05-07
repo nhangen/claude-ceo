@@ -33,13 +33,8 @@ The chat-triggered `inbox` playbook picks the line up next time `ceo chat inbox`
 
 ## Install
 
-Copy this file into the vault, then re-scan:
-
-```
-cp docs/playbooks/token-intake.md "$CEO_VAULT/CEO/playbooks/"
-ceo playbook scan
-```
+Registered automatically by `ceo playbook scan`. Repo playbooks under `docs/playbooks/` are picked up alongside vault playbooks; a vault playbook with the same `name` shadows the repo copy.
 
 ## Disable
 
-Set `status: inactive` and re-scan.
+Set `status: inactive` in this file (or in a vault override at `$CEO_VAULT/CEO/playbooks/token-intake.md`) and re-scan.
