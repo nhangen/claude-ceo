@@ -438,12 +438,16 @@ cmd_playbook_scan() {
   local seen_names=""
   local shadowed=0
 
-  for f in "$playbook_dir"/*.md "$repo_playbook_dir"/*.md; do
-    [ -f "$f" ] || continue
+  local scan_dirs=( "$playbook_dir" )
+  [ -d "$repo_playbook_dir" ] && scan_dirs+=( "$repo_playbook_dir" )
+
+  for d in "${scan_dirs[@]}"; do
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue
     local basename
     basename=$(basename "$f")
     local from_repo=0
-    [[ "$f" == "$repo_playbook_dir"/* ]] && from_repo=1
+    [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
     local name description trigger schedule model preflight tier status bin runner script inputs
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
@@ -453,7 +457,7 @@ cmd_playbook_scan() {
       continue
     fi
 
-    if echo "$seen_names" | tr ' ' '\n' | grep -qx "$name"; then
+    if grep -qxF "$name" <<< "$seen_names"; then
       if [ "$from_repo" = "1" ]; then
         echo "  SHADOW $basename (vault override of repo playbook '$name')"
         shadowed=$((shadowed + 1))
@@ -463,7 +467,7 @@ cmd_playbook_scan() {
       fi
       continue
     fi
-    seen_names="$seen_names $name"
+    seen_names="${seen_names}${name}"$'\n'
 
     description=$(yq --front-matter=extract '.description // ""' "$f" 2>/dev/null || echo "")
     trigger=$(yq --front-matter=extract '.trigger // ""' "$f" 2>/dev/null || echo "")
@@ -536,6 +540,7 @@ cmd_playbook_scan() {
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))
+    done
   done
 
   # Compare old vs new

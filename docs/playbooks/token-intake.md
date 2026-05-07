@@ -35,6 +35,8 @@ The chat-triggered `inbox` playbook picks the line up next time `ceo chat inbox`
 
 Registered automatically by `ceo playbook scan`. Repo playbooks under `docs/playbooks/` are picked up alongside vault playbooks; a vault playbook with the same `name` shadows the repo copy.
 
+Note: cron entries for repo playbooks bake in `$INSTALL_DIR` at scan time. If the repo moves (re-clone, worktree shuffle), re-run `ceo playbook scan` to refresh the crontab.
+
 ## Disable
 
 Set `status: inactive` in this file (or in a vault override at `$CEO_VAULT/CEO/playbooks/token-intake.md`) and re-scan.

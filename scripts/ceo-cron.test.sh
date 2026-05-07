@@ -88,6 +88,7 @@ STUB
 
 teardown() {
   rm -rf "$TEST_HOME"
+  rm -f "$SCRIPT_DIR/../docs/playbooks/"_test-*.md
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
   unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP
