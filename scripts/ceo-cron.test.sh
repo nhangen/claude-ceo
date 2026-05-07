@@ -90,7 +90,7 @@ teardown() {
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP
+  unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR
 }
 
 test_runner_script_execs_named_script_and_skips_claude() {
@@ -1114,6 +1114,111 @@ PB
   prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
   assert_contains "$prompt" "Briefing-specific training" "non-array inputs must default to all (briefings present)"
   assert_contains "$prompt" "PRs requesting review:" "non-array inputs must default to all (pr_data present)"
+}
+
+test_repo_playbook_auto_registers_with_absolute_file_path() {
+  local repo_dir="$TEST_HOME/repo-pb"
+  local repo_pb="$repo_dir/_test-repo-pb.md"
+  mkdir -p "$repo_dir"
+  export CEO_REPO_PLAYBOOK_DIR="$repo_dir"
+  cat > "$repo_pb" << 'PB'
+---
+name: _test-repo-pb
+description: Repo-side playbook for scan test
+trigger: chat
+preflight: none
+tier: read
+status: active
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  unset CEO_REPO_PLAYBOOK_DIR
+
+  assert_contains "$out" "ADD   _test-repo-pb" "repo playbook must be picked up by scan"
+
+  local file_field
+  file_field=$(jq -r '.playbooks[] | select(.name=="_test-repo-pb") | .file' "$CEO_DIR/registry.json")
+  assert_eq "${file_field:0:1}" "/" "repo playbook .file must be absolute"
+  assert_contains "$file_field" "_test-repo-pb.md" "repo playbook .file must point at repo path"
+}
+
+test_vault_playbook_shadows_repo_playbook_with_same_name() {
+  local repo_dir="$TEST_HOME/repo-pb"
+  local repo_pb="$repo_dir/_test-shadow.md"
+  mkdir -p "$repo_dir"
+  export CEO_REPO_PLAYBOOK_DIR="$repo_dir"
+  cat > "$repo_pb" << 'PB'
+---
+name: _test-shadow
+description: Repo version
+trigger: chat
+preflight: none
+tier: read
+status: active
+---
+PB
+
+  cat > "$CEO_DIR/playbooks/_test-shadow.md" << 'PB'
+---
+name: _test-shadow
+description: Vault override
+trigger: chat
+preflight: none
+tier: read
+status: inactive
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  unset CEO_REPO_PLAYBOOK_DIR
+
+  assert_contains "$out" "SHADOW" "scan must report shadowing"
+
+  local desc status
+  desc=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .description' "$CEO_DIR/registry.json")
+  status=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .status' "$CEO_DIR/registry.json")
+  assert_eq "$desc" "Vault override" "vault entry must win on collision"
+  assert_eq "$status" "inactive" "vault status must override repo status"
+}
+
+test_repo_internal_duplicate_logs_dup_not_shadow() {
+  local repo_dir="$TEST_HOME/repo-pb"
+  mkdir -p "$repo_dir"
+  export CEO_REPO_PLAYBOOK_DIR="$repo_dir"
+
+  cat > "$repo_dir/_test-twin-a.md" << 'PB'
+---
+name: _test-twin
+description: First repo file
+trigger: chat
+preflight: none
+tier: read
+status: active
+---
+PB
+  cat > "$repo_dir/_test-twin-b.md" << 'PB'
+---
+name: _test-twin
+description: Second repo file
+trigger: chat
+preflight: none
+tier: read
+status: active
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  unset CEO_REPO_PLAYBOOK_DIR
+
+  assert_contains "$out" "DUP" "two repo files with same name must log DUP"
+  if [[ "$out" == *"SHADOW"* ]]; then
+    printf '  FAIL [%s] repo-internal dup must NOT log SHADOW (no vault override exists)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
 }
 
 run_tests() {

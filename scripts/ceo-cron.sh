@@ -294,7 +294,11 @@ if [ "$TRIGGER_TYPE" = "chat" ]; then
   exit 0
 fi
 
-PLAYBOOK_FILE="$CEO_DIR/$PLAYBOOK_REL"
+if [[ "$PLAYBOOK_REL" = /* ]]; then
+  PLAYBOOK_FILE="$PLAYBOOK_REL"
+else
+  PLAYBOOK_FILE="$CEO_DIR/$PLAYBOOK_REL"
+fi
 _v "Playbook: $PLAYBOOK_REL (model: $MODEL, preflight: $PREFLIGHT, status: $STATUS)"
 
 if [ ! -f "$PLAYBOOK_FILE" ]; then

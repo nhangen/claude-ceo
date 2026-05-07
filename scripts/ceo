@@ -396,6 +396,7 @@ cmd_playbook_scan() {
   ceo_assert_primary_host || exit 1
 
   local playbook_dir="$CEO_DIR/playbooks"
+  local repo_playbook_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
   local registry_file="$CEO_DIR/registry.json"
 
   if [ ! -d "$playbook_dir" ]; then
@@ -434,10 +435,20 @@ cmd_playbook_scan() {
   local found=0
   local skipped=0
 
-  for f in "$playbook_dir"/*.md; do
-    [ -f "$f" ] || continue
+  local seen_names_vault=""
+  local seen_names_repo=""
+  local shadowed=0
+
+  local scan_dirs=( "$playbook_dir" )
+  [ -d "$repo_playbook_dir" ] && scan_dirs+=( "$repo_playbook_dir" )
+
+  for d in "${scan_dirs[@]}"; do
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue
     local basename
     basename=$(basename "$f")
+    local from_repo=0
+    [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
     local name description trigger schedule model preflight tier status bin runner script inputs
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
@@ -445,6 +456,35 @@ cmd_playbook_scan() {
       echo "  SKIP  $basename (no name in frontmatter)"
       skipped=$((skipped + 1))
       continue
+    fi
+
+    case "$name" in
+      *$'\n'*)
+        echo "  SKIP  $basename (name contains newline; YAML block scalars not supported)"
+        skipped=$((skipped + 1))
+        continue
+        ;;
+    esac
+
+    if grep -qxF "$name" <<< "$seen_names_vault"; then
+      if [ "$from_repo" = "1" ]; then
+        echo "  SHADOW $basename (vault override of repo playbook '$name')"
+        shadowed=$((shadowed + 1))
+      else
+        echo "  DUP    $basename (duplicate name '$name')"
+        skipped=$((skipped + 1))
+      fi
+      continue
+    fi
+    if grep -qxF "$name" <<< "$seen_names_repo"; then
+      echo "  DUP    $basename (duplicate name '$name')"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if [ "$from_repo" = "1" ]; then
+      seen_names_repo="${seen_names_repo}${name}"$'\n'
+    else
+      seen_names_vault="${seen_names_vault}${name}"$'\n'
     fi
 
     description=$(yq --front-matter=extract '.description // ""' "$f" 2>/dev/null || echo "")
@@ -492,6 +532,13 @@ cmd_playbook_scan() {
         continue ;;
     esac
 
+    local entry_file
+    if [ "$from_repo" = "1" ]; then
+      entry_file="$f"
+    else
+      entry_file="playbooks/$basename"
+    fi
+
     local entry
     entry=$(jq -n \
       --arg name "$name" \
@@ -506,11 +553,12 @@ cmd_playbook_scan() {
       --arg runner "$runner" \
       --arg script "$script" \
       --argjson inputs "$inputs" \
-      --arg file "playbooks/$basename" \
+      --arg file "$entry_file" \
       '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, inputs:$inputs, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))
+    done
   done
 
   # Compare old vs new
@@ -562,7 +610,7 @@ cmd_playbook_scan() {
   mv "$registry_tmp" "$registry_file"
 
   echo ""
-  echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped)"
+  echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed)"
   echo "Wrote: $registry_file"
 
   _playbook_sync_bins "$new_registry"
@@ -975,7 +1023,12 @@ cmd_playbook_info() {
 
   local playbook_file
   playbook_file=$(echo "$entry" | jq -r '.file')
-  local full_path="$CEO_DIR/$playbook_file"
+  local full_path
+  if [[ "$playbook_file" = /* ]]; then
+    full_path="$playbook_file"
+  else
+    full_path="$CEO_DIR/$playbook_file"
+  fi
   if [ -f "$full_path" ]; then
     echo ""
     echo "--- Body ---"
@@ -1024,7 +1077,12 @@ cmd_chat() {
     local playbook_rel
     playbook_rel=$(echo "$entry" | jq -r '.file')
     model=$(echo "$entry" | jq -r '.model // "sonnet"')
-    local playbook_file="$CEO_DIR/$playbook_rel"
+    local playbook_file
+    if [[ "$playbook_rel" = /* ]]; then
+      playbook_file="$playbook_rel"
+    else
+      playbook_file="$CEO_DIR/$playbook_rel"
+    fi
 
     if [ ! -f "$playbook_file" ]; then
       echo "Playbook file not found: $playbook_file"
