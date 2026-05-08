@@ -120,6 +120,7 @@ ceo_augment_path() {
       export PATH="$HOME/.bun/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.npm-global/bin:/usr/local/bin:$PATH"
       ;;
     *)
+      # Minimal trusted set when OS detection fails — do not normalize-merge with the branches above.
       export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
       ;;
   esac
