@@ -196,6 +196,73 @@ EOF
     "rtk must see HOME=$pinned (resolver target), not the sandbox HOME the caller passed"
 }
 
+test_exits_nonzero_when_capture_command_missing() {
+  rm -f "$TEST_HOME/.bun/bin/token-scope"
+  local rc=0
+  bash "$INTAKE" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] script must exit non-zero when a capture binary is missing\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md"; then
+    printf '  FAIL [%s] inbox must NOT have a line when capture failed\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  local today report
+  today=$(date +%Y-%m-%d)
+  report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
+  if [ -f "$report" ] && ! grep -qF "unavailable on PATH=" "$report"; then
+    printf '  FAIL [%s] report must record the missing-binary sentinel for forensics\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_exits_nonzero_when_capture_command_fails() {
+  cat > "$TEST_HOME/.bun/bin/rtk" << 'STUB'
+#!/bin/bash
+echo "boom: simulated failure" >&2
+exit 7
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/rtk"
+  local rc=0
+  bash "$INTAKE" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] script must exit non-zero when a capture command exits non-zero\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md"; then
+    printf '  FAIL [%s] inbox must NOT have a line when capture failed\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_augment_path_branches_per_os() {
+  # shellcheck source=ceo-config.sh
+  source "$SCRIPT_DIR/ceo-config.sh"
+  local got
+  unset _CEO_PATH_AUGMENTED
+  PATH="/usr/bin:/bin"
+  ceo_detect_os() { echo "wsl"; }
+  ceo_augment_path
+  got="$PATH"
+  if [[ "$got" == *"/opt/homebrew/bin"* ]]; then
+    printf '  FAIL [%s] wsl branch must NOT prepend /opt/homebrew/bin\n    got: %q\n' "$CURRENT_TEST" "$got"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$got" "$HOME/.bun/bin" "wsl branch must include \$HOME/.bun/bin"
+  assert_contains "$got" "$HOME/.local/bin" "wsl branch must include \$HOME/.local/bin"
+
+  unset _CEO_PATH_AUGMENTED
+  PATH="/usr/bin:/bin"
+  ceo_detect_os() { echo "macos"; }
+  ceo_augment_path
+  got="$PATH"
+  assert_contains "$got" "/opt/homebrew/bin" "macos branch must include /opt/homebrew/bin"
+  assert_contains "$got" "$HOME/.bun/bin" "macos branch must include \$HOME/.bun/bin"
+  unset _CEO_PATH_AUGMENTED
+  unset -f ceo_detect_os
+}
+
 test_aborts_on_unwritable_report_dir() {
   if [ "$(id -u)" = "0" ]; then
     return 0
