@@ -39,16 +39,29 @@ INBOX_LINE="- [ ] Review daily token report $WIKILINK"
 mkdir -p "$TOKEN_DIR" "$INBOX_DIR"
 
 # capture <label> <cmd> [args...] — run a command and wrap its output in a fenced block.
-# Falls back to "<cmd> unavailable" so the inbox link always resolves to readable content.
+# Writes a sentinel into the report on failure so the link resolves to readable
+# content, AND returns non-zero so the script exits non-zero and ceo-cron records
+# a failure (otherwise a missing/broken binary leaves cron telemetry green).
+CAPTURE_FAILED=0
 capture() {
   local label="$1"; shift
+  local cmd="$1"
   printf '\n## %s\n\n```\n' "$label"
-  if command -v "$1" >/dev/null 2>&1; then
-    "$@" 2>&1 || printf '\n[command exited non-zero]\n'
-  else
-    printf '%s unavailable on PATH=%s\n' "$1" "$PATH"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    printf '%s unavailable on PATH=%s\n' "$cmd" "$PATH"
+    printf '```\n'
+    echo "ERROR: capture: '$cmd' not on PATH" >&2
+    CAPTURE_FAILED=1
+    return 0
   fi
+  local rc=0
+  "$@" 2>&1 || rc=$?
   printf '```\n'
+  if [ "$rc" -ne 0 ]; then
+    echo "ERROR: capture: '$cmd' exited $rc" >&2
+    CAPTURE_FAILED=1
+  fi
+  return 0
 }
 
 if ! {
@@ -63,6 +76,10 @@ if ! {
   exit 1
 fi
 [ -s "$REPORT_FILE" ] || { echo "ERROR: empty report $REPORT_FILE" >&2; exit 1; }
+if [ "$CAPTURE_FAILED" -ne 0 ]; then
+  echo "ERROR: one or more capture commands failed; see report $REPORT_FILE" >&2
+  exit 1
+fi
 
 # Idempotently append the inbox line. Dedupe on the wikilink target
 # rather than the full line so a `[x]` checkoff doesn't re-trigger the
