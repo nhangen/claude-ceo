@@ -18,8 +18,14 @@ Resolve `$VAULT` using this fallback chain (first match wins):
 If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vault is installed and use that path.
 
 Resolve `$WEEKLY_MERGES_DIR` (used by Step 10):
-1. If `$VAULT/CEO/AGENTS.md` defines `weekly_merges_dir:`, use that value.
+1. If `$VAULT/CEO/AGENTS.md` defines `weekly_merges_dir:`, use that value (resolved relative to `$VAULT`).
 2. Default: `$VAULT/CEO/weekly-merges/`.
+
+Example AGENTS.md override (when the producer skill writes elsewhere, e.g. under an org subfolder):
+
+```yaml
+weekly_merges_dir: Awesome Motive/weekly-merges/
+```
 
 ## Steps
 
@@ -52,7 +58,7 @@ Resolve `$WEEKLY_MERGES_DIR` (used by Step 10):
     **10a. Compute `<current-quarter>`** from today's UTC date as `YYYY-QN` (Q1=Jan–Mar, Q2=Apr–Jun, Q3=Jul–Sep, Q4=Oct–Dec). UTC is required so the value matches the `generated` timestamp in INDEX frontmatter. If current is Q1, the previous quarter is `(YYYY-1)-Q4`.
 
     **10b. INDEX frontmatter contract** (consumed fields; the producer is the external `am-weekly-merges` skill, no in-repo schema doc):
-    - `latest_week` (string, ISO week e.g. `2026-W20`, or `"none"`)
+    - `latest_week` (string, ISO week e.g. `2026-W20`, or the literal string `none` for an empty quarter)
     - `latest_count` (int)
     - `rolling_avg_4w` (float)
     - `rolling_avg_n` (int, 0–4)
@@ -102,3 +108,4 @@ Resolve `$WEEKLY_MERGES_DIR` (used by Step 10):
 - Max 10 bullet points in the brief
 - Do not execute any actions — this is read-only
 - If `gh` is unavailable, skip PR scan and note "GitHub CLI unavailable"
+- Step 10 requires `yq` (`brew install yq` on macOS; not preinstalled). If `yq` is unavailable, skip Step 10 and note "yq unavailable — merged-PR trend skipped" in the brief.
