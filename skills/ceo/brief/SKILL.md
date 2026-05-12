@@ -1,7 +1,7 @@
 ---
 name: ceo-brief
 description: Generate a morning briefing summarizing priorities, open PRs, pending approvals, and relevant questions. Triggers on "/ceo:brief", "morning brief", "daily brief", "what's on my plate".
-version: 0.1.0
+version: 0.2.0
 ---
 
 # CEO Brief
