@@ -698,6 +698,43 @@ STUB
   fi
 }
 
+test_runner_ollama_empty_output_records_failure() {
+  cat > "$CEO_DIR/playbooks/ollama-empty.md" << 'PB'
+---
+name: ollama-empty
+description: ollama exits 0 but emits nothing
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/ollama"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-empty >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "empty ollama output must increment FAIL_COUNT_FILE (alert threshold relies on this)"
+
+  local runs_log
+  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  if [[ "$runs_log" == *"ollama-empty completed"* ]]; then
+    printf '  FAIL [%s] empty ollama output must NOT log completed\n    runs_log: %q\n' \
+      "$CURRENT_TEST" "$runs_log"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 test_runner_ollama_works_under_stripped_path() {
   cat > "$CEO_DIR/playbooks/ollama-strip.md" << 'PB'
 ---

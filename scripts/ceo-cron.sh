@@ -402,6 +402,11 @@ if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
     _record_failure "ollama exited $OLLAMA_EXIT for $TRIGGER (model: $OLLAMA_MODEL)"
     exit "$OLLAMA_EXIT"
   fi
+  if [ -z "$(printf '%s' "$OLLAMA_OUT" | tr -d '[:space:]')" ]; then
+    _v "FAILED (empty output)"
+    _record_failure "ollama returned empty output for $TRIGGER (model: $OLLAMA_MODEL)"
+    exit 1
+  fi
   printf '\n## %s — %s (model: %s)\n\n%s\n' "$NOW" "$TRIGGER" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$LOG_FILE"
   _record_success
   exit 0
