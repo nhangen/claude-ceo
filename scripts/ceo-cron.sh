@@ -266,9 +266,9 @@ TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
 RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
 [ -z "$RUNNER" ] && RUNNER="claude"
 case "$RUNNER" in
-  claude|script) ;;
+  claude|script|ollama|ollama-think) ;;
   *)
-    _record_failure "Unknown runner '$RUNNER' for $TRIGGER (expected: claude|script)"
+    _record_failure "Unknown runner '$RUNNER' for $TRIGGER (expected: claude|script|ollama|ollama-think)"
     exit 1 ;;
 esac
 SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
@@ -326,6 +326,17 @@ else
   _v "WARNING: Unknown preflight '$PREFLIGHT' — running anyway"
 fi
 
+# --- Shared file-read helper (used by ollama branch and claude tier blocks below) ---
+MAX_FILE_SIZE=10000  # 10KB max per context file
+
+safe_read() {
+  local file="$1"
+  local max="$2"
+  if [ -f "$file" ]; then
+    head -c "$max" "$file"
+  fi
+}
+
 # --- Script-runner branch: exec named script, skip claude --print ---
 if [ "$RUNNER" = "script" ]; then
   if [ -z "$SCRIPT_PATH" ]; then
@@ -357,17 +368,52 @@ if [ "$RUNNER" = "script" ]; then
   exit 0
 fi
 
-# --- Read context files (with size limits for injection safety) ---
-MAX_FILE_SIZE=10000  # 10KB max per context file
-
-safe_read() {
-  local file="$1"
-  local max="$2"
-  if [ -f "$file" ]; then
-    head -c "$max" "$file"
+# --- Ollama-runner branch: route playbook body to a local ollama model ---
+# One-shot prompt-in / text-out. No multi-turn chat, no AGENTS.md / IDENTITY.md
+# / TRAINING.md context injection — playbook body is the entire prompt. Use
+# this for cron-batch playbooks (classifiers, digests, summarizers) where the
+# token saving justifies giving up the CEO context preamble.
+if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
+  if ! command -v ollama >/dev/null 2>&1; then
+    _record_failure "ollama binary not found on PATH (playbook: $TRIGGER)"
+    exit 1
   fi
-}
+  # Daemon presence ≠ binary presence (per command-v-presence-vs-success).
+  # Skip the probe under tests (stubbed ollama on PATH won't have a daemon).
+  if [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ] && ! command -v curl >/dev/null 2>&1; then
+    _v "WARNING: curl not available, skipping ollama daemon probe"
+  elif [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ]; then
+    if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+      _record_failure "ollama daemon not reachable at 127.0.0.1:11434 (playbook: $TRIGGER)"
+      exit 1
+    fi
+  fi
+  # Resolve model: explicit playbook tag wins. Scanner writes "" for missing
+  # model (ceo:493) and jq `// "sonnet"` only fires on null — so both "" and
+  # "sonnet" mean "no override, use runner default".
+  if [ -z "$MODEL" ] || [ "$MODEL" = "sonnet" ]; then
+    case "$RUNNER" in
+      ollama)       OLLAMA_MODEL="mistral-small3.2:24b" ;;
+      ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
+    esac
+  else
+    OLLAMA_MODEL="$MODEL"
+  fi
+  _v "Runner: $RUNNER — model: $OLLAMA_MODEL"
+  OLLAMA_PROMPT=$(safe_read "$PLAYBOOK_FILE" "$MAX_FILE_SIZE")
+  OLLAMA_EXIT=0
+  OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | ollama run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
+  if [ "$OLLAMA_EXIT" -ne 0 ]; then
+    _v "FAILED (exit: $OLLAMA_EXIT)"
+    _record_failure "ollama exited $OLLAMA_EXIT for $TRIGGER (model: $OLLAMA_MODEL)"
+    exit "$OLLAMA_EXIT"
+  fi
+  printf '\n## %s — %s (model: %s)\n\n%s\n' "$NOW" "$TRIGGER" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$LOG_FILE"
+  _record_success
+  exit 0
+fi
 
+# --- Read context files (with size limits for injection safety) ---
 AGENTS_CONTENT=$(safe_read "$CEO_DIR/AGENTS.md" "$MAX_FILE_SIZE")
 IDENTITY_CONTENT=$(safe_read "$CEO_DIR/IDENTITY.md" "$MAX_FILE_SIZE")
 TRAINING_CONTENT=$(safe_read "$CEO_DIR/TRAINING.md" "$MAX_FILE_SIZE")

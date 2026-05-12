@@ -42,6 +42,9 @@ setup() {
   export HOME="$TEST_HOME"
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
+  # Bypass the ollama daemon HTTP probe in tests (the stubbed ollama binary
+  # has no daemon backing it). Production runs leave this unset.
+  export CEO_OLLAMA_SKIP_PROBE=1
 
   mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports"
   : > "$CEO_DIR/AGENTS.md"
@@ -72,6 +75,20 @@ echo "ACTION: 1 | read | noop | n/a"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/claude"
 
+  # Stub ollama on PATH for runner:ollama / runner:ollama-think tests. Captures
+  # the model argument so tests can assert which model was dispatched.
+  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "run" ]; then
+  echo "$2" > "$HOME/ollama-invoked-model.txt"
+  cat > "$HOME/ollama-invoked-prompt.txt"
+  echo "ollama-stub-response"
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/ollama"
+
   # macOS lacks `timeout` from GNU coreutils; the dispatcher uses
   # `timeout N claude ...`. Stub it as a transparent passthrough.
   if ! command -v timeout >/dev/null 2>&1; then
@@ -90,7 +107,7 @@ teardown() {
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR
+  unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE
 }
 
 test_runner_script_execs_named_script_and_skips_claude() {
@@ -438,6 +455,185 @@ PB
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips_log" "Unknown runner 'scrpt'" "skips log must record unknown-runner rejection"
+}
+
+test_runner_ollama_accepted_at_scan() {
+  cat > "$CEO_DIR/playbooks/ollama-ok.md" << 'PB'
+---
+name: ollama-ok
+description: Playbook with runner:ollama
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+PB
+
+  local scan_out
+  scan_out=$(bash "$CEO_CLI" playbook scan 2>&1 || true)
+  if [[ "$scan_out" == *"unknown runner: 'ollama'"* ]]; then
+    printf '  FAIL [%s] runner:ollama must be accepted at scan\n    scan_out: %q\n' \
+      "$CURRENT_TEST" "$scan_out"
+    FAILS=$((FAILS + 1))
+  fi
+
+  local entry
+  entry=$(jq -r '.playbooks[] | select(.name=="ollama-ok") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  assert_eq "$entry" "ollama" "ollama playbook must be registered with runner:ollama"
+}
+
+test_runner_ollama_invokes_ollama_and_skips_claude() {
+  cat > "$CEO_DIR/playbooks/ollama-dispatch.md" << 'PB'
+---
+name: ollama-dispatch
+description: Routes to ollama
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" ollama-dispatch >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "dispatcher must exit 0 on ollama success"
+
+  assert_file_exists "$HOME/ollama-invoked-model.txt" "ollama must have been invoked"
+  if [ -f "$HOME/claude-invoked.txt" ]; then
+    printf '  FAIL [%s] claude was invoked but the ollama-runner branch must skip it\n' \
+      "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+
+  local model
+  model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
+  assert_eq "$model" "mistral-small3.2:24b" "runner:ollama default must be mistral-small3.2:24b"
+}
+
+test_runner_ollama_think_uses_gpt_oss_default() {
+  cat > "$CEO_DIR/playbooks/ollama-think-dispatch.md" << 'PB'
+---
+name: ollama-think-dispatch
+description: Routes to ollama-think
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama-think
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" ollama-think-dispatch >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "dispatcher must exit 0 on ollama-think success"
+
+  local model
+  model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
+  assert_eq "$model" "gpt-oss:20b" "runner:ollama-think default must be gpt-oss:20b"
+}
+
+test_runner_ollama_explicit_model_overrides_default() {
+  cat > "$CEO_DIR/playbooks/ollama-explicit.md" << 'PB'
+---
+name: ollama-explicit
+description: Explicit model override
+trigger: cron
+schedule: "0 9 * * *"
+model: qwen3:14b
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" ollama-explicit >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "dispatcher must exit 0 with explicit ollama model"
+
+  local model
+  model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
+  assert_eq "$model" "qwen3:14b" "explicit model: tag must override runner default"
+}
+
+test_runner_ollama_failure_increments_fail_count() {
+  cat > "$CEO_DIR/playbooks/ollama-fail.md" << 'PB'
+---
+name: ollama-fail
+description: ollama exits non-zero
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  # Override the default ollama stub for this test to simulate failure.
+  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+#!/bin/bash
+echo "ollama-error-sentinel" >&2
+exit 9
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/ollama"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-fail >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after ollama failure"
+
+  # Pin: failure must come from the ollama branch specifically. cron-runs.log must
+  # NOT contain a completion line for this playbook — that's what proves the
+  # ollama branch (not an earlier preflight/schema/missing-file path) failed.
+  local runs_log
+  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  if [[ "$runs_log" == *"ollama-fail completed"* ]]; then
+    printf '  FAIL [%s] ollama failure must NOT log completed\n    runs_log: %q\n' \
+      "$CURRENT_TEST" "$runs_log"
+    FAILS=$((FAILS + 1))
+  fi
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "ollama-error-sentinel" "ollama stderr must be appended to cron-stderr.log"
+}
+
+test_runner_ollama_works_under_stripped_path() {
+  cat > "$CEO_DIR/playbooks/ollama-strip.md" << 'PB'
+---
+name: ollama-strip
+description: ollama dispatch under stripped PATH (proves ceo_augment_path reaches branch)
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" ollama-strip >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ollama branch must resolve ollama via ceo_augment_path under stripped PATH"
+  assert_file_exists "$HOME/ollama-invoked-model.txt" "ollama stub must fire under stripped PATH"
 }
 
 test_ceo_augment_path_prepends_user_tool_prefixes() {
