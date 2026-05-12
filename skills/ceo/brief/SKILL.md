@@ -43,7 +43,12 @@ If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vaul
 
 9. **Read today's daily note** — if `$VAULT/Daily/YYYY-MM-DD.md` exists, read Top 3 and Tasks sections.
 
-10. **Write brief** — create or append to `$VAULT/CEO/log/YYYY-MM-DD.md`:
+10. **Read merged-PR trend** — read `$VAULT/Awesome Motive/weekly-merges/INDEX-<current-quarter>.md` (e.g. `INDEX-2026-Q2.md`). Also read the previous quarter's INDEX if the current quarter's `rolling_avg_n` is less than 4. Pull frontmatter fields `latest_week`, `latest_count`, `rolling_avg_4w`, `rolling_avg_n`. Surface one line in the brief:
+    - If `rolling_avg_n == 4`: `Merged PRs (last week, {latest_week}): {latest_count} — 4wk avg {rolling_avg_4w}`
+    - If `rolling_avg_n < 4`: `Merged PRs (last week, {latest_week}): {latest_count} — {rolling_avg_n}wk avg {rolling_avg_4w}`
+    - If `latest_week == "none"` and no previous quarter INDEX: skip the line.
+
+11. **Write brief** — create or append to `$VAULT/CEO/log/YYYY-MM-DD.md`:
 
     ```markdown
     ## HH:MM — morning-brief
@@ -62,7 +67,7 @@ If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vaul
     - **Questions:** [1-2 from Pending.md if relevant]
     ```
 
-11. **Present brief to user** — print the brief to terminal. Do not write to the daily note directly.
+12. **Present brief to user** — print the brief to terminal. Do not write to the daily note directly.
 
 ## Constraints
 
