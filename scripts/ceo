@@ -525,9 +525,9 @@ cmd_playbook_scan() {
     esac
 
     case "$runner" in
-      ""|claude|script) ;;
+      ""|claude|script|ollama|ollama-think) ;;
       *)
-        echo "  SKIP  $basename (unknown runner: '$runner', expected: claude|script)"
+        echo "  SKIP  $basename (unknown runner: '$runner', expected: claude|script|ollama|ollama-think)"
         skipped=$((skipped + 1))
         continue ;;
     esac
