@@ -17,6 +17,16 @@ Resolve `$VAULT` using this fallback chain (first match wins):
 
 If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vault is installed and use that path.
 
+Resolve `$WEEKLY_MERGES_DIR` (used by Step 10):
+1. If `$VAULT/CEO/AGENTS.md` defines `weekly_merges_dir:`, use that value (resolved relative to `$VAULT`).
+2. Default: `$VAULT/CEO/weekly-merges/`.
+
+Example AGENTS.md override (when the producer skill writes elsewhere, e.g. under an org subfolder):
+
+```yaml
+weekly_merges_dir: Awesome Motive/weekly-merges/
+```
+
 ## Steps
 
 1. **Read global agent rules** — read `$VAULT/CEO/AGENTS.md`.
@@ -43,7 +53,36 @@ If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vaul
 
 9. **Read today's daily note** — if `$VAULT/Daily/YYYY-MM-DD.md` exists, read Top 3 and Tasks sections.
 
-10. **Write brief** — create or append to `$VAULT/CEO/log/YYYY-MM-DD.md`:
+10. **Read merged-PR trend** — surface a single line summarizing weekly merged-PR activity from the `am-weekly-merges` (external producer skill) INDEX files.
+
+    **10a. Compute `<current-quarter>`** from today's UTC date as `YYYY-QN` (Q1=Jan–Mar, Q2=Apr–Jun, Q3=Jul–Sep, Q4=Oct–Dec). UTC is required so the value matches the `generated` timestamp in INDEX frontmatter. If current is Q1, the previous quarter is `(YYYY-1)-Q4`.
+
+    **10b. INDEX frontmatter contract** (consumed fields; the producer is the external `am-weekly-merges` skill, no in-repo schema doc):
+    - `latest_week` (string, ISO week e.g. `2026-W20`, or the literal string `none` for an empty quarter)
+    - `latest_count` (int)
+    - `rolling_avg_4w` (float)
+    - `rolling_avg_n` (int, 0–4)
+
+    **10c. Read INDEX files.** Let `CURRENT=$WEEKLY_MERGES_DIR/INDEX-<current-quarter>.md` and `PREVIOUS=$WEEKLY_MERGES_DIR/INDEX-<previous-quarter>.md`. Extract fields with `yq` (do not eyeball the YAML — extraction must be deterministic):
+    ```bash
+    yq -r '.latest_week'    "$CURRENT"
+    yq -r '.latest_count'   "$CURRENT"
+    yq -r '.rolling_avg_4w' "$CURRENT"
+    yq -r '.rolling_avg_n'  "$CURRENT"
+    ```
+    Read `PREVIOUS` only when `CURRENT`'s `rolling_avg_n < 4`.
+
+    **10d. Merge rule.** `latest_week` and `latest_count` always come from `CURRENT`. When `CURRENT.rolling_avg_n < 4` and `PREVIOUS` exists, replace `rolling_avg_4w` and `rolling_avg_n` with the values from `PREVIOUS` (these reflect a longer trailing window).
+
+    **10e. Skip / diagnostic guards** (mirror the `if file exists` shape used in steps 8–9):
+    - If neither `CURRENT` nor `PREVIOUS` exists: skip the line entirely.
+    - If `CURRENT` exists with `latest_week == "none"` AND `PREVIOUS` is absent or also `latest_week == "none"`: skip the line.
+    - If `yq` fails to parse either file's frontmatter: emit a muted diagnostic line instead of silent-skip — `Merged PRs: (index frontmatter unreadable for <file>)`. A stalled producer cron must be distinguishable from a genuine no-merges week.
+
+    **10f. Render** the merged line (single template, no `==4` special case):
+    `Merged PRs (last week, {latest_week}): {latest_count} — {rolling_avg_n}wk avg {rolling_avg_4w}`
+
+11. **Write brief** — create or append to `$VAULT/CEO/log/YYYY-MM-DD.md`:
 
     ```markdown
     ## HH:MM — morning-brief
@@ -62,10 +101,11 @@ If `$VAULT/CEO/AGENTS.md` does not exist, ask the user where their Obsidian vaul
     - **Questions:** [1-2 from Pending.md if relevant]
     ```
 
-11. **Present brief to user** — print the brief to terminal. Do not write to the daily note directly.
+12. **Present brief to user** — print the brief to terminal. Do not write to the daily note directly.
 
 ## Constraints
 
 - Max 10 bullet points in the brief
 - Do not execute any actions — this is read-only
 - If `gh` is unavailable, skip PR scan and note "GitHub CLI unavailable"
+- Step 10 requires `yq` (`brew install yq` on macOS; not preinstalled). If `yq` is unavailable, skip Step 10 and note "yq unavailable — merged-PR trend skipped" in the brief.
