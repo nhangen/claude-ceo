@@ -258,7 +258,7 @@ if [ -z "$ENTRY" ]; then
 fi
 
 PLAYBOOK_REL=$(echo "$ENTRY" | jq -r '.file')
-MODEL=$(echo "$ENTRY" | jq -r '.model // "sonnet"')
+MODEL=$(echo "$ENTRY" | jq -r '.model // ""')
 PREFLIGHT=$(echo "$ENTRY" | jq -r '.preflight // "none"')
 STATUS=$(echo "$ENTRY" | jq -r '.status // "active"')
 TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
@@ -388,10 +388,7 @@ if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
       exit 1
     fi
   fi
-  # Resolve model: explicit playbook tag wins. Scanner writes "" for missing
-  # model (ceo:493) and jq `// "sonnet"` only fires on null — so both "" and
-  # "sonnet" mean "no override, use runner default".
-  if [ -z "$MODEL" ] || [ "$MODEL" = "sonnet" ]; then
+  if [ -z "$MODEL" ]; then
     case "$RUNNER" in
       ollama)       OLLAMA_MODEL="mistral-small3.2:24b" ;;
       ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
@@ -412,6 +409,8 @@ if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
   _record_success
   exit 0
 fi
+
+MODEL="${MODEL:-sonnet}"
 
 # --- Read context files (with size limits for injection safety) ---
 AGENTS_CONTENT=$(safe_read "$CEO_DIR/AGENTS.md" "$MAX_FILE_SIZE")

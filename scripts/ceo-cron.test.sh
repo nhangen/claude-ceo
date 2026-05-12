@@ -613,6 +613,57 @@ STUB
   assert_contains "$stderr_log" "ollama-error-sentinel" "ollama stderr must be appended to cron-stderr.log"
 }
 
+test_runner_ollama_think_accepted_at_scan() {
+  cat > "$CEO_DIR/playbooks/ollama-think-ok.md" << 'PB'
+---
+name: ollama-think-ok
+description: Playbook with runner:ollama-think
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama-think
+---
+PB
+
+  local scan_out
+  scan_out=$(bash "$CEO_CLI" playbook scan 2>&1 || true)
+  if [[ "$scan_out" == *"unknown runner: 'ollama-think'"* ]]; then
+    printf '  FAIL [%s] runner:ollama-think must be accepted at scan\n    scan_out: %q\n' \
+      "$CURRENT_TEST" "$scan_out"
+    FAILS=$((FAILS + 1))
+  fi
+
+  local entry
+  entry=$(jq -r '.playbooks[] | select(.name=="ollama-think-ok") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  assert_eq "$entry" "ollama-think" "ollama-think playbook must be registered with runner:ollama-think"
+}
+
+test_runner_ollama_model_sonnet_passes_literal() {
+  cat > "$CEO_DIR/playbooks/ollama-sonnet.md" << 'PB'
+---
+name: ollama-sonnet
+description: Misconfigured — model:sonnet on ollama runner
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-sonnet >/dev/null 2>&1 || true
+
+  local model
+  model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
+  assert_eq "$model" "sonnet" "explicit model:sonnet on runner:ollama must pass literally (not silently coerce to mistral default)"
+}
+
 test_runner_ollama_works_under_stripped_path() {
   cat > "$CEO_DIR/playbooks/ollama-strip.md" << 'PB'
 ---
