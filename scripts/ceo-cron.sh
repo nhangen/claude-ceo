@@ -369,21 +369,18 @@ if [ "$RUNNER" = "script" ]; then
 fi
 
 # --- Ollama-runner branch: route playbook body to a local ollama model ---
-# One-shot prompt-in / text-out. No multi-turn chat, no AGENTS.md / IDENTITY.md
-# / TRAINING.md context injection — playbook body is the entire prompt. Use
-# this for cron-batch playbooks (classifiers, digests, summarizers) where the
-# token saving justifies giving up the CEO context preamble.
+# One-shot prompt-in / text-out; no AGENTS.md / IDENTITY.md / TRAINING.md preamble.
 if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
   if ! command -v ollama >/dev/null 2>&1; then
     _record_failure "ollama binary not found on PATH (playbook: $TRIGGER)"
     exit 1
   fi
-  # Daemon presence ≠ binary presence (per command-v-presence-vs-success).
-  # Skip the probe under tests (stubbed ollama on PATH won't have a daemon).
-  if [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ] && ! command -v curl >/dev/null 2>&1; then
-    _v "WARNING: curl not available, skipping ollama daemon probe"
-  elif [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ]; then
-    if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+  if [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ]; then
+    if ! command -v curl >/dev/null 2>&1; then
+      _record_failure "curl not available — cannot probe ollama daemon (playbook: $TRIGGER)"
+      exit 1
+    fi
+    if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>>"$LOG_DIR/cron-stderr.log"; then
       _record_failure "ollama daemon not reachable at 127.0.0.1:11434 (playbook: $TRIGGER)"
       exit 1
     fi

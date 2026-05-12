@@ -664,6 +664,40 @@ PB
   assert_eq "$model" "sonnet" "explicit model:sonnet on runner:ollama must pass literally (not silently coerce to mistral default)"
 }
 
+test_runner_ollama_daemon_unreachable_records_failure() {
+  cat > "$CEO_DIR/playbooks/ollama-noprobe.md" << 'PB'
+---
+name: ollama-noprobe
+description: Daemon probe enabled, curl fails
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+exit 7
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  env -u CEO_OLLAMA_SKIP_PROBE CEO_VERBOSE=1 bash "$CRON" ollama-noprobe >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "unreachable ollama daemon must increment FAIL_COUNT_FILE"
+
+  if [ -f "$HOME/ollama-invoked-model.txt" ]; then
+    printf '  FAIL [%s] ollama must NOT be invoked when daemon probe fails\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 test_runner_ollama_works_under_stripped_path() {
   cat > "$CEO_DIR/playbooks/ollama-strip.md" << 'PB'
 ---
