@@ -53,7 +53,7 @@ weekly_merges_dir: Awesome Motive/weekly-merges/
 
 9. **Read today's daily note** — if `$VAULT/Daily/YYYY-MM-DD.md` exists, read Top 3 and Tasks sections.
 
-10. **Read merged-PR trend** — surface a single line summarizing weekly merged-PR activity from the `am-weekly-merges` (external producer skill) INDEX files.
+10. **Read merged-PR trend** — surface a single line summarizing the user's own weekly merged-PR activity from the `am-weekly-merges` (external producer skill) INDEX files. The producer counts **PRs authored by its configured `gh` user that landed during the window** — not PRs merged on others' behalf, not tickets, not reviews. Render the line as first-person ("My merged PRs ...") to reflect that scope.
 
     **10a. Compute `<current-quarter>`** from today's UTC date as `YYYY-QN` (Q1=Jan–Mar, Q2=Apr–Jun, Q3=Jul–Sep, Q4=Oct–Dec). UTC is required so the value matches the `generated` timestamp in INDEX frontmatter. If current is Q1, the previous quarter is `(YYYY-1)-Q4`.
 
@@ -77,10 +77,10 @@ weekly_merges_dir: Awesome Motive/weekly-merges/
     **10e. Skip / diagnostic guards** (mirror the `if file exists` shape used in steps 8–9):
     - If neither `CURRENT` nor `PREVIOUS` exists: skip the line entirely.
     - If `CURRENT` exists with `latest_week == "none"` AND `PREVIOUS` is absent or also `latest_week == "none"`: skip the line.
-    - If `yq` fails to parse either file's frontmatter: emit a muted diagnostic line instead of silent-skip — `Merged PRs: (index frontmatter unreadable for <file>)`. A stalled producer cron must be distinguishable from a genuine no-merges week.
+    - If `yq` fails to parse either file's frontmatter: emit a muted diagnostic line instead of silent-skip — `My merged PRs: (index frontmatter unreadable for <file>)`. A stalled producer cron must be distinguishable from a genuine no-merges week.
 
     **10f. Render** the merged line (single template, no `==4` special case):
-    `Merged PRs (last week, {latest_week}): {latest_count} — {rolling_avg_n}wk avg {rolling_avg_4w}`
+    `My merged PRs (last week, {latest_week}): {latest_count} — {rolling_avg_n}wk avg {rolling_avg_4w}`
 
 11. **Write brief** — create or append to `$VAULT/CEO/log/YYYY-MM-DD.md`:
 
