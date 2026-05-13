@@ -128,6 +128,48 @@ ceo_augment_path() {
 }
 
 # ---------------------------------------------------------------------------
+# ceo_resolve_plugin_cli — resolve a Claude Code plugin-provided CLI entrypoint
+# from the local plugin cache, returning the runtime command and absolute entry
+# path on stdout (one per line).
+#
+# Plugins land at ~/.claude/plugins/cache/<owner>/<plugin>/<version>/ and do
+# not install anything on PATH. Consumers that need to invoke a plugin-provided
+# CLI from cron/scripts should resolve via the cache rather than rely on stale
+# PATH symlinks from prior standalone installs. See nhangen/claude-ceo#37.
+#
+# Usage (bash 3.2 compatible — macOS default lacks mapfile/readarray):
+#   if out=$(ceo_resolve_plugin_cli "nhangen-tools/token-scope" "src/cli.ts"); then
+#     runtime=$(printf '%s\n' "$out" | sed -n '1p')
+#     entry=$(printf '%s\n' "$out" | sed -n '2p')
+#     "$runtime" "$entry" --since 1d
+#   fi
+#
+# Args:
+#   $1  owner/plugin slug (e.g. nhangen-tools/token-scope)
+#   $2  entry path relative to the version directory (e.g. src/cli.ts)
+#   $3  runtime to prepend (optional, default: bun)
+#
+# Returns:
+#   0  prints "<runtime>\n<abs-entry-path>" on stdout
+#   1  plugin not installed; entry missing; HOME unset
+# ---------------------------------------------------------------------------
+ceo_resolve_plugin_cli() {
+  : "${HOME:?HOME must be set before ceo_resolve_plugin_cli}"
+  local slug="${1:?slug required (owner/plugin)}"
+  local entry="${2:?entry path required (relative to version dir)}"
+  local runtime="${3:-bun}"
+  local cache_root="$HOME/.claude/plugins/cache/$slug"
+  local latest
+  latest=$(ls -1d "$cache_root"/*/ 2>/dev/null | sort -V | tail -1) || true
+  if [ -z "$latest" ] || [ ! -d "$latest" ]; then
+    return 1
+  fi
+  local abs="${latest%/}/$entry"
+  [ -f "$abs" ] || return 1
+  printf '%s\n%s\n' "$runtime" "$abs"
+}
+
+# ---------------------------------------------------------------------------
 # ceo_resolve_real_home — print the running user's canonical home from passwd,
 # ignoring $HOME. Use when a script needs access to real-user state (rtk DB,
 # ccusage data, keyring tokens) and may be invoked from contexts that scrubbed
