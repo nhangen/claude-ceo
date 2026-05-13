@@ -44,9 +44,9 @@ INBOX_FILE="$INBOX_DIR/$HOST.md"
 TODAY=$(date +%Y-%m-%d)
 SINCE=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d)
 
-NOTE_DIR="$VAULT/Projects/Development/nhangen/mcp-value-tracker"
+NOTE_DIR="$VAULT/Projects/Development/nhangen/claude-ceo/value-tracker"
 NOTE_PATH="$NOTE_DIR/$TODAY.md"
-WIKILINK="[[Projects/Development/nhangen/mcp-value-tracker/$TODAY]]"
+WIKILINK="[[Projects/Development/nhangen/claude-ceo/value-tracker/$TODAY]]"
 INBOX_LINE="- [ ] Review daily value-tracker report $WIKILINK"
 
 mkdir -p "$INBOX_DIR" "$NOTE_DIR"

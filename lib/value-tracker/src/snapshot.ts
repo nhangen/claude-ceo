@@ -4,7 +4,7 @@ import { homedir } from "os";
 import type { RunSnapshot } from "@/types";
 
 export function defaultSnapshotDir(): string {
-  return join(homedir(), ".local", "share", "mcp-value-tracker", "runs");
+  return join(homedir(), ".local", "share", "claude-ceo", "value-tracker", "runs");
 }
 
 export function writeSnapshot(snap: RunSnapshot, dir: string = defaultSnapshotDir()): string {

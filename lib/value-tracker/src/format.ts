@@ -48,7 +48,7 @@ function emptyResultBanner(): string[] {
 
 export function formatTerminal(s: RunSnapshot): string {
   const lines: string[] = [];
-  lines.push(`mcp-value-tracker — ${s.serversAnalysed.join(", ")}`);
+  lines.push(`value-tracker — ${s.serversAnalysed.join(", ")}`);
   lines.push(`window from ${new Date(s.windowSinceMs).toISOString().slice(0, 10)} | sessions: ${s.sessionCount} | calls: ${s.callCount}`);
   lines.push("");
   if (s.callCount === 0) {
@@ -73,10 +73,10 @@ export function formatObsidian(s: RunSnapshot): string {
   const lines: string[] = [];
   lines.push("---");
   lines.push(`date: ${date}`);
-  lines.push(`tags: [mcp-value-tracker, ${s.serversAnalysed.join(", ")}]`);
+  lines.push(`tags: [value-tracker, ${s.serversAnalysed.join(", ")}]`);
   lines.push("---");
   lines.push("");
-  lines.push(`# mcp-value-tracker — ${date}`);
+  lines.push(`# value-tracker — ${date}`);
   lines.push("");
   lines.push(`Window: from ${new Date(s.windowSinceMs).toISOString().slice(0, 10)}`);
   lines.push(`Sessions analysed: ${s.sessionCount}`);

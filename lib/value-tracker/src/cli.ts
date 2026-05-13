@@ -75,9 +75,9 @@ function parseArgs(argv: string[]): Args {
 
 function usage(): string {
   return [
-    "mcp-value-tracker — analyse MCP tool-call value from Claude Code sessions",
+    "value-tracker — analyse MCP tool-call value from Claude Code sessions",
     "",
-    "Usage: mcp-value-tracker [options]",
+    "Usage: bun lib/value-tracker/src/cli.ts [options]",
     "  --since <YYYY-MM-DD>      window start (default: 7 days ago)",
     "  --project <fragment>      filter by cwd substring",
     "  --session <id>            analyse one session by id",
@@ -151,7 +151,7 @@ async function main() {
   }
 
   if (args.obsidianVault) {
-    const noteDir = join(args.obsidianVault, "Projects", "Development", "nhangen", "mcp-value-tracker");
+    const noteDir = join(args.obsidianVault, "Projects", "Development", "nhangen", "claude-ceo", "value-tracker");
     mkdirSync(noteDir, { recursive: true });
     const notePath = join(noteDir, `${snap.generatedAt.slice(0, 10)}.md`);
     writeFileSync(notePath, formatObsidian(snap));
