@@ -29,7 +29,7 @@ Written May 11 2026 by a Claude Code session on ML-1 as a follow-up to a 1.126 T
 | `CEO/log/disk-monitor/YYYY-MM.md` | append | Every run. One line per check. Forensic history. |
 | `CEO/inbox/<host>.md` | append `- [ ]` line | On `clear → firing` transition. Idempotent — does not re-append the same task line. Per-host file (`<host>` = `hostname -s`, lowercase). |
 
-The sustained-firing re-poke appends a fresh `- [ ]` line only when the prior task has been checked off (`- [x]`) but the alert continues to fire past 24 hours — `grep -qF` matches the literal unchecked form, so a still-unchecked line is never duplicated.
+Dedupe is gated by an HTML-comment marker (`<!-- disk-monitor:<host> -->`) embedded in every task line. The marker survives user reformats (translating the message, editing wording) so the same alert never produces two active task lines. The sustained-firing re-poke appends a fresh `- [ ]` only when no unchecked line carries the marker — i.e., the prior task has been checked off — and the alert continues to fire past 24 hours.
 
 When state transitions `firing → clear`, the playbook flips the matching `- [ ]` task in `CEO/inbox/<host>.md` to `- [done]` and appends a one-line resolution note. The rewrite is exact-string match (no regex), so hosts with regex metacharacters in their names rewrite correctly.
 

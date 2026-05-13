@@ -252,6 +252,24 @@ test_two_hosts_write_disjoint_state_files() {
   assert_eq "$beta_status" "clear" "beta must be clear (no overwrite from alpha)"
 }
 
+test_user_reformat_does_not_duplicate_task() {
+  # User reformats the task line text but leaves the HTML-comment marker.
+  # Steady-state firing must NOT append a second active task.
+  DUMP_GB_STUB="20" run_monitor
+  local marker="<!-- disk-monitor:testhost -->"
+  # Reformat the line: keep marker, change everything else.
+  sed -i.bak "s|^- \[ \] Clean wsl-crashes.*|- [ ] custom translated message $marker|" "$CEO_DIR/inbox/testhost.md"
+  rm -f "$CEO_DIR/inbox/testhost.md.bak"
+  DUMP_GB_STUB="20" run_monitor
+  local count
+  count=$(grep -c -F -- "$marker" "$CEO_DIR/inbox/testhost.md")
+  assert_eq "$count" "1" "reformatted line with marker must not be duplicated"
+  if grep -qF -- "Clean wsl-crashes on testhost — see" "$CEO_DIR/inbox/testhost.md"; then
+    printf '  FAIL [%s] reformat was overwritten — original wording reappeared\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 test_inbox_rewrite_handles_host_with_regex_chars() {
   # HOST is interpolated into inbox-rewrite logic — must not break on regex
   # metacharacters or shell special chars.

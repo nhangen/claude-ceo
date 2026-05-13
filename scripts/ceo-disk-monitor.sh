@@ -153,10 +153,20 @@ printf '%s status=%s dump=%sG free=%sG reasons="%s"\n' \
 # Inbox escalation. Unknown prior or current status, or any measurement
 # failure, suppresses all inbox mutation — we never escalate or clear on
 # uncertain state.
-TASK_LINE="- [ ] Clean wsl-crashes on $HOST — see [[CEO/alerts/disk-$HOST]]"
-DONE_NOTE="- [done] disk monitor cleared $(date +%Y-%m-%d) — wsl-crashes ${DUMP_GB}G, C: ${C_FREE_GB}G free"
+#
+# Dedupe and rewrite key off TASK_MARKER, an HTML comment embedded in the
+# task line. The marker survives user reformats (translating the message,
+# editing wording, adding context) so the same alert never produces two
+# active task lines.
+TASK_MARKER="<!-- disk-monitor:$HOST -->"
+TASK_LINE="- [ ] Clean wsl-crashes on $HOST — see [[CEO/alerts/disk-$HOST]] $TASK_MARKER"
+DONE_NOTE="- [done] disk monitor cleared $(date +%Y-%m-%d) — wsl-crashes ${DUMP_GB}G, C: ${C_FREE_GB}G free $TASK_MARKER"
 
 touch "$INBOX_FILE"
+
+active_task_present() {
+  awk -v m="$TASK_MARKER" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$INBOX_FILE"
+}
 
 if [ "$MEASUREMENT_FAILED" -eq 0 ] && [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
   SUSTAINED=0
@@ -171,25 +181,21 @@ if [ "$MEASUREMENT_FAILED" -eq 0 ] && [ "$PRIOR_STATUS" != "unknown" ] && [ "$CU
   fi
 
   if [ "$PRIOR_STATUS" = "clear" ] && [ "$CURRENT_STATUS" = "firing" ]; then
-    grep -qF -- "$TASK_LINE" "$INBOX_FILE" || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+    active_task_present || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
   elif [ "$SUSTAINED" -eq 1 ]; then
-    # Re-poke only fires after the user has checked off the prior task line
-    # — `grep -qF` matches only the literal "- [ ]" form, not "- [x]".
-    grep -qF -- "$TASK_LINE" "$INBOX_FILE" || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+    # Re-poke fires only if the prior unchecked task has been checked off
+    # — `active_task_present` is false once the `[ ]` becomes `[x]` or
+    # `[done]`, allowing the append.
+    active_task_present || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
   elif [ "$PRIOR_STATUS" = "firing" ] && [ "$CURRENT_STATUS" = "clear" ]; then
-    if grep -qF -- "$TASK_LINE" "$INBOX_FILE"; then
-      tmpfile=$(mktemp) || { echo "ERROR: mktemp failed for inbox rewrite" >&2; exit 1; }
+    if active_task_present; then
+      tmpfile=$(mktemp) || { echo "ERROR: ceo-disk-monitor: mktemp failed for inbox rewrite" >&2; exit 1; }
       trap 'rm -f "$tmpfile"' EXIT
-      _done_replacement="- [done] Cleaned wsl-crashes on $HOST $(date +%Y-%m-%d)"
-      while IFS= read -r line || [ -n "$line" ]; do
-        if [ "$line" = "$TASK_LINE" ]; then
-          printf '%s\n' "$_done_replacement"
-        else
-          printf '%s\n' "$line"
-        fi
-      done < "$INBOX_FILE" > "$tmpfile"
+      _done_replacement="- [done] Cleaned wsl-crashes on $HOST $(date +%Y-%m-%d) $TASK_MARKER"
+      awk -v m="$TASK_MARKER" -v r="$_done_replacement" \
+        '/^- \[ \]/ && index($0, m) { print r; next } { print }' "$INBOX_FILE" > "$tmpfile"
       if ! mv "$tmpfile" "$INBOX_FILE"; then
-        echo "ERROR: failed to rewrite $INBOX_FILE" >&2
+        echo "ERROR: ceo-disk-monitor: failed to rewrite $INBOX_FILE" >&2
         exit 1
       fi
       trap - EXIT
