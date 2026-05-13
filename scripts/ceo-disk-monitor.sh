@@ -8,7 +8,7 @@
 # Replaces the prior /home/nhang/disk-monitor.sh which appended to
 # CEO/inbox/disk-alert.md unconditionally every hour.
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=ceo-config.sh
@@ -32,53 +32,91 @@ INBOX_FILE="$INBOX_DIR/$HOST.md"
 
 mkdir -p "$ALERTS_DIR" "$LOG_DIR" "$INBOX_DIR"
 
-# Thresholds
-WSL_CRASHES_PATH="/mnt/c/Users/nhang/AppData/Local/Temp/wsl-crashes"
+# Paths are overridable so the test harness can drive without a real /mnt/c.
+WSL_CRASHES_PATH="${CEO_DISK_WSL_CRASHES_PATH:-/mnt/c/Users/nhang/AppData/Local/Temp/wsl-crashes}"
+C_MOUNT="${CEO_DISK_C_MOUNT:-/mnt/c}"
 DUMP_THRESHOLD_GB=5
 FREE_THRESHOLD_GB=50
 
 NOW=$(date +%Y-%m-%dT%H:%M:%S%z)
-TODAY=$(date +%Y-%m-%d)
 
-# --- Measure current state ---
-# Use safe defaults so a read error doesn't false-clear an alert.
-DUMP_GB=0
+# Read prior state from state file frontmatter.
+# Empty status = first run (no state file) = "clear".
+# Unknown status = corrupted state file = log + refuse to mutate inbox.
+PRIOR_STATUS=""
+PRIOR_SINCE=""
+if [ -f "$STATE_FILE" ]; then
+  PRIOR_STATUS=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$STATE_FILE" | tr -d '[:space:]')
+  PRIOR_SINCE=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$STATE_FILE" | tr -d '[:space:]')
+fi
+case "$PRIOR_STATUS" in
+  clear|firing) ;;
+  '') PRIOR_STATUS="clear" ;;
+  *)
+    printf 'WARN: ceo-disk-monitor: unknown prior status %q in %s; refusing inbox mutation\n' \
+      "$PRIOR_STATUS" "$STATE_FILE" >&2
+    PRIOR_STATUS="unknown"
+    ;;
+esac
+
+# Measure. Any unreadable path or non-zero exit from du/df is
+# MEASUREMENT_FAILED — we must NOT silently downgrade to clear.
+MEASUREMENT_FAILED=0
+DUMP_GB="?"
+C_FREE_GB="?"
+
 if [ -d "$WSL_CRASHES_PATH" ]; then
-  DUMP_GB=$(du -sBG "$WSL_CRASHES_PATH" 2>/dev/null | awk '{sub(/G$/, "", $1); print int($1)}') || DUMP_GB=0
+  _du_out=$(du -sBG "$WSL_CRASHES_PATH" 2>/dev/null) && _du_rc=0 || _du_rc=$?
+  if [ "$_du_rc" -eq 0 ] && [ -n "$_du_out" ]; then
+    DUMP_GB=$(printf '%s\n' "$_du_out" | awk '{sub(/G$/, "", $1); print int($1); exit}')
+    [ -z "$DUMP_GB" ] && { MEASUREMENT_FAILED=1; DUMP_GB="?"; }
+  else
+    MEASUREMENT_FAILED=1
+  fi
+else
+  MEASUREMENT_FAILED=1
 fi
 
-C_FREE_GB=999
-if [ -d "/mnt/c" ]; then
-  C_FREE_GB=$(df -BG /mnt/c 2>/dev/null | awk 'NR==2 {sub(/G$/, "", $4); print int($4)}') || C_FREE_GB=999
+if [ -d "$C_MOUNT" ]; then
+  _df_out=$(df -BG "$C_MOUNT" 2>/dev/null) && _df_rc=0 || _df_rc=$?
+  if [ "$_df_rc" -eq 0 ] && [ -n "$_df_out" ]; then
+    C_FREE_GB=$(printf '%s\n' "$_df_out" | awk 'NR==2 {sub(/G$/, "", $4); print int($4); exit}')
+    [ -z "$C_FREE_GB" ] && { MEASUREMENT_FAILED=1; C_FREE_GB="?"; }
+  else
+    MEASUREMENT_FAILED=1
+  fi
+else
+  MEASUREMENT_FAILED=1
 fi
 
 REASONS=()
-[ "$DUMP_GB" -gt "$DUMP_THRESHOLD_GB" ] && REASONS+=("wsl-crashes ${DUMP_GB}G > ${DUMP_THRESHOLD_GB}G")
-[ "$C_FREE_GB" -lt "$FREE_THRESHOLD_GB" ] && REASONS+=("C: free ${C_FREE_GB}G < ${FREE_THRESHOLD_GB}G")
+if [ "$MEASUREMENT_FAILED" -eq 0 ]; then
+  [ "$DUMP_GB" -gt "$DUMP_THRESHOLD_GB" ] && REASONS+=("wsl-crashes ${DUMP_GB}G > ${DUMP_THRESHOLD_GB}G")
+  [ "$C_FREE_GB" -lt "$FREE_THRESHOLD_GB" ] && REASONS+=("C: free ${C_FREE_GB}G < ${FREE_THRESHOLD_GB}G")
+fi
 
-if [ "${#REASONS[@]}" -gt 0 ]; then
+# Resolve CURRENT_STATUS.
+# Measurement failure preserves PRIOR_STATUS so a transient du/df error
+# cannot flip a firing alert to clear.
+if [ "$MEASUREMENT_FAILED" -eq 1 ]; then
+  printf 'WARN: ceo-disk-monitor: measurement failed; preserving prior status %q\n' "$PRIOR_STATUS" >&2
+  case "$PRIOR_STATUS" in
+    firing|clear) CURRENT_STATUS="$PRIOR_STATUS" ;;
+    *)            CURRENT_STATUS="unknown" ;;
+  esac
+elif [ "${#REASONS[@]}" -gt 0 ]; then
   CURRENT_STATUS="firing"
 else
   CURRENT_STATUS="clear"
 fi
 
-# --- Read prior state from state file frontmatter ---
-PRIOR_STATUS="clear"
-PRIOR_SINCE=""
-if [ -f "$STATE_FILE" ]; then
-  PRIOR_STATUS=$(awk -F': *' '/^status:/ {print $2; exit}' "$STATE_FILE" | tr -d '[:space:]')
-  PRIOR_SINCE=$(awk -F': *' '/^since:/ {print $2; exit}' "$STATE_FILE" | tr -d '[:space:]')
-  [ -z "$PRIOR_STATUS" ] && PRIOR_STATUS="clear"
-fi
-
-if [ "$CURRENT_STATUS" = "firing" ]; then
-  SINCE="${PRIOR_SINCE:-$NOW}"
-  [ "$PRIOR_STATUS" = "clear" ] && SINCE="$NOW"
+# SINCE only resets on a real transition into firing.
+if [ "$CURRENT_STATUS" = "firing" ] && [ "$PRIOR_STATUS" = "firing" ] && [ -n "$PRIOR_SINCE" ]; then
+  SINCE="$PRIOR_SINCE"
 else
   SINCE="$NOW"
 fi
 
-# --- Write state file (overwrite) ---
 {
   printf -- '---\n'
   printf 'status: %s\n' "$CURRENT_STATUS"
@@ -87,62 +125,75 @@ fi
   printf 'host: %s\n' "$HOST"
   printf 'dump_folder_gb: %s\n' "$DUMP_GB"
   printf 'c_free_gb: %s\n' "$C_FREE_GB"
+  printf 'measurement_failed: %s\n' "$MEASUREMENT_FAILED"
   printf -- '---\n\n'
   printf '# Disk Monitor — %s\n\n' "$HOST"
   if [ "$CURRENT_STATUS" = "firing" ]; then
     printf 'Firing since %s.\n\n' "$SINCE"
-    printf '## Reasons\n\n'
-    for r in "${REASONS[@]}"; do printf -- '- %s\n' "$r"; done
-    printf '\n## Largest dumps\n\n```\n'
-    if [ -d "$WSL_CRASHES_PATH" ]; then
-      ls -laSh "$WSL_CRASHES_PATH" 2>/dev/null | head -10 || echo "(unable to list)"
+    if [ "$MEASUREMENT_FAILED" -eq 1 ]; then
+      printf 'Status preserved from prior run (measurement failed).\n\n'
+    else
+      printf '## Reasons\n\n'
+      for r in "${REASONS[@]}"; do printf -- '- %s\n' "$r"; done
+      printf '\n## Largest dumps\n\n```\n'
+      [ -d "$WSL_CRASHES_PATH" ] && (ls -laSh "$WSL_CRASHES_PATH" 2>/dev/null | head -10 || echo "(unable to list)")
+      printf '```\n\n## Resolution\n\nDelete unwanted dumps:\n\n```bash\nrm /mnt/c/Users/nhang/AppData/Local/Temp/wsl-crashes/*.dmp\n```\n'
     fi
-    printf '```\n\n## Resolution\n\nDelete unwanted dumps:\n\n```bash\nrm /mnt/c/Users/nhang/AppData/Local/Temp/wsl-crashes/*.dmp\n```\n'
-  else
+  elif [ "$CURRENT_STATUS" = "clear" ]; then
     printf 'No active disk pressure. C: free %sG, wsl-crashes %sG.\n' "$C_FREE_GB" "$DUMP_GB"
+  else
+    printf 'Status unknown — measurement failed and no prior state available.\n'
   fi
 } > "$STATE_FILE"
 
-# --- Append log line ---
 printf '%s status=%s dump=%sG free=%sG reasons="%s"\n' \
   "$NOW" "$CURRENT_STATUS" "$DUMP_GB" "$C_FREE_GB" "${REASONS[*]:-}" >> "$LOG_FILE"
 
-# --- Inbox escalation rules ---
+# Inbox escalation. Unknown prior or current status, or any measurement
+# failure, suppresses all inbox mutation — we never escalate or clear on
+# uncertain state.
 TASK_LINE="- [ ] Clean wsl-crashes on $HOST — see [[CEO/alerts/disk]]"
 DONE_NOTE="- [done] disk monitor cleared $(date +%Y-%m-%d) — wsl-crashes ${DUMP_GB}G, C: ${C_FREE_GB}G free"
 
 touch "$INBOX_FILE"
 
-# Sustained-firing check: if firing for >24h AND task line not present, append it.
-SUSTAINED=0
-if [ "$CURRENT_STATUS" = "firing" ]; then
-  if [ -n "$PRIOR_SINCE" ]; then
-    SINCE_EPOCH=$(date -d "$PRIOR_SINCE" +%s 2>/dev/null || echo 0)
+if [ "$MEASUREMENT_FAILED" -eq 0 ] && [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
+  SUSTAINED=0
+  if [ "$CURRENT_STATUS" = "firing" ] && [ "$PRIOR_STATUS" = "firing" ] && [ -n "$PRIOR_SINCE" ]; then
+    SINCE_EPOCH=$(date -d "$PRIOR_SINCE" +%s 2>/dev/null \
+      || date -j -f '%Y-%m-%dT%H:%M:%S%z' "$PRIOR_SINCE" +%s 2>/dev/null \
+      || echo 0)
     NOW_EPOCH=$(date +%s)
     if [ "$SINCE_EPOCH" -gt 0 ] && [ $((NOW_EPOCH - SINCE_EPOCH)) -gt 86400 ]; then
       SUSTAINED=1
     fi
   fi
-fi
 
-if [ "$PRIOR_STATUS" = "clear" ] && [ "$CURRENT_STATUS" = "firing" ]; then
-  # Transition: clear → firing. Idempotent — only append if not already there.
-  if ! grep -qF -- "$TASK_LINE" "$INBOX_FILE"; then
-    printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
-  fi
-elif [ "$SUSTAINED" -eq 1 ]; then
-  # Sustained firing — same idempotency.
-  if ! grep -qF -- "$TASK_LINE" "$INBOX_FILE"; then
-    printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
-  fi
-elif [ "$PRIOR_STATUS" = "firing" ] && [ "$CURRENT_STATUS" = "clear" ]; then
-  # Transition: firing → clear. Flip the task and append a resolution note.
-  if grep -qF -- "$TASK_LINE" "$INBOX_FILE"; then
-    # Replace the - [ ] task with - [done]. Use a temp file because sed -i differs across platforms.
-    tmpfile=$(mktemp)
-    sed "s|^- \[ \] Clean wsl-crashes on $HOST.*|- [done] Cleaned wsl-crashes on $HOST $(date +%Y-%m-%d)|" "$INBOX_FILE" > "$tmpfile"
-    mv "$tmpfile" "$INBOX_FILE"
-    printf '%s\n' "$DONE_NOTE" >> "$INBOX_FILE"
+  if [ "$PRIOR_STATUS" = "clear" ] && [ "$CURRENT_STATUS" = "firing" ]; then
+    grep -qF -- "$TASK_LINE" "$INBOX_FILE" || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+  elif [ "$SUSTAINED" -eq 1 ]; then
+    # Re-poke only fires after the user has checked off the prior task line
+    # — `grep -qF` matches only the literal "- [ ]" form, not "- [x]".
+    grep -qF -- "$TASK_LINE" "$INBOX_FILE" || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+  elif [ "$PRIOR_STATUS" = "firing" ] && [ "$CURRENT_STATUS" = "clear" ]; then
+    if grep -qF -- "$TASK_LINE" "$INBOX_FILE"; then
+      tmpfile=$(mktemp) || { echo "ERROR: mktemp failed for inbox rewrite" >&2; exit 1; }
+      trap 'rm -f "$tmpfile"' EXIT
+      _done_replacement="- [done] Cleaned wsl-crashes on $HOST $(date +%Y-%m-%d)"
+      while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$line" = "$TASK_LINE" ]; then
+          printf '%s\n' "$_done_replacement"
+        else
+          printf '%s\n' "$line"
+        fi
+      done < "$INBOX_FILE" > "$tmpfile"
+      if ! mv "$tmpfile" "$INBOX_FILE"; then
+        echo "ERROR: failed to rewrite $INBOX_FILE" >&2
+        exit 1
+      fi
+      trap - EXIT
+      printf '%s\n' "$DONE_NOTE" >> "$INBOX_FILE"
+    fi
   fi
 fi
 
