@@ -8,6 +8,7 @@
 #   YESTERDAY_DAILY_NOTE, TODAY_DAILY_NOTE
 #   PENDING_QUESTIONS, PENDING_APPROVALS_UNCHECKED
 #   YESTERDAY_REPORT, FAILED_ACTIONS
+#   ALERTS_FIRING
 
 VAULT="${CEO_VAULT:-${VAULT:-$HOME/Documents/Obsidian}}"
 CEO_DIR="$VAULT/CEO"
@@ -103,21 +104,30 @@ else
 fi
 
 # --- 6. Alerts (state files with status: firing|clear) ---
-# Surface only alerts whose status is "firing". Pull host + reason summary
-# from frontmatter. Sustained-firing surfacing is the playbook's job — this
-# block just reports the current state of each alert file.
+# Surface only alerts whose `status:` frontmatter is "firing". Pulls host and
+# transition timestamp from the same frontmatter; full reasons live in the
+# alert body. Unknown status values are logged so a corrupt or typo'd alert
+# file does not silently disappear from the morning scan.
 ALERTS_DIR="$CEO_DIR/alerts"
 ALERTS_FIRING=""
 if [ -d "$ALERTS_DIR" ]; then
   for alert in "$ALERTS_DIR"/*.md; do
     [ -f "$alert" ] || continue
-    status=$(awk -F': *' '/^status:/ {print $2; exit}' "$alert" | tr -d '[:space:]')
-    if [ "$status" = "firing" ]; then
-      name=$(basename "$alert" .md)
-      host=$(awk -F': *' '/^host:/ {print $2; exit}' "$alert" | tr -d '[:space:]')
-      since=$(awk -F': *' '/^since:/ {print $2; exit}' "$alert" | tr -d '[:space:]')
-      ALERTS_FIRING="${ALERTS_FIRING}${name} (host=${host}, since=${since})\n"
-    fi
+    status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+    case "$status" in
+      firing)
+        name=$(basename "$alert" .md)
+        host=$(awk '/^host:/ { sub(/^host:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+        since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+        ALERTS_FIRING="${ALERTS_FIRING}${name} (host=${host}, since=${since})\n"
+        ;;
+      clear|'')
+        ;;
+      *)
+        printf 'WARN: ceo-scan: unknown alert status %q in %s; treating as not firing\n' \
+          "$status" "$alert" >&2
+        ;;
+    esac
   done
 fi
 export ALERTS_FIRING
