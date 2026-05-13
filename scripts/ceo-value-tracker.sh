@@ -58,6 +58,6 @@ bun "$ENTRY" \
   --obsidian-vault "$VAULT"
 
 # Idempotent inbox append — skip if the line is already there.
-if [ ! -f "$INBOX_FILE" ] || ! grep -qF "$WIKILINK" "$INBOX_FILE"; then
+if [ ! -f "$INBOX_FILE" ] || ! grep -qF -- "$WIKILINK" "$INBOX_FILE"; then
   printf '%s\n' "$INBOX_LINE" >> "$INBOX_FILE"
 fi

@@ -52,3 +52,13 @@ cd ~/code/claude-ceo/lib/value-tracker && bun install && bun test
 ```
 
 50 tests covering ingest, classify, rollup, format, snapshot, CLI detection, Cursor SQLite extraction.
+
+## Fresh-clone install
+
+Cron invocation works without `bun install` — the engine has zero runtime deps, and `bun src/cli.ts` resolves the TS imports directly. `bun install` is only needed for `bun test` / `bun tsc --noEmit`, both of which require the dev-deps (`typescript`, `@types/bun`).
+
+After `git clone` or worktree creation, run once:
+
+```bash
+cd lib/value-tracker && bun install
+```
