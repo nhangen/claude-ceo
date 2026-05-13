@@ -1,268 +1,192 @@
 # claude-ceo
 
-Autonomous CEO agent for Claude Code. Reads your Obsidian vault, understands your priorities, proposes and executes work across domains. Triage conversations on demand, scheduled cron playbooks, and a small executive-assistant feature set.
+**Autonomous CEO agent for Claude Code. Reads your Obsidian vault, dispatches specialized subagents, runs scheduled playbooks, and gates writes by authority tier.**
 
-## Table of contents
+## Why
 
-- [What it does](#what-it-does)
-- [Architecture at a glance](#architecture-at-a-glance)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Daily flow](#daily-flow)
-- [CLIs](#clis)
-  - [`ceo` — agent system management](#ceo--agent-system-management)
-  - [`count-blessings` — gratitude list (EA feature)](#count-blessings--gratitude-list-ea-feature)
-- [Slash skills (in Claude Code)](#slash-skills-in-claude-code)
-- [Vault structure](#vault-structure)
-- [Playbooks](#playbooks)
-- [Authority tiers](#authority-tiers)
-- [Tests](#tests)
-- [Troubleshooting](#troubleshooting)
+A solo operator has more domains than hours: code repos, research, ops, career, personal. Day-to-day, most of the work isn't doing — it's deciding what to do next, where you left off, and what's safe to ship without you. claude-ceo reads your Obsidian vault (the source of truth), runs prioritized scans on a cron schedule, and proposes work in tiers: read-only digests run automatically, low-stakes writes execute with a report, high-stakes actions queue for approval.
 
-## What it does
-
-The CEO is a small set of shell scripts plus playbook files in your Obsidian vault. Cron fires playbooks on a schedule (morning scan, morning brief, inbox, EOD summary, etc.). Each playbook gets a curated context payload and produces output that the shell appends to a daily report file. Interactive triage runs from `ceo chat`. Higher-stakes actions (writes, pushes, merges) are gated through an approvals workflow.
-
-## Architecture at a glance
+## How it works
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Cron / interactive trigger                                 │
-│       │                                                     │
-│       ▼                                                     │
-│  ceo-cron.sh  ──►  ceo-config.sh   (resolve $CEO_VAULT)     │
-│                ──►  ceo-gather.sh   (pre-gather context)    │
-│                       └─►  blessings-lib.sh                 │
-│                              └─► CEO/cache/blessings-today  │
-│                ──►  ceo-scan.sh    (vault diff for scan)    │
-│                ──►  registry.json  (dispatch lookup)        │
-│                ──►  preflight_<name>()                      │
-│                ──►  read-tier SINGLE_PROMPT (one claude run)│
-│                     OR three-phase PLAN/FILTER/EXECUTE      │
-│                ──►  ceo-report.sh  (flock-guarded append)   │
-│                                                             │
-│  Output:  CEO/reports/YYYY-MM-DD.md                         │
-│  State:   CEO/log/, CEO/approvals/, CEO/cache/              │
-└─────────────────────────────────────────────────────────────┘
+Cron / interactive trigger
+  │
+  ▼
+ceo-cron.sh ──► ceo-config.sh        (resolve $CEO_VAULT)
+            ──► ceo-gather.sh         (pre-gather context → env)
+            ──► ceo-scan.sh           (vault diff)
+            ──► registry.json         (dispatch lookup)
+            ──► preflight_<name>()
+            ──► runner:
+                 • claude (default)   — read tier = single call,
+                                        write tiers = PLAN/FILTER/EXECUTE
+                 • script              — deterministic shell, no LLM
+            ──► ceo-report.sh         (flock-guarded append)
+
+Output: CEO/reports/YYYY-MM-DD.md
+State:  CEO/log/, CEO/approvals/, CEO/cache/
 ```
 
-Playbooks self-register: `ceo playbook scan` walks `CEO/playbooks/*.md`, extracts each frontmatter block via `yq`, rewrites `registry.json`, and updates the user's crontab between `# CEO Agent START/END` markers.
+Playbooks self-register: `ceo playbook scan` walks `CEO/playbooks/*.md`, extracts each frontmatter block via `yq`, rewrites `registry.json`, and updates the crontab between `# CEO Agent START/END` markers.
 
-`tier: read` playbooks run a single `claude --print --max-turns 1 --disallowedTools Bash,Write,Edit` call. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline (high-stakes actions are written to `CEO/approvals/pending.md` instead of executed).
+## Subagents
 
-## Requirements
+Skills under `skills/ceo/agents/` define six specialized subagents the CEO can dispatch for domain-specific work. Each declares its authority and domain scope; high-stakes actions (push, publish, send) are always returned as drafts.
 
-- [Obsidian](https://obsidian.md/) with a vault synced across all machines
-- [Syncthing](https://syncthing.net/) installed and running on every machine (Mac, WSL, Windows)
-- [Obsidian plugin](https://github.com/nhangen/claude-obsidian-plugin) v1.4.0+ with `VAULT.md` in your vault root
-- `Profile.md` in your vault root (created by the Chief of Staff knowledge layer)
-- `gh` CLI authenticated
-- `jq` for JSON processing
-- `yq` for YAML frontmatter parsing ([install](https://github.com/mikefarah/yq#install))
-- Claude Code with a subscription (`claude --print`)
+| Subagent | Authority | Domains | Use for |
+|----------|-----------|---------|---------|
+| `analyst` | read + reports | Career, Academics, all | Evaluating options, thesis planning, cost-benefit, tool comparison |
+| `code-reviewer` | read + draft (post is high-stakes) | Awesome Motive, any code repo | PR review — diff analysis, CI check, draft comments |
+| `implementer` | read + low-stakes write | Awesome Motive, any code repo | Bug fix — branch, commit, test; push/PR returned as recommendation |
+| `ops-manager` | read + low-stakes write | NRX Research | Inventory, hiring pipeline, SOP execution, runbook compliance |
+| `researcher` | read only | Academics, Career, NRX Research, any | Vault / web / claude-mem / academic source investigation |
+| `writer` | read + draft | Career, Academics, NRX Research, Personal | LinkedIn posts, cover letters, emails, academic writing, docs |
 
-### Syncthing setup
+## Playbooks
 
-Syncthing syncs the Obsidian vault between machines. Install it separately — the CEO setup script does **not** install it for you.
+Active playbooks shipped with the plugin (live in `docs/playbooks/`; copy into `$CEO_VAULT/CEO/playbooks/` to enable, then `ceo playbook scan`):
+
+| Playbook | Trigger | Tier | Runner | Purpose |
+|----------|---------|------|--------|---------|
+| `morning-brief` | `50 8 * * 1-5` | read | claude | Prioritized day overview — PR queue, top-3 tasks, blessings |
+| `morning-scan` | `57 8 * * 1-5` | read | claude | Vault-diff digest of overnight changes |
+| `inbox` | every 15 min | read | claude | Process unchecked items in `CEO/inbox.md` (preflight-gated) |
+| `pr-triage` | `03 10 * * 1-5` | read | claude | Surface PRs needing review |
+| `pending-drip` | daily | read | claude | Drip reminders from `Pending.md` |
+| `eod-summary` | `47 17 * * 1-5` | read | claude | Recap if there are log entries after 4pm |
+| `cleanup` | weekly | low-stakes-write | claude | Branch / worktree hygiene |
+| `token-intake` | `45 8 * * 1-5` | read | script | Run `ceo-token-intake.sh` — token-scope snapshot to vault |
+
+`tier: read` runs a single `claude --print --max-turns 5 --disallowedTools Bash,Write,Edit` call with pre-gathered context injected as `<external-data>` blocks. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline; high-stakes actions are written to `CEO/approvals/pending.md` instead of executed.
+
+A playbook can declare `runner: script` to dispatch a shell script directly, skipping the LLM call entirely (token-intake is the canonical example). The script receives `CEO_VAULT`, `CEO_DIR`, `LOG_DIR`, `TODAY`, `NOW`, `TRIGGER` as env vars; the dispatcher does not parse stdout. Exit code 0 = success.
+
+## Examples
+
+Interactive triage from a Claude Code session:
+
+```
+/ceo
+```
+
+Reads today's report, walks the vault, and proposes prioritized actions in tier order.
+
+Trigger a playbook by hand (no cron wait):
+
+```bash
+ceo cron morning-brief
+ceo chat pr-triage          # same playbook, interactive instead of cron
+```
+
+Preview what the next cron tick would actually do:
+
+```bash
+$ ceo preflight
+morning-brief    RUN     (read)
+inbox            SKIP    (no unchecked items)
+pr-triage        RUN     (3 reviews requested)
+```
+
+Read the day's report:
+
+```bash
+ceo chat                    # opens conversation about today's report
+# or directly:
+$EDITOR ~/Documents/Obsidian/CEO/reports/$(date +%F).md
+```
+
+Inspect a registered playbook:
+
+```bash
+ceo playbook list
+ceo playbook info token-intake
+```
+
+## Install
+
+1. Clone somewhere persistent (e.g. `~/ML-AI/claude/ceo`).
+2. Run `scripts/ceo setup` — installs deps where it can, walks you through git/ssh/cron, creates `~/.ceo/config` with the resolved vault path.
+3. Symlink the CLIs onto `PATH`:
+   ```bash
+   ln -s "$(pwd)/scripts/ceo"               ~/bin/ceo
+   ln -s "$(pwd)/scripts/count-blessings.sh" ~/bin/count-blessings
+   ```
+4. Run `scripts/ceo doctor` to verify everything resolves (yq, gh auth, vault, cron).
+5. Run `ceo playbook scan` to build `registry.json` and install the crontab.
+
+### Requirements
+
+- [Obsidian](https://obsidian.md/) vault synced across all machines
+- [Syncthing](https://syncthing.net/) running on every machine (no installer ships with this plugin)
+- [claude-obsidian-plugin](https://github.com/nhangen/claude-obsidian-plugin) v1.4.0+ with `VAULT.md` and `Profile.md` in the vault root
+- `gh` CLI authenticated, `jq`, `yq` ([install](https://github.com/mikefarah/yq#install))
+- Claude Code with subscription (`claude --print`)
+
+### Syncthing
 
 | Platform | Install |
 |----------|---------|
 | macOS | `brew install syncthing && brew services start syncthing` |
-| WSL/Linux | [Add the APT repo](https://apt.syncthing.net/), then `sudo apt install syncthing` |
-| Windows | [Download installer](https://syncthing.net/downloads/) or `choco install syncthing` |
+| WSL/Linux | [APT repo](https://apt.syncthing.net/), then `sudo apt install syncthing` |
+| Windows | [Installer](https://syncthing.net/downloads/) or `choco install syncthing` |
 
-After installing on all machines:
-1. Open `http://localhost:8384` on each machine
-2. Add devices to each other
-3. Share the Obsidian vault folder (Send & Receive on all machines)
-4. Copy `syncthing/shared.stignore` to `~/Documents/Obsidian/.stignore` on each machine
-5. Wait for initial sync, then verify `CEO/AGENTS.md` exists on all machines
+Open `http://localhost:8384` on each machine, add devices, share the Obsidian vault (Send & Receive everywhere), copy `syncthing/shared.stignore` to `~/Documents/Obsidian/.stignore`. See `syncthing/README.md` for write-domain rules and conflict handling.
 
-See `syncthing/README.md` for write-domain rules and conflict handling.
-
-## Install
-
-1. Clone this repo somewhere persistent (e.g. `~/ML-AI/claude/ceo`).
-2. Run `scripts/ceo setup` — installs deps where it can, walks you through git/ssh/cron, creates `~/.ceo/config` with the resolved vault path.
-3. Symlink the CLIs to a directory on `PATH`:
-   ```bash
-   ln -s "$(pwd)/scripts/ceo"             ~/bin/ceo
-   ln -s "$(pwd)/scripts/count-blessings.sh" ~/bin/count-blessings
-   ```
-4. Run `scripts/ceo doctor` to verify everything resolves (yq, gh auth, vault, cron).
-5. Run `ceo playbook scan` to build `registry.json` and install the crontab entries.
-
-## Daily flow
-
-Default schedule (active playbooks; see `CEO/registry.json` for the live truth):
-
-| Time | Trigger | Tier | Notes |
-|------|---------|------|-------|
-| 8:50 AM | `morning-brief` | read | Surfaces priorities, PR queue, blessings (`## Personal / ### Blessings`) |
-| 8:57 AM | `morning-scan` | read | Vault-diff digest of overnight changes |
-| every 15 min | `inbox` | read | Processes unchecked items in `CEO/inbox.md` (preflight-gated) |
-| 10:03 AM weekdays | `pr-triage` | read | If you have PRs needing review |
-| daily | `pending-drip` | read | Dripping reminders from `Pending.md` |
-| 5:47 PM weekdays | `eod-summary` | read | If there are log entries after 4pm |
-| weekly | `cleanup` | low-stakes-write | Branch / worktree hygiene |
-
-All output lands in `CEO/reports/YYYY-MM-DD.md` via `ceo-report.sh`. The interactive `/ceo` (or `ceo chat`) reads the day's report and converses about it.
-
-## CLIs
-
-### `ceo` — agent system management
-
-```
-ceo setup            First-time machine setup (deps, git, ssh, cron)
-ceo next             Redisplay post-setup steps (survives terminal clear)
-ceo doctor           Check system health (deps, vault, cron, auth)
-ceo test             Smoke test: trigger morning-brief, check log
-ceo cron <name>      Manually run a cron trigger (e.g. ceo cron pr-triage)
-ceo chat [name]      Interactive playbook (no cron); empty arg = triage conversation
-ceo playbook scan|list|info   Self-registering playbook management
-ceo schedule [name]  List effective schedules; with name, reschedule one (interactive)
-ceo preflight        Preview what cron would run vs skip
-```
-
-### `count-blessings` — gratitude list (EA feature)
-
-A small executive-assistant feature: keep a gratitude list in your vault and have the morning brief surface three random entries each day under `## Personal / ### Blessings`.
-
-```
-count-blessings add "text"   Append a blessing to the list
-count-blessings list         Show all blessings, numbered
-count-blessings show         Show today's three picks
-```
-
-**Data files** (in your Obsidian vault):
-- `CEO/blessings.md` — the persistent list, one bullet per blessing
-- `CEO/cache/blessings-today.md` — auto-generated daily cache holding the three picks
-
-**How it surfaces:**
-1. `ceo-gather.sh` calls `ensure_blessings_cache` (in `scripts/blessings-lib.sh`) on every cron run. Picks 3 at random into the cache file once per day; idempotent fast path on same-day cache.
-2. `BLESSINGS_TODAY` is exported into the read-tier `SINGLE_PROMPT` inside a separate `<external-data>` block (sealed against prompt injection by the existing untrusted-content guard). Three-phase playbooks (`tier: low-stakes-write` and above) do not receive blessings data.
-3. The `morning-brief` playbook renders the bullets verbatim under `## Personal / ### Blessings` with a footer pointing at the CLI.
-
-**First-run UX:** `count-blessings add "..."` works on a fresh machine — it bootstraps `$CEO_DIR` automatically. No `ceo setup` required just to seed blessings.
-
-**Portability:** macOS (BSD userland), Linux/WSL (GNU userland). No `shuf`, no `sort -R`, no `flock`, no GNU-only `sed -i`. Atomic tmp + `mv -f` writes; `mkdir`-based locks; `mktemp` for tmp filenames.
-
-## Slash skills (in Claude Code)
-
-Skills surface as `<plugin>:<skill>` once the plugin is installed via the marketplace.
-
-| Command | Description |
-|---------|-------------|
-| `/ceo` | Read vault, propose prioritized actions (triage conversation) |
-| `/ceo:status` | Show pending approvals, recent log, blocked items |
-| `/ceo:brief` | Generate morning briefing on demand |
-| `/ceo:delegate` | Hand off a task |
-| `/ceo:train` | Add a training rule or playbook |
-| `/ceo:log` | Show today's execution log |
-
-`count-blessings` is intentionally CLI-only — running `count-blessings add "..."` from a terminal is fewer keystrokes than any slash-command equivalent.
-
-## Vault structure
-
-The CEO's brain lives in your Obsidian vault at `CEO/`:
-
-```
-CEO/
-├── AGENTS.md          — global rules for ALL agents (tiers, constraints)
-├── IDENTITY.md        — CEO-specific identity and personality
-├── TRAINING.md        — rules learned from corrections
-├── training/          — domain-specific training rules
-├── playbooks/         — step-by-step workflows (frontmatter drives registration)
-├── registry.json      — derived dispatch table (built by `ceo playbook scan`)
-├── settings.json      — runtime config (cooldown, branch_prefix, …)
-├── repos.md           — registry of cloned repos
-├── inbox.md           — task queue for the inbox playbook
-├── blessings.md       — gratitude list (EA feature)
-├── approvals/         — pending high-stakes proposals
-├── cache/             — derived state (blessings-today.md, …)
-├── delegations/       — task hand-offs
-├── reports/           — daily report files (ceo-report.sh writes here)
-└── log/               — execution logs (per-trigger timestamps, errors)
-```
-
-## Playbooks
-
-Each playbook is a markdown file in `CEO/playbooks/` with frontmatter that drives registration:
-
-```yaml
----
-name: morning-brief
-description: Prioritized overview of the day's work
-trigger: cron
-schedule: "50 8 * * 1-5"
-model: sonnet
-preflight: none
-tier: read
-status: active
----
-```
-
-Run `ceo playbook scan` after editing any playbook to refresh `registry.json` and the user's crontab. Use `ceo playbook list` to see what's registered, `ceo playbook info <name>` for the full record.
-
-To disable a playbook without deleting it: change `status: active` → `status: inactive` and rescan.
-
-### Shell-only playbooks (`runner: script`)
-
-A playbook can declare `runner: script` to dispatch a shell script directly, skipping the LLM call. Use this for deterministic intakes — token reports, status snapshots, scheduled file moves — where an AI summary would just be wasted tokens.
-
-```yaml
----
-name: token-intake
-trigger: cron
-schedule: "45 8 * * 1-5"
-preflight: none
-tier: read
-status: active
-runner: script
-script: ceo-token-intake.sh   # resolved against scripts/ in the plugin clone
----
-```
-
-The script receives `CEO_VAULT`, `CEO_DIR`, `LOG_DIR`, `TODAY`, `NOW`, and `TRIGGER` as exported environment variables. It is responsible for whatever output it produces — the dispatcher does not parse stdout or write to the daily report. Exit code 0 = success; non-zero is logged to `cron-skips.log`.
-
-The default runner is `claude` — every existing playbook is unaffected.
-
-A starter shell-only playbook ships at `docs/playbooks/token-intake.md`. Copy it into the vault to enable:
+## Development
 
 ```bash
-cp docs/playbooks/token-intake.md "$CEO_VAULT/CEO/playbooks/"
-ceo playbook scan
+bash scripts/ceo-config.test.sh         # config loader / path helpers
+bash scripts/ceo-cron.test.sh           # dispatch + tier semantics
+bash scripts/ceo-notify.test.sh         # notification helper
+bash scripts/ceo-schedule.test.sh       # schedule override + collision detection
+bash scripts/ceo-token-intake.test.sh   # token-intake script runner
+bash scripts/count-blessings.test.sh    # blessings CLI + cache
 ```
 
-### Pre-gathered data (read-tier playbooks)
+Tests are portable across BSD (macOS) and GNU (Linux/WSL): no `shuf`, no `sort -R`, no `flock`, no GNU-only `sed -i`. Each test runs in an isolated `mktemp -d`.
 
-Read-tier playbooks (`tier: read`) run through a single Claude call with `--max-turns 5` and `--disallowedTools "Bash,Write,Edit"`. The design intent is **synthesis, not exploration**: the shell pre-gathers everything Claude needs and injects it into the prompt as `<external-data>` blocks. Claude reads from the prompt, not the filesystem.
+## Configuration
 
-`scripts/ceo-gather.sh` exports (and `scripts/ceo-cron.sh` injects):
+### `~/.ceo/config`
 
-| Variable | Source | Purpose |
-|---|---|---|
-| `PR_REVIEW_REQUESTED`, `PR_AUTHORED`, `PR_REVIEW_COUNT`, `PR_AUTHORED_COUNT` | `gh pr list` per repo | PR queue |
-| `PENDING_COUNT`, `APPROVED_COUNT` | `CEO/approvals/pending.md` | approval queue counts |
-| `TODAY_LOG_SUMMARY`, `YESTERDAY_LOG_SUMMARY` | `CEO/log/<date>.md` | log activity counts |
-| `DAILY_NOTE_TOP3`, `DAILY_NOTE_TASKS` | `Daily/<date>.md` | today's priorities |
-| `BRIEFINGS_TRAINING` | `CEO/training/briefings.md` | briefing-specific rules |
-| `ACTIVE_DOMAINS_CONTENT` | `Profile.md` → `## Active Domains` section | priority-domain order |
-| `PENDING_ASK_QUESTIONS` | `Pending.md` lines containing `[ask]` | top 20 open questions |
-| `BLESSINGS_TODAY` | `CEO/cache/blessings-today.md` | EA blessings rotation |
-| `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (only set when scan ran) | morning-scan output |
+Persistent config file written by `ceo setup`. Stores resolved vault path so scripts don't need a discovery loop on every cron tick. Roll back to inline discovery (debugging only):
 
-When writing or editing a read-tier playbook, **do not ask Claude to `Read` files**. Reference the pre-gathered values directly in the playbook's Steps section. If a new file genuinely needs to be in the prompt, add an export to `ceo-gather.sh` and an inject site to `ceo-cron.sh`'s `SINGLE_PROMPT`. Each tool call burns a turn; 5 turns vanish fast across reasoning + multi-file reads.
+```bash
+cd /path/to/claude-ceo
+git checkout HEAD -- scripts/ceo scripts/ceo-cron.sh scripts/ceo-gather.sh scripts/ceo-report.sh
+```
 
-The non-read tiers (low-stakes-write, high-stakes) use the three-phase pipeline (PLAN → FILTER → EXEC) and have higher turn caps (`--max-turns 20` on EXEC). Pre-gather is still preferred for known-shape data, but those tiers can call tools when discovery is genuinely needed.
+Then re-run `ceo setup` to regenerate the config.
 
-### Portable timeout
+### `CEO_VAULT`
 
-`ceo-cron.sh` wraps Claude calls with a wall-clock timeout. `timeout` (Linux) and `gtimeout` (macOS via `brew install coreutils`) are both supported. If neither is installed, the wrapper degrades to running the command without a wall-clock cap (`--max-turns` and the API's own timeout still apply); a `WARN` is logged to stderr suggesting `brew install coreutils`.
+Override the configured vault path for a single invocation:
 
-### Scheduling
+```bash
+CEO_VAULT="$HOME/Documents/Obsidian" bash scripts/ceo-token-intake.sh
+```
 
-Playbook frontmatter `schedule:` is the **default** — what ships with the playbook author's intent. Per-user overrides live in `$CEO_DIR/schedules.json`:
+### `ceo_augment_path`
+
+Helper in `scripts/ceo-config.sh` that prepends `~/.bun/bin`, Homebrew, `~/.local/bin`, and `~/.cargo/bin` (OS-aware) to `PATH`. Cron starts with `PATH=/usr/bin:/bin`; any script that needs bun/Homebrew/user-installed CLIs sources `ceo-config.sh` and calls `ceo_augment_path` at the top. Validates `$HOME` is non-empty — `set -u` doesn't catch `HOME=""`.
+
+### `ceo_resolve_plugin_cli` *(0.12.1)*
+
+Resolves a Claude Code plugin-provided CLI from `~/.claude/plugins/cache/<owner>/<plugin>/<version>/` rather than relying on PATH. Plugins don't install symlinks on PATH; older standalone installs of the same tool can leave stale symlinks that resolve to deleted binaries, producing silent fall-through.
+
+```bash
+if out=$(ceo_resolve_plugin_cli "nhangen-tools/token-scope" "src/cli.ts"); then
+  runtime=$(printf '%s\n' "$out" | sed -n '1p')
+  entry=$(printf '%s\n' "$out" | sed -n '2p')
+  "$runtime" "$entry" --since 1d
+fi
+```
+
+Picks the highest version directory via `sort -V`. Returns 1 if the plugin isn't installed or the entry file is missing. `ceo-token-intake.sh` uses this resolver and emits a `WARN` to stderr when falling back to `token-scope` on `PATH` (introduced after a token-intake cron silently no-op'd against a stale symlink — see nhangen/claude-ceo#37 / #38).
+
+### Per-user schedule overrides
+
+Playbook frontmatter `schedule:` is the default. Per-user overrides live in `$CEO_DIR/schedules.json`:
 
 ```json
 {
@@ -271,91 +195,97 @@ Playbook frontmatter `schedule:` is the **default** — what ships with the play
 }
 ```
 
-Top-level keys are playbook names; values are cron expressions. Overrides win over frontmatter at scan time. Unknown playbook names and invalid cron syntax are warned to stderr and ignored — never silently coerced.
+Unknown playbook names and invalid cron syntax warn to stderr and are ignored — never silently coerced. `ceo playbook scan` performs collision detection before installing the crontab; a refused scan leaves the previous good state intact. Use `ceo schedule <playbook>` for an interactive reschedule.
 
-Two playbooks at the same minute share the global `/tmp/ceo-cron.lock`; one always loses silently. To prevent that, `ceo playbook scan` performs **collision detection** before installing the crontab and refuses if any two active cron-trigger playbooks share a schedule. Resolve via `ceo schedule <playbook>` (interactive prompt, validates the cron expression, writes `schedules.json`, re-runs scan) or by editing `schedules.json` directly.
+### Read-tier pre-gather
 
-`ceo schedule` (no args) lists all cron-trigger playbooks with their effective schedule, source (`frontmatter` | `override`), status, and a collision flag if applicable.
+`ceo-gather.sh` exports (and `ceo-cron.sh` injects) these into the `SINGLE_PROMPT` as `<external-data>` blocks:
 
-The registry is only written after a successful crontab install — a refused scan leaves the previous good state intact.
+| Variable | Source |
+|---|---|
+| `PR_REVIEW_REQUESTED`, `PR_AUTHORED`, `PR_REVIEW_COUNT`, `PR_AUTHORED_COUNT` | `gh pr list` per repo |
+| `PENDING_COUNT`, `APPROVED_COUNT` | `CEO/approvals/pending.md` |
+| `TODAY_LOG_SUMMARY`, `YESTERDAY_LOG_SUMMARY` | `CEO/log/<date>.md` |
+| `DAILY_NOTE_TOP3`, `DAILY_NOTE_TASKS` | `Daily/<date>.md` |
+| `BRIEFINGS_TRAINING` | `CEO/training/briefings.md` |
+| `ACTIVE_DOMAINS_CONTENT` | `Profile.md` → `## Active Domains` |
+| `PENDING_ASK_QUESTIONS` | `Pending.md` lines containing `[ask]` (top 20) |
+| `BLESSINGS_TODAY` | `CEO/cache/blessings-today.md` |
+| `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (morning-scan only) |
 
-## Authority tiers
+When writing or editing a read-tier playbook, do not ask Claude to `Read` files. Reference pre-gathered values directly in the playbook's Steps section. New file in the prompt → add an export to `ceo-gather.sh` and an inject site to `ceo-cron.sh`.
+
+## Architecture
+
+### Authority tiers
 
 | Tier | Actions | Execution path | Approval |
 |------|---------|----------------|----------|
-| `read` | Scan vault, read PRs, generate briefings | Single-call (1 model call, no Bash/Write/Edit) | Auto |
+| `read` | Scan vault, read PRs, generate briefings | Single call (no Bash/Write/Edit) | Auto |
 | `low-stakes-write` | Create branches, run tests, post PR comments | Three-phase PLAN/FILTER/EXECUTE | Auto + report |
 | `high-stakes` | Push code, merge PRs, create PRs | Filtered out of EXECUTE; written to `approvals/pending.md` | Propose + wait |
 
-## Tests
+### Vault structure
 
-```bash
-bash scripts/count-blessings.test.sh   # 22 self-contained TDD tests for the CLI + cache
+```
+CEO/
+├── AGENTS.md          — global rules for ALL agents (tiers, constraints)
+├── IDENTITY.md        — CEO-specific identity and personality
+├── TRAINING.md        — rules learned from corrections
+├── training/          — domain-specific training rules
+├── playbooks/         — step-by-step workflows (frontmatter drives registration)
+├── registry.json      — derived dispatch table
+├── settings.json      — runtime config (cooldown, branch_prefix, …)
+├── repos.md           — registry of cloned repos
+├── inbox.md           — task queue for the inbox playbook
+├── blessings.md       — gratitude list
+├── approvals/         — pending high-stakes proposals
+├── cache/             — derived state
+├── delegations/       — task hand-offs
+├── reports/           — daily report files
+└── log/               — execution logs
 ```
 
-The harness is portable across BSD (macOS) and GNU (Linux/WSL) userlands. `count-blessings.sh` and `blessings-lib.sh` use no `shuf`, no `sort -R`, no `flock`, no GNU-only extensions. Each test runs in an isolated `mktemp -d` directory.
+### CLIs
 
-## Troubleshooting
+`ceo`:
 
-### Vault path detection issues
-
-As of v0.5.0, the CEO system uses a persistent config file at `~/.ceo/config` to store the vault path, instead of relying on environment-specific path discovery.
-
-**If vault path detection fails during `ceo setup`:**
-1. Verify Syncthing is running and the vault has synced: `ls $VAULT/CEO/inbox.md`
-2. Run `ceo setup` again to write the config file
-3. Verify the config was created: `cat ~/.ceo/config`
-4. Verify vault detection: `ceo doctor`
-
-**If you need to roll back to inline discovery loops** (temporarily, for debugging):
-
-```bash
-cd /path/to/claude-ceo
-git checkout HEAD -- \
-  scripts/ceo \
-  scripts/ceo-cron.sh \
-  scripts/ceo-gather.sh \
-  scripts/ceo-report.sh
+```
+ceo setup            First-time machine setup (deps, git, ssh, cron)
+ceo next             Redisplay post-setup steps
+ceo doctor           Check system health (deps, vault, cron, auth)
+ceo test             Smoke test: trigger morning-brief, check log
+ceo cron <name>      Manually run a cron trigger
+ceo chat [name]      Interactive playbook (no cron); empty = triage conversation
+ceo playbook scan|list|info     Self-registering playbook management
+ceo schedule [name]  List effective schedules; with name, reschedule one
+ceo preflight        Preview what cron would run vs skip
 ```
 
-This restores the hardcoded discovery loops in each script. This is a **temporary measure** for debugging only. After restoring, re-run `ceo setup` to regenerate the config file and re-enable the persistent config system.
+`count-blessings` — gratitude list surfaced in the morning brief under `## Personal / ### Blessings`:
 
-### Cron not firing
-
-```bash
-ceo doctor                              # checks crontab + dependencies
-crontab -l | grep -A1 -B1 'CEO Agent'   # show installed entries
-tail -n 50 ~/Documents/Obsidian/CEO/log/cron-skips.log
+```
+count-blessings add "text"   Append a blessing
+count-blessings list         Show all blessings, numbered
+count-blessings show         Show today's three picks
 ```
 
-**WSL2 caveat:** WSL2 does not auto-start cron at boot. Either add a `[boot] command = service cron start` stanza to `/etc/wsl.conf`, or set up a Windows Task Scheduler job that runs `wsl.exe -u <user> -- /etc/init.d/cron start` at logon.
+### Slash skills (Claude Code)
 
-### Playbook not running on schedule
+| Command | Description |
+|---------|-------------|
+| `/ceo` | Read vault, propose prioritized actions |
+| `/ceo:status` | Pending approvals, recent log, blocked items |
+| `/ceo:brief` | Generate morning briefing on demand |
+| `/ceo:delegate` | Hand off a task |
+| `/ceo:train` | Add a training rule or playbook |
+| `/ceo:log` | Today's execution log |
 
-```bash
-ceo playbook info <name>     # frontmatter snapshot
-jq '.playbooks[] | select(.name == "<name>")' ~/Documents/Obsidian/CEO/registry.json
-```
+## Known Limitations
 
-If the playbook frontmatter changed but `registry.json` is stale: `ceo playbook scan`.
-If `status: inactive` in `registry.json`: flip frontmatter and rescan.
-If preflight is gating the run: `ceo preflight <name>` to see why.
-
-### Script-runner playbook not firing
-
-1. Run `ceo playbook info <name>` and confirm `runner: script` and `script: <filename>`.
-2. Confirm the file exists and is executable: `ls -l scripts/<filename>`.
-3. Check `CEO/log/cron-skips.log` for `ERROR — Script not found` or `Script not executable`.
-4. If the cron tick fired but nothing happened, run the script manually with `CEO_VAULT` set: `CEO_VAULT="$HOME/Documents/Obsidian" bash scripts/<filename>`.
-
-### count-blessings produces no Personal section in the brief
-
-1. Is `CEO/blessings.md` populated? `count-blessings list` should show entries.
-2. Did `morning-brief` run? `tail -n 50 ~/Documents/Obsidian/CEO/log/cron-runs.log`.
-3. Is the cache today's? `count-blessings show` (frontmatter `date:` should match today).
-4. Is `morning-brief.md` in `CEO/playbooks/` updated to reproduce the `Blessings today:` external-data block under `## Personal / ### Blessings`?
-
-For production issues, file a bug report with your OS, WSL version (if applicable), and the output of `ceo doctor`.
+- **WSL2 cron does not auto-start at boot.** Add `[boot] command = service cron start` to `/etc/wsl.conf`, or set up a Windows Task Scheduler job that runs `wsl.exe -u <user> -- /etc/init.d/cron start` at logon.
+- **Portable timeout.** `ceo-cron.sh` uses `timeout` (Linux) or `gtimeout` (macOS via `brew install coreutils`). If neither is installed, the wrapper degrades to no wall-clock cap (`--max-turns` and API timeout still apply) and a `WARN` is logged.
+- **Schedule collisions are refused, not coerced.** Two cron-trigger playbooks on the same minute would race the global `/tmp/ceo-cron.lock`; `ceo playbook scan` refuses to install the crontab until you resolve via `ceo schedule <playbook>` or by editing `schedules.json`.
 
 ## License
 
