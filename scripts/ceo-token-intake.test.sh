@@ -281,6 +281,46 @@ test_aborts_on_unwritable_report_dir() {
   fi
 }
 
+test_prefers_plugin_cache_over_path_for_token_scope() {
+  # Stage a plugin-cache token-scope that announces itself, plus a stub `bun`
+  # runtime that just exec's the script it's handed. The PATH-level
+  # token-scope from setup() should be ignored when the cache resolves.
+  local cache="$TEST_HOME/.claude/plugins/cache/nhangen-tools/token-scope/1.3.1/src"
+  mkdir -p "$cache"
+  cat > "$cache/cli.ts" << 'STUB'
+#!/bin/bash
+echo "token-scope-from-cache: $*"
+STUB
+  chmod +x "$cache/cli.ts"
+
+  cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
+#!/bin/bash
+exec bash "$@"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/bun"
+
+  # Make the PATH stub trip a sentinel so a regression that falls through to
+  # PATH lights up as a failed assertion below.
+  cat > "$TEST_HOME/.bun/bin/token-scope" << 'STUB'
+#!/bin/bash
+echo "token-scope-from-PATH-WRONG: $*"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/token-scope"
+
+  bash "$INTAKE" >/dev/null 2>&1
+  local today report body
+  today=$(date +%Y-%m-%d)
+  report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
+  assert_file_exists "$report" "report must be written"
+  body=$(cat "$report")
+  assert_contains "$body" "token-scope-from-cache:" \
+    "intake must invoke the cache-resolved token-scope, not the PATH stub"
+  if [[ "$body" == *"token-scope-from-PATH-WRONG"* ]]; then
+    printf '  FAIL [%s] cache resolver was bypassed; PATH stub ran instead\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

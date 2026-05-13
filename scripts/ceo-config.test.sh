@@ -283,6 +283,85 @@ test_pin_home_or_warn_emits_warn_on_resolver_failure() {
   esac
 }
 
+test_resolve_plugin_cli_returns_runtime_and_abs_path() {
+  local cache="$TEST_HOME/.claude/plugins/cache/nhangen-tools/token-scope/1.3.1/src"
+  mkdir -p "$cache"
+  : > "$cache/cli.ts"
+
+  local out rc=0
+  out=$(env HOME="$TEST_HOME" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_plugin_cli 'nhangen-tools/token-scope' 'src/cli.ts'
+  " 2>/dev/null) || rc=$?
+  assert_eq "$rc" "0" "resolver should succeed when cache + entry exist"
+  local line1 line2
+  line1=$(printf '%s\n' "$out" | sed -n '1p')
+  line2=$(printf '%s\n' "$out" | sed -n '2p')
+  assert_eq "$line1" "bun" "default runtime should be bun"
+  assert_eq "$line2" "$TEST_HOME/.claude/plugins/cache/nhangen-tools/token-scope/1.3.1/src/cli.ts" \
+    "second line should be absolute entry path"
+}
+
+test_resolve_plugin_cli_picks_latest_version() {
+  local base="$TEST_HOME/.claude/plugins/cache/nhangen-tools/token-scope"
+  for v in 1.2.0 1.3.0 1.3.1; do
+    mkdir -p "$base/$v/src"
+    : > "$base/$v/src/cli.ts"
+  done
+
+  local out rc=0
+  out=$(env HOME="$TEST_HOME" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_plugin_cli 'nhangen-tools/token-scope' 'src/cli.ts'
+  " 2>/dev/null) || rc=$?
+  assert_eq "$rc" "0" "resolver should succeed with multiple versions present"
+  local picked
+  picked=$(printf '%s\n' "$out" | sed -n '2p')
+  assert_eq "$picked" "$base/1.3.1/src/cli.ts" "resolver must pick the highest version via sort -V"
+}
+
+test_resolve_plugin_cli_fails_when_plugin_absent() {
+  local rc=0
+  env HOME="$TEST_HOME" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_plugin_cli 'nhangen-tools/token-scope' 'src/cli.ts'
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "resolver must return 1 when no cache directory exists"
+}
+
+test_resolve_plugin_cli_fails_when_entry_missing() {
+  local cache="$TEST_HOME/.claude/plugins/cache/nhangen-tools/token-scope/1.3.1"
+  mkdir -p "$cache"
+
+  local rc=0
+  env HOME="$TEST_HOME" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_plugin_cli 'nhangen-tools/token-scope' 'src/cli.ts'
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "resolver must return 1 when entry file is missing"
+}
+
+test_resolve_plugin_cli_honors_runtime_override() {
+  local cache="$TEST_HOME/.claude/plugins/cache/owner/tool/0.1.0/bin"
+  mkdir -p "$cache"
+  : > "$cache/run.js"
+
+  local out rc=0
+  out=$(env HOME="$TEST_HOME" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_resolve_plugin_cli 'owner/tool' 'bin/run.js' 'node'
+  " 2>/dev/null) || rc=$?
+  assert_eq "$rc" "0" "resolver should succeed with custom runtime"
+  local runtime
+  runtime=$(printf '%s\n' "$out" | sed -n '1p')
+  assert_eq "$runtime" "node" "runtime arg must override the bun default"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
