@@ -26,7 +26,7 @@ HOST="${CEO_HOSTNAME:-$(hostname -s)}"
 ALERTS_DIR="$CEO_DIR/alerts"
 LOG_DIR="$CEO_DIR/log/disk-monitor"
 INBOX_DIR="$CEO_DIR/inbox"
-STATE_FILE="$ALERTS_DIR/disk.md"
+STATE_FILE="$ALERTS_DIR/disk-$HOST.md"
 LOG_FILE="$LOG_DIR/$(date +%Y-%m).md"
 INBOX_FILE="$INBOX_DIR/$HOST.md"
 
@@ -128,6 +128,7 @@ fi
   printf 'measurement_failed: %s\n' "$MEASUREMENT_FAILED"
   printf -- '---\n\n'
   printf '# Disk Monitor — %s\n\n' "$HOST"
+  printf '<!-- alert: [[CEO/alerts/disk-%s]] -->\n\n' "$HOST"
   if [ "$CURRENT_STATUS" = "firing" ]; then
     printf 'Firing since %s.\n\n' "$SINCE"
     if [ "$MEASUREMENT_FAILED" -eq 1 ]; then
@@ -152,7 +153,7 @@ printf '%s status=%s dump=%sG free=%sG reasons="%s"\n' \
 # Inbox escalation. Unknown prior or current status, or any measurement
 # failure, suppresses all inbox mutation — we never escalate or clear on
 # uncertain state.
-TASK_LINE="- [ ] Clean wsl-crashes on $HOST — see [[CEO/alerts/disk]]"
+TASK_LINE="- [ ] Clean wsl-crashes on $HOST — see [[CEO/alerts/disk-$HOST]]"
 DONE_NOTE="- [done] disk monitor cleared $(date +%Y-%m-%d) — wsl-crashes ${DUMP_GB}G, C: ${C_FREE_GB}G free"
 
 touch "$INBOX_FILE"

@@ -112,14 +112,14 @@ run_monitor() {
 }
 
 state_field() {
-  awk -F': *' "/^$1:/ {print \$2; exit}" "$CEO_DIR/alerts/disk.md" | tr -d '[:space:]'
+  awk "/^$1:/ { sub(/^$1:[[:space:]]*/, \"\"); print; exit }" "$CEO_DIR/alerts/disk-$CEO_HOSTNAME.md" | tr -d '[:space:]'
 }
 
 # ---------- tests ----------
 
 test_first_run_clear_creates_state_file() {
   DUMP_GB_STUB="0" C_FREE_GB_STUB="999" run_monitor
-  assert_file_exists "$CEO_DIR/alerts/disk.md" "state file should exist"
+  assert_file_exists "$CEO_DIR/alerts/disk-$CEO_HOSTNAME.md" "state file should exist"
   assert_eq "$(state_field status)" "clear" "first run with low usage should be clear"
   if [ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ]; then
     printf '  FAIL [%s] clear first run must not write inbox\n' "$CURRENT_TEST"
@@ -195,7 +195,7 @@ test_missing_wsl_crashes_path_is_measurement_failure() {
 test_corrupted_prior_status_does_not_mutate_inbox() {
   # Write a state file with an unknown status value.
   mkdir -p "$CEO_DIR/alerts"
-  cat > "$CEO_DIR/alerts/disk.md" << 'EOF'
+  cat > "$CEO_DIR/alerts/disk-$CEO_HOSTNAME.md" << 'EOF'
 ---
 status: frring
 since: 2026-05-12T00:00:00-0400
@@ -212,7 +212,7 @@ EOF
 
 test_corrupted_prior_status_emits_warning() {
   mkdir -p "$CEO_DIR/alerts"
-  cat > "$CEO_DIR/alerts/disk.md" << 'EOF'
+  cat > "$CEO_DIR/alerts/disk-$CEO_HOSTNAME.md" << 'EOF'
 ---
 status: frring
 since: 2026-05-12T00:00:00-0400
@@ -232,12 +232,24 @@ test_sustained_firing_re_pokes_after_user_checkoff() {
   sed -i.bak 's/^- \[ \]/- [x]/' "$CEO_DIR/inbox/testhost.md"
   rm -f "$CEO_DIR/inbox/testhost.md.bak"
   # Force prior since to >24h ago so the SUSTAINED branch fires.
-  sed -i.bak "s/^since: .*/since: 2026-01-01T00:00:00-0500/" "$CEO_DIR/alerts/disk.md"
+  sed -i.bak "s/^since: .*/since: 2026-01-01T00:00:00-0500/" "$CEO_DIR/alerts/disk-$CEO_HOSTNAME.md"
   rm -f "$CEO_DIR/alerts/disk.md.bak"
   DUMP_GB_STUB="20" run_monitor
   local count
   count=$(grep -c -F -- "- [ ] Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "sustained firing past 24h after checkoff must re-append one task"
+}
+
+test_two_hosts_write_disjoint_state_files() {
+  CEO_HOSTNAME="alpha" DUMP_GB_STUB="20" run_monitor
+  CEO_HOSTNAME="beta"  DUMP_GB_STUB="0"  run_monitor
+  assert_file_exists "$CEO_DIR/alerts/disk-alpha.md" "alpha state file"
+  assert_file_exists "$CEO_DIR/alerts/disk-beta.md"  "beta state file"
+  local alpha_status beta_status
+  alpha_status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$CEO_DIR/alerts/disk-alpha.md" | tr -d '[:space:]')
+  beta_status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$CEO_DIR/alerts/disk-beta.md" | tr -d '[:space:]')
+  assert_eq "$alpha_status" "firing" "alpha must be firing"
+  assert_eq "$beta_status" "clear" "beta must be clear (no overwrite from alpha)"
 }
 
 test_inbox_rewrite_handles_host_with_regex_chars() {

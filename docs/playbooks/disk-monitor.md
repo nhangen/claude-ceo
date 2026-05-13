@@ -25,7 +25,7 @@ Written May 11 2026 by a Claude Code session on ML-1 as a follow-up to a 1.126 T
 
 | File | Mode | When |
 |---|---|---|
-| `CEO/alerts/disk.md` | overwrite | Every run. One entry, current state. Frontmatter: `status: firing\|clear\|unknown`, `since:`, `last_check:`, `dump_folder_gb:`, `c_free_gb:`, `measurement_failed:`. |
+| `CEO/alerts/disk-<host>.md` | overwrite | Every run. One entry per host, current state. Frontmatter: `status: firing\|clear\|unknown`, `since:`, `last_check:`, `host:`, `dump_folder_gb:`, `c_free_gb:`, `measurement_failed:`. Per-host so a synced vault with multiple monitors does not race. |
 | `CEO/log/disk-monitor/YYYY-MM.md` | append | Every run. One line per check. Forensic history. |
 | `CEO/inbox/<host>.md` | append `- [ ]` line | On `clear → firing` transition. Idempotent — does not re-append the same task line. Per-host file (`<host>` = `hostname -s`, lowercase). |
 
