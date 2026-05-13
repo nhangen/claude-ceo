@@ -23,10 +23,18 @@ if [ ! -f "$LAST_SCAN_MARKER" ]; then
 fi
 
 # --- 1. Vault file changes since last scan ---
+# Excludes:
+#   .obsidian/    — editor metadata
+#   CEO/log/      — append-only forensic history (per output-locations.md)
+#   CEO/reports/  — CEO-generated reports
+#   CEO/alerts/   — monitor state files (surfaced separately via ALERTS_FIRING below)
+#   CEO/inbox/    — per-host task files; the inbox playbook handles these directly
 VAULT_CHANGES_RAW=$(find "$VAULT" -newer "$LAST_SCAN_MARKER" -type f -name "*.md" \
   -not -path "*/.obsidian/*" \
   -not -path "*/CEO/log/*" \
   -not -path "*/CEO/reports/*" \
+  -not -path "*/CEO/alerts/*" \
+  -not -path "*/CEO/inbox/*" \
   -not -name "*.sync-conflict-*" \
   2>/dev/null || true)
 
@@ -93,3 +101,23 @@ if [ -f "$YESTERDAY_REPORT_FILE" ]; then
 else
   export FAILED_ACTIONS="none"
 fi
+
+# --- 6. Alerts (state files with status: firing|clear) ---
+# Surface only alerts whose status is "firing". Pull host + reason summary
+# from frontmatter. Sustained-firing surfacing is the playbook's job — this
+# block just reports the current state of each alert file.
+ALERTS_DIR="$CEO_DIR/alerts"
+ALERTS_FIRING=""
+if [ -d "$ALERTS_DIR" ]; then
+  for alert in "$ALERTS_DIR"/*.md; do
+    [ -f "$alert" ] || continue
+    status=$(awk -F': *' '/^status:/ {print $2; exit}' "$alert" | tr -d '[:space:]')
+    if [ "$status" = "firing" ]; then
+      name=$(basename "$alert" .md)
+      host=$(awk -F': *' '/^host:/ {print $2; exit}' "$alert" | tr -d '[:space:]')
+      since=$(awk -F': *' '/^since:/ {print $2; exit}' "$alert" | tr -d '[:space:]')
+      ALERTS_FIRING="${ALERTS_FIRING}${name} (host=${host}, since=${since})\n"
+    fi
+  done
+fi
+export ALERTS_FIRING
