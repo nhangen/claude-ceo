@@ -1,5 +1,6 @@
 import { extractPathsAndSymbols } from "@/extract";
 import { resolveServer } from "@/servers";
+import { EMPTY_THRESHOLD_TOKENS } from "@/signals";
 import type { Bucket, ClassifiedCall, ToolCall, ToolClass } from "@/types";
 
 const DEFAULT_WINDOW: Record<ToolClass, number> = {
@@ -10,7 +11,6 @@ const DEFAULT_WINDOW: Record<ToolClass, number> = {
   meta: 0,
 };
 
-const EMPTY_THRESHOLD_TOKENS = 50;
 const TRIV_DOWNSTREAM_WINDOW = 3;
 
 function windowFor(call: ToolCall): number {

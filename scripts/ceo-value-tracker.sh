@@ -18,11 +18,15 @@ source "$SCRIPT_DIR/ceo-config.sh"
 
 ceo_load_config || { echo "ERROR: CEO config not found" >&2; exit 1; }
 
+# Validate before any helper that reads $HOME. `set -u` does not catch
+# HOME="" (set-but-empty); that's the cron / stripped-env shape from PR #11
+# where ceo_augment_path emits dangling `/.bun/bin` paths silently.
+: "${HOME:?HOME must be set}"
+
 # Pin $HOME before PATH augmentation so cron-stripped env still resolves bun.
 ceo_pin_home_or_warn || true
 ceo_augment_path
 
-: "${HOME:?HOME must be set}"
 : "${CEO_VAULT:?CEO_VAULT must be set}"
 
 if ! command -v bun >/dev/null 2>&1; then
@@ -42,7 +46,8 @@ HOST="${CEO_HOSTNAME:-$(hostname -s)}"
 INBOX_DIR="$CEO_DIR/inbox"
 INBOX_FILE="$INBOX_DIR/$HOST.md"
 TODAY=$(date +%Y-%m-%d)
-SINCE=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d)
+SINCE=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev/null || true)
+: "${SINCE:?SINCE computation failed; neither BSD nor GNU date resolved (check cron PATH)}"
 
 NOTE_DIR="$VAULT/Projects/Development/nhangen/claude-ceo/value-tracker"
 NOTE_PATH="$NOTE_DIR/$TODAY.md"

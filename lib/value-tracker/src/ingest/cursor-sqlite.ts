@@ -77,7 +77,6 @@ interface RawTfd {
 
 function resultIsError(status: unknown, result: unknown): boolean {
   if (typeof status === "string" && /(error|fail|cancel)/i.test(status)) return true;
-  if (typeof status === "number" && status !== 0 && status !== 1 && status !== 2) return true;
   if (result && typeof result === "object" && "error" in (result as object)) return true;
   return false;
 }
@@ -165,7 +164,13 @@ export function readCursorBubbles(opts: CursorIngestOptions = {}): ToolCall[] {
       try { tfd = JSON.parse(row.tfd) as RawTfd; } catch { continue; }
       if (typeof tfd.name !== "string") continue;
       const composerId = extractComposerIdFromKey(row.k);
-      if (!composerId) continue;
+      if (!composerId) {
+        // Bubble carries a tool call but the key doesn't yield a composer id —
+        // surface schema drift instead of silently dropping. Mirrors the
+        // canonicalizeName log at line ~44.
+        process.stderr.write(`cursor-sqlite: bubble has toolFormerData but unparseable composer key, skipping: ${row.k}\n`);
+        continue;
+      }
 
       const ts = createdAtById.get(composerId) ?? 0;
       if (ts < sinceMs) continue;
