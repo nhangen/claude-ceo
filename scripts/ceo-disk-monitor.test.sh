@@ -270,6 +270,19 @@ test_user_reformat_does_not_duplicate_task() {
   fi
 }
 
+test_log_append_failure_emits_warning() {
+  if [ "$(id -u)" = "0" ]; then
+    return 0
+  fi
+  DUMP_GB_STUB="0" run_monitor
+  local log_file="$CEO_DIR/log/disk-monitor/$(date +%Y-%m).md"
+  chmod 0400 "$log_file"
+  local stderr
+  stderr=$(DUMP_GB_STUB="0" bash "$MONITOR" 2>&1 >/dev/null) || true
+  chmod 0600 "$log_file"
+  assert_contains "$stderr" "failed to append log line" "read-only log file must surface a warning to stderr"
+}
+
 test_inbox_rewrite_handles_host_with_regex_chars() {
   # HOST is interpolated into inbox-rewrite logic — must not break on regex
   # metacharacters or shell special chars.

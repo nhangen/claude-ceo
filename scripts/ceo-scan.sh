@@ -103,7 +103,6 @@ else
   export FAILED_ACTIONS="none"
 fi
 
-# --- 6. Alerts (state files with status: firing|clear) ---
 # Surface only alerts whose `status:` frontmatter is "firing". Pulls host and
 # transition timestamp from the same frontmatter; full reasons live in the
 # alert body. Unknown status values are logged so a corrupt or typo'd alert

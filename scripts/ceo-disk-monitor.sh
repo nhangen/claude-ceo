@@ -147,8 +147,10 @@ fi
   fi
 } > "$STATE_FILE"
 
-printf '%s status=%s dump=%sG free=%sG reasons="%s"\n' \
-  "$NOW" "$CURRENT_STATUS" "$DUMP_GB" "$C_FREE_GB" "${REASONS[*]:-}" >> "$LOG_FILE"
+if ! printf '%s status=%s dump=%sG free=%sG reasons="%s"\n' \
+    "$NOW" "$CURRENT_STATUS" "$DUMP_GB" "$C_FREE_GB" "${REASONS[*]:-}" >> "$LOG_FILE" 2>/dev/null; then
+  printf 'WARN: ceo-disk-monitor: failed to append log line to %s\n' "$LOG_FILE" >&2
+fi
 
 # Inbox escalation. Unknown prior or current status, or any measurement
 # failure, suppresses all inbox mutation — we never escalate or clear on
