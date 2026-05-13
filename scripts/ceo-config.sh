@@ -130,16 +130,19 @@ ceo_augment_path() {
 # ---------------------------------------------------------------------------
 # ceo_resolve_plugin_cli — resolve a Claude Code plugin-provided CLI entrypoint
 # from the local plugin cache, returning the runtime command and absolute entry
-# path on stdout (one per line, suitable for `mapfile`).
+# path on stdout (one per line).
 #
 # Plugins land at ~/.claude/plugins/cache/<owner>/<plugin>/<version>/ and do
 # not install anything on PATH. Consumers that need to invoke a plugin-provided
 # CLI from cron/scripts should resolve via the cache rather than rely on stale
 # PATH symlinks from prior standalone installs. See nhangen/claude-ceo#37.
 #
-# Usage:
-#   mapfile -t TS_CMD < <(ceo_resolve_plugin_cli "nhangen-tools/token-scope" "src/cli.ts")
-#   "${TS_CMD[@]}" --since 1d
+# Usage (bash 3.2 compatible — macOS default lacks mapfile/readarray):
+#   if out=$(ceo_resolve_plugin_cli "nhangen-tools/token-scope" "src/cli.ts"); then
+#     runtime=$(printf '%s\n' "$out" | sed -n '1p')
+#     entry=$(printf '%s\n' "$out" | sed -n '2p')
+#     "$runtime" "$entry" --since 1d
+#   fi
 #
 # Args:
 #   $1  owner/plugin slug (e.g. nhangen-tools/token-scope)

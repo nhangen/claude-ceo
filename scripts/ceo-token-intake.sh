@@ -69,12 +69,16 @@ capture() {
 # prior standalone installs satisfy `command -v` but dangle. See #37.
 # Avoid mapfile here: macOS ships bash 3.2 by default, which lacks it.
 TS_CMD=(token-scope)
+_ts_resolved=""
 if _ts_resolved=$(ceo_resolve_plugin_cli "nhangen-tools/token-scope" "src/cli.ts" 2>/dev/null); then
   _ts_runtime=$(printf '%s\n' "$_ts_resolved" | sed -n '1p')
   _ts_path=$(printf '%s\n' "$_ts_resolved" | sed -n '2p')
   if [ -n "$_ts_runtime" ] && [ -n "$_ts_path" ]; then
     TS_CMD=("$_ts_runtime" "$_ts_path")
   fi
+fi
+if [ "${TS_CMD[0]}" = "token-scope" ]; then
+  echo "WARN: token-scope plugin cache not resolved; falling back to PATH (stale symlinks may dangle)" >&2
 fi
 unset _ts_resolved _ts_runtime _ts_path
 

@@ -287,15 +287,24 @@ test_prefers_plugin_cache_over_path_for_token_scope() {
   # token-scope from setup() should be ignored when the cache resolves.
   local cache="$TEST_HOME/.claude/plugins/cache/nhangen-tools/token-scope/1.3.1/src"
   mkdir -p "$cache"
-  cat > "$cache/cli.ts" << 'STUB'
+  cat > "$cache/cli.ts" << STUB
 #!/bin/bash
-echo "token-scope-from-cache: $*"
+echo "token-scope-from-cache: \$*"
 STUB
   chmod +x "$cache/cli.ts"
 
-  cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
+  # Stub bun must receive the absolute cache path as \$1 — that's how the
+  # caller proves it actually used the resolver's runtime+path pair, not
+  # an accidental "bash cli.ts" fallback. A regression that drops
+  # \$_ts_runtime from TS_CMD would invoke the .ts directly and miss this.
+  local expected_entry="$cache/cli.ts"
+  cat > "$TEST_HOME/.bun/bin/bun" << STUB
 #!/bin/bash
-exec bash "$@"
+if [ "\$1" != "$expected_entry" ]; then
+  echo "bun-stub-WRONG-ARG: expected '$expected_entry', got '\$1'" >&2
+  exit 2
+fi
+exec bash "\$@"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
 
@@ -317,6 +326,10 @@ STUB
     "intake must invoke the cache-resolved token-scope, not the PATH stub"
   if [[ "$body" == *"token-scope-from-PATH-WRONG"* ]]; then
     printf '  FAIL [%s] cache resolver was bypassed; PATH stub ran instead\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [[ "$body" == *"bun-stub-WRONG-ARG"* ]]; then
+    printf '  FAIL [%s] bun stub received wrong entry path (runtime+path pair mismatched)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
 }
