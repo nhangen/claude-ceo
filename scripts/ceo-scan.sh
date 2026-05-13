@@ -8,6 +8,7 @@
 #   YESTERDAY_DAILY_NOTE, TODAY_DAILY_NOTE
 #   PENDING_QUESTIONS, PENDING_APPROVALS_UNCHECKED
 #   YESTERDAY_REPORT, FAILED_ACTIONS
+#   ALERTS_FIRING
 
 VAULT="${CEO_VAULT:-${VAULT:-$HOME/Documents/Obsidian}}"
 CEO_DIR="$VAULT/CEO"
@@ -23,10 +24,18 @@ if [ ! -f "$LAST_SCAN_MARKER" ]; then
 fi
 
 # --- 1. Vault file changes since last scan ---
+# Excludes:
+#   .obsidian/    — editor metadata
+#   CEO/log/      — append-only forensic history (per output-locations.md)
+#   CEO/reports/  — CEO-generated reports
+#   CEO/alerts/   — monitor state files (surfaced separately via ALERTS_FIRING below)
+#   CEO/inbox/    — per-host task files; the inbox playbook handles these directly
 VAULT_CHANGES_RAW=$(find "$VAULT" -newer "$LAST_SCAN_MARKER" -type f -name "*.md" \
   -not -path "*/.obsidian/*" \
   -not -path "*/CEO/log/*" \
   -not -path "*/CEO/reports/*" \
+  -not -path "*/CEO/alerts/*" \
+  -not -path "*/CEO/inbox/*" \
   -not -name "*.sync-conflict-*" \
   2>/dev/null || true)
 
@@ -93,3 +102,31 @@ if [ -f "$YESTERDAY_REPORT_FILE" ]; then
 else
   export FAILED_ACTIONS="none"
 fi
+
+# Surface only alerts whose `status:` frontmatter is "firing". Pulls host and
+# transition timestamp from the same frontmatter; full reasons live in the
+# alert body. Unknown status values are logged so a corrupt or typo'd alert
+# file does not silently disappear from the morning scan.
+ALERTS_DIR="$CEO_DIR/alerts"
+ALERTS_FIRING=""
+if [ -d "$ALERTS_DIR" ]; then
+  for alert in "$ALERTS_DIR"/*.md; do
+    [ -f "$alert" ] || continue
+    status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+    case "$status" in
+      firing)
+        name=$(basename "$alert" .md)
+        host=$(awk '/^host:/ { sub(/^host:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+        since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+        ALERTS_FIRING="${ALERTS_FIRING}${name} (host=${host}, since=${since})\n"
+        ;;
+      clear|'')
+        ;;
+      *)
+        printf 'WARN: ceo-scan: unknown alert status %q in %s; treating as not firing\n' \
+          "$status" "$alert" >&2
+        ;;
+    esac
+  done
+fi
+export ALERTS_FIRING
