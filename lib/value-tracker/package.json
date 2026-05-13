@@ -1,0 +1,16 @@
+{
+  "name": "ceo-value-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Internal CEO lib — post-hoc analyser of MCP tool-call value from Claude Code + Cursor sessions. Invoked by scripts/ceo-value-tracker.sh via the value-tracker playbook.",
+  "scripts": {
+    "typecheck": "bun tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/bun": "latest"
+  },
+  "engines": { "bun": ">=1.3.5" },
+  "license": "MIT"
+}
