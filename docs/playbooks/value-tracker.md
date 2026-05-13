@@ -2,7 +2,7 @@
 name: value-tracker
 description: Daily MCP tool-call value report — analyses Claude Code + Cursor sessions for used vs wasted tool calls
 trigger: cron
-schedule: "0 6 * * *"
+schedule: "0 6 * * 1-5"
 preflight: none
 tier: read
 status: active
