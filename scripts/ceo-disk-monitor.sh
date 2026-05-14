@@ -1,5 +1,5 @@
 #!/bin/bash
-# ceo-disk-monitor.sh — Hourly disk-state check on ML-1 (WSL2).
+# ceo-disk-monitor.sh — Six-hour disk-state check on ML-1 (WSL2).
 # State machine, not signal generator. Writes one state file (overwrite),
 # one log line (append), and only touches the inbox on state transitions
 # or sustained firing.

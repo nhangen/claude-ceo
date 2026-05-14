@@ -322,6 +322,40 @@ SH
   rm -f "$SCRIPT_DIR/log-intake.sh"
 }
 
+test_disk_monitor_success_suppresses_success_notification() {
+  cat > "$CEO_DIR/playbooks/disk-monitor.md" << 'PB'
+---
+name: disk-monitor
+description: Test disk-monitor notification suppression
+trigger: cron
+schedule: "0 */6 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: disk-monitor-test.sh
+---
+PB
+
+  cat > "$SCRIPT_DIR/disk-monitor-test.sh" << 'SH'
+#!/bin/bash
+exit 0
+SH
+  chmod +x "$SCRIPT_DIR/disk-monitor-test.sh"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" CEO_VERBOSE=1 bash "$CRON" disk-monitor >/dev/null 2>&1 || true
+
+  local notify_log
+  notify_log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
+  if [[ "$notify_log" == *"[success/disk-monitor]"* ]]; then
+    printf '  FAIL [%s] disk-monitor success must not invoke success notification\n    log: %q\n' "$CURRENT_TEST" "$notify_log"
+    FAILS=$((FAILS + 1))
+  fi
+
+  rm -f "$SCRIPT_DIR/disk-monitor-test.sh"
+}
+
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash

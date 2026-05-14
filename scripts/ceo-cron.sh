@@ -45,7 +45,9 @@ _record_success() {
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
   echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
-  [ -x "$SCRIPT_DIR/ceo-notify.sh" ] && "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || true
+  if [ "$TRIGGER" != "disk-monitor" ]; then
+    [ -x "$SCRIPT_DIR/ceo-notify.sh" ] && "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || true
+  fi
 }
 
 _record_failure() {

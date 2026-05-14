@@ -1,8 +1,8 @@
 ---
 name: disk-monitor
-description: Hourly disk/wsl-crashes check on ML-1; writes state to alerts/disk.md, escalates to inbox on sustained firing
+description: Six-hour disk/wsl-crashes check on ML-1; writes state to alerts/disk.md, escalates to inbox on sustained firing
 trigger: cron
-schedule: "0 * * * *"
+schedule: "0 */6 * * *"
 preflight: none
 tier: low-stakes write
 status: active
@@ -12,7 +12,7 @@ script: ceo-disk-monitor.sh
 
 # Disk Monitor (ML-1)
 
-Shell-only playbook. Runs hourly on ML-1 (WSL2). Checks:
+Shell-only playbook. Runs every six hours on ML-1 (WSL2). Checks:
 
 - C: drive free space — alert if < 50 GB
 - `C:\Users\nhang\AppData\Local\Temp\wsl-crashes\` folder size — alert if > 5 GB
@@ -40,7 +40,7 @@ If `du`, `df`, or either measured path is unavailable, the run is treated as mea
 ## Documented gaps
 
 - `.wslconfig`'s `crashDumpFolder=` only suppresses WSL-guest-side dumps. Windows-native binaries running Linux builds *under* WSL (e.g. CARLA's Linux UE4 binary) still write to `wsl-crashes/` via Windows Error Reporting. The monitor can detect this but does not clean it up — cleanup is human work via the inbox task.
-- Hourly cadence is intentional (early detection). Suppress duplicate inbox tasks via idempotency, not by lengthening the schedule.
+- Six-hour cadence is intentional: enough to catch disk pressure without creating notification noise. Suppress duplicate inbox tasks via idempotency.
 
 ## Install
 
