@@ -362,6 +362,166 @@ test_resolve_plugin_cli_honors_runtime_override() {
   assert_eq "$runtime" "node" "runtime arg must override the bun default"
 }
 
+# --- ceo_write_alert_frontmatter / ceo_read_alert_field ---
+
+test_write_alert_frontmatter_emits_required_fields() {
+  local out
+  out=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_write_alert_frontmatter --status=firing --since=2026-05-13T18:00:00-0400 \
+      --host=ml1 --last-check=2026-05-13T19:00:00-0400
+  ")
+  assert_eq "$(printf '%s\n' "$out" | sed -n '1p')" "---" "first line must be frontmatter delimiter"
+  case "$out" in
+    *"status: firing"*) ;;
+    *) printf '  FAIL [%s] missing status\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
+  esac
+  case "$out" in
+    *"since: 2026-05-13T18:00:00-0400"*) ;;
+    *) printf '  FAIL [%s] missing since\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
+  esac
+  case "$out" in
+    *"last_check: 2026-05-13T19:00:00-0400"*) ;;
+    *) printf '  FAIL [%s] missing last_check\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
+  esac
+  case "$out" in
+    *"host: ml1"*) ;;
+    *) printf '  FAIL [%s] missing host\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
+  esac
+  assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "---" "last line must be closing delimiter"
+}
+
+test_write_alert_frontmatter_rejects_invalid_status() {
+  local stderr rc=0
+  stderr=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_write_alert_frontmatter --status=frring --since=t --host=h --last-check=t
+  " 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "1" "invalid status must return 1"
+  case "$stderr" in
+    *"invalid"*"status"*) ;;
+    *) printf '  FAIL [%s] expected error on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
+       FAILS=$((FAILS + 1)) ;;
+  esac
+}
+
+test_write_alert_frontmatter_accepts_clear_firing_unknown() {
+  for s in clear firing unknown; do
+    local rc=0
+    bash -c "
+      set -uo pipefail
+      source '$LIB'
+      ceo_write_alert_frontmatter --status=$s --since=t --host=h --last-check=t
+    " >/dev/null 2>&1 || rc=$?
+    assert_eq "$rc" "0" "status=$s must be accepted"
+  done
+}
+
+test_write_alert_frontmatter_requires_since_and_host() {
+  local rc=0
+  bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_write_alert_frontmatter --status=clear --host=h --last-check=t
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "missing --since must return 1"
+  rc=0
+  bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_write_alert_frontmatter --status=clear --since=t --last-check=t
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "missing --host must return 1"
+}
+
+test_write_alert_frontmatter_emits_extra_fields() {
+  local out
+  out=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_write_alert_frontmatter --status=firing --since=t --host=h --last-check=t \
+      --field dump_folder_gb=20 --field c_free_gb=999 --field measurement_failed=0
+  ")
+  for kv in "dump_folder_gb: 20" "c_free_gb: 999" "measurement_failed: 0"; do
+    case "$out" in
+      *"$kv"*) ;;
+      *) printf '  FAIL [%s] missing %q in output\n' "$CURRENT_TEST" "$kv"
+         FAILS=$((FAILS + 1)) ;;
+    esac
+  done
+}
+
+test_read_alert_field_parses_timestamps_with_colons() {
+  local f="$TEST_HOME/disk.md"
+  cat > "$f" << 'EOF'
+---
+status: firing
+since: 2026-01-01T00:00:00-0500
+last_check: 2026-05-13T18:29:43-0400
+host: testhost
+---
+EOF
+  local got
+  got=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_read_alert_field '$f' since
+  ")
+  assert_eq "$got" "2026-01-01T00:00:00-0500" "since must round-trip including colons (regression: -F': *' bug)"
+}
+
+test_read_alert_field_returns_empty_for_missing_field() {
+  local f="$TEST_HOME/disk.md"
+  cat > "$f" << 'EOF'
+---
+status: clear
+---
+EOF
+  local got
+  got=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_read_alert_field '$f' nonexistent
+  ")
+  assert_eq "$got" "" "missing field must return empty string"
+}
+
+test_read_alert_field_returns_empty_for_missing_file() {
+  local got
+  got=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_read_alert_field '$TEST_HOME/no-such-file.md' status
+  ")
+  assert_eq "$got" "" "missing file must return empty string (not error)"
+}
+
+test_write_and_read_roundtrip() {
+  local f="$TEST_HOME/alert.md"
+  bash -c "
+    set -uo pipefail
+    source '$LIB'
+    { ceo_write_alert_frontmatter --status=firing \
+        --since=2026-01-01T00:00:00-0500 \
+        --last-check=2026-05-13T19:00:00-0400 \
+        --host=ml1 \
+        --field dump_folder_gb=20
+      printf '\n# body\n'
+    } > '$f'
+  "
+  local status since host dump
+  status=$(bash -c "set -uo pipefail; source '$LIB'; ceo_read_alert_field '$f' status")
+  since=$(bash -c "set -uo pipefail; source '$LIB'; ceo_read_alert_field '$f' since")
+  host=$(bash -c "set -uo pipefail; source '$LIB'; ceo_read_alert_field '$f' host")
+  dump=$(bash -c "set -uo pipefail; source '$LIB'; ceo_read_alert_field '$f' dump_folder_gb")
+  assert_eq "$status" "firing" "round-trip status"
+  assert_eq "$since" "2026-01-01T00:00:00-0500" "round-trip since (colons preserved)"
+  assert_eq "$host" "ml1" "round-trip host"
+  assert_eq "$dump" "20" "round-trip extra field"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

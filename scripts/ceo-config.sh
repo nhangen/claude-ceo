@@ -14,6 +14,8 @@
 #   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1
 #   ceo_assert_primary_host() — gate Syncthing-shared writes; rc=0 allowed/1 deny
 #   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
+#   ceo_write_alert_frontmatter() — emit alert frontmatter to stdout; validates enum
+#   ceo_read_alert_field()  — read a single frontmatter field; handles colons in values
 #
 # Resolution order in ceo_load_config():
 #   1. CEO_VAULT already set in environment → use it as-is, return 0 (bypass mode)
@@ -383,4 +385,99 @@ ceo_assert_primary_host() {
   fi
 
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# ceo_write_alert_frontmatter — emit a CEO/alerts/*.md frontmatter block.
+#
+# Centralizes the alert schema so a second alert producer cannot drift on
+# field names, status enum values, or timestamp parsing semantics.
+#
+# Required:
+#   --status=<clear|firing|unknown>   validated; unknown values return 1
+#   --since=<timestamp>               first time current status was observed
+#   --host=<hostname>                 originating host
+#   --last-check=<timestamp>          time of this write (caller-supplied for
+#                                     determinism in tests)
+#
+# Optional:
+#   --field key=value                 additional frontmatter fields
+#                                     (repeatable). Values must not contain newlines.
+#
+# Writes the `---`-delimited YAML frontmatter block to stdout. Caller is
+# responsible for the body (`{ ceo_write_alert_frontmatter ...; printf '...'; } > file`).
+# ---------------------------------------------------------------------------
+ceo_write_alert_frontmatter() {
+  local status="" since="" host="" last_check=""
+  local -a extra_fields=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status=*)     status="${1#--status=}" ;;
+      --since=*)      since="${1#--since=}" ;;
+      --host=*)       host="${1#--host=}" ;;
+      --last-check=*) last_check="${1#--last-check=}" ;;
+      --field)        shift; extra_fields+=("${1:-}") ;;
+      --field=*)      extra_fields+=("${1#--field=}") ;;
+      *)
+        printf 'ERROR: ceo_write_alert_frontmatter: unknown argument %q\n' "$1" >&2
+        return 1
+        ;;
+    esac
+    shift
+  done
+
+  case "$status" in
+    clear|firing|unknown) ;;
+    *)
+      printf 'ERROR: ceo_write_alert_frontmatter: invalid --status=%q (want clear|firing|unknown)\n' \
+        "$status" >&2
+      return 1
+      ;;
+  esac
+  [ -z "$since" ]      && { echo "ERROR: ceo_write_alert_frontmatter: --since= required" >&2; return 1; }
+  [ -z "$host" ]       && { echo "ERROR: ceo_write_alert_frontmatter: --host= required" >&2; return 1; }
+  [ -z "$last_check" ] && { echo "ERROR: ceo_write_alert_frontmatter: --last-check= required" >&2; return 1; }
+
+  printf -- '---\n'
+  printf 'status: %s\n' "$status"
+  printf 'since: %s\n' "$since"
+  printf 'last_check: %s\n' "$last_check"
+  printf 'host: %s\n' "$host"
+
+  local kv k v
+  for kv in ${extra_fields[@]+"${extra_fields[@]}"}; do
+    [ -z "$kv" ] && continue
+    if [[ "$kv" != *=* ]]; then
+      printf 'ERROR: ceo_write_alert_frontmatter: --field value %q is not key=value\n' "$kv" >&2
+      return 1
+    fi
+    k="${kv%%=*}"
+    v="${kv#*=}"
+    printf '%s: %s\n' "$k" "$v"
+  done
+
+  printf -- '---\n'
+}
+
+# ---------------------------------------------------------------------------
+# ceo_read_alert_field <path> <field>
+#
+# Read a single frontmatter field from an alert file. Uses awk sub() to strip
+# the "field:" prefix so values containing colons (timestamps with offsets,
+# wikilinks, urls) round-trip correctly — the prior `-F': *'` parser truncated
+# `since: 2026-01-01T00:00:00-0500` to `2026-01-01T00`.
+#
+# Missing file or missing field both print nothing and return 0.
+# ---------------------------------------------------------------------------
+ceo_read_alert_field() {
+  local path="$1" field="$2"
+  [ -f "$path" ] || return 0
+  awk -v f="$field" '
+    $0 ~ "^" f ":" {
+      sub("^" f ":[[:space:]]*", "")
+      sub(/[[:space:]]+$/, "")
+      print
+      exit
+    }
+  ' "$path"
 }
