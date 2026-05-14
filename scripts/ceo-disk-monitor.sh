@@ -41,23 +41,40 @@ FREE_THRESHOLD_GB=50
 NOW=$(date +%Y-%m-%dT%H:%M:%S%z)
 
 # Read prior state from state file frontmatter.
-# Empty status = first run (no state file) = "clear".
-# Unknown status = corrupted state file = log + refuse to mutate inbox.
+# Exit code semantics (see ceo_read_alert_field):
+#   rc=0  field present  → consume value
+#   rc=1  file exists but field absent  → corruption, refuse to mutate inbox
+#   rc=2  no state file (first run)     → empty PRIOR_STATUS = "clear"
 PRIOR_STATUS=""
 PRIOR_SINCE=""
-if [ -f "$STATE_FILE" ]; then
-  PRIOR_STATUS=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$STATE_FILE" | tr -d '[:space:]')
-  PRIOR_SINCE=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$STATE_FILE" | tr -d '[:space:]')
-fi
-case "$PRIOR_STATUS" in
-  clear|firing) ;;
-  '') PRIOR_STATUS="clear" ;;
-  *)
-    printf 'WARN: ceo-disk-monitor: unknown prior status %q in %s; refusing inbox mutation\n' \
-      "$PRIOR_STATUS" "$STATE_FILE" >&2
+_status_rc=0
+PRIOR_STATUS=$(ceo_read_alert_field "$STATE_FILE" status) || _status_rc=$?
+case "$_status_rc" in
+  0)
+    case "$PRIOR_STATUS" in
+      clear|firing) ;;
+      *)
+        printf 'WARN: ceo-disk-monitor: unrecognized prior status %q in %s; refusing inbox mutation\n' \
+          "$PRIOR_STATUS" "$STATE_FILE" >&2
+        PRIOR_STATUS="unknown"
+        ;;
+    esac
+    ;;
+  1)
+    printf 'WARN: ceo-disk-monitor: state file %s present but missing status field; refusing inbox mutation\n' \
+      "$STATE_FILE" >&2
     PRIOR_STATUS="unknown"
     ;;
+  2)
+    PRIOR_STATUS="clear"
+    ;;
 esac
+# PRIOR_SINCE is optional: absent on first run (rc=2) or for a "clear" alert
+# without a recorded transition. rc=1 (file exists, since field missing) is
+# tolerated for mutation purposes — PRIOR_STATUS already determines whether we
+# mutate — but the helper's stderr diagnostic is preserved so the operator
+# sees the corruption signal alongside the PRIOR_STATUS warning above.
+PRIOR_SINCE=$(ceo_read_alert_field "$STATE_FILE" since) || PRIOR_SINCE=""
 
 # Measure. Any unreadable path or non-zero exit from du/df is
 # MEASUREMENT_FAILED — we must NOT silently downgrade to clear.
@@ -117,17 +134,25 @@ else
   SINCE="$NOW"
 fi
 
-{
-  printf -- '---\n'
-  printf 'status: %s\n' "$CURRENT_STATUS"
-  printf 'since: %s\n' "$SINCE"
-  printf 'last_check: %s\n' "$NOW"
-  printf 'host: %s\n' "$HOST"
-  printf 'dump_folder_gb: %s\n' "$DUMP_GB"
-  printf 'c_free_gb: %s\n' "$C_FREE_GB"
-  printf 'measurement_failed: %s\n' "$MEASUREMENT_FAILED"
-  printf -- '---\n\n'
-  printf '# Disk Monitor — %s\n\n' "$HOST"
+# Atomic write: render to a tmp file, rename on success. A failed
+# ceo_write_alert_frontmatter (returns 1 on validation error) would otherwise
+# leave $STATE_FILE half-truncated under the brace-group redirect.
+STATE_TMP=$(mktemp "${STATE_FILE}.XXXXXX") || {
+  printf 'ERROR: ceo-disk-monitor: mktemp failed for %s\n' "$STATE_FILE" >&2
+  exit 1
+}
+trap 'rm -f "$STATE_TMP"' EXIT
+
+if ! {
+  ceo_write_alert_frontmatter \
+    --status="$CURRENT_STATUS" \
+    --since="$SINCE" \
+    --last-check="$NOW" \
+    --host="$HOST" \
+    --field dump_folder_gb="$DUMP_GB" \
+    --field c_free_gb="$C_FREE_GB" \
+    --field measurement_failed="$MEASUREMENT_FAILED"
+  printf '\n# Disk Monitor — %s\n\n' "$HOST"
   printf '<!-- alert: [[CEO/alerts/disk-%s]] -->\n\n' "$HOST"
   if [ "$CURRENT_STATUS" = "firing" ]; then
     printf 'Firing since %s.\n\n' "$SINCE"
@@ -145,7 +170,13 @@ fi
   else
     printf 'Status unknown — measurement failed and no prior state available.\n'
   fi
-} > "$STATE_FILE"
+} > "$STATE_TMP"; then
+  printf 'ERROR: ceo-disk-monitor: failed to render state for %s; existing state preserved\n' "$STATE_FILE" >&2
+  exit 1
+fi
+
+mv "$STATE_TMP" "$STATE_FILE"
+trap - EXIT
 
 if ! printf '%s status=%s dump=%sG free=%sG reasons="%s"\n' \
     "$NOW" "$CURRENT_STATUS" "$DUMP_GB" "$C_FREE_GB" "${REASONS[*]:-}" >> "$LOG_FILE" 2>/dev/null; then

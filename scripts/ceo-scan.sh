@@ -10,6 +10,10 @@
 #   YESTERDAY_REPORT, FAILED_ACTIONS
 #   ALERTS_FIRING
 
+_SCAN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=ceo-config.sh
+source "$_SCAN_DIR/ceo-config.sh"
+
 VAULT="${CEO_VAULT:-${VAULT:-$HOME/Documents/Obsidian}}"
 CEO_DIR="$VAULT/CEO"
 REPORT_DIR="$CEO_DIR/reports"
@@ -105,26 +109,40 @@ fi
 
 # Surface only alerts whose `status:` frontmatter is "firing". Pulls host and
 # transition timestamp from the same frontmatter; full reasons live in the
-# alert body. Unknown status values are logged so a corrupt or typo'd alert
-# file does not silently disappear from the morning scan.
+# alert body. A missing status field is corruption (not absence) — surface it
+# as a firing alert so the morning scan flags it for investigation instead of
+# silently treating it as cleared.
 ALERTS_DIR="$CEO_DIR/alerts"
 ALERTS_FIRING=""
 if [ -d "$ALERTS_DIR" ]; then
   for alert in "$ALERTS_DIR"/*.md; do
     [ -f "$alert" ] || continue
-    status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
-    case "$status" in
-      firing)
-        name=$(basename "$alert" .md)
-        host=$(awk '/^host:/ { sub(/^host:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
-        since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
-        ALERTS_FIRING="${ALERTS_FIRING}${name} (host=${host}, since=${since})\n"
+    _rc=0
+    status=$(ceo_read_alert_field "$alert" status) || _rc=$?
+    name=$(basename "$alert" .md)
+    case "$_rc" in
+      0)
+        case "$status" in
+          firing)
+            host=$(ceo_read_alert_field "$alert" host 2>/dev/null || true)
+            since=$(ceo_read_alert_field "$alert" since 2>/dev/null || true)
+            ALERTS_FIRING="${ALERTS_FIRING}${name} (host=${host}, since=${since})\n"
+            ;;
+          clear)
+            ;;
+          *)
+            printf 'WARN: ceo-scan: unrecognized alert status %q in %s; surfacing for investigation\n' \
+              "$status" "$alert" >&2
+            ALERTS_FIRING="${ALERTS_FIRING}${name} (corrupted: status=${status})\n"
+            ;;
+        esac
         ;;
-      clear|'')
+      1)
+        printf 'WARN: ceo-scan: alert %s missing status field; surfacing for investigation\n' \
+          "$alert" >&2
+        ALERTS_FIRING="${ALERTS_FIRING}${name} (corrupted: no status field)\n"
         ;;
       *)
-        printf 'WARN: ceo-scan: unknown alert status %q in %s; treating as not firing\n' \
-          "$status" "$alert" >&2
         ;;
     esac
   done
