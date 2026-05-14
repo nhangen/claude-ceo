@@ -43,12 +43,8 @@ NOW=$(date +%Y-%m-%dT%H:%M:%S%z)
 # Read prior state from state file frontmatter.
 # Empty status = first run (no state file) = "clear".
 # Unknown status = corrupted state file = log + refuse to mutate inbox.
-PRIOR_STATUS=""
-PRIOR_SINCE=""
-if [ -f "$STATE_FILE" ]; then
-  PRIOR_STATUS=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$STATE_FILE" | tr -d '[:space:]')
-  PRIOR_SINCE=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$STATE_FILE" | tr -d '[:space:]')
-fi
+PRIOR_STATUS=$(ceo_read_alert_field "$STATE_FILE" status)
+PRIOR_SINCE=$(ceo_read_alert_field "$STATE_FILE" since)
 case "$PRIOR_STATUS" in
   clear|firing) ;;
   '') PRIOR_STATUS="clear" ;;
@@ -118,16 +114,15 @@ else
 fi
 
 {
-  printf -- '---\n'
-  printf 'status: %s\n' "$CURRENT_STATUS"
-  printf 'since: %s\n' "$SINCE"
-  printf 'last_check: %s\n' "$NOW"
-  printf 'host: %s\n' "$HOST"
-  printf 'dump_folder_gb: %s\n' "$DUMP_GB"
-  printf 'c_free_gb: %s\n' "$C_FREE_GB"
-  printf 'measurement_failed: %s\n' "$MEASUREMENT_FAILED"
-  printf -- '---\n\n'
-  printf '# Disk Monitor — %s\n\n' "$HOST"
+  ceo_write_alert_frontmatter \
+    --status="$CURRENT_STATUS" \
+    --since="$SINCE" \
+    --last-check="$NOW" \
+    --host="$HOST" \
+    --field dump_folder_gb="$DUMP_GB" \
+    --field c_free_gb="$C_FREE_GB" \
+    --field measurement_failed="$MEASUREMENT_FAILED"
+  printf '\n# Disk Monitor — %s\n\n' "$HOST"
   printf '<!-- alert: [[CEO/alerts/disk-%s]] -->\n\n' "$HOST"
   if [ "$CURRENT_STATUS" = "firing" ]; then
     printf 'Firing since %s.\n\n' "$SINCE"

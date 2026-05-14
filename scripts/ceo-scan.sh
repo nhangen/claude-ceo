@@ -10,6 +10,10 @@
 #   YESTERDAY_REPORT, FAILED_ACTIONS
 #   ALERTS_FIRING
 
+_SCAN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=ceo-config.sh
+source "$_SCAN_DIR/ceo-config.sh"
+
 VAULT="${CEO_VAULT:-${VAULT:-$HOME/Documents/Obsidian}}"
 CEO_DIR="$VAULT/CEO"
 REPORT_DIR="$CEO_DIR/reports"
@@ -112,12 +116,12 @@ ALERTS_FIRING=""
 if [ -d "$ALERTS_DIR" ]; then
   for alert in "$ALERTS_DIR"/*.md; do
     [ -f "$alert" ] || continue
-    status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+    status=$(ceo_read_alert_field "$alert" status)
     case "$status" in
       firing)
         name=$(basename "$alert" .md)
-        host=$(awk '/^host:/ { sub(/^host:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
-        since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert" | tr -d '[:space:]')
+        host=$(ceo_read_alert_field "$alert" host)
+        since=$(ceo_read_alert_field "$alert" since)
         ALERTS_FIRING="${ALERTS_FIRING}${name} (host=${host}, since=${since})\n"
         ;;
       clear|'')
