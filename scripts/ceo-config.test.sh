@@ -407,8 +407,8 @@ test_write_alert_frontmatter_rejects_invalid_status() {
   esac
 }
 
-test_write_alert_frontmatter_accepts_clear_firing_unknown() {
-  for s in clear firing unknown; do
+test_write_alert_frontmatter_accepts_clear_and_firing() {
+  for s in clear firing; do
     local rc=0
     bash -c "
       set -uo pipefail
@@ -417,6 +417,16 @@ test_write_alert_frontmatter_accepts_clear_firing_unknown() {
     " >/dev/null 2>&1 || rc=$?
     assert_eq "$rc" "0" "status=$s must be accepted"
   done
+}
+
+test_write_alert_frontmatter_rejects_unknown_status() {
+  local rc=0
+  bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_write_alert_frontmatter --status=unknown --since=t --host=h --last-check=t
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "status=unknown is reserved as a consumer-side corruption sentinel and must not be writable"
 }
 
 test_write_alert_frontmatter_requires_since_and_host() {
@@ -472,30 +482,64 @@ EOF
   assert_eq "$got" "2026-01-01T00:00:00-0500" "since must round-trip including colons (regression: -F': *' bug)"
 }
 
-test_read_alert_field_returns_empty_for_missing_field() {
+test_read_alert_field_rc1_for_missing_field() {
   local f="$TEST_HOME/disk.md"
   cat > "$f" << 'EOF'
 ---
 status: clear
 ---
 EOF
-  local got
+  local got rc=0
   got=$(bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_read_alert_field '$f' nonexistent
-  ")
-  assert_eq "$got" "" "missing field must return empty string"
+  ") || rc=$?
+  assert_eq "$got" "" "missing field must print empty"
+  assert_eq "$rc"  "1" "missing field must return rc=1 so callers distinguish corruption from absence"
 }
 
-test_read_alert_field_returns_empty_for_missing_file() {
-  local got
+test_read_alert_field_rc2_for_missing_file() {
+  local got rc=0
   got=$(bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_read_alert_field '$TEST_HOME/no-such-file.md' status
-  ")
-  assert_eq "$got" "" "missing file must return empty string (not error)"
+  ") || rc=$?
+  assert_eq "$got" "" "missing file must print empty"
+  assert_eq "$rc"  "2" "missing file must return rc=2 (legitimate first-run, distinct from corruption)"
+}
+
+test_read_alert_field_anchored_match() {
+  # `host` must not match `hostname`. Regression test for prefix-matching awk.
+  local f="$TEST_HOME/disk.md"
+  cat > "$f" << 'EOF'
+---
+hostname: ml1-long
+status: firing
+---
+EOF
+  local got rc=0
+  got=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_read_alert_field '$f' host
+  ") || rc=$?
+  assert_eq "$rc"  "1" "field 'host' must not match line 'hostname:' (anchored match)"
+  assert_eq "$got" "" "no spurious value when only a prefix-named field is present"
+}
+
+test_read_alert_field_rc0_for_present_empty_value() {
+  local f="$TEST_HOME/disk.md"
+  printf -- '---\nstatus:\nhost: ml1\n---\n' > "$f"
+  local got rc=0
+  got=$(bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_read_alert_field '$f' status
+  ") || rc=$?
+  assert_eq "$rc"  "0" "field present with empty value is rc=0 (not rc=1) — value-empty != field-absent"
+  assert_eq "$got" "" "empty value prints empty"
 }
 
 test_write_and_read_roundtrip() {

@@ -394,7 +394,11 @@ ceo_assert_primary_host() {
 # field names, status enum values, or timestamp parsing semantics.
 #
 # Required:
-#   --status=<clear|firing|unknown>   validated; unknown values return 1
+#   --status=<clear|firing>           validated; other values return 1.
+#                                     `unknown` is reserved as a consumer-side
+#                                     corruption sentinel and is not accepted
+#                                     here — no legitimate producer should
+#                                     write a frontmatter with status: unknown.
 #   --since=<timestamp>               first time current status was observed
 #   --host=<hostname>                 originating host
 #   --last-check=<timestamp>          time of this write (caller-supplied for
@@ -427,9 +431,9 @@ ceo_write_alert_frontmatter() {
   done
 
   case "$status" in
-    clear|firing|unknown) ;;
+    clear|firing) ;;
     *)
-      printf 'ERROR: ceo_write_alert_frontmatter: invalid --status=%q (want clear|firing|unknown)\n' \
+      printf 'ERROR: ceo_write_alert_frontmatter: invalid --status=%q (want clear|firing)\n' \
         "$status" >&2
       return 1
       ;;
@@ -467,17 +471,24 @@ ceo_write_alert_frontmatter() {
 # wikilinks, urls) round-trip correctly — the prior `-F': *'` parser truncated
 # `since: 2026-01-01T00:00:00-0500` to `2026-01-01T00`.
 #
-# Missing file or missing field both print nothing and return 0.
+# Exit codes (callers must distinguish corruption from absence):
+#   0  field found; value (possibly empty) printed to stdout
+#   1  file exists but field absent — caller should treat as corruption
+#   2  file does not exist — legitimate "no prior state" for first-run paths
+#
+# Field-name match is anchored: `host` does not match `hostname`.
 # ---------------------------------------------------------------------------
 ceo_read_alert_field() {
   local path="$1" field="$2"
-  [ -f "$path" ] || return 0
+  [ -f "$path" ] || return 2
   awk -v f="$field" '
-    $0 ~ "^" f ":" {
+    substr($0, 1, length(f)+1) == f ":" {
       sub("^" f ":[[:space:]]*", "")
       sub(/[[:space:]]+$/, "")
       print
+      found=1
       exit
     }
+    END { exit !found }
   ' "$path"
 }

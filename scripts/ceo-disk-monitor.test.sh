@@ -222,7 +222,7 @@ host: testhost
 EOF
   local stderr
   stderr=$(bash "$MONITOR" 2>&1 >/dev/null) || true
-  assert_contains "$stderr" "unknown prior status" "unknown enum value must log to stderr"
+  assert_contains "$stderr" "unrecognized prior status" "unrecognized enum value must log to stderr"
 }
 
 test_sustained_firing_re_pokes_after_user_checkoff() {
