@@ -120,6 +120,44 @@ _escape_tag() {
   printf '%s' "$1" | sed -e 's|</external-data>|<\\/external-data>|g'
 }
 
+_append_pending_drip_to_inbox() {
+  local log_entry="$1"
+
+  if printf '%s\n' "$log_entry" | grep -Eiq 'no relevant .*questions?'; then
+    _v "Pending drip found no relevant questions; inbox unchanged."
+    return 0
+  fi
+
+  local host inbox_dir inbox_file marker summary
+  host="${CEO_HOSTNAME:-$(hostname -s)}"
+  : "${host:?HOST resolution failed; set CEO_HOSTNAME or fix hostname}"
+  inbox_dir="$CEO_DIR/inbox"
+  inbox_file="$inbox_dir/$host.md"
+  marker="<!-- pending-drip:$TODAY:$host -->"
+
+  summary=$(printf '%s\n' "$log_entry" | awk '
+    /^\*\*Output:\*\*/ { in_output = 1; next }
+    /^\*\*Errors:\*\*/ { in_output = 0 }
+    in_output && /^- / { print; exit }
+  ' | sed 's/^[[:space:]-]*//; s/[[:space:]]*$//' | cut -c 1-160)
+  [ -n "$summary" ] || summary="Review pending drip questions"
+
+  mkdir -p "$inbox_dir"
+  touch "$inbox_file"
+  if grep -qF -- "$marker" "$inbox_file"; then
+    _v "Pending drip inbox item already exists for $TODAY on $host."
+    return 0
+  fi
+
+  if [ -s "$inbox_file" ] && [ "$(tail -c 1 "$inbox_file" 2>/dev/null)" != "" ]; then
+    printf '\n' >> "$inbox_file"
+  fi
+  {
+    printf -- '- [ ] Review pending drip for %s: %s %s\n' "$TODAY" "$summary" "$marker"
+    printf '%s\n' "$log_entry" | sed 's/^/  /'
+  } >> "$inbox_file"
+}
+
 # --- Settings reader (safe fallback on missing file/bad JSON/no jq) ---
 SETTINGS_FILE="$CEO_DIR/settings.json"
 _cfg() {
@@ -595,7 +633,11 @@ END_LOG_ENTRY"
     [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
     _v "--- End ---"
     _v ""
-    "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
+    if [ "$TRIGGER" = "pending-drip" ] && ! printf '%s\n' "$LOG_ENTRY" | grep -q '^\*\*Status:\*\* failed'; then
+      _append_pending_drip_to_inbox "$LOG_ENTRY"
+    else
+      "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
+    fi
   else
     _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
     "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)

@@ -50,9 +50,9 @@ Active playbooks shipped with the plugin (live in `docs/playbooks/`; copy into `
 |----------|---------|------|--------|---------|
 | `morning-brief` | `50 8 * * 1-5` | read | claude | Prioritized day overview — PR queue, top-3 tasks, blessings |
 | `morning-scan` | `57 8 * * 1-5` | read | claude | Vault-diff digest of overnight changes |
-| `inbox` | every 15 min | read | claude | Process unchecked items in `CEO/inbox.md` (preflight-gated) |
+| `inbox` | every 15 min | read | claude | Process unchecked items in `CEO/inbox.md` and `CEO/inbox/<host>.md` (preflight-gated) |
 | `pr-triage` | `03 10 * * 1-5` | read | claude | Surface PRs needing review |
-| `pending-drip` | daily | read | claude | Drip reminders from `Pending.md` |
+| `pending-drip` | daily | read | claude | Drip reminders from `Pending.md` into `CEO/inbox/<host>.md` |
 | `eod-summary` | `47 17 * * 1-5` | read | claude | Recap if there are log entries after 4pm |
 | `cleanup` | weekly | low-stakes-write | claude | Branch / worktree hygiene |
 | `token-intake` | `45 8 * * 1-5` | read | script | Run `ceo-token-intake.sh` — token-scope snapshot to vault |
@@ -238,7 +238,8 @@ CEO/
 ├── registry.json      — derived dispatch table
 ├── settings.json      — runtime config (cooldown, branch_prefix, …)
 ├── repos.md           — registry of cloned repos
-├── inbox.md           — task queue for the inbox playbook
+├── inbox.md           — shared task queue for the inbox playbook
+├── inbox/             — per-host task queues written by automated intakes
 ├── blessings.md       — gratitude list
 ├── approvals/         — pending high-stakes proposals
 ├── cache/             — derived state

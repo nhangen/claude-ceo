@@ -1267,6 +1267,125 @@ PB
   fi
 }
 
+_write_pending_drip_registry() {
+  cat > "$CEO_DIR/playbooks/pending-drip.md" << 'PB'
+---
+name: pending-drip
+description: Test pending drip
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: has_pending_items
+tier: read
+status: active
+---
+PB
+  cat > "$CEO_DIR/registry.json" << JSON
+{"schema_version":2,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
+JSON
+  printf -- '- [ ] pending approval sentinel\n' > "$CEO_DIR/approvals/pending.md"
+}
+
+_stub_claude_log_entry() {
+  local status="$1"
+  local output="$2"
+  cat > "$TEST_HOME/.bun/bin/claude" << STUB
+#!/bin/bash
+cat >/dev/null
+cat <<'OUT'
+LOG_ENTRY:
+## 12:00 - pending-drip
+**Status:** $status
+**Playbook:** pending-drip.md
+**Output:**
+$output
+**Errors:**
+- none
+END_LOG_ENTRY
+OUT
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+}
+
+test_pending_drip_success_appends_host_inbox_not_report() {
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "**Questions to ask Nathan:**
+- [from Pending.md] What is the pending question?"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local inbox report
+  inbox="$CEO_DIR/inbox/testhost.md"
+  report="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  assert_file_exists "$inbox" "pending-drip must append to per-host inbox"
+  local body
+  body=$(cat "$inbox" 2>/dev/null)
+  assert_contains "$body" "- [ ] Review pending drip for" "pending-drip inbox item must be unchecked"
+  assert_contains "$body" "<!-- pending-drip:" "pending-drip inbox item must include dedupe marker"
+  assert_contains "$body" "What is the pending question?" "pending-drip inbox item must include question context"
+  if [ -f "$report" ]; then
+    printf '  FAIL [%s] successful pending-drip must not append to daily report\n    report: %q\n' "$CURRENT_TEST" "$report"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_pending_drip_rerun_is_idempotent() {
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "**Questions to ask Nathan:**
+- [from Pending.md] What is the pending question?"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local count
+  count=$(grep -c -F "<!-- pending-drip:" "$CEO_DIR/inbox/testhost.md" 2>/dev/null || echo 0)
+  assert_eq "$count" "1" "same-day pending-drip rerun must not append duplicate inbox item"
+}
+
+test_pending_drip_append_preserves_task_start_after_missing_newline() {
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "**Questions to ask Nathan:**
+- [from Pending.md] What is the pending question?"
+  mkdir -p "$CEO_DIR/inbox"
+  printf -- '- [done] prior item without newline' > "$CEO_DIR/inbox/testhost.md"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local task_count
+  task_count=$(grep -c '^- \[ \] Review pending drip' "$CEO_DIR/inbox/testhost.md" 2>/dev/null || echo 0)
+  assert_eq "$task_count" "1" "pending-drip append must start on a new line"
+}
+
+test_pending_drip_failed_entry_uses_report_not_inbox() {
+  _write_pending_drip_registry
+  _stub_claude_log_entry "failed" "Something failed"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local inbox report report_body
+  inbox="$CEO_DIR/inbox/testhost.md"
+  report="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  if [ -s "$inbox" ]; then
+    printf '  FAIL [%s] failed pending-drip must not create inbox task\n    inbox: %q\n' "$CURRENT_TEST" "$(cat "$inbox")"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_file_exists "$report" "failed pending-drip must use normal report path"
+  report_body=$(cat "$report" 2>/dev/null)
+  assert_contains "$report_body" "Something failed" "failed pending-drip report must include failure output"
+}
+
+test_pending_drip_no_relevant_questions_suppresses_inbox() {
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "No relevant [ask] questions today."
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  if [ -s "$CEO_DIR/inbox/testhost.md" ]; then
+    printf '  FAIL [%s] no-relevant pending-drip must not create inbox task\n    inbox: %q\n' "$CURRENT_TEST" "$(cat "$CEO_DIR/inbox/testhost.md")"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
 # --- inputs: per-playbook injection filter (0.11.0) ---
 
 # Helper: stub claude to capture stdin (the SINGLE_PROMPT) for inspection.
@@ -1542,6 +1661,9 @@ PB
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
+    if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
+      continue
+    fi
     CURRENT_TEST="$fn"
     setup
     "$fn"
