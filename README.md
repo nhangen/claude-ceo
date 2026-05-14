@@ -61,6 +61,8 @@ Active playbooks shipped with the plugin (live in `docs/playbooks/`; copy into `
 
 A playbook can declare `runner: script` to dispatch a shell script directly, skipping the LLM call entirely (token-intake is the canonical example). The script receives `CEO_VAULT`, `CEO_DIR`, `LOG_DIR`, `TODAY`, `NOW`, `TRIGGER` as env vars; the dispatcher does not parse stdout. Exit code 0 = success.
 
+A playbook can also declare `bin: <script>.sh` in frontmatter to expose itself as a shell command: `ceo playbook scan` creates a `~/.local/bin/<name>` symlink to that script and removes stale ones when the playbook is deleted or set `inactive`. `ceo doctor` warns when a declared bin symlink is missing.
+
 ## Examples
 
 Interactive triage from a Claude Code session:
