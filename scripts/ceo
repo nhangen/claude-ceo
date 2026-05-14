@@ -69,6 +69,7 @@ Examples:
   ceo doctor                   # Verify everything is configured correctly
   ceo preflight                # Preview what cron would do right now
   ceo chat inbox               # Interactive conversation to process inbox
+  CEO_CHAT_EFFORT=high ceo chat # Override chat effort (default: medium)
   ceo chat morning-scan        # Morning triage conversation
   ceo cron pr-triage           # Autonomous cron trigger (no conversation)
   ceo playbook scan            # Discover playbooks, update registry + crontab
@@ -1059,7 +1060,16 @@ cmd_chat() {
   _require_registry_current "$registry_file"
 
   local model="sonnet"
+  local effort="${CEO_CHAT_EFFORT:-medium}"
   local playbook_content=""
+
+  case "$effort" in
+    low|medium|high|xhigh|max) ;;
+    *)
+      echo "Invalid CEO_CHAT_EFFORT='$effort' (expected: low, medium, high, xhigh, max)"
+      exit 1
+      ;;
+  esac
 
   if [ "$name" = "triage" ]; then
     # No playbook — general triage conversation
@@ -1153,10 +1163,10 @@ $PENDING_APPROVALS_UNCHECKED
 $YESTERDAY_REPORT"
   fi
 
-  echo "Starting CEO chat ($name, model: $model)..."
+  echo "Starting CEO chat ($name, model: $model, effort: $effort)..."
   echo ""
 
-  cd "$VAULT" && claude --model "$model" --system-prompt "$sys_prompt"
+  cd "$VAULT" && claude --model "$model" --effort "$effort" --system-prompt "$sys_prompt"
 }
 
 # Bind vault globals after ceo_require_vault has set CEO_VAULT.

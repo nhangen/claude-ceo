@@ -91,6 +91,7 @@ Read the day's report:
 
 ```bash
 ceo chat                    # opens conversation about today's report
+CEO_CHAT_EFFORT=high ceo chat # override chat effort (default: medium)
 # or directly:
 $EDITOR ~/Documents/Obsidian/CEO/reports/$(date +%F).md
 ```
@@ -256,11 +257,13 @@ ceo next             Redisplay post-setup steps
 ceo doctor           Check system health (deps, vault, cron, auth)
 ceo test             Smoke test: trigger morning-brief, check log
 ceo cron <name>      Manually run a cron trigger
-ceo chat [name]      Interactive playbook (no cron); empty = triage conversation
+ceo chat [name]      Interactive playbook (no cron); empty = triage conversation; defaults to --effort medium
 ceo playbook scan|list|info     Self-registering playbook management
 ceo schedule [name]  List effective schedules; with name, reschedule one
 ceo preflight        Preview what cron would run vs skip
 ```
+
+Override interactive chat effort with `CEO_CHAT_EFFORT=low|medium|high|xhigh|max`.
 
 `count-blessings` — gratitude list surfaced in the morning brief under `## Personal / ### Blessings`:
 
