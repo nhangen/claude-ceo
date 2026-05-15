@@ -164,6 +164,73 @@ PB
   assert_file_exists "$HOME/claude-invoked.txt" "default runner must invoke claude"
 }
 
+test_read_tier_posts_full_report_to_discord_report_webhook() {
+  cat > "$CEO_DIR/playbooks/morning-brief.md" << 'PB'
+---
+name: morning-brief
+description: Morning brief
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+cat << 'OUT'
+LOG_ENTRY:
+## 09:00 — morning-brief
+**Status:** completed
+**Playbook:** playbooks/morning-brief.md
+**Output:**
+Full morning body from the model.
+**Errors:**
+- none
+END_LOG_ENTRY
+OUT
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  mkdir -p "$TEST_HOME/curl"
+  export CURL_CAPTURE_DIR="$TEST_HOME/curl"
+  cat > "$HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+out="$CURL_CAPTURE_DIR/payload.json"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d)
+      shift
+      printf '%s' "$1" > "$out"
+      ;;
+  esac
+  shift || true
+done
+exit 0
+STUB
+  chmod +x "$HOME/.bun/bin/curl"
+
+  mkdir -p "$HOME/.config/claude-ceo"
+  echo '{"discord_report_webhook":"http://127.0.0.1/report-channel"}' \
+    > "$HOME/.config/claude-ceo/secrets.json"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" morning-brief >/dev/null 2>&1
+
+  local payload
+  payload=$(cat "$CURL_CAPTURE_DIR/payload.json" 2>/dev/null || echo "")
+  assert_contains "$payload" "CEO full report: morning-brief" \
+    "cron must post a full-report Discord message for morning-brief"
+  assert_contains "$payload" "Full morning body from the model." \
+    "Discord payload must include the parsed LOG_ENTRY body"
+
+  unset CURL_CAPTURE_DIR
+}
+
 test_v_safe_under_set_e() {
   cat > "$CEO_DIR/playbooks/v-test.md" << 'PB'
 ---

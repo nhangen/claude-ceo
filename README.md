@@ -141,6 +141,7 @@ Open `http://localhost:8384` on each machine, add devices, share the Obsidian va
 bash scripts/ceo-config.test.sh         # config loader / path helpers
 bash scripts/ceo-cron.test.sh           # dispatch + tier semantics
 bash scripts/ceo-notify.test.sh         # notification helper
+bash scripts/ceo-discord-report.test.sh # full-report Discord webhook helper
 bash scripts/ceo-schedule.test.sh       # schedule override + collision detection
 bash scripts/ceo-token-intake.test.sh   # token-intake script runner
 bash scripts/count-blessings.test.sh    # blessings CLI + cache
@@ -217,6 +218,27 @@ Unknown playbook names and invalid cron syntax warn to stderr and are ignored â€
 | `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (morning-scan only) |
 
 When writing or editing a read-tier playbook, do not ask Claude to `Read` files. Reference pre-gathered values directly in the playbook's Steps section. New file in the prompt â†’ add an export to `ceo-gather.sh` and an inject site to `ceo-cron.sh`.
+
+### Discord full reports
+
+Status/failure alerts use `discord_webhook`. Full report delivery uses a separate webhook so it can target a different Discord channel:
+
+```json
+{
+  "discord_webhook": "https://discord.com/api/webhooks/...",
+  "discord_report_webhook": "https://discord.com/api/webhooks/..."
+}
+```
+
+Store that JSON at `~/.config/claude-ceo/secrets.json`, or set `CEO_DISCORD_REPORT_WEBHOOK` for one-off testing. By default, the full-report poster sends `morning-brief` only. Override the allowlist in `CEO/settings.json`:
+
+```json
+{
+  "discord_report_triggers": ["morning-brief"]
+}
+```
+
+The full report is split across multiple Discord messages when it exceeds Discord's message limit.
 
 ## Architecture
 

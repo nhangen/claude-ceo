@@ -76,4 +76,11 @@ cat >> "$REPORT_FILE" << ENTRY
 $CONTENT
 ENTRY
 
+# Optional side-channel delivery. The Obsidian report write above is canonical;
+# Discord delivery is best-effort and must never make report capture fail.
+if [ -x "$SCRIPT_DIR/ceo-discord-report.sh" ]; then
+  printf '%s\n' "$CONTENT" | CEO_VAULT="$VAULT" CEO_DIR="$CEO_DIR" TODAY="$TODAY" \
+    "$SCRIPT_DIR/ceo-discord-report.sh" "$TRIGGER_NAME" >/dev/null 2>&1 || true
+fi
+
 # Release lock (flock releases on fd close; mkdir trap handles the fallback)
