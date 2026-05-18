@@ -87,7 +87,7 @@ if ! {
   printf '# Token Report — %s\n' "$TODAY"
   capture "RTK — global savings" rtk gain
   capture "RTK — current project" rtk gain -p
-  capture "RTK — Claude Code economics" rtk cc-economics
+  capture "ccusage — Claude Code monthly" npx --yes ccusage@latest monthly
   capture "token-scope — last 24h" "${TS_CMD[@]}" --since 1d
 } > "$REPORT_FILE"; then
   echo "ERROR: failed to write $REPORT_FILE" >&2
