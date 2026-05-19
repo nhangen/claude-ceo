@@ -524,13 +524,41 @@ cmd_playbook_scan() {
         ;;
     esac
 
-    case "$runner" in
-      ""|claude|script|ollama|ollama-think) ;;
-      *)
-        echo "  SKIP  $basename (unknown runner: '$runner', expected: claude|script|ollama|ollama-think)"
-        skipped=$((skipped + 1))
-        continue ;;
-    esac
+    local runner_valid=0
+    [ -z "$runner" ] && runner_valid=1
+    for r in "${CEO_VALID_RUNNERS[@]}"; do
+      [ "$runner" = "$r" ] && { runner_valid=1; break; }
+    done
+    if [ "$runner_valid" -eq 0 ]; then
+      echo "  SKIP  $basename (unknown runner: '$runner', expected: ${CEO_VALID_RUNNERS[*]})"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    if [ "$runner" = "ollama" ] || [ "$runner" = "ollama-think" ]; then
+      local effective_model="$model"
+      if [ "$runner" = "ollama" ]; then
+        [ -z "$effective_model" ] && effective_model="mistral-small3.2:24b"
+      else
+        [ -z "$effective_model" ] && effective_model="gpt-oss:20b"
+      fi
+
+      if [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ]; then
+        if ! command -v ollama &>/dev/null; then
+          echo "  SKIP  $basename (ollama CLI not found)"
+          skipped=$((skipped + 1))
+          continue
+        fi
+
+        local ollama_models
+        ollama_models=$(timeout 3 ollama list 2>/dev/null | awk '{print $1}')
+        if ! echo "$ollama_models" | grep -q "^${effective_model}$"; then
+          echo "  SKIP  $basename (model '$effective_model' not found locally; run 'ollama pull $effective_model')"
+          skipped=$((skipped + 1))
+          continue
+        fi
+      fi
+    fi
 
     local entry_file
     if [ "$from_repo" = "1" ]; then

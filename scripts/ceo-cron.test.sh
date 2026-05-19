@@ -46,6 +46,9 @@ setup() {
   # has no daemon backing it). Production runs leave this unset.
   export CEO_OLLAMA_SKIP_PROBE=1
 
+  # Prevent test pollution from leaked cron locks
+  rm -rf /tmp/ceo-cron.lock /tmp/ceo-cron.lock.d 2>/dev/null || true
+
   mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports"
   : > "$CEO_DIR/AGENTS.md"
   : > "$CEO_DIR/IDENTITY.md"
@@ -105,6 +108,7 @@ STUB
 
 teardown() {
   rm -rf "$TEST_HOME"
+  rm -rf /tmp/ceo-cron.lock /tmp/ceo-cron.lock.d 2>/dev/null || true
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
   unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE
@@ -756,6 +760,46 @@ PB
   PATH=/usr/bin:/bin bash "$CRON" ollama-strip >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ollama branch must resolve ollama via ceo_augment_path under stripped PATH"
   assert_file_exists "$HOME/ollama-invoked-model.txt" "ollama stub must fire under stripped PATH"
+}
+
+test_runner_ollama_skips_preamble_files() {
+  cat > "$CEO_DIR/playbooks/ollama-preamble.md" << 'PB'
+---
+name: ollama-preamble
+description: Assert AGENTS/IDENTITY omitted
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# my-playbook-body
+PB
+
+  echo "SENTINEL_AGENT_CONTENT" > "$CEO_DIR/AGENTS.md"
+  echo "SENTINEL_IDENTITY_CONTENT" > "$CEO_DIR/IDENTITY.md"
+  echo "SENTINEL_TRAINING_CONTENT" > "$CEO_DIR/TRAINING.md"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-preamble >/dev/null 2>&1 || true
+
+  local prompt
+  prompt=$(cat "$HOME/ollama-invoked-prompt.txt" 2>/dev/null || echo "")
+
+  if [[ "$prompt" == *"SENTINEL_AGENT_CONTENT"* ]]; then
+    printf '  FAIL [%s] ollama prompt must NOT contain AGENTS.md content\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [[ "$prompt" == *"SENTINEL_IDENTITY_CONTENT"* ]]; then
+    printf '  FAIL [%s] ollama prompt must NOT contain IDENTITY.md content\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [[ "$prompt" == *"SENTINEL_TRAINING_CONTENT"* ]]; then
+    printf '  FAIL [%s] ollama prompt must NOT contain TRAINING.md content\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$prompt" "my-playbook-body" "ollama prompt must contain the playbook body"
 }
 
 test_ceo_augment_path_prepends_user_tool_prefixes() {

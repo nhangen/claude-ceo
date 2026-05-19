@@ -14,7 +14,8 @@ _SCAN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=ceo-config.sh
 source "$_SCAN_DIR/ceo-config.sh"
 
-VAULT="${CEO_VAULT:-${VAULT:-$HOME/Documents/Obsidian}}"
+ceo_require_vault
+VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 REPORT_DIR="$CEO_DIR/reports"
 LOG_DIR="$CEO_DIR/log"
