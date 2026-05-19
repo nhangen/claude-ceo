@@ -5,8 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=blessings-lib.sh
 source "$SCRIPT_DIR/blessings-lib.sh"
 
-: "${CEO_VAULT:=$HOME/Documents/Obsidian}"
-: "${CEO_DIR:=$CEO_VAULT/CEO}"
+source "$SCRIPT_DIR/ceo-config.sh"
+ceo_require_vault
+CEO_DIR="$CEO_VAULT/CEO"
 export CEO_VAULT CEO_DIR
 
 BLESSINGS_FILE="$CEO_DIR/blessings.md"

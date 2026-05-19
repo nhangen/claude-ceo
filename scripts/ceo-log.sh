@@ -5,7 +5,10 @@ set -euo pipefail
 # Usage: ceo-log.sh [date|yesterday|today]
 # Called by the /ceo:log skill to avoid an AI call for pure file display.
 
-VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
+_LOG_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+source "$_LOG_DIR/ceo-config.sh"
+ceo_require_vault
+VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 LOG_DIR="$CEO_DIR/log"
 

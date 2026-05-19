@@ -175,16 +175,24 @@ mkdir -p "$REPORT_DIR"
 # --- Exclusive lock (prevents overlapping cron runs) ---
 if command -v flock &>/dev/null; then
   exec 200>"$LOCK_FILE"
-  if ! flock -n 200; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running" >> "$LOG_DIR/cron-skips.log"
+  if ! flock -w 300 200; then
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 300s)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
   trap "rm -f '$LOCK_FILE' 2>/dev/null" EXIT
 else
-  # macOS fallback: mkdir-based lock
+  # macOS fallback: mkdir-based lock with retry
   LOCK_DIR="${LOCK_FILE}.d"
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running" >> "$LOG_DIR/cron-skips.log"
+  _lock_acquired=false
+  for _i in $(seq 1 300); do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      _lock_acquired=true
+      break
+    fi
+    sleep 1
+  done
+  if ! $_lock_acquired; then
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 300s)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
   trap "rmdir '$LOCK_DIR' 2>/dev/null" EXIT
@@ -202,7 +210,10 @@ if [ "${CEO_FORCE:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
 fi
 
 # --- Pre-flight: gh auth ---
-if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null 2>&1; then
+if ! command -v gh &>/dev/null; then
+  echo "$(date): ERROR — gh CLI not found on PATH=$PATH" >> "$LOG_DIR/cron-stderr.log"
+  _v "ERROR: gh CLI not found"
+elif ! gh auth status &>/dev/null 2>&1; then
   echo "$(date): WARNING — gh CLI not authenticated. PR-related playbooks will fail." >> "$LOG_DIR/cron-skips.log"
   _v "WARNING: gh CLI not authenticated"
 fi
@@ -238,6 +249,10 @@ preflight_has_unchecked_inbox() {
 }
 
 preflight_has_prs_to_review() {
+  if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null 2>&1; then
+    _record_failure "gh CLI missing or unauthenticated; cannot check PRs for review"
+    return 1
+  fi
   [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]
 }
 
@@ -264,6 +279,10 @@ preflight_has_ceo_branches() {
 preflight_has_auto_review_prs() {
   local scan_script="$HOME/.claude/skills/auto-review/scripts/scan-prs.sh"
   [ -x "$scan_script" ] || return 1
+  if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null 2>&1; then
+    _record_failure "gh CLI missing or unauthenticated; cannot run auto-review scan"
+    return 1
+  fi
   local scan_out="/tmp/auto-review-scan.json"
   "$scan_script" > "$scan_out" 2>/tmp/auto-review-scan.stderr
   local exit_code=$?
@@ -305,12 +324,14 @@ TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
 TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
 RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
 [ -z "$RUNNER" ] && RUNNER="claude"
-case "$RUNNER" in
-  claude|script|ollama|ollama-think) ;;
-  *)
-    _record_failure "Unknown runner '$RUNNER' for $TRIGGER (expected: claude|script|ollama|ollama-think)"
-    exit 1 ;;
-esac
+_runner_valid=0
+for _r in "${CEO_VALID_RUNNERS[@]}"; do
+  [ "$RUNNER" = "$_r" ] && { _runner_valid=1; break; }
+done
+if [ "$_runner_valid" -eq 0 ]; then
+  _record_failure "Unknown runner '$RUNNER' for $TRIGGER (expected: ${CEO_VALID_RUNNERS[*]})"
+  exit 1
+fi
 SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
 # Per-playbook input filtering. INPUTS_JSON is the raw JSON value from the
 # registry: `null` (absent → all keys), `[]` (none), or `["key", …]`.
@@ -424,6 +445,8 @@ if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
       _record_failure "ollama daemon not reachable at 127.0.0.1:11434 (playbook: $TRIGGER)"
       exit 1
     fi
+  else
+    _v "NOTE: CEO_OLLAMA_SKIP_PROBE set, skipping daemon probe"
   fi
   if [ -z "$MODEL" ]; then
     case "$RUNNER" in

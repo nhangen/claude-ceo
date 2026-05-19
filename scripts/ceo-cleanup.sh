@@ -8,7 +8,10 @@ set -euo pipefail
 # Usage: ceo-cleanup.sh
 # Requires: CEO_VAULT env var or defaults to ~/Documents/Obsidian
 
-VAULT="${CEO_VAULT:-$HOME/Documents/Obsidian}"
+_CLEANUP_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+source "$_CLEANUP_DIR/ceo-config.sh"
+ceo_require_vault
+VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 LOG_DIR="$CEO_DIR/log"
 REPOS_FILE="$CEO_DIR/repos.md"
