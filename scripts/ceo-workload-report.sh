@@ -56,9 +56,19 @@ if ! "$SKILL" --out "$TMP_OUT" >/dev/null; then
   exit 1
 fi
 
-SRC="$TMP_OUT/$TODAY-team.md"
+# Don't hardcode the skill's filename — across-midnight TZ skew between
+# wrapper $TODAY and the skill's own `date` call would leave the file under
+# yesterday's name and make us bail as if no output existed. Glob instead.
+shopt -s nullglob
+MD_FILES=("$TMP_OUT"/*.md)
+shopt -u nullglob
+if [ "${#MD_FILES[@]}" -ne 1 ]; then
+  echo "ERROR: expected exactly one .md in $TMP_OUT, got ${#MD_FILES[@]}" >&2
+  exit 1
+fi
+SRC="${MD_FILES[0]}"
 if [ ! -s "$SRC" ]; then
-  echo "ERROR: skill produced no output at $SRC" >&2
+  echo "ERROR: skill produced empty output at $SRC" >&2
   exit 1
 fi
 
