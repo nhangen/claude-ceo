@@ -29,7 +29,7 @@ LOG_DIR="$CEO_DIR/log"
 TODAY=$(date +%Y-%m-%d)
 NOW=$(date +%H:%M)
 LOG_FILE="$LOG_DIR/$TODAY.md"
-LOCK_FILE="/tmp/ceo-cron.lock"
+LOCK_FILE="${CEO_LOCK_FILE:-"$CEO_DIR/log/ceo-cron.lock"}"
 LAST_RUN_FILE="$LOG_DIR/.last-run-${TRIGGER}"
 FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
 
@@ -175,8 +175,8 @@ mkdir -p "$REPORT_DIR"
 # --- Exclusive lock (prevents overlapping cron runs) ---
 if command -v flock &>/dev/null; then
   exec 200>"$LOCK_FILE"
-  if ! flock -w 300 200; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 300s)" >> "$LOG_DIR/cron-skips.log"
+  if ! flock -w 30 200; then
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
   trap "rm -f '$LOCK_FILE' 2>/dev/null" EXIT
@@ -184,7 +184,8 @@ else
   # macOS fallback: mkdir-based lock with retry
   LOCK_DIR="${LOCK_FILE}.d"
   _lock_acquired=false
-  for _i in $(seq 1 300); do
+  trap '$_lock_acquired && rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+  for _i in $(seq 1 30); do
     if mkdir "$LOCK_DIR" 2>/dev/null; then
       _lock_acquired=true
       break
@@ -192,10 +193,9 @@ else
     sleep 1
   done
   if ! $_lock_acquired; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 300s)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
-  trap "rmdir '$LOCK_DIR' 2>/dev/null" EXIT
 fi
 
 # --- Per-trigger runaway protection (skip with --force) ---

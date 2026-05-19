@@ -101,16 +101,31 @@ ceo_load_config() {
 # `return 1` on failure (exit would kill the caller's shell).
 # ---------------------------------------------------------------------------
 ceo_require_vault() {
+  local fail_file="$HOME/.claude/ceo-cron-config-fails"
   if ceo_load_config; then
-    rm -f "/tmp/ceo-cron-config-fails" 2>/dev/null || true
+    rm -f "$fail_file" 2>/dev/null || true
     return 0
   fi
   echo "FATAL — CEO_VAULT unresolved. Run 'ceo setup' to initialize." >&2
-  local fail_file="/tmp/ceo-cron-config-fails"
+  
+  mkdir -p "$HOME/.claude" 2>/dev/null || true
+  local lock_file="${fail_file}.lock"
+  
+  if command -v flock &>/dev/null; then
+    exec 202>"$lock_file"
+    flock -x 202
+  fi
+  
   local fails
   fails=$(cat "$fail_file" 2>/dev/null || echo 0)
   fails=$((fails + 1))
   echo "$fails" > "$fail_file"
+  
+  if command -v flock &>/dev/null; then
+    flock -u 202
+    exec 202>&-
+  fi
+
   if [ "$fails" -ge 3 ]; then
     if command -v osascript &>/dev/null; then
       osascript -e 'display notification "CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." with title "Claude CEO FATAL"' &>/dev/null || true

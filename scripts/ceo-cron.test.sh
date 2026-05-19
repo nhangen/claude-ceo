@@ -46,8 +46,8 @@ setup() {
   # has no daemon backing it). Production runs leave this unset.
   export CEO_OLLAMA_SKIP_PROBE=1
 
-  # Prevent test pollution from leaked cron locks
-  rm -rf /tmp/ceo-cron.lock /tmp/ceo-cron.lock.d 2>/dev/null || true
+  # Isolate cron lock to this test invocation
+  export CEO_LOCK_FILE="$TEST_HOME/ceo-cron.lock"
 
   mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports"
   : > "$CEO_DIR/AGENTS.md"
@@ -108,10 +108,9 @@ STUB
 
 teardown() {
   rm -rf "$TEST_HOME"
-  rm -rf /tmp/ceo-cron.lock /tmp/ceo-cron.lock.d 2>/dev/null || true
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE
+  unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE CEO_LOCK_FILE
 }
 
 test_runner_script_execs_named_script_and_skips_claude() {

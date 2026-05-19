@@ -95,6 +95,19 @@ test_ceo_report_fails_loud_on_unresolved_vault() {
   fi
 }
 
+test_ceo_callers_fail_loud_on_unresolved_vault() {
+  local rc=0 out
+  for script in "ceo-log.sh" "ceo-cleanup.sh" "ceo-scan.sh" "ceo-gather.sh" "count-blessings.sh"; do
+    rc=0
+    out=$(env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/$script" 2>&1) || rc=$?
+    assert_eq "$rc" "1" "$script must exit 1 when no vault resolves"
+    case "$out" in
+      *FATAL*) ;;
+      *) printf '  FAIL [%s] %s stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$script" "$out"; FAILS=$((FAILS + 1)) ;;
+    esac
+  done
+}
+
 test_ceo_help_works_on_fresh_host() {
   local rc=0
   env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo" help >/dev/null 2>&1 || rc=$?

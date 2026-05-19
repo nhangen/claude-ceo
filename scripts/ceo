@@ -553,7 +553,7 @@ cmd_playbook_scan() {
 
         local ollama_models
         ollama_models=$(timeout 3 ollama list 2>/dev/null | awk '{print $1}')
-        if ! echo "$ollama_models" | grep -q "^${effective_model}$"; then
+        if ! echo "$ollama_models" | grep -Fxq -- "$effective_model"; then
           echo "  SKIP  $basename (model '$effective_model' not found locally; run 'ollama pull $effective_model')"
           skipped=$((skipped + 1))
           continue
