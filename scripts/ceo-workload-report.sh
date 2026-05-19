@@ -39,7 +39,7 @@ fi
 TMP_OUT=$(mktemp -d)
 trap 'rm -rf "$TMP_OUT"' EXIT
 
-if ! "$SKILL" --out "$TMP_OUT" >/dev/null 2>&1; then
+if ! "$SKILL" --out "$TMP_OUT" >/dev/null; then
   echo "ERROR: workload-report skill failed" >&2
   exit 1
 fi
