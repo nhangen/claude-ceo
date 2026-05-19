@@ -47,6 +47,12 @@ Registered automatically by `ceo playbook scan`. Cron entries for repo playbooks
 
 Files accumulate forever by design — explicitly chose history over overwrite for trend analysis. Add a retention sweep later if `CEO/reports/workload/` gets unwieldy.
 
+## Troubleshooting
+
+- **No output or empty report:** check `cron-stderr.log` for the skill's stderr. Common cause: `~/.cursor/mcp.json` missing or `ZENHUB_TOKEN` resolved to the literal string `"null"`.
+- **`WARN: no assignee rows`:** auth succeeded but Zenhub returned zero items — likely a wrong `ZENHUB_WORKSPACE_ID` or the gh user has no access to the workspace.
+- **Wrong host in filename:** `CEO_HOSTNAME` overrides `hostname -s` if set.
+
 ## Disable
 
 Set `status: inactive` in this frontmatter or remove the file, then re-run `ceo playbook scan`.
