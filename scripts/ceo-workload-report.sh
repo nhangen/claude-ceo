@@ -62,5 +62,12 @@ if [ ! -s "$SRC" ]; then
   exit 1
 fi
 
+# The skill emits frontmatter + headers unconditionally, so -s passes even
+# when Zenhub returned zero items (wrong workspace ID, auth-OK-no-data, etc).
+# Bullet rows start with "- **" — absence means a header-only report.
+if ! grep -q '^- \*\*' "$SRC"; then
+  echo "WARN: skill produced report with no assignee rows — auth/workspace misconfig?" >&2
+fi
+
 mv "$SRC" "$REPORT_FILE"
 echo "Wrote $REPORT_FILE"
