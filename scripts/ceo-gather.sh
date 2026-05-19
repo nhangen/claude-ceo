@@ -22,7 +22,7 @@ GATHER_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$GATHER_DIR/ceo-config.sh"
 
 # --- Base paths ---
-ceo_load_config || { echo "ERROR: CEO config not found. Set CEO_VAULT or run: ceo setup" >&2; return 1; }
+ceo_require_vault
 export VAULT="$CEO_VAULT"
 export CEO_DIR="$VAULT/CEO"
 export LOG_DIR="$CEO_DIR/log"

@@ -101,8 +101,23 @@ ceo_load_config() {
 # `return 1` on failure (exit would kill the caller's shell).
 # ---------------------------------------------------------------------------
 ceo_require_vault() {
-  ceo_load_config && return 0
+  if ceo_load_config; then
+    rm -f "/tmp/ceo-cron-config-fails" 2>/dev/null || true
+    return 0
+  fi
   echo "FATAL — CEO_VAULT unresolved. Run 'ceo setup' to initialize." >&2
+  local fail_file="/tmp/ceo-cron-config-fails"
+  local fails
+  fails=$(cat "$fail_file" 2>/dev/null || echo 0)
+  fails=$((fails + 1))
+  echo "$fails" > "$fail_file"
+  if [ "$fails" -ge 3 ]; then
+    if command -v osascript &>/dev/null; then
+      osascript -e 'display notification "CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." with title "Claude CEO FATAL"' &>/dev/null || true
+    else
+      logger "Claude CEO FATAL: CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." || true
+    fi
+  fi
   exit 1
 }
 
@@ -234,6 +249,7 @@ ceo_pin_home_or_warn() {
 #   1 — implicit (pre-runner-script registry; missing field treated as <2)
 # ---------------------------------------------------------------------------
 CEO_REGISTRY_SCHEMA_VERSION=2
+CEO_VALID_RUNNERS=(claude script ollama ollama-think)
 
 # ceo_registry_version <registry_file>
 #   Prints the integer schema_version, or nothing if missing/malformed.
