@@ -14,10 +14,22 @@ source "$SCRIPT_DIR/ceo-config.sh"
 
 ceo_load_config || { echo "ERROR: CEO config not found" >&2; exit 1; }
 
+# `set -u` does not catch HOME="" (set-but-empty); guard before any helper
+# that reads $HOME. Same shape as ceo-value-tracker.sh (PR #11 fix).
+: "${HOME:?HOME must be set}"
+
 # The skill script reads gh auth and ~/.cursor/mcp.json from $HOME.
 ceo_pin_home_or_warn || true
 ceo_augment_path
 
+# Verify $HOME actually resolves to a directory holding the MCP config the
+# skill will need. Catches launchd's $HOME=/var/root and cron-stripped env.
+if [ ! -f "$HOME/.cursor/mcp.json" ]; then
+  echo "ERROR: $HOME/.cursor/mcp.json not found — \$HOME may be wrong" >&2
+  exit 1
+fi
+
+: "${CEO_VAULT:?CEO_VAULT must be set}"
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 HOST="${CEO_HOSTNAME:-$(hostname -s)}"
