@@ -96,6 +96,23 @@ ceo_load_config() {
 }
 
 # ---------------------------------------------------------------------------
+# ceo_resolve_timeout_bin — sets CEO_TIMEOUT_BIN to "timeout" / "gtimeout" / "".
+# Empty value means no portable timeout available; callers must handle that.
+# Mirrors the resolver in ceo-cron.sh:85-107; promoted here so non-cron scripts
+# (e.g. `ceo playbook scan`'s ollama probe) can share the same shim.
+# ---------------------------------------------------------------------------
+ceo_resolve_timeout_bin() {
+  if command -v timeout &>/dev/null; then
+    CEO_TIMEOUT_BIN="timeout"
+  elif command -v gtimeout &>/dev/null; then
+    CEO_TIMEOUT_BIN="gtimeout"
+  else
+    CEO_TIMEOUT_BIN=""
+  fi
+  export CEO_TIMEOUT_BIN
+}
+
+# ---------------------------------------------------------------------------
 # ceo_require_vault — load config; exit 1 with operator guidance if unresolved.
 # For executed scripts only. Sourced scripts must call ceo_load_config and
 # `return 1` on failure (exit would kill the caller's shell).

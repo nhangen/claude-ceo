@@ -551,8 +551,20 @@ cmd_playbook_scan() {
           continue
         fi
 
-        local ollama_models
-        ollama_models=$(timeout 3 ollama list 2>/dev/null | awk '{print $1}')
+        ceo_resolve_timeout_bin
+        local ollama_models ollama_rc
+        if [ -n "$CEO_TIMEOUT_BIN" ]; then
+          ollama_models=$("$CEO_TIMEOUT_BIN" 3 ollama list 2>/dev/null | awk 'NR>1 {print $1}')
+          ollama_rc=${PIPESTATUS[0]}
+        else
+          ollama_models=$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')
+          ollama_rc=${PIPESTATUS[0]}
+        fi
+        case "$ollama_rc" in
+          0) : ;;
+          124) echo "  SKIP  $basename (ollama daemon hung — 'ollama list' timed out)"; skipped=$((skipped + 1)); continue ;;
+          *)   echo "  SKIP  $basename (ollama list failed rc=$ollama_rc — daemon down? run 'ollama serve')"; skipped=$((skipped + 1)); continue ;;
+        esac
         if ! echo "$ollama_models" | grep -Fxq -- "$effective_model"; then
           echo "  SKIP  $basename (model '$effective_model' not found locally; run 'ollama pull $effective_model')"
           skipped=$((skipped + 1))
