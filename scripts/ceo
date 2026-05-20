@@ -243,6 +243,32 @@ cmd_doctor() {
     fi
   fi
 
+  # playbook drift — only meaningful when both trees exist
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  if [ ! -d "$CEO_DIR/playbooks" ] || [ ! -d "${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}" ]; then
+    echo "  ? Playbook drift check skipped (vault or repo playbooks dir missing)"
+    warn=$((warn + 1))
+  elif cmd_playbook_diff --quiet >/dev/null 2>&1; then
+    echo "  ✓ Playbooks in sync (no vault/repo drift)"
+    ok=$((ok + 1))
+    [ -f "$alert_file" ] && rm -f "$alert_file"
+  else
+    echo "  ✗ Playbook drift detected — run: ceo playbook diff"
+    fail=$((fail + 1))
+    mkdir -p "$(dirname "$alert_file")"
+    {
+      echo "---"
+      echo "status: drift"
+      echo "since: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "---"
+      echo ""
+      echo "# Playbook drift"
+      echo ""
+      echo "Vault and repo playbook trees diverged. Run \`ceo playbook diff\` for details."
+    } > "$alert_file"
+  fi
+
   echo ""
   echo "Result: $ok ok, $warn warnings, $fail failures"
   [ "$fail" -gt 0 ] && return 1
@@ -371,12 +397,14 @@ cmd_playbook() {
     scan) cmd_playbook_scan ;;
     list) cmd_playbook_list ;;
     info) cmd_playbook_info "$@" ;;
+    diff) cmd_playbook_diff "$@" ;;
     help|--help|-h)
-      echo "Usage: ceo playbook <scan|list|info>"
+      echo "Usage: ceo playbook <scan|list|info|diff>"
       echo ""
-      echo "  scan        Discover playbooks, update registry + crontab"
-      echo "  list        Show all registered playbooks"
-      echo "  info <name> Show details for one playbook"
+      echo "  scan          Discover playbooks, update registry + crontab"
+      echo "  list          Show all registered playbooks"
+      echo "  info <name>   Show details for one playbook"
+      echo "  diff [--quiet] Detect drift between vault and repo playbooks"
       ;;
     *)
       echo "Unknown playbook command: $subcmd"
@@ -384,6 +412,71 @@ cmd_playbook() {
       exit 1
       ;;
   esac
+}
+
+cmd_playbook_diff() {
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo playbook diff}"
+  local vault_dir="$CEO_DIR/playbooks"
+  local repo_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
+  local quiet=""
+  for arg in "$@"; do
+    case "$arg" in
+      --quiet) quiet="--quiet" ;;
+    esac
+  done
+
+  if [ ! -d "$vault_dir" ]; then
+    [ "$quiet" != "--quiet" ] && echo "ERROR: Vault playbooks directory not found at $vault_dir" >&2
+    return 2
+  fi
+  if [ ! -d "$repo_dir" ]; then
+    [ "$quiet" != "--quiet" ] && echo "ERROR: Repo playbooks directory not found at $repo_dir" >&2
+    return 2
+  fi
+
+  local drift=0
+
+  # Check vault vs repo
+  for f in "$vault_dir"/*.md; do
+    [ -f "$f" ] || continue
+    local base="${f##*/}"
+    if [ ! -f "$repo_dir/$base" ]; then
+      [ "$quiet" != "--quiet" ] && echo "Vault only: $base"
+      drift=$((drift + 1))
+    else
+      local cmp_rc=0
+      cmp -s "$f" "$repo_dir/$base" || cmp_rc=$?
+      if [ "$cmp_rc" -eq 0 ]; then
+        :
+      elif [ "$cmp_rc" -eq 1 ]; then
+        [ "$quiet" != "--quiet" ] && echo "Differs: $base"
+        if [ "$quiet" != "--quiet" ]; then
+          diff -u "$repo_dir/$base" "$f" || true
+        fi
+        drift=$((drift + 1))
+      else
+        echo "ERROR: cmp failed (rc=$cmp_rc) comparing $f vs $repo_dir/$base — treating as drift" >&2
+        drift=$((drift + 1))
+      fi
+    fi
+  done
+
+  # Check repo vs vault
+  for f in "$repo_dir"/*.md; do
+    [ -f "$f" ] || continue
+    local base="${f##*/}"
+    if [ ! -f "$vault_dir/$base" ]; then
+      [ "$quiet" != "--quiet" ] && echo "Repo only: $base"
+      drift=$((drift + 1))
+    fi
+  done
+
+  if [ "$drift" -gt 0 ]; then
+    return 1
+  else
+    [ "$quiet" != "--quiet" ] && echo "No drift detected between $vault_dir and $repo_dir"
+    return 0
+  fi
 }
 
 cmd_playbook_scan() {
