@@ -8,7 +8,7 @@
 # Replaces the prior /home/nhang/disk-monitor.sh which appended to
 # CEO/inbox/disk-alert.md unconditionally every hour.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=ceo-config.sh
@@ -162,7 +162,11 @@ if ! {
       printf '## Reasons\n\n'
       for r in "${REASONS[@]}"; do printf -- '- %s\n' "$r"; done
       printf '\n## Largest dumps\n\n```\n'
-      [ -d "$WSL_CRASHES_PATH" ] && (ls -laSh "$WSL_CRASHES_PATH" 2>/dev/null | head -10 || echo "(unable to list)")
+      if [ -d "$WSL_CRASHES_PATH" ]; then
+        if ! ls -laSh "$WSL_CRASHES_PATH" 2>/dev/null | head -10; then
+          echo "(unable to list)"
+        fi
+      fi
       printf '```\n\n## Resolution\n\nDelete unwanted dumps:\n\n```bash\nrm /mnt/c/Users/nhang/AppData/Local/Temp/wsl-crashes/*.dmp\n```\n'
     fi
   elif [ "$CURRENT_STATUS" = "clear" ]; then
@@ -213,13 +217,20 @@ if [ "$MEASUREMENT_FAILED" -eq 0 ] && [ "$PRIOR_STATUS" != "unknown" ] && [ "$CU
     fi
   fi
 
+  _append_inbox() {
+    if ! printf '%s\n' "$1" >> "$INBOX_FILE"; then
+      echo "ERROR: ceo-disk-monitor: failed to append to $INBOX_FILE" >&2
+      exit 1
+    fi
+  }
+
   if [ "$PRIOR_STATUS" = "clear" ] && [ "$CURRENT_STATUS" = "firing" ]; then
-    active_task_present || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+    active_task_present || _append_inbox "$TASK_LINE"
   elif [ "$SUSTAINED" -eq 1 ]; then
     # Re-poke fires only if the prior unchecked task has been checked off
     # — `active_task_present` is false once the `[ ]` becomes `[x]` or
     # `[done]`, allowing the append.
-    active_task_present || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+    active_task_present || _append_inbox "$TASK_LINE"
   elif [ "$PRIOR_STATUS" = "firing" ] && [ "$CURRENT_STATUS" = "clear" ]; then
     if active_task_present; then
       tmpfile=$(mktemp) || { echo "ERROR: ceo-disk-monitor: mktemp failed for inbox rewrite" >&2; exit 1; }
@@ -232,7 +243,7 @@ if [ "$MEASUREMENT_FAILED" -eq 0 ] && [ "$PRIOR_STATUS" != "unknown" ] && [ "$CU
         exit 1
       fi
       trap - EXIT
-      printf '%s\n' "$DONE_NOTE" >> "$INBOX_FILE"
+      _append_inbox "$DONE_NOTE"
     fi
   fi
 fi

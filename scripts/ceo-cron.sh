@@ -29,7 +29,7 @@ LOG_DIR="$CEO_DIR/log"
 TODAY=$(date +%Y-%m-%d)
 NOW=$(date +%H:%M)
 LOG_FILE="$LOG_DIR/$TODAY.md"
-LOCK_FILE="/tmp/ceo-cron.lock"
+LOCK_FILE="${CEO_LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}"
 LAST_RUN_FILE="$LOG_DIR/.last-run-${TRIGGER}"
 FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
 
@@ -45,8 +45,9 @@ _record_success() {
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
   echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
-  if [ "$TRIGGER" != "disk-monitor" ]; then
-    [ -x "$SCRIPT_DIR/ceo-notify.sh" ] && "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || true
+  if [ "$TRIGGER" != "disk-monitor" ] && [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
+    "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || \
+      echo "$(date): WARN — ceo-notify.sh success exited non-zero for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
   fi
 }
 
@@ -69,7 +70,10 @@ _record_failure() {
 ALERTEOF
   fi
   date +%s > "$LAST_RUN_FILE"
-  [ -x "$SCRIPT_DIR/ceo-notify.sh" ] && "$SCRIPT_DIR/ceo-notify.sh" failure "$TRIGGER" "$reason" >/dev/null 2>&1 || true
+  if [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
+    "$SCRIPT_DIR/ceo-notify.sh" failure "$TRIGGER" "$reason" >/dev/null 2>&1 || \
+      echo "$(date): WARN — ceo-notify.sh failure exited non-zero for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+  fi
 }
 
 # --- Require jq ---
@@ -173,34 +177,49 @@ REPORT_DIR="$CEO_DIR/reports"
 mkdir -p "$REPORT_DIR"
 
 # --- Exclusive lock (prevents overlapping cron runs) ---
-if command -v flock &>/dev/null; then
+if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
   exec 200>"$LOCK_FILE"
-  if ! flock -w 300 200; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 300s)" >> "$LOG_DIR/cron-skips.log"
+  if ! flock -w 30 200; then
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
-  trap "rm -f '$LOCK_FILE' 2>/dev/null" EXIT
+  # No rm trap: flock releases on FD close. Unlinking the inode while another
+  # process still holds it open lets a third process create a new inode at the
+  # same path and acquire its own flock — both run concurrently.
 else
-  # macOS fallback: mkdir-based lock with retry
+  # macOS fallback: mkdir-based lock with retry + stale-PID detection.
+  # A SIGKILL'd cron leaves $LOCK_DIR orphaned; without stale detection every
+  # subsequent tick loops 30s and falsely reports "another CEO cron is running".
   LOCK_DIR="${LOCK_FILE}.d"
   _lock_acquired=false
-  for _i in $(seq 1 300); do
+  trap '$_lock_acquired && rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+  for _i in $(seq 1 30); do
     if mkdir "$LOCK_DIR" 2>/dev/null; then
+      echo "$$" > "$LOCK_DIR/pid"
       _lock_acquired=true
       break
+    fi
+    # Stale check: if the recorded PID is gone, reclaim the lock.
+    if [ -f "$LOCK_DIR/pid" ]; then
+      _holder=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+      if [ -n "$_holder" ] && ! kill -0 "$_holder" 2>/dev/null; then
+        echo "$(date): Reclaiming stale lock from dead PID $_holder" >> "$LOG_DIR/cron-skips.log"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+        continue
+      fi
     fi
     sleep 1
   done
   if ! $_lock_acquired; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 300s)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
-  trap "rmdir '$LOCK_DIR' 2>/dev/null" EXIT
 fi
 
 # --- Per-trigger runaway protection (skip with --force) ---
 if [ "${CEO_FORCE:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
-  LAST_RUN=$(cat "$LAST_RUN_FILE")
+  LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null || echo 0)
+  case "$LAST_RUN" in (''|*[!0-9]*) LAST_RUN=0 ;; esac
   NOW_EPOCH=$(date +%s)
   COOLDOWN=$(_cfg '.cooldown_seconds' '1800')
   if [ $((NOW_EPOCH - LAST_RUN)) -lt "$COOLDOWN" ]; then
@@ -419,7 +438,7 @@ if [ "$RUNNER" = "script" ]; then
   _v "Runner: script — exec $SCRIPT_PATH"
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
   SCRIPT_EXIT=0
-  "$SCRIPT_FULL" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
+  "$SCRIPT_FULL" >>"$LOG_DIR/cron-stdout.log" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
     _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"

@@ -1,6 +1,7 @@
 #!/bin/bash
 # ollama-setup.sh — Bootstrap script to pull default local models for the CEO agent
-set -e
+set -euo pipefail
+trap 'echo "ERROR: ollama-setup failed at line $LINENO" >&2' ERR
 
 if ! command -v ollama &>/dev/null; then
   echo "ERROR: ollama CLI not found. Please install Ollama first:"
@@ -12,9 +13,11 @@ echo "Pulling default models for CEO agent runners..."
 
 echo "1/2: Pulling mistral-small3.2:24b (default for 'runner: ollama')..."
 ollama pull mistral-small3.2:24b
+echo "1/2: OK"
 
 echo "2/2: Pulling gpt-oss:20b (default for 'runner: ollama-think')..."
 ollama pull gpt-oss:20b
+echo "2/2: OK"
 
 echo ""
 echo "Setup complete. The CEO agent is ready to dispatch local playbooks."
