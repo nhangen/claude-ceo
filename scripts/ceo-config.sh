@@ -118,36 +118,66 @@ ceo_resolve_timeout_bin() {
 # `return 1` on failure (exit would kill the caller's shell).
 # ---------------------------------------------------------------------------
 ceo_require_vault() {
+  : "${HOME:?HOME must be set before ceo_require_vault}"
   local fail_file="$HOME/.claude/ceo-cron-config-fails"
   if ceo_load_config; then
     rm -f "$fail_file" 2>/dev/null || true
     return 0
   fi
   echo "FATAL — CEO_VAULT unresolved. Run 'ceo setup' to initialize." >&2
-  
+
   mkdir -p "$HOME/.claude" 2>/dev/null || true
   local lock_file="${fail_file}.lock"
-  
-  if command -v flock &>/dev/null; then
-    exec 202>"$lock_file"
-    flock -x 202
+  local lock_dir="${fail_file}.lock.d"
+  local locked=false
+
+  # Atomic increment: prefer flock (Linux), fall back to mkdir directory-lock
+  # (macOS where flock isn't installed). Bounded wait so a stale lock doesn't
+  # block the cron tick indefinitely; on timeout we log and skip the increment
+  # rather than race on the read-modify-write.
+  if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
+    if exec 202>"$lock_file" && flock -w 5 -x 202; then
+      locked=true
+    else
+      echo "WARN — could not acquire flock on $lock_file; skipping fail-counter increment" >&2
+      exec 202>&- 2>/dev/null || true
+    fi
+  else
+    local _i
+    for _i in $(seq 1 5); do
+      if mkdir "$lock_dir" 2>/dev/null; then
+        locked=true
+        break
+      fi
+      sleep 1
+    done
+    if ! $locked; then
+      echo "WARN — could not acquire mkdir lock on $lock_dir; skipping fail-counter increment" >&2
+    fi
   fi
-  
-  local fails
-  fails=$(cat "$fail_file" 2>/dev/null || echo 0)
-  fails=$((fails + 1))
-  echo "$fails" > "$fail_file"
-  
-  if command -v flock &>/dev/null; then
-    flock -u 202
-    exec 202>&-
+
+  local fails=0
+  if $locked; then
+    fails=$(cat "$fail_file" 2>/dev/null || echo 0)
+    case "$fails" in (''|*[!0-9]*) fails=0 ;; esac
+    fails=$((fails + 1))
+    echo "$fails" > "$fail_file"
+    if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
+      flock -u 202 2>/dev/null || true
+      exec 202>&- 2>/dev/null || true
+    else
+      rmdir "$lock_dir" 2>/dev/null || true
+    fi
   fi
 
   if [ "$fails" -ge 3 ]; then
+    # Sentinel file alongside the notification channels so observability sees
+    # the escalation even if osascript (locked session) and logger both fail.
+    : > "$HOME/.claude/ceo-fatal-alerted" 2>/dev/null || true
     if command -v osascript &>/dev/null; then
       osascript -e 'display notification "CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." with title "Claude CEO FATAL"' &>/dev/null || true
     else
-      logger "Claude CEO FATAL: CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." || true
+      logger "Claude CEO FATAL: CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." 2>/dev/null || true
     fi
   fi
   exit 1
