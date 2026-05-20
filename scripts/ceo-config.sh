@@ -311,6 +311,7 @@ ceo_pin_home_or_warn() {
 #   1 — implicit (pre-runner-script registry; missing field treated as <2)
 # ---------------------------------------------------------------------------
 CEO_REGISTRY_SCHEMA_VERSION=2
+# shellcheck disable=SC2034
 CEO_VALID_RUNNERS=(claude script ollama ollama-think)
 
 # ceo_registry_version <registry_file>

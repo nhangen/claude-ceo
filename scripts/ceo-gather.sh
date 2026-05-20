@@ -26,14 +26,18 @@ ceo_require_vault
 export VAULT="$CEO_VAULT"
 export CEO_DIR="$VAULT/CEO"
 export LOG_DIR="$CEO_DIR/log"
-export TODAY=$(date +%Y-%m-%d)
-export NOW=$(date +%H:%M)
+export TODAY
+TODAY=$(date +%Y-%m-%d)
+export NOW
+NOW=$(date +%H:%M)
 
 # --- Pending approvals ---
 PENDING_FILE="$CEO_DIR/approvals/pending.md"
 if [ -f "$PENDING_FILE" ]; then
-  export PENDING_COUNT=$(grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null; true)
-  export APPROVED_COUNT=$(grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null; true)
+export PENDING_COUNT
+PENDING_COUNT=$(grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null; true)
+export APPROVED_COUNT
+APPROVED_COUNT=$(grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null; true)
 else
   export PENDING_COUNT=0
   export APPROVED_COUNT=0
@@ -73,8 +77,10 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
   export PR_REVIEW_REQUESTED="$_REVIEW_PARTS"
   export PR_AUTHORED="$_AUTHORED_PARTS"
 
-  export PR_REVIEW_COUNT=$(echo "$PR_REVIEW_REQUESTED" | jq 'length' 2>/dev/null || echo 0)
-  export PR_AUTHORED_COUNT=$(echo "$PR_AUTHORED" | jq 'length' 2>/dev/null || echo 0)
+export PR_REVIEW_COUNT
+PR_REVIEW_COUNT=$(echo "$PR_REVIEW_REQUESTED" | jq 'length' 2>/dev/null || echo 0)
+export PR_AUTHORED_COUNT
+PR_AUTHORED_COUNT=$(echo "$PR_AUTHORED" | jq 'length' 2>/dev/null || echo 0)
 else
   export PR_REVIEW_REQUESTED="[]"
   export PR_AUTHORED="[]"
@@ -100,7 +106,8 @@ YESTERDAY=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d yesterday +%Y-%m-%d)
 YESTERDAY_LOG="$LOG_DIR/$YESTERDAY.md"
 if [ -f "$YESTERDAY_LOG" ]; then
   export YESTERDAY_LOG_EXISTS=true
-  export YESTERDAY_LOG_SUMMARY=$(sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null | head -20 || echo "no eod summary")
+export YESTERDAY_LOG_SUMMARY
+YESTERDAY_LOG_SUMMARY=$(sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null | head -20 || echo "no eod summary")
 else
   export YESTERDAY_LOG_EXISTS=false
   export YESTERDAY_LOG_SUMMARY="no log"
@@ -110,9 +117,12 @@ fi
 if [ -d "$CEO_DIR/delegations" ]; then
   RECENT_DELEGATIONS=$(find "$CEO_DIR/delegations" -name "*.md" -not -name ".gitkeep" -mtime -7 2>/dev/null)
   if [ -n "$RECENT_DELEGATIONS" ]; then
-    export DELEGATION_COMPLETED=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: completed" 2>/dev/null | wc -l | xargs)
-    export DELEGATION_IN_PROGRESS=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: in-progress" 2>/dev/null | wc -l | xargs)
-    export DELEGATION_FAILED=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: failed" 2>/dev/null | wc -l | xargs)
+export DELEGATION_COMPLETED
+DELEGATION_COMPLETED=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: completed" 2>/dev/null | wc -l | xargs)
+export DELEGATION_IN_PROGRESS
+DELEGATION_IN_PROGRESS=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: in-progress" 2>/dev/null | wc -l | xargs)
+export DELEGATION_FAILED
+DELEGATION_FAILED=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: failed" 2>/dev/null | wc -l | xargs)
   else
     export DELEGATION_COMPLETED=0
     export DELEGATION_IN_PROGRESS=0
@@ -125,13 +135,16 @@ else
 fi
 
 # --- Sync conflicts ---
-export SYNC_CONFLICT_COUNT=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs)
+export SYNC_CONFLICT_COUNT
+SYNC_CONFLICT_COUNT=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs)
 
 # --- Daily note sections ---
 DAILY_NOTE="$VAULT/Daily/$TODAY.md"
 if [ -f "$DAILY_NOTE" ]; then
-  export DAILY_NOTE_TOP3=$(sed -n '/^## Top 3/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -6 | tail -n +2 || echo "")
-  export DAILY_NOTE_TASKS=$(sed -n '/^## Tasks/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -20 | tail -n +2 || echo "")
+export DAILY_NOTE_TOP3
+DAILY_NOTE_TOP3=$(sed -n '/^## Top 3/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -6 | tail -n +2 || echo "")
+export DAILY_NOTE_TASKS
+DAILY_NOTE_TASKS=$(sed -n '/^## Tasks/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -20 | tail -n +2 || echo "")
 else
   export DAILY_NOTE_TOP3=""
   export DAILY_NOTE_TASKS=""
@@ -144,7 +157,8 @@ source "$GATHER_DIR/blessings-lib.sh"
 ensure_blessings_cache || true
 
 if [ -f "$CEO_DIR/cache/blessings-today.md" ]; then
-  export BLESSINGS_TODAY=$(strip_frontmatter "$CEO_DIR/cache/blessings-today.md")
+export BLESSINGS_TODAY
+BLESSINGS_TODAY=$(strip_frontmatter "$CEO_DIR/cache/blessings-today.md")
 else
   export BLESSINGS_TODAY=""
 fi
@@ -160,7 +174,8 @@ _gather_safe_read() {
   fi
 }
 
-export BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
+export BRIEFINGS_TRAINING
+BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 
 # --- Profile.md Active Domains (extract section, not whole file) ---
 # Profile.md may contain personal context; we want only the priority-ordering
@@ -168,7 +183,8 @@ export BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 # whole file.
 PROFILE_FILE="$VAULT/Profile.md"
 if [ -f "$PROFILE_FILE" ]; then
-  export ACTIVE_DOMAINS_CONTENT=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null | head -c "$GATHER_MAX_FILE")
+export ACTIVE_DOMAINS_CONTENT
+ACTIVE_DOMAINS_CONTENT=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null | head -c "$GATHER_MAX_FILE")
 else
   export ACTIVE_DOMAINS_CONTENT=""
 fi
@@ -178,7 +194,8 @@ fi
 # so Claude doesn't need to read the full file. Cap at 20 lines to bound cost.
 PENDING_FILE="$VAULT/Pending.md"
 if [ -f "$PENDING_FILE" ]; then
-  export PENDING_ASK_QUESTIONS=$(grep -n '\[ask\]' "$PENDING_FILE" 2>/dev/null | head -20)
+export PENDING_ASK_QUESTIONS
+PENDING_ASK_QUESTIONS=$(grep -n '\[ask\]' "$PENDING_FILE" 2>/dev/null | head -20)
 else
   export PENDING_ASK_QUESTIONS=""
 fi
