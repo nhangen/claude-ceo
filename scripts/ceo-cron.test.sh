@@ -908,6 +908,7 @@ test_ceo_augment_path_prepends_user_tool_prefixes() {
     set -uo pipefail
     PATH=/usr/bin:/bin
     source '"$SCRIPT_DIR"'/ceo-config.sh
+    ceo_detect_os() { echo "macos"; }
     ceo_augment_path
     echo "$PATH"
   ')
@@ -927,6 +928,7 @@ test_ceo_augment_path_idempotent() {
     set -uo pipefail
     PATH=/usr/bin:/bin
     source '"$SCRIPT_DIR"'/ceo-config.sh
+    ceo_detect_os() { echo "macos"; }
     ceo_augment_path; first="$PATH"
     ceo_augment_path; second="$PATH"
     [ "$first" = "$second" ] && echo idempotent || echo diverged

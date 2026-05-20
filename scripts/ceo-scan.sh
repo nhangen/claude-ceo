@@ -47,7 +47,8 @@ VAULT_CHANGES_RAW=$(find "$VAULT" -newer "$LAST_SCAN_MARKER" -type f -name "*.md
 if [ -z "$VAULT_CHANGES_RAW" ]; then
   export VAULT_CHANGES_COUNT=0
 else
-  export VAULT_CHANGES_COUNT=$(echo "$VAULT_CHANGES_RAW" | wc -l | xargs)
+  export VAULT_CHANGES_COUNT
+  VAULT_CHANGES_COUNT=$(echo "$VAULT_CHANGES_RAW" | wc -l | xargs)
 fi
 
 # Categorize by domain (path prefix relative to vault)
@@ -65,7 +66,8 @@ export VAULT_CHANGES_BY_DOMAIN
 # --- 2. Yesterday's daily note (full content, max 10KB) ---
 YESTERDAY_DAILY_FILE="$VAULT/Daily/$YESTERDAY.md"
 if [ -f "$YESTERDAY_DAILY_FILE" ]; then
-  export YESTERDAY_DAILY_NOTE=$(head -c 10000 "$YESTERDAY_DAILY_FILE")
+  export YESTERDAY_DAILY_NOTE
+  YESTERDAY_DAILY_NOTE=$(head -c 10000 "$YESTERDAY_DAILY_FILE")
 else
   export YESTERDAY_DAILY_NOTE="No daily note for $YESTERDAY"
 fi
@@ -73,7 +75,8 @@ fi
 # --- 3. Today's daily note (full content, max 10KB) ---
 TODAY_DAILY_FILE="$VAULT/Daily/$TODAY.md"
 if [ -f "$TODAY_DAILY_FILE" ]; then
-  export TODAY_DAILY_NOTE=$(head -c 10000 "$TODAY_DAILY_FILE")
+  export TODAY_DAILY_NOTE
+  TODAY_DAILY_NOTE=$(head -c 10000 "$TODAY_DAILY_FILE")
 else
   export TODAY_DAILY_NOTE="No daily note for $TODAY yet"
 fi
@@ -81,14 +84,16 @@ fi
 # --- 4. Pending/unresolved ---
 PENDING_FILE="$VAULT/Pending.md"
 if [ -f "$PENDING_FILE" ]; then
-  export PENDING_QUESTIONS=$(head -c 5000 "$PENDING_FILE")
+  export PENDING_QUESTIONS
+  PENDING_QUESTIONS=$(head -c 5000 "$PENDING_FILE")
 else
   export PENDING_QUESTIONS="No Pending.md found"
 fi
 
 APPROVALS_FILE="$CEO_DIR/approvals/pending.md"
 if [ -f "$APPROVALS_FILE" ]; then
-  export PENDING_APPROVALS_UNCHECKED=$(grep "^- \[ \]" "$APPROVALS_FILE" 2>/dev/null || echo "none")
+  export PENDING_APPROVALS_UNCHECKED
+  PENDING_APPROVALS_UNCHECKED=$(grep "^- \[ \]" "$APPROVALS_FILE" 2>/dev/null || echo "none")
 else
   export PENDING_APPROVALS_UNCHECKED="none"
 fi
@@ -96,14 +101,16 @@ fi
 # --- 5. Yesterday's report (carryover context) ---
 YESTERDAY_REPORT_FILE="$REPORT_DIR/$YESTERDAY.md"
 if [ -f "$YESTERDAY_REPORT_FILE" ]; then
-  export YESTERDAY_REPORT=$(head -c 10000 "$YESTERDAY_REPORT_FILE")
+  export YESTERDAY_REPORT
+  YESTERDAY_REPORT=$(head -c 10000 "$YESTERDAY_REPORT_FILE")
 else
   export YESTERDAY_REPORT="No report for $YESTERDAY"
 fi
 
 # Failed actions from yesterday's report
 if [ -f "$YESTERDAY_REPORT_FILE" ]; then
-  export FAILED_ACTIONS=$(grep -A2 "failed\|FAILED" "$YESTERDAY_REPORT_FILE" 2>/dev/null || echo "none")
+  export FAILED_ACTIONS
+  FAILED_ACTIONS=$(grep -A2 "failed\|FAILED" "$YESTERDAY_REPORT_FILE" 2>/dev/null || echo "none")
 else
   export FAILED_ACTIONS="none"
 fi

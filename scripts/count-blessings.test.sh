@@ -152,7 +152,7 @@ test_list_on_empty_body_is_empty() {
 }
 
 test_cache_picks_three_when_many_available() {
-  # shellcheck source=../blessings-lib.sh
+  # shellcheck disable=SC1090
   source "$LIB"
   mkdir -p "$CEO_DIR"
   {
@@ -174,6 +174,7 @@ test_cache_picks_three_when_many_available() {
 }
 
 test_cache_picks_all_when_fewer_than_three() {
+  # shellcheck disable=SC1090
   source "$LIB"
   mkdir -p "$CEO_DIR"
   printf -- '---\ntype: ea-blessings\n---\n\n- only-one\n' > "$CEO_DIR/blessings.md"
@@ -184,6 +185,7 @@ test_cache_picks_all_when_fewer_than_three() {
 }
 
 test_cache_no_op_when_already_today() {
+  # shellcheck disable=SC1090
   source "$LIB"
   mkdir -p "$CEO_DIR/cache"
   printf -- '- first\n- second\n- third\n' > "$CEO_DIR/blessings.md"
@@ -195,6 +197,7 @@ test_cache_no_op_when_already_today() {
 }
 
 test_cache_regenerates_when_stale() {
+  # shellcheck disable=SC1090
   source "$LIB"
   mkdir -p "$CEO_DIR/cache"
   printf -- '- a\n- b\n- c\n' > "$CEO_DIR/blessings.md"
@@ -209,6 +212,7 @@ test_cache_regenerates_when_stale() {
 }
 
 test_cache_handles_missing_source_file() {
+  # shellcheck disable=SC1090
   source "$LIB"
   ensure_blessings_cache  # no blessings.md exists
   local cache="$CEO_DIR/cache/blessings-today.md"
@@ -219,6 +223,7 @@ test_cache_handles_missing_source_file() {
 }
 
 test_cache_strips_frontmatter_before_picking() {
+  # shellcheck disable=SC1090
   source "$LIB"
   mkdir -p "$CEO_DIR"
   {

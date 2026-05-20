@@ -192,7 +192,7 @@ else
   # subsequent tick loops 30s and falsely reports "another CEO cron is running".
   LOCK_DIR="${LOCK_FILE}.d"
   _lock_acquired=false
-  trap '$_lock_acquired && rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+  trap '$_lock_acquired && rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
   for _i in $(seq 1 30); do
     if mkdir "$LOCK_DIR" 2>/dev/null; then
       echo "$$" > "$LOCK_DIR/pid"
@@ -204,7 +204,7 @@ else
       _holder=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
       if [ -n "$_holder" ] && ! kill -0 "$_holder" 2>/dev/null; then
         echo "$(date): Reclaiming stale lock from dead PID $_holder" >> "$LOG_DIR/cron-skips.log"
-        rmdir "$LOCK_DIR" 2>/dev/null || true
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
         continue
       fi
     fi
