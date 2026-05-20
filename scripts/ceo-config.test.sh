@@ -96,16 +96,18 @@ test_ceo_report_fails_loud_on_unresolved_vault() {
 }
 
 test_ceo_callers_fail_loud_on_unresolved_vault() {
-  local rc=0 out
+  local rc=0 out _outer_test="$CURRENT_TEST"
   for script in "ceo-log.sh" "ceo-cleanup.sh" "ceo-scan.sh" "ceo-gather.sh" "count-blessings.sh"; do
+    CURRENT_TEST="${_outer_test}::${script}"
     rc=0
     out=$(env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/$script" 2>&1) || rc=$?
     assert_eq "$rc" "1" "$script must exit 1 when no vault resolves"
     case "$out" in
       *FATAL*) ;;
-      *) printf '  FAIL [%s] %s stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$script" "$out"; FAILS=$((FAILS + 1)) ;;
+      *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
     esac
   done
+  CURRENT_TEST="$_outer_test"
 }
 
 test_ceo_help_works_on_fresh_host() {
@@ -577,6 +579,55 @@ test_write_and_read_roundtrip() {
   assert_eq "$since" "2026-01-01T00:00:00-0500" "round-trip since (colons preserved)"
   assert_eq "$host" "ml1" "round-trip host"
   assert_eq "$dump" "20" "round-trip extra field"
+}
+
+test_require_vault_rejects_empty_home() {
+  # F10 fail-on-revert: removing the ${HOME:?...} guard at the top of
+  # ceo_require_vault lets the fail-counter write fall through to /.claude/...
+  # under empty HOME. set -u alone does not catch set-but-empty.
+  local rc=0 out
+  out=$(env -i HOME="" CEO_VAULT="" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_require_vault
+  " 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf '  FAIL [%s] ceo_require_vault must exit non-zero when HOME is empty (got 0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  case "$out" in
+    *HOME*) ;;
+    *) printf '  FAIL [%s] empty-HOME error must mention HOME\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
+  esac
+}
+
+test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
+  # F3 fail-on-revert: with CEO_TEST_FORCE_MKDIR_LOCK=1 the mkdir directory-lock
+  # path runs even on hosts with flock. Three sequential failures must yield a
+  # counter value of 3 — reverting the lock-gated write to an unguarded one
+  # would still increment correctly here, but reverting the validator
+  # ($fails fallthrough to "0" on non-numeric) would crash arithmetic on a
+  # pre-corrupted file.
+  local counter_file="$TEST_HOME/.claude/ceo-cron-config-fails"
+  local fails_value
+  for _i in 1 2 3; do
+    env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 PATH="$PATH" bash -c "
+      set -uo pipefail
+      source '$LIB'
+      ceo_require_vault
+    " >/dev/null 2>&1 || true
+  done
+  fails_value=$(cat "$counter_file" 2>/dev/null || echo missing)
+  assert_eq "$fails_value" "3" "fail counter must reach 3 after three calls under mkdir-fallback"
+  # Pre-corrupt the counter and verify the numeric validator resets to 0+1=1.
+  echo "garbage" > "$counter_file"
+  env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_require_vault
+  " >/dev/null 2>&1 || true
+  fails_value=$(cat "$counter_file" 2>/dev/null || echo missing)
+  assert_eq "$fails_value" "1" "corrupted counter must reset to 1 on next failure"
 }
 
 run_tests() {
