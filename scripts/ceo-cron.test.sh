@@ -1130,6 +1130,50 @@ PB
   assert_eq "$rc" "1" "playbook info must reject old registry schema"
 }
 
+test_cmd_chat_rejects_old_schema_version() {
+  cat > "$CEO_DIR/playbooks/example.md" << 'PB'
+---
+name: example
+description: noop
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
+  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+
+  local rc=0
+  bash "$CEO_CLI" chat example >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "cmd_chat must reject old registry schema"
+}
+
+test_cmd_preflight_rejects_old_schema_version() {
+  cat > "$CEO_DIR/playbooks/example.md" << 'PB'
+---
+name: example
+description: noop
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
+  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+
+  local rc=0
+  bash "$CEO_CLI" preflight >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "cmd_preflight must reject old registry schema"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---
