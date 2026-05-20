@@ -243,6 +243,15 @@ cmd_doctor() {
     fi
   fi
 
+  # playbook drift
+  if cmd_playbook_diff --quiet >/dev/null 2>&1; then
+    echo "  ✓ Playbooks in sync (no vault/repo drift)"
+    ok=$((ok + 1))
+  else
+    echo "  ! Playbook drift detected — run: ceo playbook diff"
+    warn=$((warn + 1))
+  fi
+
   echo ""
   echo "Result: $ok ok, $warn warnings, $fail failures"
   [ "$fail" -gt 0 ] && return 1
@@ -371,12 +380,14 @@ cmd_playbook() {
     scan) cmd_playbook_scan ;;
     list) cmd_playbook_list ;;
     info) cmd_playbook_info "$@" ;;
+    diff) cmd_playbook_diff ;;
     help|--help|-h)
-      echo "Usage: ceo playbook <scan|list|info>"
+      echo "Usage: ceo playbook <scan|list|info|diff>"
       echo ""
       echo "  scan        Discover playbooks, update registry + crontab"
       echo "  list        Show all registered playbooks"
       echo "  info <name> Show details for one playbook"
+      echo "  diff        Detect drift between vault and repo playbooks"
       ;;
     *)
       echo "Unknown playbook command: $subcmd"
@@ -384,6 +395,56 @@ cmd_playbook() {
       exit 1
       ;;
   esac
+}
+
+cmd_playbook_diff() {
+  local vault_dir="$CEO_DIR/playbooks"
+  local repo_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
+  local quiet="${1:-}"
+
+  if [ ! -d "$vault_dir" ]; then
+    [ "$quiet" != "--quiet" ] && echo "ERROR: Vault playbooks directory not found at $vault_dir" >&2
+    return 1
+  fi
+  if [ ! -d "$repo_dir" ]; then
+    [ "$quiet" != "--quiet" ] && echo "ERROR: Repo playbooks directory not found at $repo_dir" >&2
+    return 1
+  fi
+
+  local drift=0
+
+  # Check vault vs repo
+  for f in "$vault_dir"/*.md; do
+    [ -f "$f" ] || continue
+    local base="${f##*/}"
+    if [ ! -f "$repo_dir/$base" ]; then
+      [ "$quiet" != "--quiet" ] && echo "Vault only: $base"
+      drift=$((drift + 1))
+    elif ! cmp -s "$f" "$repo_dir/$base"; then
+      [ "$quiet" != "--quiet" ] && echo "Differs: $base"
+      if [ "$quiet" != "--quiet" ]; then
+        diff -u "$repo_dir/$base" "$f" || true
+      fi
+      drift=$((drift + 1))
+    fi
+  done
+
+  # Check repo vs vault
+  for f in "$repo_dir"/*.md; do
+    [ -f "$f" ] || continue
+    local base="${f##*/}"
+    if [ ! -f "$vault_dir/$base" ]; then
+      [ "$quiet" != "--quiet" ] && echo "Repo only: $base"
+      drift=$((drift + 1))
+    fi
+  done
+
+  if [ "$drift" -gt 0 ]; then
+    return 1
+  else
+    [ "$quiet" != "--quiet" ] && echo "No drift detected between $vault_dir and $repo_dir"
+    return 0
+  fi
 }
 
 cmd_playbook_scan() {
