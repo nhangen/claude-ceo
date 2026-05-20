@@ -173,22 +173,36 @@ REPORT_DIR="$CEO_DIR/reports"
 mkdir -p "$REPORT_DIR"
 
 # --- Exclusive lock (prevents overlapping cron runs) ---
-if command -v flock &>/dev/null; then
+if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
   exec 200>"$LOCK_FILE"
   if ! flock -w 30 200; then
     echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$LOG_DIR/cron-skips.log"
     exit 0
   fi
-  trap "rm -f '$LOCK_FILE' 2>/dev/null" EXIT
+  # No rm trap: flock releases on FD close. Unlinking the inode while another
+  # process still holds it open lets a third process create a new inode at the
+  # same path and acquire its own flock — both run concurrently.
 else
-  # macOS fallback: mkdir-based lock with retry
+  # macOS fallback: mkdir-based lock with retry + stale-PID detection.
+  # A SIGKILL'd cron leaves $LOCK_DIR orphaned; without stale detection every
+  # subsequent tick loops 30s and falsely reports "another CEO cron is running".
   LOCK_DIR="${LOCK_FILE}.d"
   _lock_acquired=false
   trap '$_lock_acquired && rmdir "$LOCK_DIR" 2>/dev/null' EXIT
   for _i in $(seq 1 30); do
     if mkdir "$LOCK_DIR" 2>/dev/null; then
+      echo "$$" > "$LOCK_DIR/pid"
       _lock_acquired=true
       break
+    fi
+    # Stale check: if the recorded PID is gone, reclaim the lock.
+    if [ -f "$LOCK_DIR/pid" ]; then
+      _holder=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+      if [ -n "$_holder" ] && ! kill -0 "$_holder" 2>/dev/null; then
+        echo "$(date): Reclaiming stale lock from dead PID $_holder" >> "$LOG_DIR/cron-skips.log"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+        continue
+      fi
     fi
     sleep 1
   done
