@@ -48,9 +48,6 @@ if [ -f "$REPOS_FILE" ]; then
 
     echo "REPO: $REPO_PATH"
 
-    # List CEO worktrees
-    WORKTREES=$(git -C "$REPO_PATH" worktree list --porcelain 2>/dev/null | grep "^worktree" | grep -v "$REPO_PATH$" || true)
-
     # List CEO branches
     CEO_BRANCHES=$(git -C "$REPO_PATH" branch --list "${BRANCH_PREFIX}*" 2>/dev/null | sed 's/^[* ]*//' || true)
 

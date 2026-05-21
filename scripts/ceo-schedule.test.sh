@@ -49,7 +49,7 @@ assert_no_match() {
 _load_ceo_helpers() {
   export CEO_LIB_ONLY=1
   set +u
-  # shellcheck disable=SC1091
+  # shellcheck disable=SC1090,SC1091
   source "$CEO_CLI"
   set +e +u
   unset CEO_LIB_ONLY
@@ -159,6 +159,7 @@ test_collision_detection_blocks_crontab_write() {
   setup
   # Default REGISTRY has morning-scan and morning-brief at the same schedule.
   # _playbook_update_crontab should refuse to write.
+  # shellcheck disable=SC2034
   CEO_CRON="/tmp/fake-cron.sh"
   out=$(_playbook_update_crontab "$REGISTRY" 2>&1)
   rc=$?
@@ -172,6 +173,7 @@ test_collision_detection_blocks_crontab_write() {
 test_collision_resolved_after_override() {
   CURRENT_TEST="collision_resolved_after_override"
   setup
+  # shellcheck disable=SC2034
   CEO_CRON="/tmp/fake-cron.sh"
   echo '{"morning-scan": "50 8 * * 1-5"}' > "$CEO_DIR/schedules.json"
   merged=$(_playbook_apply_schedule_overrides "$REGISTRY")

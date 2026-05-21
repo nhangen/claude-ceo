@@ -53,7 +53,11 @@ STUB
 #!/bin/bash
 echo "token-scope-stub: $*"
 STUB
-  chmod +x "$TEST_HOME/.bun/bin/rtk" "$TEST_HOME/.bun/bin/token-scope"
+  cat > "$TEST_HOME/.bun/bin/npx" << 'STUB'
+#!/bin/bash
+echo "npx-stub: $*"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/rtk" "$TEST_HOME/.bun/bin/token-scope" "$TEST_HOME/.bun/bin/npx"
 
   # Stage a getent stub so ceo_pin_home_or_warn (via ceo_resolve_real_home)
   # resolves to $TEST_HOME instead of the developer's real ~/. Without this,

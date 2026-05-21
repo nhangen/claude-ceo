@@ -275,7 +275,8 @@ test_log_append_failure_emits_warning() {
     return 0
   fi
   DUMP_GB_STUB="0" run_monitor
-  local log_file="$CEO_DIR/log/disk-monitor/$(date +%Y-%m).md"
+  local log_file
+  log_file="$CEO_DIR/log/disk-monitor/$(date +%Y-%m).md"
   chmod 0400 "$log_file"
   local stderr
   stderr=$(DUMP_GB_STUB="0" bash "$MONITOR" 2>&1 >/dev/null) || true

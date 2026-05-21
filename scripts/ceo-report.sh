@@ -53,7 +53,7 @@ else
     sleep 1
   done
   $_acquired || { echo "ERROR: Could not acquire report lock" >&2; exit 1; }
-  trap "rmdir '$LOCK_DIR' 2>/dev/null" EXIT
+  trap 'rmdir "'"$LOCK_DIR"'" 2>/dev/null' EXIT
 fi
 
 # Create report file with frontmatter if new

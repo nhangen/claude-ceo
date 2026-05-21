@@ -326,7 +326,8 @@ cmd_preflight() {
   if command -v jq &>/dev/null && [ -f "$settings_file" ]; then
     branch_prefix=$(jq -r '.branch_prefix // "ceo/"' "$settings_file" 2>/dev/null || echo "ceo/")
   fi
-  local log_file="$CEO_DIR/log/$(date +%Y-%m-%d).md"
+  local log_file
+  log_file="$CEO_DIR/log/$(date +%Y-%m-%d).md"
 
   # Define preflights inline (can't source from ceo-cron.sh mid-script)
   preflight_none() { return 0; }
@@ -1248,7 +1249,8 @@ cmd_chat() {
 
   # Today's report for context
   local today_report=""
-  local report_file="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  local report_file
+  report_file="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
   [ -f "$report_file" ] && today_report=$(head -c 10000 "$report_file")
 
   local sys_prompt="You are the CEO agent in interactive mode. You are having a conversation with Nathan.

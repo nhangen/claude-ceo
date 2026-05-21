@@ -50,7 +50,6 @@ SINCE=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev
 : "${SINCE:?SINCE computation failed; neither BSD nor GNU date resolved (check cron PATH)}"
 
 NOTE_DIR="$VAULT/Projects/Development/nhangen/claude-ceo/value-tracker"
-NOTE_PATH="$NOTE_DIR/$TODAY.md"
 WIKILINK="[[Projects/Development/nhangen/claude-ceo/value-tracker/$TODAY]]"
 INBOX_LINE="- [ ] Review daily value-tracker report $WIKILINK"
 
