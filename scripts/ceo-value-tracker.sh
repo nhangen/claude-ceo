@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIB_DIR="$REPO_ROOT/lib/value-tracker"
-ENTRY="$LIB_DIR/src/cli.ts"
+ENTRY="${CEO_VALUE_TRACKER_ENTRY:-$LIB_DIR/src/cli.ts}"
 
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
