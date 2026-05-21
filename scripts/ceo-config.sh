@@ -359,7 +359,30 @@ ceo_registry_validate() {
 # useful on a fresh host without explicit config. See nhangen/claude-ceo#61.
 # ---------------------------------------------------------------------------
 ceo_pr_sources_path() {
+  : "${HOME:?HOME must be set before ceo_pr_sources_path}"
   echo "$HOME/.ceo/pr-sources.json"
+}
+
+# _ceo_pr_sources_discover_gh_accounts — shared awk parse of `gh auth status`.
+# Extracted because the reader-fallback path and the interactive setup path
+# both need it; an earlier draft duplicated the awk verbatim. Prefers the
+# newer `gh auth status --json` shape when present; falls back to scraping
+# the human-readable output.
+_ceo_pr_sources_discover_gh_accounts() {
+  command -v gh &>/dev/null || return 0
+  gh auth status &>/dev/null || return 0
+  local raw accounts
+  if raw=$(gh auth status --json 2>/dev/null) && [ -n "$raw" ] && command -v jq &>/dev/null; then
+    accounts=$(echo "$raw" | jq -r '.. | objects | select(has("user")) | .user' 2>/dev/null | sort -u)
+    [ -n "$accounts" ] && { printf '%s\n' "$accounts"; return 0; }
+  fi
+  raw=$(gh auth status 2>&1)
+  accounts=$(printf '%s\n' "$raw" | awk '/account [a-zA-Z0-9_-]+/ {for(i=1;i<=NF;i++) if($i=="account") print $(i+1)}' | sort -u)
+  if [ -z "$accounts" ]; then
+    echo "WARN: gh auth status succeeded but no accounts parsed; gh output format may have drifted." >&2
+    return 0
+  fi
+  printf '%s\n' "$accounts"
 }
 
 # ceo_pr_sources_github_accounts [path]
@@ -367,42 +390,50 @@ ceo_pr_sources_path() {
 #   `gh auth status`. Empty stdout means "skip GitHub" to callers.
 ceo_pr_sources_github_accounts() {
   local path="${1:-$(ceo_pr_sources_path)}"
-  if [ -f "$path" ] && command -v jq >/dev/null 2>&1 && jq empty "$path" 2>/dev/null; then
-    local accounts
-    accounts=$(jq -r '.github.accounts // [] | .[]' "$path" 2>/dev/null)
-    if [ -n "$accounts" ]; then
-      printf '%s\n' "$accounts"
-      return 0
+  if [ -f "$path" ]; then
+    if ! command -v jq &>/dev/null; then
+      echo "WARN: $path exists but jq is not installed; falling back to gh discovery." >&2
+    elif ! jq empty "$path" 2>/dev/null; then
+      echo "WARN: $path is malformed JSON; falling back to gh discovery. Re-run 'ceo pr-sources' to rewrite." >&2
+    else
+      local accounts
+      accounts=$(jq -r '.github.accounts // [] | .[]' "$path" 2>/dev/null)
+      if [ -n "$accounts" ]; then
+        printf '%s\n' "$accounts"
+        return 0
+      fi
     fi
   fi
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh auth status 2>&1 | awk '/account [a-zA-Z0-9_-]+/ {for(i=1;i<=NF;i++) if($i=="account") print $(i+1)}' | sort -u
-  fi
+  _ceo_pr_sources_discover_gh_accounts
 }
 
 # ceo_pr_sources_github_exclude_orgs [path] — one org per line.
 ceo_pr_sources_github_exclude_orgs() {
   local path="${1:-$(ceo_pr_sources_path)}"
   [ -f "$path" ] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
+  command -v jq &>/dev/null || return 0
   jq empty "$path" 2>/dev/null || return 0
-  jq -r '.github.exclude_orgs // [] | .[]' "$path" 2>/dev/null
+  # Drop names that aren't valid GitHub-org shape (alphanum + hyphen). Catches
+  # newline/garbage that would silently collapse the exclude filter later.
+  jq -r '.github.exclude_orgs // [] | .[] | select(test("^[A-Za-z0-9][A-Za-z0-9-]*$"))' "$path" 2>/dev/null
 }
 
 # ceo_pr_sources_gitlab_usernames [path]
 #   One username per line. Empty file/missing field → discover via glab.
 ceo_pr_sources_gitlab_usernames() {
   local path="${1:-$(ceo_pr_sources_path)}"
-  if [ -f "$path" ] && command -v jq >/dev/null 2>&1 && jq empty "$path" 2>/dev/null; then
-    local users
-    users=$(jq -r '.gitlab.usernames // [] | .[]' "$path" 2>/dev/null)
-    if [ -n "$users" ]; then
-      printf '%s\n' "$users"
-      return 0
+  if [ -f "$path" ]; then
+    if command -v jq &>/dev/null && jq empty "$path" 2>/dev/null; then
+      local users
+      users=$(jq -r '.gitlab.usernames // [] | .[]' "$path" 2>/dev/null)
+      if [ -n "$users" ]; then
+        printf '%s\n' "$users"
+        return 0
+      fi
     fi
   fi
-  if command -v glab >/dev/null 2>&1 && glab auth status >/dev/null 2>&1; then
-    glab api user 2>/dev/null | (command -v jq >/dev/null 2>&1 && jq -r '.username // empty' || true)
+  if command -v glab &>/dev/null && glab auth status &>/dev/null; then
+    glab api user 2>/dev/null | (command -v jq &>/dev/null && jq -r '.username // empty' || true)
   fi
 }
 
@@ -410,9 +441,14 @@ ceo_pr_sources_gitlab_usernames() {
 #   rc=0 if dedupe on (default); rc=1 only when explicitly set to false.
 ceo_pr_sources_dedupe() {
   local path="${1:-$(ceo_pr_sources_path)}"
-  [ -f "$path" ] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-  jq empty "$path" 2>/dev/null || return 0
+  # Three indistinguishable fallbacks below all return 0 (dedupe ON) on
+  # purpose — dedupe is a non-safety filter and the safer default when the
+  # config is unreadable is to dedupe rather than risk double-counting.
+  # Sibling `ceo_assert_primary_host` fails closed because it gates writes;
+  # do not mirror that pattern here.
+  [ -f "$path" ] || return 0  # safety default: dedupe ON when no config
+  command -v jq &>/dev/null || return 0  # safety default: dedupe ON without jq
+  jq empty "$path" 2>/dev/null || return 0  # safety default: dedupe ON on malformed JSON
   local v
   # `.dedupe // true` is wrong — jq's // returns the right operand on
   # null OR false, so an explicit `false` becomes `true`. Use has() instead.
@@ -430,46 +466,56 @@ ceo_pr_sources_setup() {
   path=$(ceo_pr_sources_path)
   mkdir -p "$(dirname "$path")"
 
-  if ! command -v jq >/dev/null 2>&1; then
+  if ! command -v jq &>/dev/null; then
     echo "ERROR: jq required to write $path" >&2
     return 1
   fi
 
+  # Stdin must be a tty — otherwise EOF on `read` leaves $ans empty and the
+  # `case *)` default-to-Y branch would silently opt the user into every
+  # discovered account. Skip with a clear message and let the user re-run.
+  if [ ! -t 0 ]; then
+    echo "  WARNING: stdin is not a tty — skipping interactive pr-sources setup." >&2
+    echo "  Re-run from a terminal with: ceo pr-sources" >&2
+    return 0
+  fi
+
   local -a selected_accounts=()
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    local discovered
-    discovered=$(gh auth status 2>&1 | awk '/account [a-zA-Z0-9_-]+/ {for(i=1;i<=NF;i++) if($i=="account") print $(i+1)}' | sort -u)
-    if [ -n "$discovered" ]; then
-      echo "  GitHub accounts discovered via gh auth status:"
-      local acct ans
-      while IFS= read -r acct; do
-        [ -z "$acct" ] && continue
-        printf "    Query PRs for '%s'? [Y/n] " "$acct"
-        read -r ans
-        case "$ans" in
-          n|N|no|No) ;;
-          *) selected_accounts+=("$acct") ;;
-        esac
-      done <<< "$discovered"
-    else
-      echo "  WARNING: gh is installed but no accounts were discoverable from 'gh auth status'."
-    fi
+  local discovered
+  discovered=$(_ceo_pr_sources_discover_gh_accounts)
+  if [ -n "$discovered" ]; then
+    echo "  GitHub accounts discovered via gh auth status:"
+    local acct ans
+    while IFS= read -r acct; do
+      [ -z "$acct" ] && continue
+      printf "    Query PRs for '%s'? [Y/n] " "$acct"
+      if ! read -r ans; then
+        echo "" >&2
+        echo "  WARNING: read returned EOF; treating remaining accounts as skipped." >&2
+        break
+      fi
+      case "$ans" in
+        n|N|no|No) ;;
+        *) selected_accounts+=("$acct") ;;
+      esac
+    done <<< "$discovered"
   else
-    echo "  WARNING: gh CLI not authenticated. Run 'gh auth login' then re-run 'ceo pr-sources'."
+    echo "  WARNING: no GitHub accounts discoverable. Run 'gh auth login' then re-run 'ceo pr-sources'."
   fi
 
   local -a gitlab_users=()
-  if command -v glab >/dev/null 2>&1 && glab auth status >/dev/null 2>&1; then
+  if command -v glab &>/dev/null && glab auth status &>/dev/null; then
     local gluser
     gluser=$(glab api user 2>/dev/null | jq -r '.username // empty' 2>/dev/null)
     if [ -n "$gluser" ]; then
       local ans
       printf "    Query GitLab MRs for '%s'? [Y/n] " "$gluser"
-      read -r ans
-      case "$ans" in
-        n|N|no|No) ;;
-        *) gitlab_users+=("$gluser") ;;
-      esac
+      if read -r ans; then
+        case "$ans" in
+          n|N|no|No) ;;
+          *) gitlab_users+=("$gluser") ;;
+        esac
+      fi
     fi
   else
     echo "  glab not authenticated. Skipping GitLab username selection."
