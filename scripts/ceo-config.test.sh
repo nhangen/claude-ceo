@@ -630,6 +630,59 @@ test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
   assert_eq "$fails_value" "1" "corrupted counter must reset to 1 on next failure"
 }
 
+test_pr_sources_path_uses_home() {
+  local got
+  got=$(env HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path")
+  assert_eq "$got" "$TEST_HOME/.ceo/pr-sources.json" "pr-sources path must be under \$HOME/.ceo"
+}
+
+test_pr_sources_github_accounts_reads_config() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"github":{"accounts":["nhangenam","nhangen"]}}' > "$cfg"
+  local got
+  got=$(bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "nhangenam,nhangen" "must list both configured accounts in order"
+}
+
+test_pr_sources_github_accounts_empty_array_returns_empty_when_no_gh() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"github":{"accounts":[]}}' > "$cfg"
+  local got
+  # PATH stripped so gh discovery fallback can't fire.
+  got=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'")
+  assert_eq "$got" "" "empty accounts array with no gh available → empty stdout"
+}
+
+test_pr_sources_exclude_orgs() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"github":{"exclude_orgs":["dependabot","copilot"]}}' > "$cfg"
+  local got
+  got=$(bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_exclude_orgs '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "dependabot,copilot" "exclude_orgs must round-trip"
+}
+
+test_pr_sources_dedupe_default_true() {
+  local rc=0
+  bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_dedupe '$TEST_HOME/missing.json'" || rc=$?
+  assert_eq "$rc" "0" "missing config defaults dedupe=true (rc=0)"
+}
+
+test_pr_sources_dedupe_explicit_false() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"dedupe":false}' > "$cfg"
+  local rc=0
+  bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_dedupe '$cfg'" || rc=$?
+  assert_eq "$rc" "1" "explicit dedupe:false returns rc=1"
+}
+
+test_pr_sources_malformed_json_falls_through() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{not valid json' > "$cfg"
+  local got
+  got=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'")
+  assert_eq "$got" "" "malformed JSON must not crash; falls through to empty when no gh"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

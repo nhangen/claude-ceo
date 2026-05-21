@@ -346,6 +346,161 @@ ceo_registry_validate() {
 }
 
 # ---------------------------------------------------------------------------
+# ceo_pr_sources_path — canonical path for the persisted PR-sources config.
+#
+# Schema (JSON):
+#   {
+#     "github": { "accounts":  [<str>...], "exclude_orgs": [<str>...] },
+#     "gitlab": { "usernames": [<str>...], "hosts": [<str>...] },
+#     "dedupe": true
+#   }
+#
+# Missing/empty fields fall back to runtime discovery so the gather path stays
+# useful on a fresh host without explicit config. See nhangen/claude-ceo#61.
+# ---------------------------------------------------------------------------
+ceo_pr_sources_path() {
+  echo "$HOME/.ceo/pr-sources.json"
+}
+
+# ceo_pr_sources_github_accounts [path]
+#   Echo one account name per line. Empty file/missing field → discover via
+#   `gh auth status`. Empty stdout means "skip GitHub" to callers.
+ceo_pr_sources_github_accounts() {
+  local path="${1:-$(ceo_pr_sources_path)}"
+  if [ -f "$path" ] && command -v jq >/dev/null 2>&1 && jq empty "$path" 2>/dev/null; then
+    local accounts
+    accounts=$(jq -r '.github.accounts // [] | .[]' "$path" 2>/dev/null)
+    if [ -n "$accounts" ]; then
+      printf '%s\n' "$accounts"
+      return 0
+    fi
+  fi
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    gh auth status 2>&1 | awk '/account [a-zA-Z0-9_-]+/ {for(i=1;i<=NF;i++) if($i=="account") print $(i+1)}' | sort -u
+  fi
+}
+
+# ceo_pr_sources_github_exclude_orgs [path] — one org per line.
+ceo_pr_sources_github_exclude_orgs() {
+  local path="${1:-$(ceo_pr_sources_path)}"
+  [ -f "$path" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq empty "$path" 2>/dev/null || return 0
+  jq -r '.github.exclude_orgs // [] | .[]' "$path" 2>/dev/null
+}
+
+# ceo_pr_sources_gitlab_usernames [path]
+#   One username per line. Empty file/missing field → discover via glab.
+ceo_pr_sources_gitlab_usernames() {
+  local path="${1:-$(ceo_pr_sources_path)}"
+  if [ -f "$path" ] && command -v jq >/dev/null 2>&1 && jq empty "$path" 2>/dev/null; then
+    local users
+    users=$(jq -r '.gitlab.usernames // [] | .[]' "$path" 2>/dev/null)
+    if [ -n "$users" ]; then
+      printf '%s\n' "$users"
+      return 0
+    fi
+  fi
+  if command -v glab >/dev/null 2>&1 && glab auth status >/dev/null 2>&1; then
+    glab api user 2>/dev/null | (command -v jq >/dev/null 2>&1 && jq -r '.username // empty' || true)
+  fi
+}
+
+# ceo_pr_sources_dedupe [path]
+#   rc=0 if dedupe on (default); rc=1 only when explicitly set to false.
+ceo_pr_sources_dedupe() {
+  local path="${1:-$(ceo_pr_sources_path)}"
+  [ -f "$path" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq empty "$path" 2>/dev/null || return 0
+  local v
+  # `.dedupe // true` is wrong — jq's // returns the right operand on
+  # null OR false, so an explicit `false` becomes `true`. Use has() instead.
+  v=$(jq -r 'if has("dedupe") then .dedupe else true end' "$path" 2>/dev/null)
+  [ "$v" = "false" ] && return 1
+  return 0
+}
+
+# ceo_pr_sources_setup — interactive prompt; writes JSON to ceo_pr_sources_path.
+# Re-running overwrites the file. Returns 0 on write, 1 only if jq is missing
+# (cannot construct the JSON safely).
+ceo_pr_sources_setup() {
+  : "${HOME:?HOME must be set before ceo_pr_sources_setup}"
+  local path
+  path=$(ceo_pr_sources_path)
+  mkdir -p "$(dirname "$path")"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: jq required to write $path" >&2
+    return 1
+  fi
+
+  local -a selected_accounts=()
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    local discovered
+    discovered=$(gh auth status 2>&1 | awk '/account [a-zA-Z0-9_-]+/ {for(i=1;i<=NF;i++) if($i=="account") print $(i+1)}' | sort -u)
+    if [ -n "$discovered" ]; then
+      echo "  GitHub accounts discovered via gh auth status:"
+      local acct ans
+      while IFS= read -r acct; do
+        [ -z "$acct" ] && continue
+        printf "    Query PRs for '%s'? [Y/n] " "$acct"
+        read -r ans
+        case "$ans" in
+          n|N|no|No) ;;
+          *) selected_accounts+=("$acct") ;;
+        esac
+      done <<< "$discovered"
+    else
+      echo "  WARNING: gh is installed but no accounts were discoverable from 'gh auth status'."
+    fi
+  else
+    echo "  WARNING: gh CLI not authenticated. Run 'gh auth login' then re-run 'ceo pr-sources'."
+  fi
+
+  local -a gitlab_users=()
+  if command -v glab >/dev/null 2>&1 && glab auth status >/dev/null 2>&1; then
+    local gluser
+    gluser=$(glab api user 2>/dev/null | jq -r '.username // empty' 2>/dev/null)
+    if [ -n "$gluser" ]; then
+      local ans
+      printf "    Query GitLab MRs for '%s'? [Y/n] " "$gluser"
+      read -r ans
+      case "$ans" in
+        n|N|no|No) ;;
+        *) gitlab_users+=("$gluser") ;;
+      esac
+    fi
+  else
+    echo "  glab not authenticated. Skipping GitLab username selection."
+  fi
+
+  if [ ${#selected_accounts[@]} -eq 0 ] && [ ${#gitlab_users[@]} -eq 0 ]; then
+    echo "  WARNING: no GitHub or GitLab sources selected. PR counts in the morning brief will be empty."
+  fi
+
+  local accounts_json="[]" usernames_json="[]"
+  if [ ${#selected_accounts[@]} -gt 0 ]; then
+    accounts_json=$(printf '%s\n' "${selected_accounts[@]}" | jq -R . | jq -s .)
+  fi
+  if [ ${#gitlab_users[@]} -gt 0 ]; then
+    usernames_json=$(printf '%s\n' "${gitlab_users[@]}" | jq -R . | jq -s .)
+  fi
+
+  local tmp="$path.tmp"
+  jq -n \
+    --argjson accounts "$accounts_json" \
+    --argjson usernames "$usernames_json" \
+    '{
+      github: { accounts: $accounts, exclude_orgs: [] },
+      gitlab: { usernames: $usernames, hosts: ["gitlab.com"] },
+      dedupe: true
+    }' > "$tmp"
+  mv "$tmp" "$path"
+  echo "  Wrote $path"
+}
+
+# ---------------------------------------------------------------------------
 # ceo_validate_vault — verify the vault is ready (CEO/inbox.md must exist).
 # Call after ceo_load_config.
 #

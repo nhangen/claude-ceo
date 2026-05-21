@@ -168,6 +168,12 @@ CEO_OS="$CEO_OS"
 CEOCONF
 echo "  Config written: $HOME/.ceo/config"
 
+# 9b. PR sources (GitHub accounts + GitLab usernames)
+echo ""
+echo "[9b] PR sources configuration"
+echo "  Selects which gh/glab accounts the morning brief queries for PR counts."
+ceo_pr_sources_setup || echo "  (skipped — re-run later with: ceo pr-sources)"
+
 # 10. Install cron via playbook scan
 CEO_CLI="$SCRIPT_DIR/ceo"
 if [ -f "$CEO_CLI" ] && command -v yq &>/dev/null; then
@@ -227,7 +233,8 @@ NEXT_STEPS="$INSTALL_DIR/next-steps.txt"
   echo "  3. Run: claude login  (if not already authenticated)"
   echo "  4. Run: claude plugin add nhangen/claude-ceo"
   echo "  5. Run: ceo doctor  (verify everything is configured)"
-  echo "  6. Run: ceo playbook scan  (register playbooks + install cron)"
+  echo "  6. Run: ceo pr-sources  (pick which gh/glab accounts to query, if you skipped it)"
+  echo "  7. Run: ceo playbook scan  (register playbooks + install cron)"
   echo "  7. Test interactive:  cd $VAULT && claude"
   echo "     Then type:  /ceo"
   echo "  8. Test cron:  ceo test"

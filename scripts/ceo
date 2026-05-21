@@ -52,6 +52,7 @@ Usage: ceo <command>
 
 Commands:
   setup       Provision this machine (install deps, configure git/ssh, cron)
+  pr-sources  Configure GitHub/GitLab accounts queried for PR/MR counts
   next        Show post-setup instructions (survives terminal clear)
   test        Run a quick smoke test of the CEO system
   doctor      Check system health (deps, vault, cron, auth)
@@ -64,6 +65,7 @@ Commands:
 
 Examples:
   ceo setup                    # First-time machine setup
+  ceo pr-sources               # Re-run the GitHub/GitLab account selection
   ceo next                     # Redisplay next steps after claude login
   ceo test                     # Smoke test: run morning-brief, check log
   ceo doctor                   # Verify everything is configured correctly
@@ -126,6 +128,20 @@ cmd_doctor() {
   else
     echo "  ✗ gh CLI not found — install: https://cli.github.com"
     fail=$((fail + 1))
+  fi
+
+  # pr-sources
+  local _pr_sources
+  _pr_sources="$(ceo_pr_sources_path)"
+  if [ -f "$_pr_sources" ]; then
+    local _gh_n _gl_n
+    _gh_n=$(ceo_pr_sources_github_accounts "$_pr_sources" | grep -c . || true)
+    _gl_n=$(ceo_pr_sources_gitlab_usernames "$_pr_sources" | grep -c . || true)
+    echo "  ✓ PR sources configured ($_gh_n github account(s), $_gl_n gitlab username(s))"
+    ok=$((ok + 1))
+  else
+    echo "  ! PR sources not configured ($_pr_sources) — run: ceo pr-sources"
+    warn=$((warn + 1))
   fi
 
   # claude
@@ -1175,6 +1191,15 @@ cmd_setup() {
   bash "$SCRIPT_DIR/setup-wsl.sh"
 }
 
+cmd_pr_sources() {
+  echo "=== CEO PR Sources Configuration ==="
+  echo ""
+  echo "Configures which GitHub/GitLab accounts the morning brief queries."
+  echo "Writes $(ceo_pr_sources_path)."
+  echo ""
+  ceo_pr_sources_setup
+}
+
 cmd_cron() {
   if [ $# -eq 0 ]; then
     echo "Usage: ceo cron <trigger>"
@@ -1316,6 +1341,7 @@ fi
 
 case "${1:-help}" in
   setup)    cmd_setup ;;
+  pr-sources) cmd_pr_sources ;;
   next)     cmd_next ;;
   doctor)   cmd_doctor ;;
   preflight) ceo_require_vault; _bind_vault; cmd_preflight ;;
