@@ -43,50 +43,129 @@ else
   export APPROVED_COUNT=0
 fi
 
-# --- GitHub PRs (if gh available) ---
-if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-  # Build repo list from repos.md (column 2 = repo name like org/repo)
-  REPOS_FILE="$CEO_DIR/repos.md"
-  REPO_NAMES=()
-  if [ -f "$REPOS_FILE" ]; then
-    while IFS= read -r REPO_NAME; do
-      REPO_NAME=$(echo "$REPO_NAME" | xargs)
-      [ -n "$REPO_NAME" ] && REPO_NAMES+=("$REPO_NAME")
-    done < <(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $2}')
-  fi
-
-  # Fetch PRs per-repo then merge (gh pr list only accepts one --repo)
-  _REVIEW_PARTS="[]"
-  _AUTHORED_PARTS="[]"
-  if [ ${#REPO_NAMES[@]} -gt 0 ]; then
-    for RN in "${REPO_NAMES[@]}"; do
-      _R=$(timeout 30 gh pr list --state open --search "review-requested:@me" \
-        --json number,title,createdAt,repository --limit 20 --repo "$RN" 2>/dev/null || echo "[]")
-      _REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_R" | jq -s 'add' 2>/dev/null || echo "$_REVIEW_PARTS")
-
-      _A=$(timeout 30 gh pr list --state open --author @me \
-        --json number,title,createdAt,repository --limit 10 --repo "$RN" 2>/dev/null || echo "[]")
-      _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_A" | jq -s 'add' 2>/dev/null || echo "$_AUTHORED_PARTS")
-    done
-  else
-    _REVIEW_PARTS=$(timeout 30 gh pr list --state open --search "review-requested:@me" \
-      --json number,title,createdAt,repository --limit 20 2>/dev/null || echo "[]")
-    _AUTHORED_PARTS=$(timeout 30 gh pr list --state open --author @me \
-      --json number,title,createdAt,repository --limit 10 2>/dev/null || echo "[]")
-  fi
-  export PR_REVIEW_REQUESTED="$_REVIEW_PARTS"
-  export PR_AUTHORED="$_AUTHORED_PARTS"
-
-export PR_REVIEW_COUNT
-PR_REVIEW_COUNT=$(echo "$PR_REVIEW_REQUESTED" | jq 'length' 2>/dev/null || echo 0)
-export PR_AUTHORED_COUNT
-PR_AUTHORED_COUNT=$(echo "$PR_AUTHORED" | jq 'length' 2>/dev/null || echo 0)
+# Portable timeout shim — reuse the library helper instead of duplicating it.
+# CEO_TIMEOUT_BIN is set to "timeout" / "gtimeout" / "" by ceo_resolve_timeout_bin.
+ceo_resolve_timeout_bin
+if [ -n "$CEO_TIMEOUT_BIN" ]; then
+  _CEO_TIMEOUT() { "$CEO_TIMEOUT_BIN" "$@"; }
 else
-  export PR_REVIEW_REQUESTED="[]"
-  export PR_AUTHORED="[]"
-  export PR_REVIEW_COUNT=0
-  export PR_AUTHORED_COUNT=0
+  _CEO_TIMEOUT() { shift; "$@"; }
 fi
+
+# --- GitHub PRs (global search per configured account) ---
+# Account list, exclude-orgs, GitLab usernames, dedupe come from
+# ~/.ceo/pr-sources.json (written by `ceo pr-sources` / setup-wsl.sh).
+# Missing config falls back to discovery so fresh hosts still produce data.
+# See nhangen/claude-ceo#61.
+_REVIEW_PARTS="[]"
+_AUTHORED_PARTS="[]"
+# Track gh failures so the morning brief can render a "PR counts may be incomplete"
+# marker instead of silently reporting 0 on rate limits / 5xx / token expiry.
+export PR_GATHER_DEGRADED=0
+export PR_GATHER_DEGRADED_REASONS=""
+_pr_gather_mark_degraded() {
+  PR_GATHER_DEGRADED=1
+  PR_GATHER_DEGRADED_REASONS="$PR_GATHER_DEGRADED_REASONS
+$1"
+}
+
+if command -v gh &>/dev/null; then
+  while IFS= read -r ACCT; do
+    [ -z "$ACCT" ] && continue
+    if ! TOKEN=$(gh auth token -u "$ACCT" 2>/dev/null); then
+      echo "WARN: gh auth token failed for '$ACCT' — run 'gh auth refresh -h github.com -u $ACCT'" >&2
+      _pr_gather_mark_degraded "token-fetch-failed:$ACCT"
+      continue
+    fi
+    [ -z "$TOKEN" ] && { _pr_gather_mark_degraded "token-empty:$ACCT"; continue; }
+
+    _err=$(mktemp)
+    if ! _R=$(GH_TOKEN="$TOKEN" _CEO_TIMEOUT 30 gh search prs \
+          --state open --review-requested "@me" \
+          --json number,title,createdAt,repository --limit 50 2>"$_err"); then
+      echo "WARN: gh search prs (review) for '$ACCT' failed: $(head -c 200 "$_err")" >&2
+      _pr_gather_mark_degraded "gh-review-failed:$ACCT"
+      _R="[]"
+    fi
+    rm -f "$_err"
+    _REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_R" | jq -s 'add' 2>/dev/null || echo "$_REVIEW_PARTS")
+
+    _err=$(mktemp)
+    if ! _A=$(GH_TOKEN="$TOKEN" _CEO_TIMEOUT 30 gh search prs \
+          --state open --author "@me" \
+          --json number,title,createdAt,repository --limit 50 2>"$_err"); then
+      echo "WARN: gh search prs (authored) for '$ACCT' failed: $(head -c 200 "$_err")" >&2
+      _pr_gather_mark_degraded "gh-authored-failed:$ACCT"
+      _A="[]"
+    fi
+    rm -f "$_err"
+    _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_A" | jq -s 'add' 2>/dev/null || echo "$_AUTHORED_PARTS")
+  done < <(ceo_pr_sources_github_accounts)
+
+  # Drop excluded orgs (case-insensitive match on the owner segment).
+  # Warn loudly if the user configured exclude_orgs but everything got dropped
+  # by the validator in ceo_pr_sources_github_exclude_orgs — silent collapse
+  # would let PRs from explicitly-excluded orgs leak into the brief.
+  _RAW_EX=$(ceo_pr_sources_github_exclude_orgs)
+  EXCLUDE_ORGS=$(printf '%s\n' "$_RAW_EX" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+  if [ -n "$_RAW_EX" ] && [ "$EXCLUDE_ORGS" = "[]" ]; then
+    echo "WARN: exclude_orgs configured but parsed to empty list — check $(ceo_pr_sources_path)" >&2
+  fi
+  if [ "$EXCLUDE_ORGS" != "[]" ]; then
+    _REVIEW_PARTS=$(echo "$_REVIEW_PARTS" | jq --argjson ex "$EXCLUDE_ORGS" \
+      '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_REVIEW_PARTS")
+    _AUTHORED_PARTS=$(echo "$_AUTHORED_PARTS" | jq --argjson ex "$EXCLUDE_ORGS" \
+      '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_AUTHORED_PARTS")
+  fi
+
+  # Dedupe by repo+number — same PR can appear under both accounts when one
+  # is author and the other has org read access. Opt-out via dedupe:false.
+  # `select(.repository.nameWithOwner and .number)` prevents jq's null-as-"null"
+  # interpolation from collapsing distinct null-key entries into a single row.
+  if ceo_pr_sources_dedupe; then
+    _REVIEW_PARTS=$(echo "$_REVIEW_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_REVIEW_PARTS")
+    _AUTHORED_PARTS=$(echo "$_AUTHORED_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_AUTHORED_PARTS")
+  fi
+fi
+
+# --- GitLab MRs ---
+_GL_REVIEW_PARTS="[]"
+_GL_AUTHORED_PARTS="[]"
+if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
+  while IFS= read -r GL_USER; do
+    [ -z "$GL_USER" ] && continue
+    _err=$(mktemp)
+    if ! _GLR=$(_CEO_TIMEOUT 30 glab api "merge_requests?scope=all&state=opened&reviewer_username=$GL_USER&per_page=50" 2>"$_err"); then
+      echo "WARN: glab api (reviewer) for '$GL_USER' failed: $(head -c 200 "$_err")" >&2
+      _pr_gather_mark_degraded "glab-review-failed:$GL_USER"
+      _GLR="[]"
+    fi
+    rm -f "$_err"
+    _err=$(mktemp)
+    if ! _GLA=$(_CEO_TIMEOUT 30 glab api "merge_requests?scope=all&state=opened&author_username=$GL_USER&per_page=50" 2>"$_err"); then
+      echo "WARN: glab api (author) for '$GL_USER' failed: $(head -c 200 "$_err")" >&2
+      _pr_gather_mark_degraded "glab-authored-failed:$GL_USER"
+      _GLA="[]"
+    fi
+    rm -f "$_err"
+    # Guard `references.full` — null on rare MR shapes would throw inside sub()
+    # and the outer `|| echo "[]"` would empty the entire batch.
+    _R=$(echo "$_GLR" | jq '[.[] | select(.references.full != null) | {number: .iid, title, createdAt: .created_at, repository: {nameWithOwner: (.references.full | sub("![^!]*$"; ""))}, url: .web_url}]' 2>/dev/null || echo "[]")
+    _A=$(echo "$_GLA" | jq '[.[] | select(.references.full != null) | {number: .iid, title, createdAt: .created_at, repository: {nameWithOwner: (.references.full | sub("![^!]*$"; ""))}, url: .web_url}]' 2>/dev/null || echo "[]")
+    _GL_REVIEW_PARTS=$(printf '%s\n%s' "$_GL_REVIEW_PARTS" "$_R" | jq -s 'add' 2>/dev/null || echo "$_GL_REVIEW_PARTS")
+    _GL_AUTHORED_PARTS=$(printf '%s\n%s' "$_GL_AUTHORED_PARTS" "$_A" | jq -s 'add' 2>/dev/null || echo "$_GL_AUTHORED_PARTS")
+  done < <(ceo_pr_sources_gitlab_usernames)
+fi
+
+_REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_GL_REVIEW_PARTS" | jq -s 'add' 2>/dev/null || echo "$_REVIEW_PARTS")
+_AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_GL_AUTHORED_PARTS" | jq -s 'add' 2>/dev/null || echo "$_AUTHORED_PARTS")
+
+export PR_REVIEW_REQUESTED="$_REVIEW_PARTS"
+export PR_AUTHORED="$_AUTHORED_PARTS"
+export PR_REVIEW_COUNT
+PR_REVIEW_COUNT=$(echo "$PR_REVIEW_REQUESTED" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
+export PR_AUTHORED_COUNT
+PR_AUTHORED_COUNT=$(echo "$PR_AUTHORED" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
 
 # --- Today's log ---
 TODAY_LOG="$LOG_DIR/$TODAY.md"

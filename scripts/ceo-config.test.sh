@@ -630,6 +630,194 @@ test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
   assert_eq "$fails_value" "1" "corrupted counter must reset to 1 on next failure"
 }
 
+test_pr_sources_path_uses_home() {
+  local got
+  got=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path")
+  assert_eq "$got" "$TEST_HOME/.ceo/pr-sources.json" "pr-sources path must be under \$HOME/.ceo"
+}
+
+test_pr_sources_path_rejects_empty_home() {
+  # Sibling helpers all guard `: "${HOME:?...}"`; verify pr_sources_path mirrors that.
+  local rc=0
+  env -i HOME="" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] && rc=1
+  assert_eq "$rc" "1" "ceo_pr_sources_path must reject empty HOME (mirrors sibling :?: guard)"
+}
+
+test_pr_sources_github_accounts_reads_config() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"github":{"accounts":["nhangenam","nhangen"]}}' > "$cfg"
+  local got
+  got=$(bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "nhangenam,nhangen" "must list both configured accounts in order"
+}
+
+test_pr_sources_github_accounts_empty_array_returns_empty_when_no_gh() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"github":{"accounts":[]}}' > "$cfg"
+  local got
+  # PATH stripped so gh discovery fallback can't fire.
+  got=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'")
+  assert_eq "$got" "" "empty accounts array with no gh available → empty stdout"
+}
+
+test_pr_sources_exclude_orgs() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"github":{"exclude_orgs":["dependabot","copilot"]}}' > "$cfg"
+  local got
+  got=$(bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_exclude_orgs '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "dependabot,copilot" "exclude_orgs must round-trip"
+}
+
+test_pr_sources_dedupe_default_true() {
+  local rc=0
+  bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_dedupe '$TEST_HOME/missing.json'" || rc=$?
+  assert_eq "$rc" "0" "missing config defaults dedupe=true (rc=0)"
+}
+
+test_pr_sources_dedupe_explicit_false() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{"dedupe":false}' > "$cfg"
+  local rc=0
+  bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_dedupe '$cfg'" || rc=$?
+  assert_eq "$rc" "1" "explicit dedupe:false returns rc=1"
+}
+
+test_pr_sources_malformed_json_falls_through() {
+  local cfg="$TEST_HOME/pr-sources.json"
+  printf '%s\n' '{not valid json' > "$cfg"
+  local got
+  got=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null)
+  assert_eq "$got" "" "malformed JSON must not crash; falls through to empty when no gh"
+}
+
+# Stub-gh tests: place a fake `gh` on PATH that emits a known `gh auth status`
+# block, then assert the helper falls back correctly. Pin the fall-through
+# contract per the auditor's MEDIUM finding.
+_setup_stub_gh() {
+  # Args: $1 = TEST_HOME, $2 = "auth-multi" | "auth-empty" | "auth-fail"
+  local home="$1" mode="$2"
+  local stub_dir="$home/stub-bin"
+  mkdir -p "$stub_dir"
+  cat > "$stub_dir/gh" <<EOSCRIPT
+#!/bin/bash
+case "\$1 \$2" in
+  "auth status")
+EOSCRIPT
+  case "$mode" in
+    auth-multi)
+      cat >> "$stub_dir/gh" <<'EOSCRIPT'
+    cat <<EOSTATUS
+github.com
+  ✓ Logged in to github.com account stubuser1 (keyring)
+  ✓ Logged in to github.com account stubuser2 (keyring)
+EOSTATUS
+    exit 0 ;;
+EOSCRIPT
+      ;;
+    auth-empty)
+      cat >> "$stub_dir/gh" <<'EOSCRIPT'
+    echo "Not logged in"
+    exit 1 ;;
+EOSCRIPT
+      ;;
+    auth-fail)
+      cat >> "$stub_dir/gh" <<'EOSCRIPT'
+    exit 1 ;;
+EOSCRIPT
+      ;;
+  esac
+  cat >> "$stub_dir/gh" <<'EOSCRIPT'
+  *) echo "stub: unsupported subcommand: $*" >&2; exit 1 ;;
+esac
+EOSCRIPT
+  chmod +x "$stub_dir/gh"
+  echo "$stub_dir"
+}
+
+test_pr_sources_github_accounts_discovers_via_gh_when_config_missing() {
+  local stub_dir got
+  stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
+  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "stubuser1,stubuser2" "missing config must fall through to gh discovery"
+}
+
+test_pr_sources_github_accounts_empty_array_triggers_discovery() {
+  # Auditor finding: explicit empty array should fall through to gh, not silently
+  # emit nothing. Test must FAIL if the early `[ -n "$accounts" ]; return 0` is
+  # changed to unconditionally return 0 after the config branch.
+  local cfg="$TEST_HOME/pr-sources.json" stub_dir got
+  printf '%s\n' '{"github":{"accounts":[]}}' > "$cfg"
+  stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
+  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "stubuser1,stubuser2" "empty accounts array must fall through to gh discovery"
+}
+
+test_pr_sources_github_accounts_malformed_triggers_discovery() {
+  # Pins the auditor's "fall-through is the contract, not return-empty" finding.
+  local cfg="$TEST_HOME/pr-sources.json" stub_dir got
+  printf '%s\n' '{not valid json' > "$cfg"
+  stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
+  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "stubuser1,stubuser2" "malformed JSON must trigger gh discovery (not silently return empty)"
+}
+
+test_pr_sources_github_accounts_gh_auth_failure_returns_empty() {
+  local stub_dir got rc=0
+  stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-fail)
+  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null) || rc=$?
+  assert_eq "$got" "" "gh auth status failure → empty stdout, no crash"
+  assert_eq "$rc" "0" "gh auth failure must not propagate non-zero rc"
+}
+
+test_pr_sources_gitlab_usernames_reads_config() {
+  local cfg="$TEST_HOME/pr-sources.json" got
+  printf '%s\n' '{"gitlab":{"usernames":["nhangen","alt-user"]}}' > "$cfg"
+  got=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_gitlab_usernames '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "nhangen,alt-user" "gitlab usernames must round-trip from config"
+}
+
+test_pr_sources_exclude_orgs_rejects_garbage() {
+  # Validator must drop entries that aren't valid GitHub-org-shape. A newline
+  # or whitespace in an exclude_orgs entry would otherwise silently collapse
+  # the entire exclude filter at the gather call site (jq -R . | jq -s .
+  # produces [""] for a single bad entry → still gets `index($o)` evaluated
+  # downstream and either crashes or misfires).
+  local cfg="$TEST_HOME/pr-sources.json" got
+  printf '%s\n' '{"github":{"exclude_orgs":["dependabot","valid-org","bad org with space","invalid!chars"]}}' > "$cfg"
+  got=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_exclude_orgs '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  assert_eq "$got" "dependabot,valid-org" "exclude_orgs validator must drop garbage entries"
+}
+
+test_pr_sources_setup_skips_non_tty() {
+  # HIGH finding F1: non-tty stdin must NOT silently opt user into accounts.
+  # Without the [ -t 0 ] guard, the `case *)` branch fires on empty $ans and
+  # the function writes every discovered account into the config.
+  local stub_dir
+  stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
+  # Pipe empty stdin to force non-tty.
+  env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_setup </dev/null" >/dev/null 2>&1
+  # Either the file wasn't written, or it was written with empty accounts.
+  local accounts
+  if [ -f "$TEST_HOME/.ceo/pr-sources.json" ]; then
+    accounts=$(jq -r '.github.accounts | length' "$TEST_HOME/.ceo/pr-sources.json" 2>/dev/null)
+  else
+    accounts=0
+  fi
+  assert_eq "${accounts:-0}" "0" "non-tty stdin must not silently select any accounts"
+}
+
+test_pr_sources_setup_writes_valid_json_when_no_sources() {
+  # Even with neither gh nor glab on PATH, the function should emit a
+  # structurally valid (empty) config — not crash, not leave a partial write.
+  env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_setup </dev/null" >/dev/null 2>&1
+  local rc=0
+  if [ -f "$TEST_HOME/.ceo/pr-sources.json" ]; then
+    jq empty "$TEST_HOME/.ceo/pr-sources.json" 2>/dev/null || rc=$?
+  fi
+  assert_eq "$rc" "0" "setup must either skip cleanly or write valid JSON"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
