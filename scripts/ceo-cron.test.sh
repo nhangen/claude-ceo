@@ -902,6 +902,97 @@ PB
   assert_contains "$prompt" "my-playbook-body" "ollama prompt must contain the playbook body"
 }
 
+test_runner_ollama_read_tier_includes_pre_gathered_data() {
+  cat > "$CEO_DIR/playbooks/ollama-pregather.md" << 'PB'
+---
+name: ollama-pregather
+description: Verify pre-gathered data injection on ollama+tier:read
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# ollama-pregather-playbook-body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-pregather >/dev/null 2>&1 || true
+
+  local prompt
+  prompt=$(cat "$HOME/ollama-invoked-prompt.txt" 2>/dev/null || echo "")
+  assert_contains "$prompt" "PRE-GATHERED DATA" "ollama+tier:read prompt must include PRE-GATHERED DATA section"
+  assert_contains "$prompt" "ollama-pregather-playbook-body" "ollama prompt must include playbook body"
+  assert_contains "$prompt" "PLAYBOOK (ollama-pregather)" "ollama prompt must label the playbook"
+}
+
+test_runner_ollama_prompt_exceeds_budget_fails() {
+  cat > "$CEO_DIR/playbooks/ollama-toolarge.md" << 'PB'
+---
+name: ollama-toolarge
+description: Tests CEO_OLLAMA_MAX_PROMPT_BYTES budget enforcement
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# ollama-toolarge-body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_OLLAMA_MAX_PROMPT_BYTES=100 CEO_VERBOSE=1 bash "$CRON" ollama-toolarge >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "oversized prompt must increment FAIL_COUNT_FILE"
+
+  if [ -f "$HOME/ollama-invoked-model.txt" ]; then
+    printf '  FAIL [%s] ollama must NOT be invoked when prompt exceeds budget\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "exceeds budget" "skips log must record oversized-prompt reason"
+}
+
+test_runner_ollama_rejects_non_read_tier() {
+  cat > "$CEO_DIR/playbooks/ollama-writetier.md" << 'PB'
+---
+name: ollama-writetier
+description: ollama on non-read tier must reject before any dispatch
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes write
+status: active
+runner: ollama
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" ollama-writetier >/dev/null 2>&1 || rc=$?
+
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] ollama with non-read tier must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+
+  if [ -f "$HOME/ollama-invoked-model.txt" ]; then
+    printf '  FAIL [%s] ollama must NOT be invoked for non-read tier\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "ollama runner requires tier:read" "skips log must record reject reason"
+}
+
 test_ceo_augment_path_prepends_user_tool_prefixes() {
   local out
   out=$(env HOME=/fake bash -c '
