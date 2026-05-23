@@ -437,6 +437,9 @@ if [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ] && [ "$TIER" = "read" ]; then
   RUNNER="ollama"
 fi
 
+export CEO_RUNNER="$RUNNER"
+
+
 _runner_valid=0
 for _r in "${CEO_VALID_RUNNERS[@]}"; do
   [ "$RUNNER" = "$_r" ] && { _runner_valid=1; break; }
@@ -513,6 +516,7 @@ safe_read() {
 
 # --- Script-runner branch: exec named script, skip claude --print ---
 if [ "$RUNNER" = "script" ]; then
+  export CEO_MODEL="$SCRIPT_PATH"
   if [ -z "$SCRIPT_PATH" ]; then
     echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
     _v "ERROR: runner:script requires a script field"
@@ -740,6 +744,7 @@ END_LOG_ENTRY"
       OLLAMA_MODEL="$MODEL_FROM_FRONTMATTER"
     fi
     _v "Runner: $RUNNER — model: $OLLAMA_MODEL"
+    export CEO_MODEL="$OLLAMA_MODEL"
 
     OLLAMA_PROMPT="$SINGLE_PROMPT_BODY"
     # mistral-small3.2:24b has a 32K context window. Reserve ~8K for output
@@ -776,6 +781,7 @@ END_LOG_ENTRY"
   fi
 
   MODEL="${MODEL:-sonnet}"
+  export CEO_MODEL="$MODEL"
   SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
 
   SINGLE_EXIT=0
@@ -801,6 +807,7 @@ fi
 
 # --- Three-phase pipeline (low-stakes write and above) ---
 MODEL="${MODEL:-sonnet}"
+export CEO_MODEL="$MODEL"
 
 # --- Phase 1: PLAN (read-only, no tool execution) ---
 PLAN_PROMPT="You are the CEO agent running in PLANNING MODE. You CANNOT execute any actions.
