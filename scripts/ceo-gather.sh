@@ -278,3 +278,28 @@ PENDING_ASK_QUESTIONS=$(grep -n '\[ask\]' "$PENDING_FILE" 2>/dev/null | head -20
 else
   export PENDING_ASK_QUESTIONS=""
 fi
+
+# --- Evaluate Gather Status ---
+export CEO_GATHER_STATUS="ok"
+export CEO_GATHER_REASONS=""
+
+_has_data=0
+[ "${PENDING_COUNT:-0}" -gt 0 ] && _has_data=1
+[ "${PR_REVIEW_COUNT:-0}" -gt 0 ] && _has_data=1
+[ "${PR_AUTHORED_COUNT:-0}" -gt 0 ] && _has_data=1
+[ -n "${DAILY_NOTE_TOP3:-}" ] && _has_data=1
+[ -n "${PENDING_ASK_QUESTIONS:-}" ] && _has_data=1
+
+if [ "$_has_data" -eq 0 ]; then
+  if [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ]; then
+    CEO_GATHER_STATUS="failed"
+    CEO_GATHER_REASONS="All primary data sources empty, and PR gather degraded: $(echo "$PR_GATHER_DEGRADED_REASONS" | tr '\n' ' ')"
+  else
+    CEO_GATHER_STATUS="empty"
+    CEO_GATHER_REASONS="All APIs succeeded, but zero active items found (quiet day)"
+  fi
+elif [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ]; then
+  CEO_GATHER_STATUS="partial"
+  # Replace newlines with spaces for single-line logging
+  CEO_GATHER_REASONS="PR gather degraded: $(echo "$PR_GATHER_DEGRADED_REASONS" | tr '\n' ' ')"
+fi
