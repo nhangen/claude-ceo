@@ -76,10 +76,29 @@ ALERTEOF
   fi
 }
 
+_release_lock() {
+  if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
+    exec 200>&- 2>/dev/null || true
+  else
+    if [ "${_lock_acquired:-false}" = "true" ]; then
+      rm -f "$LOCK_DIR/pid" 2>/dev/null
+      rmdir "$LOCK_DIR" 2>/dev/null
+    fi
+  fi
+}
+
 _check_rate_limit() {
   local output="$1"
   local phase="$2"
   if printf '%s\n' "$output" | grep -qEi "session limit|hit your limit"; then
+    if [ "$phase" = "single-call" ] && [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" != "1" ]; then
+      _v "Claude rate-limited! Falling back to ollama..."
+      echo "$(date) [$TRIGGER] Rate-limited (Claude). Falling back to ollama." >> "$LOG_DIR/cron-skips.log"
+      export CEO_CRON_OLLAMA_FALLBACK=1
+      _release_lock
+      exec bash "$SCRIPT_DIR/ceo-cron.sh" "$TRIGGER"
+    fi
+
     _v "SKIPPED (rate-limited in $phase)"
     "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** skipped: rate-limited
 **Playbook:** $PLAYBOOK_REL
@@ -413,6 +432,11 @@ TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
 TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
 RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
 [ -z "$RUNNER" ] && RUNNER="claude"
+
+if [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ] && [ "$TIER" = "read" ]; then
+  RUNNER="ollama"
+fi
+
 _runner_valid=0
 for _r in "${CEO_VALID_RUNNERS[@]}"; do
   [ "$RUNNER" = "$_r" ] && { _runner_valid=1; break; }
