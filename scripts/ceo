@@ -65,6 +65,7 @@ Commands:
 
 Examples:
   ceo setup                    # First-time machine setup
+  ceo setup discord            # Configure Discord notifications
   ceo pr-sources               # Re-run the GitHub/GitLab account selection
   ceo next                     # Redisplay next steps after claude login
   ceo test                     # Smoke test: run morning-brief, check log
@@ -1188,7 +1189,11 @@ cmd_playbook_info() {
 }
 
 cmd_setup() {
-  bash "$SCRIPT_DIR/setup-wsl.sh"
+  if [ "${1:-}" = "discord" ]; then
+    bash "$SCRIPT_DIR/ceo-setup-discord.sh"
+  else
+    bash "$SCRIPT_DIR/setup-wsl.sh"
+  fi
 }
 
 cmd_pr_sources() {
@@ -1340,7 +1345,7 @@ if [ "${CEO_LIB_ONLY:-0}" = "1" ]; then
 fi
 
 case "${1:-help}" in
-  setup)    cmd_setup ;;
+  setup)    shift; cmd_setup "$@" ;;
   pr-sources) cmd_pr_sources ;;
   next)     cmd_next ;;
   doctor)   cmd_doctor ;;
