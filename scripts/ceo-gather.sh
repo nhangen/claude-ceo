@@ -291,8 +291,13 @@ _has_data=0
 [ -n "${PENDING_ASK_QUESTIONS:-}" ] && _has_data=1
 
 if [ "$_has_data" -eq 0 ]; then
-  CEO_GATHER_STATUS="failed"
-  CEO_GATHER_REASONS="All primary data sources (pending, PRs, daily note, questions) are empty or missing"
+  if [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ]; then
+    CEO_GATHER_STATUS="failed"
+    CEO_GATHER_REASONS="All primary data sources empty, and PR gather degraded: $(echo "$PR_GATHER_DEGRADED_REASONS" | tr '\n' ' ')"
+  else
+    CEO_GATHER_STATUS="empty"
+    CEO_GATHER_REASONS="All APIs succeeded, but zero active items found (quiet day)"
+  fi
 elif [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ]; then
   CEO_GATHER_STATUS="partial"
   # Replace newlines with spaces for single-line logging

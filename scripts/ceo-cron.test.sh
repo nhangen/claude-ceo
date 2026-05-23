@@ -2286,11 +2286,11 @@ PB
   
   local skip_log
   skip_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
-  assert_contains "$skip_log" "Gather phase failed" "cron-skips.log must mention gather phase failed"
+  assert_contains "$skip_log" "Gather phase empty" "cron-skips.log must mention gather phase empty"
   
   local report
   report=$(cat "$CEO_DIR/reports/$(date +%Y-%m-%d).md" 2>/dev/null || echo "")
-  assert_contains "$report" "skipped: gather-failed" "report must show skipped status"
+  assert_contains "$report" "skipped: gather-empty" "report must show skipped status"
 }
 
 run_tests() {

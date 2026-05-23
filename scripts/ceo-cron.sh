@@ -626,8 +626,8 @@ if [ "$TIER" = "read" ]; then
   _v "Read-tier playbook — single call (no plan/filter phases)"
   _v "Using model: $MODEL"
 
-  # Override failed status if vault changes exist (for morning-scan)
-  if [ "${CEO_GATHER_STATUS:-ok}" = "failed" ] && [ "${VAULT_CHANGES_COUNT:-0}" -gt 0 ]; then
+  # Override failed/empty status if vault changes exist (for morning-scan)
+  if [[ "${CEO_GATHER_STATUS:-ok}" == "failed" || "${CEO_GATHER_STATUS:-ok}" == "empty" ]] && [ "${VAULT_CHANGES_COUNT:-0}" -gt 0 ]; then
     CEO_GATHER_STATUS="partial"
     CEO_GATHER_REASONS="Primary data empty, but vault changes present"
   fi
@@ -636,11 +636,11 @@ if [ "$TIER" = "read" ]; then
     echo "$(date) [$TRIGGER] WARN — Gather phase $CEO_GATHER_STATUS: $CEO_GATHER_REASONS" >> "$LOG_DIR/cron-skips.log"
     _v "WARN: Gather phase $CEO_GATHER_STATUS — $CEO_GATHER_REASONS"
     
-    if [ "$CEO_GATHER_STATUS" = "failed" ]; then
-      _v "SKIPPED (gather phase failed)"
-      "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** skipped: gather-failed
+    if [ "$CEO_GATHER_STATUS" = "failed" ] || [ "$CEO_GATHER_STATUS" = "empty" ]; then
+      _v "SKIPPED (gather phase $CEO_GATHER_STATUS)"
+      "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** skipped: gather-$CEO_GATHER_STATUS
 **Playbook:** $PLAYBOOK_REL
-**Note:** All primary data sources empty or missing. Skipping run to prevent empty confident brief."
+**Note:** $CEO_GATHER_REASONS. Skipping run to prevent empty confident brief."
       exit 0
     fi
   fi
