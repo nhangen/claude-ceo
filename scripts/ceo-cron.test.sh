@@ -1121,7 +1121,8 @@ STUB
 
   # REPORT_FILE must exist with the intake entry — this is the canonical
   # write that breaks if the ollama branch skips ceo-report.sh.
-  local report_file="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  local report_file
+  report_file="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
   assert_file_exists "$report_file" "ollama success must write to CEO/reports/<date>.md via ceo-report.sh intake"
   local report
   report=$(cat "$report_file" 2>/dev/null || echo "")
