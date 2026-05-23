@@ -54,6 +54,7 @@ setup() {
   : > "$CEO_DIR/IDENTITY.md"
   : > "$CEO_DIR/TRAINING.md"
   : > "$CEO_DIR/inbox.md"
+  echo "- [ ] test task" > "$CEO_DIR/approvals/pending.md"
 
   # Stub crontab so playbook scan's cron install can't touch the user's real crontab.
   mkdir -p "$TEST_HOME/.bun/bin"
@@ -2259,6 +2260,37 @@ STUB
   local ollama_invoked
   ollama_invoked=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_contains "$ollama_invoked" "mistral-small" "ollama must be invoked with default model during fallback"
+}
+
+test_ceo_cron_skips_read_tier_on_failed_gather() {
+  cat > "$CEO_DIR/playbooks/morning-brief.md" << 'PB'
+---
+name: morning-brief
+description: briefing
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  # Force gather phase to fail by emptying pending tasks
+  : > "$CEO_DIR/approvals/pending.md"
+
+  local rc=0
+  bash "$CRON" morning-brief >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "cron must exit 0 on failed gather"
+  
+  local skip_log
+  skip_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skip_log" "Gather phase failed" "cron-skips.log must mention gather phase failed"
+  
+  local report
+  report=$(cat "$CEO_DIR/reports/$(date +%Y-%m-%d).md" 2>/dev/null || echo "")
+  assert_contains "$report" "skipped: gather-failed" "report must show skipped status"
 }
 
 run_tests() {
