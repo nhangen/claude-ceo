@@ -76,6 +76,41 @@ ALERTEOF
   fi
 }
 
+_release_lock() {
+  if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
+    exec 200>&- 2>/dev/null || true
+  else
+    if [ "${_lock_acquired:-false}" = "true" ]; then
+      rm -f "$LOCK_DIR/pid" 2>/dev/null
+      rmdir "$LOCK_DIR" 2>/dev/null
+    fi
+  fi
+}
+
+_check_rate_limit() {
+  local output="$1"
+  local phase="$2"
+  if printf '%s\n' "$output" | grep -qEi "session limit|hit your limit"; then
+    if [ "$phase" = "single-call" ] && [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" != "1" ]; then
+      _v "Claude rate-limited! Falling back to ollama..."
+      echo "$(date) [$TRIGGER] Rate-limited (Claude). Falling back to ollama." >> "$LOG_DIR/cron-skips.log"
+      export CEO_CRON_OLLAMA_FALLBACK=1
+      _release_lock
+      exec bash "$SCRIPT_DIR/ceo-cron.sh" "$TRIGGER"
+    fi
+
+    _v "SKIPPED (rate-limited in $phase)"
+    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** skipped: rate-limited
+**Playbook:** $PLAYBOOK_REL
+**Note:** Claude API session limit reached. Raw output saved to cron-raw.log."
+    echo "$(date) [$TRIGGER] Rate-limited ($phase):" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
+    echo "$output" >> "$LOG_DIR/cron-raw.log"
+    echo "---" >> "$LOG_DIR/cron-raw.log"
+    exit 0
+  fi
+}
+
 # Single source of truth for routing read-tier model output. Both runner
 # branches (claude single-call, ollama) feed their raw stdout here so report
 # intake, Discord side-channel, and model-self-reported-status handling can't
@@ -397,6 +432,14 @@ TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
 TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
 RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
 [ -z "$RUNNER" ] && RUNNER="claude"
+
+if [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ] && [ "$TIER" = "read" ]; then
+  RUNNER="ollama"
+fi
+
+export CEO_RUNNER="$RUNNER"
+
+
 _runner_valid=0
 for _r in "${CEO_VALID_RUNNERS[@]}"; do
   [ "$RUNNER" = "$_r" ] && { _runner_valid=1; break; }
@@ -473,6 +516,7 @@ safe_read() {
 
 # --- Script-runner branch: exec named script, skip claude --print ---
 if [ "$RUNNER" = "script" ]; then
+  export CEO_MODEL="$SCRIPT_PATH"
   if [ -z "$SCRIPT_PATH" ]; then
     echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
     _v "ERROR: runner:script requires a script field"
@@ -700,6 +744,7 @@ END_LOG_ENTRY"
       OLLAMA_MODEL="$MODEL_FROM_FRONTMATTER"
     fi
     _v "Runner: $RUNNER — model: $OLLAMA_MODEL"
+    export CEO_MODEL="$OLLAMA_MODEL"
 
     OLLAMA_PROMPT="$SINGLE_PROMPT_BODY"
     # mistral-small3.2:24b has a 32K context window. Reserve ~8K for output
@@ -736,6 +781,7 @@ END_LOG_ENTRY"
   fi
 
   MODEL="${MODEL:-sonnet}"
+  export CEO_MODEL="$MODEL"
   SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
 
   SINGLE_EXIT=0
@@ -743,6 +789,7 @@ END_LOG_ENTRY"
     --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
 
   if [ $SINGLE_EXIT -ne 0 ]; then
+    _check_rate_limit "$SINGLE_OUTPUT" "single-call"
     _v "FAILED (exit: $SINGLE_EXIT)"
     "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
@@ -760,6 +807,7 @@ fi
 
 # --- Three-phase pipeline (low-stakes write and above) ---
 MODEL="${MODEL:-sonnet}"
+export CEO_MODEL="$MODEL"
 
 # --- Phase 1: PLAN (read-only, no tool execution) ---
 PLAN_PROMPT="You are the CEO agent running in PLANNING MODE. You CANNOT execute any actions.
@@ -811,6 +859,7 @@ PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with
   --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$LOG_DIR/cron-stderr.log") || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
+  _check_rate_limit "$PLAN_OUTPUT" "plan"
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
   echo "$(date) [$TRIGGER] Plan output:" >> "$LOG_DIR/cron-raw.log"
   echo "$PLAN_OUTPUT" >> "$LOG_DIR/cron-raw.log"
@@ -905,6 +954,7 @@ END_LOG_ENTRY"
 
   _v "Phase 3 done (exit: $EXEC_EXIT)"
   if [ $EXEC_EXIT -ne 0 ]; then
+    _check_rate_limit "$EXEC_OUTPUT" "exec"
     _v "FAILED — raw output saved to cron-raw.log"
     "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL

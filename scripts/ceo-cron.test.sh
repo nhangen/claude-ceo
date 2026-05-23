@@ -2225,6 +2225,42 @@ PB
   fi
 }
 
+test_claude_rate_limit_falls_back_to_ollama_on_read_tier() {
+  cat > "$CEO_DIR/playbooks/ratelimit.md" << 'PB'
+---
+name: ratelimit
+description: hit the limit
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  # Stub claude to return rate limit exit code and text
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+echo "You've hit your session limit · resets 5:10am (America/New_York)"
+exit 1
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  local rc=0
+  bash "$CRON" ratelimit >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "cron must exit 0 after falling back to ollama"
+  
+  local skip_log
+  skip_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skip_log" "Falling back to ollama" "cron-skips.log must mention fallback"
+  
+  local ollama_invoked
+  ollama_invoked=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
+  assert_contains "$ollama_invoked" "mistral-small" "ollama must be invoked with default model during fallback"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do

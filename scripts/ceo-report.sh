@@ -68,10 +68,19 @@ type: ceo-daily-report
 HEADER
 fi
 
+HOST="${CEO_HOSTNAME:-$(hostname -s)}"
+OS="$(uname -s)"
+META_BLOCK="> **Platform:** $HOST ($OS)"
+if [ -n "${CEO_RUNNER:-}" ]; then
+  META_BLOCK="$META_BLOCK
+> **Agent:** $CEO_RUNNER (${CEO_MODEL:-unknown})"
+fi
+
 # Append entry
 cat >> "$REPORT_FILE" << ENTRY
 
 ## $NOW — $TRIGGER_NAME [$ENTRY_TYPE]
+$META_BLOCK
 
 $CONTENT
 ENTRY
