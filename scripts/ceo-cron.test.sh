@@ -903,6 +903,17 @@ PB
 }
 
 test_runner_ollama_read_tier_includes_pre_gathered_data() {
+  # Seed approvals/pending.md with three unchecked items so PENDING_COUNT=3
+  # (per ceo-gather.sh's `grep -c "^- \[ \]" approvals/pending.md`). The
+  # sentinel value lets us prove the gathered count reached the ollama prompt.
+  cat > "$CEO_DIR/approvals/pending.md" << 'PENDING'
+# Pending
+
+- [ ] sentinel-pending-item-A
+- [ ] sentinel-pending-item-B
+- [ ] sentinel-pending-item-C
+PENDING
+
   cat > "$CEO_DIR/playbooks/ollama-pregather.md" << 'PB'
 ---
 name: ollama-pregather
@@ -925,6 +936,10 @@ PB
   assert_contains "$prompt" "PRE-GATHERED DATA" "ollama+tier:read prompt must include PRE-GATHERED DATA section"
   assert_contains "$prompt" "ollama-pregather-playbook-body" "ollama prompt must include playbook body"
   assert_contains "$prompt" "PLAYBOOK (ollama-pregather)" "ollama prompt must label the playbook"
+  # Sentinel pin: the seeded inbox count must reach the prompt body. A revert
+  # of the SINGLE_PROMPT_BODY split (so ollama got only the playbook file)
+  # would not surface PENDING_COUNT — the literal "3 pending" disappears.
+  assert_contains "$prompt" "3 pending" "pre-gathered PENDING_COUNT (sentinel: 3) must reach ollama prompt"
 }
 
 test_runner_ollama_prompt_exceeds_budget_fails() {
@@ -956,7 +971,14 @@ PB
 
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
-  assert_contains "$skips_log" "exceeds budget" "skips log must record oversized-prompt reason"
+  assert_contains "$skips_log" "exceeds budget (" "skips log must record oversized-prompt reason with byte counts"
+
+  # Forensic capture: the offending prompt context lands in cron-raw.log so a
+  # human investigating "why is morning-brief over budget on Tuesdays" has an
+  # artifact to inspect (mirrors the claude failure-path capture).
+  local raw_log
+  raw_log=$(cat "$CEO_DIR/log/cron-raw.log" 2>/dev/null || echo "")
+  assert_contains "$raw_log" "Prompt exceeds budget" "cron-raw.log must capture budget-exceeded events"
 }
 
 test_runner_ollama_rejects_non_read_tier() {
@@ -967,7 +989,7 @@ description: ollama on non-read tier must reject before any dispatch
 trigger: cron
 schedule: "0 9 * * *"
 preflight: none
-tier: low-stakes write
+tier: low-stakes-write
 status: active
 runner: ollama
 ---
@@ -991,6 +1013,269 @@ PB
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips_log" "ollama runner requires tier:read" "skips log must record reject reason"
+}
+
+test_runner_ollama_think_rejects_non_read_tier() {
+  # Sibling pin for runner:ollama-think — the guard at ceo-cron.sh:459 covers
+  # both ollama variants, so a regression that drops one side would leak.
+  cat > "$CEO_DIR/playbooks/ollama-think-writetier.md" << 'PB'
+---
+name: ollama-think-writetier
+description: ollama-think on non-read tier must reject
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes-write
+status: active
+runner: ollama-think
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" ollama-think-writetier >/dev/null 2>&1 || rc=$?
+
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] ollama-think with non-read tier must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [ -f "$HOME/ollama-invoked-model.txt" ]; then
+    printf '  FAIL [%s] ollama-think must NOT be invoked for non-read tier\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+test_runner_ollama_success_routes_through_ceo_report_intake() {
+  # Pins Finding 1 of the panel review: morning-brief / morning-scan after the
+  # ollama switch must still land in CEO/reports/<date>.md and trigger the
+  # Discord side-channel — same as the claude path. Regression-test for the
+  # bug where the ollama branch wrote directly to LOG_FILE and bypassed
+  # ceo-report.sh entirely.
+
+  cat > "$CEO_DIR/playbooks/ollama-intake.md" << 'PB'
+---
+name: ollama-intake
+description: ollama success must route through ceo-report.sh intake
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  # ollama stub emits a parseable LOG_ENTRY block — the helper extracts and
+  # routes through ceo-report.sh intake, which writes to REPORT_FILE and
+  # fires the Discord side-channel via curl. We capture curl to assert the
+  # side-channel fired (same shape as test_read_tier_posts_full_report).
+  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "run" ]; then
+  echo "$2" > "$HOME/ollama-invoked-model.txt"
+  cat > "$HOME/ollama-invoked-prompt.txt"
+  cat << 'OUT'
+LOG_ENTRY:
+## 09:00 — ollama-intake
+**Status:** completed
+**Playbook:** playbooks/ollama-intake.md
+**Output:**
+Hello from ollama-intake-sentinel.
+**Errors:**
+- none
+END_LOG_ENTRY
+OUT
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/ollama"
+
+  mkdir -p "$TEST_HOME/curl"
+  export CURL_CAPTURE_DIR="$TEST_HOME/curl"
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+out="$CURL_CAPTURE_DIR/payload.json"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d) shift; printf '%s' "$1" > "$out" ;;
+  esac
+  shift || true
+done
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  mkdir -p "$HOME/.config/claude-ceo"
+  echo '{"discord_report_webhook":"http://127.0.0.1/report-channel"}' \
+    > "$HOME/.config/claude-ceo/secrets.json"
+  # ceo-discord-report.sh defaults the trigger allowlist to ["morning-brief"];
+  # extend it so this test playbook is allowed to fire the side channel.
+  echo '{"discord_report_triggers": ["ollama-intake"]}' \
+    > "$CEO_DIR/settings.json"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-intake >/dev/null 2>&1 || true
+
+  # REPORT_FILE must exist with the intake entry — this is the canonical
+  # write that breaks if the ollama branch skips ceo-report.sh.
+  local report_file="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  assert_file_exists "$report_file" "ollama success must write to CEO/reports/<date>.md via ceo-report.sh intake"
+  local report
+  report=$(cat "$report_file" 2>/dev/null || echo "")
+  assert_contains "$report" "ollama-intake-sentinel" "report file must contain the LOG_ENTRY body"
+  assert_contains "$report" "ollama-intake [intake]" "report header must be intake-tagged"
+
+  # Discord side-channel fires (proves intake routing is reached, not just
+  # report-file append — they're separate concerns inside ceo-report.sh).
+  local payload
+  payload=$(cat "$CURL_CAPTURE_DIR/payload.json" 2>/dev/null || echo "")
+  assert_contains "$payload" "ollama-intake-sentinel" "Discord side-channel must fire on ollama success"
+}
+
+test_runner_ollama_self_reported_failed_records_failure() {
+  # Pins Finding 1 second facet: a model that emits **Status:** failed inside
+  # its LOG_ENTRY block must increment FAIL_COUNT_FILE — not silently record
+  # success because the exit code was 0 and stdout was non-empty.
+
+  cat > "$CEO_DIR/playbooks/ollama-selffail.md" << 'PB'
+---
+name: ollama-selffail
+description: ollama self-reports failed → must increment fail count
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "run" ]; then
+  cat << 'OUT'
+LOG_ENTRY:
+## 09:00 — ollama-selffail
+**Status:** failed
+**Playbook:** playbooks/ollama-selffail.md
+**Output:**
+Simulated playbook failure.
+**Errors:**
+- something broke during synthesis
+END_LOG_ENTRY
+OUT
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/ollama"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-selffail >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "model self-reporting **Status:** failed must increment FAIL_COUNT_FILE (silent-success invariant)"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "self-reported" "cron-skips.log must record self-reported-failure reason"
+}
+
+test_runner_claude_self_reported_failed_records_failure() {
+  # Sibling invariant: the same shape on the claude path. Before the
+  # _dispatch_single_output helper consolidation, claude swallowed
+  # model-self-reported failures and recorded success. The helper now gates
+  # both runners through the same check.
+
+  cat > "$CEO_DIR/playbooks/claude-selffail.md" << 'PB'
+---
+name: claude-selffail
+description: claude self-reports failed → must increment fail count
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+cat << 'OUT'
+LOG_ENTRY:
+## 09:00 — claude-selffail
+**Status:** failed
+**Playbook:** playbooks/claude-selffail.md
+**Output:**
+Simulated claude failure.
+**Errors:**
+- broken
+END_LOG_ENTRY
+OUT
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" claude-selffail >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "claude path: model self-reporting **Status:** failed must increment FAIL_COUNT_FILE"
+}
+
+test_production_morning_brief_registers_with_ollama_runner() {
+  # Pins Finding 2 of the panel review: the actual docs/playbooks/morning-brief.md
+  # in the repo must register with runner: ollama + tier: read after this PR.
+  # A typo in the frontmatter (e.g. `runner: olllama`) would silently ship
+  # green without this test — the unit tests above use synthetic playbooks.
+
+  local repo_playbook="$SCRIPT_DIR/../docs/playbooks/morning-brief.md"
+  if [ ! -f "$repo_playbook" ]; then
+    printf '  FAIL [%s] cannot find production playbook at %q\n' \
+      "$CURRENT_TEST" "$repo_playbook"
+    FAILS=$((FAILS + 1))
+    return
+  fi
+  cp "$repo_playbook" "$CEO_DIR/playbooks/morning-brief.md"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  local runner tier model
+  runner=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  tier=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .tier' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  model=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .model' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  assert_eq "$runner" "ollama" "production morning-brief.md must declare runner: ollama"
+  assert_eq "$tier" "read" "production morning-brief.md must declare tier: read"
+  assert_eq "$model" "mistral-small3.2:24b" "production morning-brief.md must declare model: mistral-small3.2:24b"
+}
+
+test_production_morning_scan_registers_with_ollama_runner() {
+  local repo_playbook="$SCRIPT_DIR/../docs/playbooks/morning-scan.md"
+  if [ ! -f "$repo_playbook" ]; then
+    printf '  FAIL [%s] cannot find production playbook at %q\n' \
+      "$CURRENT_TEST" "$repo_playbook"
+    FAILS=$((FAILS + 1))
+    return
+  fi
+  cp "$repo_playbook" "$CEO_DIR/playbooks/morning-scan.md"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  local runner tier model
+  runner=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  tier=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .tier' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  model=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .model' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  assert_eq "$runner" "ollama" "production morning-scan.md must declare runner: ollama"
+  assert_eq "$tier" "read" "production morning-scan.md must declare tier: read"
+  assert_eq "$model" "mistral-small3.2:24b" "production morning-scan.md must declare model: mistral-small3.2:24b"
 }
 
 test_ceo_augment_path_prepends_user_tool_prefixes() {

@@ -76,6 +76,55 @@ ALERTEOF
   fi
 }
 
+# Single source of truth for routing read-tier model output. Both runner
+# branches (claude single-call, ollama) feed their raw stdout here so report
+# intake, Discord side-channel, and model-self-reported-status handling can't
+# drift between them. Returns 1 (caller exits) if the model self-reported
+# **Status:** failed inside its LOG_ENTRY block; otherwise records success.
+# Arguments: $1 trigger, $2 raw model stdout, $3 model_label (for log lines).
+_dispatch_single_output() {
+  local trigger="$1"
+  local output="$2"
+  local model_label="$3"
+
+  local log_entry
+  log_entry=$(printf '%s\n' "$output" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
+
+  if [ -z "$log_entry" ]; then
+    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
+    "$SCRIPT_DIR/ceo-report.sh" action "$trigger" "**Status:** completed (unparseable output)
+**Playbook:** $PLAYBOOK_REL
+**Note:** Execution succeeded but log format could not be parsed ($model_label)."
+    printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
+    _record_success
+    return 0
+  fi
+
+  _v ""
+  _v "--- Output ---"
+  [ "${CEO_VERBOSE:-}" = "1" ] && echo "$log_entry"
+  _v "--- End ---"
+  _v ""
+
+  local self_reported_failed=0
+  if printf '%s\n' "$log_entry" | grep -q '^\*\*Status:\*\* failed'; then
+    self_reported_failed=1
+  fi
+
+  if [ "$trigger" = "pending-drip" ] && [ "$self_reported_failed" -eq 0 ]; then
+    _append_pending_drip_to_inbox "$log_entry"
+  else
+    "$SCRIPT_DIR/ceo-report.sh" intake "$trigger" "$log_entry"
+  fi
+
+  if [ "$self_reported_failed" -eq 1 ]; then
+    _record_failure "$trigger self-reported **Status:** failed ($model_label)"
+    return 1
+  fi
+  _record_success
+  return 0
+}
+
 # --- Require jq ---
 if ! command -v jq &>/dev/null; then
   echo "$(date): FATAL — jq not installed. Run: sudo apt install jq" >&2
@@ -640,6 +689,7 @@ END_LOG_ENTRY"
       fi
     else
       _v "NOTE: CEO_OLLAMA_SKIP_PROBE set, skipping daemon probe"
+      echo "$(date): NOTE — $TRIGGER skipping ollama daemon probe (CEO_OLLAMA_SKIP_PROBE set)" >> "$LOG_DIR/cron-skips.log"
     fi
     if [ -z "$MODEL_FROM_FRONTMATTER" ]; then
       case "$RUNNER" in
@@ -654,11 +704,14 @@ END_LOG_ENTRY"
     OLLAMA_PROMPT="$SINGLE_PROMPT_BODY"
     # mistral-small3.2:24b has a 32K context window. Reserve ~8K for output
     # and overhead; the rest is the prompt budget. Override via env when a
-    # larger-context model is selected.
+    # larger-context model is selected. `wc -c` measures bytes — `${#var}`
+    # would return character count under a UTF-8 locale and undercount.
     : "${CEO_OLLAMA_MAX_PROMPT_BYTES:=24576}"
-    OLLAMA_PROMPT_BYTES=${#OLLAMA_PROMPT}
+    OLLAMA_PROMPT_BYTES=$(printf '%s' "$OLLAMA_PROMPT" | wc -c | tr -d ' ')
     if [ "$OLLAMA_PROMPT_BYTES" -gt "$CEO_OLLAMA_MAX_PROMPT_BYTES" ]; then
       _v "FAILED (prompt exceeds budget: $OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes)"
+      printf '%s [%s] Prompt exceeds budget (%s bytes > %s) for model: %s\n---\n' \
+        "$(date)" "$TRIGGER" "$OLLAMA_PROMPT_BYTES" "$CEO_OLLAMA_MAX_PROMPT_BYTES" "$OLLAMA_MODEL" >> "$LOG_DIR/cron-raw.log"
       _record_failure "ollama prompt exceeds budget ($OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes) for $TRIGGER (model: $OLLAMA_MODEL)"
       exit 1
     fi
@@ -667,16 +720,18 @@ END_LOG_ENTRY"
     OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | ollama run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
     if [ "$OLLAMA_EXIT" -ne 0 ]; then
       _v "FAILED (exit: $OLLAMA_EXIT)"
+      printf '%s [%s] ollama non-zero exit %s (model: %s):\n%s\n---\n' \
+        "$(date)" "$TRIGGER" "$OLLAMA_EXIT" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$LOG_DIR/cron-raw.log"
       _record_failure "ollama exited $OLLAMA_EXIT for $TRIGGER (model: $OLLAMA_MODEL)"
       exit "$OLLAMA_EXIT"
     fi
     if [ -z "$(printf '%s' "$OLLAMA_OUT" | tr -d '[:space:]')" ]; then
       _v "FAILED (empty output)"
+      printf '%s [%s] Empty ollama output (model: %s)\n---\n' "$(date)" "$TRIGGER" "$OLLAMA_MODEL" >> "$LOG_DIR/cron-raw.log"
       _record_failure "ollama returned empty output for $TRIGGER (model: $OLLAMA_MODEL)"
       exit 1
     fi
-    printf '\n## %s — %s (model: %s)\n\n%s\n' "$NOW" "$TRIGGER" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$LOG_FILE"
-    _record_success
+    _dispatch_single_output "$TRIGGER" "$OLLAMA_OUT" "model: $OLLAMA_MODEL" || exit 1
     exit 0
   fi
 
@@ -699,29 +754,7 @@ END_LOG_ENTRY"
     exit "$SINGLE_EXIT"
   fi
 
-  LOG_ENTRY=$(echo "$SINGLE_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
-  if [ -n "$LOG_ENTRY" ]; then
-    _v ""
-    _v "--- Output ---"
-    [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
-    _v "--- End ---"
-    _v ""
-    if [ "$TRIGGER" = "pending-drip" ] && ! printf '%s\n' "$LOG_ENTRY" | grep -q '^\*\*Status:\*\* failed'; then
-      _append_pending_drip_to_inbox "$LOG_ENTRY"
-    else
-      "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
-    fi
-  else
-    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)
-**Playbook:** $PLAYBOOK_REL
-**Note:** Execution succeeded but log format could not be parsed."
-    echo "$(date) [$TRIGGER] Unparseable output:" >> "$LOG_DIR/cron-raw.log"
-    echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
-    echo "---" >> "$LOG_DIR/cron-raw.log"
-  fi
-
-  _record_success
+  _dispatch_single_output "$TRIGGER" "$SINGLE_OUTPUT" "model: $MODEL" || exit 1
   exit 0
 fi
 
