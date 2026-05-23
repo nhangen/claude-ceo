@@ -76,6 +76,22 @@ ALERTEOF
   fi
 }
 
+_check_rate_limit() {
+  local output="$1"
+  local phase="$2"
+  if printf '%s\n' "$output" | grep -qEi "session limit|hit your limit"; then
+    _v "SKIPPED (rate-limited in $phase)"
+    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** skipped: rate-limited
+**Playbook:** $PLAYBOOK_REL
+**Note:** Claude API session limit reached. Raw output saved to cron-raw.log."
+    echo "$(date) [$TRIGGER] Rate-limited ($phase):" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
+    echo "$output" >> "$LOG_DIR/cron-raw.log"
+    echo "---" >> "$LOG_DIR/cron-raw.log"
+    exit 0
+  fi
+}
+
 # Single source of truth for routing read-tier model output. Both runner
 # branches (claude single-call, ollama) feed their raw stdout here so report
 # intake, Discord side-channel, and model-self-reported-status handling can't
@@ -743,6 +759,7 @@ END_LOG_ENTRY"
     --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
 
   if [ $SINGLE_EXIT -ne 0 ]; then
+    _check_rate_limit "$SINGLE_OUTPUT" "single-call"
     _v "FAILED (exit: $SINGLE_EXIT)"
     "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
@@ -811,6 +828,7 @@ PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with
   --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$LOG_DIR/cron-stderr.log") || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
+  _check_rate_limit "$PLAN_OUTPUT" "plan"
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
   echo "$(date) [$TRIGGER] Plan output:" >> "$LOG_DIR/cron-raw.log"
   echo "$PLAN_OUTPUT" >> "$LOG_DIR/cron-raw.log"
@@ -905,6 +923,7 @@ END_LOG_ENTRY"
 
   _v "Phase 3 done (exit: $EXEC_EXIT)"
   if [ $EXEC_EXIT -ne 0 ]; then
+    _check_rate_limit "$EXEC_OUTPUT" "exec"
     _v "FAILED — raw output saved to cron-raw.log"
     "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
