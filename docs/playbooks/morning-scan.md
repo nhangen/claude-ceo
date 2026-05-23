@@ -3,7 +3,8 @@ name: morning-scan
 description: Scan vault for overnight changes, new notes, unresolved items, carryover
 trigger: cron
 schedule: "50 8 * * 1-5"
-model: haiku
+runner: ollama
+model: mistral-small3.2:24b
 preflight: none
 tier: read
 status: active

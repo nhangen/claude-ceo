@@ -3,7 +3,8 @@ name: morning-brief
 description: Generate a prioritized overview of the day's work
 trigger: cron
 schedule: "57 8 * * 1-5"
-model: sonnet
+runner: ollama
+model: mistral-small3.2:24b
 preflight: none
 tier: read
 status: active

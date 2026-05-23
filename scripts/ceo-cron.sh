@@ -76,6 +76,55 @@ ALERTEOF
   fi
 }
 
+# Single source of truth for routing read-tier model output. Both runner
+# branches (claude single-call, ollama) feed their raw stdout here so report
+# intake, Discord side-channel, and model-self-reported-status handling can't
+# drift between them. Returns 1 (caller exits) if the model self-reported
+# **Status:** failed inside its LOG_ENTRY block; otherwise records success.
+# Arguments: $1 trigger, $2 raw model stdout, $3 model_label (for log lines).
+_dispatch_single_output() {
+  local trigger="$1"
+  local output="$2"
+  local model_label="$3"
+
+  local log_entry
+  log_entry=$(printf '%s\n' "$output" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
+
+  if [ -z "$log_entry" ]; then
+    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
+    "$SCRIPT_DIR/ceo-report.sh" action "$trigger" "**Status:** completed (unparseable output)
+**Playbook:** $PLAYBOOK_REL
+**Note:** Execution succeeded but log format could not be parsed ($model_label)."
+    printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
+    _record_success
+    return 0
+  fi
+
+  _v ""
+  _v "--- Output ---"
+  [ "${CEO_VERBOSE:-}" = "1" ] && echo "$log_entry"
+  _v "--- End ---"
+  _v ""
+
+  local self_reported_failed=0
+  if printf '%s\n' "$log_entry" | grep -q '^\*\*Status:\*\* failed'; then
+    self_reported_failed=1
+  fi
+
+  if [ "$trigger" = "pending-drip" ] && [ "$self_reported_failed" -eq 0 ]; then
+    _append_pending_drip_to_inbox "$log_entry"
+  else
+    "$SCRIPT_DIR/ceo-report.sh" intake "$trigger" "$log_entry"
+  fi
+
+  if [ "$self_reported_failed" -eq 1 ]; then
+    _record_failure "$trigger self-reported **Status:** failed ($model_label)"
+    return 1
+  fi
+  _record_success
+  return 0
+}
+
 # --- Require jq ---
 if ! command -v jq &>/dev/null; then
   echo "$(date): FATAL — jq not installed. Run: sudo apt install jq" >&2
@@ -339,6 +388,9 @@ fi
 
 PLAYBOOK_REL=$(echo "$ENTRY" | jq -r '.file')
 MODEL=$(echo "$ENTRY" | jq -r '.model // ""')
+# Preserves "did the playbook declare an explicit model?" across the
+# claude-default fallback below. Empty string = no override.
+MODEL_FROM_FRONTMATTER="$MODEL"
 PREFLIGHT=$(echo "$ENTRY" | jq -r '.preflight // "none"')
 STATUS=$(echo "$ENTRY" | jq -r '.status // "active"')
 TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
@@ -450,53 +502,13 @@ if [ "$RUNNER" = "script" ]; then
   exit 0
 fi
 
-# --- Ollama-runner branch: route playbook body to a local ollama model ---
-# One-shot prompt-in / text-out; no AGENTS.md / IDENTITY.md / TRAINING.md preamble.
-if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
-  if ! command -v ollama >/dev/null 2>&1; then
-    _record_failure "ollama binary not found on PATH (playbook: $TRIGGER)"
-    exit 1
-  fi
-  if [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ]; then
-    if ! command -v curl >/dev/null 2>&1; then
-      _record_failure "curl not available — cannot probe ollama daemon (playbook: $TRIGGER)"
-      exit 1
-    fi
-    if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>>"$LOG_DIR/cron-stderr.log"; then
-      _record_failure "ollama daemon not reachable at 127.0.0.1:11434 (playbook: $TRIGGER)"
-      exit 1
-    fi
-  else
-    _v "NOTE: CEO_OLLAMA_SKIP_PROBE set, skipping daemon probe"
-  fi
-  if [ -z "$MODEL" ]; then
-    case "$RUNNER" in
-      ollama)       OLLAMA_MODEL="mistral-small3.2:24b" ;;
-      ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
-    esac
-  else
-    OLLAMA_MODEL="$MODEL"
-  fi
-  _v "Runner: $RUNNER — model: $OLLAMA_MODEL"
-  OLLAMA_PROMPT=$(safe_read "$PLAYBOOK_FILE" "$MAX_FILE_SIZE")
-  OLLAMA_EXIT=0
-  OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | ollama run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
-  if [ "$OLLAMA_EXIT" -ne 0 ]; then
-    _v "FAILED (exit: $OLLAMA_EXIT)"
-    _record_failure "ollama exited $OLLAMA_EXIT for $TRIGGER (model: $OLLAMA_MODEL)"
-    exit "$OLLAMA_EXIT"
-  fi
-  if [ -z "$(printf '%s' "$OLLAMA_OUT" | tr -d '[:space:]')" ]; then
-    _v "FAILED (empty output)"
-    _record_failure "ollama returned empty output for $TRIGGER (model: $OLLAMA_MODEL)"
-    exit 1
-  fi
-  printf '\n## %s — %s (model: %s)\n\n%s\n' "$NOW" "$TRIGGER" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$LOG_FILE"
-  _record_success
-  exit 0
+# --- Ollama runners only support tier:read ---
+# The three-phase pipeline (PLAN → FILTER → EXECUTE) requires tool calls and
+# strict ACTION:-line output that ollama can't reliably produce. Reject early.
+if { [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; } && [ "$TIER" != "read" ]; then
+  _record_failure "ollama runner requires tier:read ($TRIGGER is tier:$TIER)"
+  exit 1
 fi
-
-MODEL="${MODEL:-sonnet}"
 
 # --- Read context files (with size limits for injection safety) ---
 AGENTS_CONTENT=$(safe_read "$CEO_DIR/AGENTS.md" "$MAX_FILE_SIZE")
@@ -621,7 +633,10 @@ $(_escape_tag "$PENDING_ASK_QUESTIONS")
   BLESSINGS_BLOCK_OUT=""
   _inputs_includes blessings && BLESSINGS_BLOCK_OUT="$BLESSINGS_DATA"
 
-  SINGLE_PROMPT="You are the CEO agent. Read the context and execute the playbook.
+  # Prompt is built in two halves so the ollama runner can drop the AGENTS /
+  # IDENTITY / TRAINING preamble while still receiving the playbook body and
+  # pre-gathered data. The claude path concatenates both halves.
+  SINGLE_PROMPT_PREAMBLE="You are the CEO agent. Read the context and execute the playbook.
 
 GLOBAL AGENT RULES:
 $AGENTS_CONTENT
@@ -634,7 +649,9 @@ $TRAINING_CONTENT
 
 $DOMAIN_TRAINING
 
-PLAYBOOK ($TRIGGER):
+"
+
+  SINGLE_PROMPT_BODY="PLAYBOOK ($TRIGGER):
 $PLAYBOOK_CONTENT
 
 PRE-GATHERED DATA (from shell — do not re-fetch; the answer must be derived from this block alone, do not call Read/Grep/Glob):
@@ -656,6 +673,71 @@ LOG_ENTRY:
 - {any errors, or 'none'}
 END_LOG_ENTRY"
 
+  if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
+    if ! command -v ollama >/dev/null 2>&1; then
+      _record_failure "ollama binary not found on PATH (playbook: $TRIGGER)"
+      exit 1
+    fi
+    if [ -z "${CEO_OLLAMA_SKIP_PROBE:-}" ]; then
+      if ! command -v curl >/dev/null 2>&1; then
+        _record_failure "curl not available — cannot probe ollama daemon (playbook: $TRIGGER)"
+        exit 1
+      fi
+      if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>>"$LOG_DIR/cron-stderr.log"; then
+        _record_failure "ollama daemon not reachable at 127.0.0.1:11434 (playbook: $TRIGGER)"
+        exit 1
+      fi
+    else
+      _v "NOTE: CEO_OLLAMA_SKIP_PROBE set, skipping daemon probe"
+      echo "$(date): NOTE — $TRIGGER skipping ollama daemon probe (CEO_OLLAMA_SKIP_PROBE set)" >> "$LOG_DIR/cron-skips.log"
+    fi
+    if [ -z "$MODEL_FROM_FRONTMATTER" ]; then
+      case "$RUNNER" in
+        ollama)       OLLAMA_MODEL="mistral-small3.2:24b" ;;
+        ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
+      esac
+    else
+      OLLAMA_MODEL="$MODEL_FROM_FRONTMATTER"
+    fi
+    _v "Runner: $RUNNER — model: $OLLAMA_MODEL"
+
+    OLLAMA_PROMPT="$SINGLE_PROMPT_BODY"
+    # mistral-small3.2:24b has a 32K context window. Reserve ~8K for output
+    # and overhead; the rest is the prompt budget. Override via env when a
+    # larger-context model is selected. `wc -c` measures bytes — `${#var}`
+    # would return character count under a UTF-8 locale and undercount.
+    : "${CEO_OLLAMA_MAX_PROMPT_BYTES:=24576}"
+    OLLAMA_PROMPT_BYTES=$(printf '%s' "$OLLAMA_PROMPT" | wc -c | tr -d ' ')
+    if [ "$OLLAMA_PROMPT_BYTES" -gt "$CEO_OLLAMA_MAX_PROMPT_BYTES" ]; then
+      _v "FAILED (prompt exceeds budget: $OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes)"
+      printf '%s [%s] Prompt exceeds budget (%s bytes > %s) for model: %s\n---\n' \
+        "$(date)" "$TRIGGER" "$OLLAMA_PROMPT_BYTES" "$CEO_OLLAMA_MAX_PROMPT_BYTES" "$OLLAMA_MODEL" >> "$LOG_DIR/cron-raw.log"
+      _record_failure "ollama prompt exceeds budget ($OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes) for $TRIGGER (model: $OLLAMA_MODEL)"
+      exit 1
+    fi
+
+    OLLAMA_EXIT=0
+    OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | ollama run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
+    if [ "$OLLAMA_EXIT" -ne 0 ]; then
+      _v "FAILED (exit: $OLLAMA_EXIT)"
+      printf '%s [%s] ollama non-zero exit %s (model: %s):\n%s\n---\n' \
+        "$(date)" "$TRIGGER" "$OLLAMA_EXIT" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$LOG_DIR/cron-raw.log"
+      _record_failure "ollama exited $OLLAMA_EXIT for $TRIGGER (model: $OLLAMA_MODEL)"
+      exit "$OLLAMA_EXIT"
+    fi
+    if [ -z "$(printf '%s' "$OLLAMA_OUT" | tr -d '[:space:]')" ]; then
+      _v "FAILED (empty output)"
+      printf '%s [%s] Empty ollama output (model: %s)\n---\n' "$(date)" "$TRIGGER" "$OLLAMA_MODEL" >> "$LOG_DIR/cron-raw.log"
+      _record_failure "ollama returned empty output for $TRIGGER (model: $OLLAMA_MODEL)"
+      exit 1
+    fi
+    _dispatch_single_output "$TRIGGER" "$OLLAMA_OUT" "model: $OLLAMA_MODEL" || exit 1
+    exit 0
+  fi
+
+  MODEL="${MODEL:-sonnet}"
+  SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
+
   SINGLE_EXIT=0
   SINGLE_OUTPUT=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
     --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
@@ -672,33 +754,12 @@ END_LOG_ENTRY"
     exit "$SINGLE_EXIT"
   fi
 
-  LOG_ENTRY=$(echo "$SINGLE_OUTPUT" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
-  if [ -n "$LOG_ENTRY" ]; then
-    _v ""
-    _v "--- Output ---"
-    [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
-    _v "--- End ---"
-    _v ""
-    if [ "$TRIGGER" = "pending-drip" ] && ! printf '%s\n' "$LOG_ENTRY" | grep -q '^\*\*Status:\*\* failed'; then
-      _append_pending_drip_to_inbox "$LOG_ENTRY"
-    else
-      "$SCRIPT_DIR/ceo-report.sh" intake "$TRIGGER" "$LOG_ENTRY"
-    fi
-  else
-    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)
-**Playbook:** $PLAYBOOK_REL
-**Note:** Execution succeeded but log format could not be parsed."
-    echo "$(date) [$TRIGGER] Unparseable output:" >> "$LOG_DIR/cron-raw.log"
-    echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
-    echo "---" >> "$LOG_DIR/cron-raw.log"
-  fi
-
-  _record_success
+  _dispatch_single_output "$TRIGGER" "$SINGLE_OUTPUT" "model: $MODEL" || exit 1
   exit 0
 fi
 
 # --- Three-phase pipeline (low-stakes write and above) ---
+MODEL="${MODEL:-sonnet}"
 
 # --- Phase 1: PLAN (read-only, no tool execution) ---
 PLAN_PROMPT="You are the CEO agent running in PLANNING MODE. You CANNOT execute any actions.
