@@ -754,7 +754,13 @@ END_LOG_ENTRY"
       _v "NOTE: CEO_OLLAMA_SKIP_PROBE set, skipping daemon probe"
       echo "$(date): NOTE — $TRIGGER skipping ollama daemon probe (CEO_OLLAMA_SKIP_PROBE set)" >> "$LOG_DIR/cron-skips.log"
     fi
-    if [ -z "$MODEL_FROM_FRONTMATTER" ]; then
+    # Rate-limit fallback (CEO_CRON_OLLAMA_FALLBACK=1) flips RUNNER=ollama at
+    # runtime for a claude-tier playbook whose frontmatter `model:` is a Claude
+    # name (sonnet/haiku/opus). On that path, ignore frontmatter and use the
+    # runner-default ollama model — passing a Claude name to `ollama run` fails
+    # with "pull model manifest: file does not exist". Native runner:ollama
+    # playbooks still honor `model:` for explicit ollama-model overrides.
+    if [ -z "$MODEL_FROM_FRONTMATTER" ] || [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ]; then
       case "$RUNNER" in
         ollama)       OLLAMA_MODEL="mistral-small3.2:24b" ;;
         ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
