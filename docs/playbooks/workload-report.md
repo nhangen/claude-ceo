@@ -6,17 +6,19 @@ schedule: "0 7 * * 1,3"
 preflight: none
 tier: read
 status: active
-runner: script
-script: ceo-workload-report.sh
+runner: skill
+skill: workload-report
+out_pattern: CEO/reports/workload/${TODAY}-${HOSTNAME}.md
+requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]
 ---
 
 # Workload Report
 
-Shell-only playbook. The dispatcher invokes `scripts/ceo-workload-report.sh` directly — no LLM call.
+Skill-backed playbook. The dispatcher invokes the `workload-report` skill directly via `runner: skill` — no LLM call.
 
 ## What it does
 
-Runs the `workload-report` Claude Code skill (`~/.claude/skills/workload-report/scripts/run-report.sh`) and lands the markdown report at:
+Runs the `workload-report` Claude Code skill and lands the markdown report at:
 
 ```
 CEO/reports/workload/<YYYY-MM-DD>-<host>.md
@@ -30,18 +32,22 @@ No inbox line. Workload is reference material, not a `- [ ]` task — surfaced v
 
 Monday and Wednesday, 07:00 local. Monday seeds the week's starting picture post-weekend; Wednesday is a mid-sprint pulse before the typical Thursday/Friday sprint flip.
 
-## Credentials
-
-Resolved at runtime from the user's environment:
-
-- `GITHUB_TOKEN` ← `gh auth token`
-- `ZENHUB_TOKEN` + `ZENHUB_WORKSPACE_ID` ← `~/.cursor/mcp.json` (Zenhub MCP config)
-
-Both are user-scoped — the playbook is host-local (Mac), not portable to ML-1 unless those credentials are mirrored.
-
 ## Install
 
-Registered automatically by `ceo playbook scan`. Cron entries for repo playbooks bake in `$INSTALL_DIR` at scan time. If the claude-ceo repo moves (re-clone, worktree shuffle), re-run `ceo playbook scan` to refresh the crontab.
+Add the following keys to `~/.config/ceo/credentials.env`:
+
+- `ZENHUB_TOKEN`: Zenhub API token (create at app.zenhub.com).
+- `ZENHUB_WORKSPACE_ID`: Your target Zenhub Workspace ID.
+
+(The skill will still opportunistically read `~/.claude.json` or `~/.cursor/mcp.json` if run manually, but CEO strictly requires these in `credentials.env`.)
+
+## Verify
+
+To verify credentials and execution in read-only mode:
+
+```bash
+ceo cron workload-report
+```
 
 ## Output retention
 

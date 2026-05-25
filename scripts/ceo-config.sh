@@ -312,7 +312,7 @@ ceo_pin_home_or_warn() {
 # ---------------------------------------------------------------------------
 CEO_REGISTRY_SCHEMA_VERSION=2
 # shellcheck disable=SC2034
-CEO_VALID_RUNNERS=(claude script ollama ollama-think)
+CEO_VALID_RUNNERS=(claude script ollama ollama-think skill)
 
 # ceo_registry_version <registry_file>
 #   Prints the integer schema_version, or nothing if missing/malformed.
