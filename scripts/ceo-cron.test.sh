@@ -2306,12 +2306,18 @@ skill: test-skill
 out_pattern: CEO/reports/test/${TODAY}-${HOSTNAME}.md
 ---
 PB
-  "$BIN_SCAN" >/dev/null
+  "$CEO_CLI" playbook scan >/dev/null
 
   mkdir -p "$HOME/.claude/skills/test-skill/scripts"
   cat > "$HOME/.claude/skills/test-skill/scripts/run-report.sh" << 'EOF'
 #!/bin/bash
-echo "test-skill output"
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --out) out_dir="$2"; shift ;;
+  esac
+  shift
+done
+echo "test-skill output" > "$out_dir/report.md"
 EOF
   chmod +x "$HOME/.claude/skills/test-skill/scripts/run-report.sh"
 
@@ -2339,7 +2345,7 @@ skill: nonexistent-skill
 out_pattern: CEO/reports/test/missing.md
 ---
 PB
-  "$BIN_SCAN" >/dev/null
+  "$CEO_CLI" playbook scan >/dev/null
 
   local rc=0
   PATH=/usr/bin:/bin bash "$CRON" skill-missing >/dev/null 2>&1 || rc=$?
@@ -2364,7 +2370,7 @@ out_pattern: CEO/reports/test/creds.md
 requires: ["MISSING_TEST_VAR"]
 ---
 PB
-  "$BIN_SCAN" >/dev/null
+  "$CEO_CLI" playbook scan >/dev/null
 
   # Don't create the skill script because we want it to fail on the credential gate
   local rc=0
@@ -2376,7 +2382,38 @@ PB
   assert_contains "$skips_log" "missing credential MISSING_TEST_VAR" "skips log must record missing credential"
 }
 
-test_runner_skill_output_not_produced_records_failure() {
+test_runner_skill_no_output_file_records_failure() {
+  cat > "$CEO_DIR/playbooks/skill-noout.md" << 'PB'
+---
+name: skill-noout
+description: skill produces no output file
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: noout-skill
+out_pattern: CEO/reports/test/noout.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/noout-skill/scripts"
+  cat > "$HOME/.claude/skills/noout-skill/scripts/run-report.sh" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$HOME/.claude/skills/noout-skill/scripts/run-report.sh"
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" skill-noout >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "runner:skill must exit 1 when skill output is missing"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "Skill produced no output file" "skips log must record missing output file failure"
+}
+
+test_runner_skill_empty_output_records_failure() {
   cat > "$CEO_DIR/playbooks/skill-empty.md" << 'PB'
 ---
 name: skill-empty
@@ -2389,12 +2426,18 @@ skill: empty-skill
 out_pattern: CEO/reports/test/empty.md
 ---
 PB
-  "$BIN_SCAN" >/dev/null
+  "$CEO_CLI" playbook scan >/dev/null
 
   mkdir -p "$HOME/.claude/skills/empty-skill/scripts"
   cat > "$HOME/.claude/skills/empty-skill/scripts/run-report.sh" << 'EOF'
 #!/bin/bash
-exit 0
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --out) out_dir="$2"; shift ;;
+  esac
+  shift
+done
+touch "$out_dir/empty.md"
 EOF
   chmod +x "$HOME/.claude/skills/empty-skill/scripts/run-report.sh"
 
@@ -2420,12 +2463,18 @@ skill: workload-report
 out_pattern: CEO/reports/workload/${TODAY}-${HOSTNAME}.md
 ---
 PB
-  "$BIN_SCAN" >/dev/null
+  "$CEO_CLI" playbook scan >/dev/null
 
   mkdir -p "$HOME/.claude/skills/workload-report/scripts"
   cat > "$HOME/.claude/skills/workload-report/scripts/run-report.sh" << 'EOF'
 #!/bin/bash
-echo "workload report stub"
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --out) out_dir="$2"; shift ;;
+  esac
+  shift
+done
+echo "workload report stub" > "$out_dir/report.md"
 EOF
   chmod +x "$HOME/.claude/skills/workload-report/scripts/run-report.sh"
 
