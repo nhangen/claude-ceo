@@ -61,6 +61,7 @@ Commands:
   cron        Run a cron trigger autonomously (e.g. ceo cron pr-triage)
   playbook    Manage playbooks (scan, list, info)
   schedule    List/edit per-user playbook schedules (overrides frontmatter)
+  creds       Manage CEO credentials (list, check, path)
   help        Show this message
 
 Examples:
@@ -1188,6 +1189,85 @@ cmd_playbook_info() {
   fi
 }
 
+cmd_creds() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+  local creds_file="$HOME/.config/ceo/credentials.env"
+
+  case "$subcmd" in
+    path)
+      echo "$creds_file"
+      ;;
+    list)
+      if [ ! -f "$creds_file" ]; then
+        echo "Credentials file not found: $creds_file"
+        exit 0
+      fi
+      echo "=== CEO Credentials ($creds_file) ==="
+      grep -E '^[A-Za-z0-9_]+=' "$creds_file" | cut -d= -f1 || echo "No credentials found."
+      ;;
+    check)
+      local playbook="${1:-}"
+      if [ -z "$playbook" ]; then
+        echo "Usage: ceo creds check <playbook>"
+        exit 1
+      fi
+      ceo_require_vault
+      local registry_file="$CEO_VAULT/CEO/registry.json"
+      _require_registry_current "$registry_file"
+      local entry
+      entry=$(jq -r --arg n "$playbook" '.playbooks[] | select(.name==$n)' "$registry_file")
+      if [ -z "$entry" ]; then
+        echo "Playbook not found: $playbook"
+        exit 1
+      fi
+      local requires
+      requires=$(echo "$entry" | jq -r '.requires[]?' 2>/dev/null)
+      if [ -z "$requires" ]; then
+        echo "Playbook '$playbook' has no required credentials."
+        exit 0
+      fi
+      
+      if [ -f "$creds_file" ]; then
+        # shellcheck source=/dev/null
+        source "$creds_file"
+      fi
+      
+      local missing=0
+      while IFS= read -r req; do
+        [ -z "$req" ] && continue
+        if [ -z "${!req:-}" ]; then
+          echo "✗ Missing: $req"
+          missing=$((missing+1))
+        else
+          echo "✓ Found: $req"
+        fi
+      done <<< "$requires"
+      
+      if [ "$missing" -gt 0 ]; then
+        echo ""
+        echo "Playbook '$playbook' is missing $missing required credential(s)."
+        exit 1
+      else
+        echo ""
+        echo "All required credentials present for '$playbook'."
+      fi
+      ;;
+    help|--help|-h)
+      echo "Usage: ceo creds <list|check|path>"
+      echo ""
+      echo "  list               Show credential keys (never values)"
+      echo "  check <playbook>   Check if required credentials for a playbook are present"
+      echo "  path               Print the path to the credentials file"
+      ;;
+    *)
+      echo "Unknown creds command: $subcmd"
+      echo "Run: ceo creds help"
+      exit 1
+      ;;
+  esac
+}
+
 cmd_setup() {
   if [ "${1:-}" = "discord" ]; then
     bash "$SCRIPT_DIR/ceo-setup-discord.sh"
@@ -1355,6 +1435,7 @@ case "${1:-help}" in
   cron)     ceo_require_vault; _bind_vault; shift; cmd_cron "$@" ;;
   playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
   schedule) ceo_require_vault; _bind_vault; shift; cmd_schedule "$@" ;;
+  creds)    shift; cmd_creds "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     echo "Unknown command: $1"

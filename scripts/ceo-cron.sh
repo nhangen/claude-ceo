@@ -546,6 +546,88 @@ if [ "$RUNNER" = "script" ]; then
   exit 0
 fi
 
+# --- Skill-runner branch: exec a skill, validate output, write to out_pattern ---
+if [ "$RUNNER" = "skill" ]; then
+  export CEO_MODEL="skill"
+  SKILL_NAME=$(echo "$ENTRY" | jq -r '.skill // ""')
+  OUT_PATTERN=$(echo "$ENTRY" | jq -r '.out_pattern // ""')
+  
+  if [ -z "$SKILL_NAME" ]; then
+    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:skill but no 'skill' field" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "Playbook '$TRIGGER' has runner:skill but no 'skill' field"
+    exit 1
+  fi
+  if [ -z "$OUT_PATTERN" ]; then
+    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:skill but no 'out_pattern' field" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "Playbook '$TRIGGER' has runner:skill but no 'out_pattern' field"
+    exit 1
+  fi
+
+  CREDS_FILE="$HOME/.config/ceo/credentials.env"
+  if [ -f "$CREDS_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$CREDS_FILE"
+  fi
+
+  local missing_creds=0
+  while IFS= read -r req; do
+    [ -z "$req" ] && continue
+    if [ -z "${!req:-}" ]; then
+      _record_failure "missing credential $req for playbook $TRIGGER — see docs/playbooks/$TRIGGER.md"
+      missing_creds=1
+    fi
+  done < <(echo "$ENTRY" | jq -r '.requires[]?' 2>/dev/null || true)
+  
+  if [ "$missing_creds" -eq 1 ]; then
+    exit 1
+  fi
+
+  SKILL_SCRIPT="$HOME/.claude/skills/$SKILL_NAME/scripts/run-report.sh"
+  if [ -n "$SCRIPT_PATH" ]; then
+    SKILL_SCRIPT="$HOME/.claude/skills/$SKILL_NAME/$SCRIPT_PATH"
+  fi
+
+  if [ ! -f "$SKILL_SCRIPT" ]; then
+    _record_failure "Skill script not found: $SKILL_SCRIPT for $TRIGGER"
+    exit 1
+  fi
+  if [ ! -x "$SKILL_SCRIPT" ]; then
+    _record_failure "Skill script not executable: $SKILL_SCRIPT for $TRIGGER"
+    exit 1
+  fi
+
+  _v "Runner: skill — exec $SKILL_SCRIPT"
+  
+  TMP_OUT=$(mktemp)
+  export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
+  SKILL_EXIT=0
+  "$SKILL_SCRIPT" "$CEO_DIR" "$TRIGGER" "$TODAY" > "$TMP_OUT" 2>>"$LOG_DIR/cron-stderr.log" || SKILL_EXIT=$?
+  
+  if [ "$SKILL_EXIT" -ne 0 ]; then
+    _record_failure "Skill exited $SKILL_EXIT for $TRIGGER"
+    rm -f "$TMP_OUT"
+    exit "$SKILL_EXIT"
+  fi
+
+  if [ ! -s "$TMP_OUT" ]; then
+    _record_failure "Skill produced empty output for $TRIGGER"
+    rm -f "$TMP_OUT"
+    exit 1
+  fi
+
+  HOST_VAL="${CEO_HOSTNAME:-$(hostname -s)}"
+  FINAL_OUT_REL="${OUT_PATTERN//\$\{TODAY\}/$TODAY}"
+  FINAL_OUT_REL="${FINAL_OUT_REL//\$\{HOSTNAME\}/$HOST_VAL}"
+  FINAL_OUT_REL="${FINAL_OUT_REL//\$\{TRIGGER\}/$TRIGGER}"
+  FINAL_OUT="$VAULT/$FINAL_OUT_REL"
+  
+  mkdir -p "$(dirname "$FINAL_OUT")"
+  mv "$TMP_OUT" "$FINAL_OUT"
+  
+  _record_success
+  exit 0
+fi
+
 # --- Ollama runners only support tier:read ---
 # The three-phase pipeline (PLAN → FILTER → EXECUTE) requires tool calls and
 # strict ACTION:-line output that ollama can't reliably produce. Reject early.

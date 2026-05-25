@@ -2293,6 +2293,150 @@ PB
   assert_contains "$report" "skipped: gather-empty" "report must show skipped status"
 }
 
+test_runner_skill_located_and_success() {
+  cat > "$CEO_DIR/playbooks/skill-success.md" << 'PB'
+---
+name: skill-success
+description: skill executes successfully
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: test-skill
+out_pattern: CEO/reports/test/${TODAY}-${HOSTNAME}.md
+---
+PB
+  "$BIN_SCAN" >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/test-skill/scripts"
+  cat > "$HOME/.claude/skills/test-skill/scripts/run-report.sh" << 'EOF'
+#!/bin/bash
+echo "test-skill output"
+EOF
+  chmod +x "$HOME/.claude/skills/test-skill/scripts/run-report.sh"
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" skill-success >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "runner:skill must exit 0 on success"
+
+  local expected_out="$CEO_DIR/reports/test/$(date +%Y-%m-%d)-$(hostname -s).md"
+  assert_file_exists "$expected_out" "runner:skill must write to interpolated out_pattern"
+  local content
+  content=$(cat "$expected_out" 2>/dev/null || echo "")
+  assert_contains "$content" "test-skill output" "runner:skill must capture skill stdout"
+}
+
+test_runner_skill_missing_skill_records_failure() {
+  cat > "$CEO_DIR/playbooks/skill-missing.md" << 'PB'
+---
+name: skill-missing
+description: skill script does not exist
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: nonexistent-skill
+out_pattern: CEO/reports/test/missing.md
+---
+PB
+  "$BIN_SCAN" >/dev/null
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" skill-missing >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "runner:skill must exit 1 when skill is missing"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "Skill script not found" "skips log must record missing skill script"
+}
+
+test_runner_skill_missing_credential_records_failure() {
+  cat > "$CEO_DIR/playbooks/skill-creds.md" << 'PB'
+---
+name: skill-creds
+description: skill missing required credential
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: test-skill
+out_pattern: CEO/reports/test/creds.md
+requires: ["MISSING_TEST_VAR"]
+---
+PB
+  "$BIN_SCAN" >/dev/null
+
+  # Don't create the skill script because we want it to fail on the credential gate
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" skill-creds >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "runner:skill must exit 1 when credentials are missing"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "missing credential MISSING_TEST_VAR" "skips log must record missing credential"
+}
+
+test_runner_skill_output_not_produced_records_failure() {
+  cat > "$CEO_DIR/playbooks/skill-empty.md" << 'PB'
+---
+name: skill-empty
+description: skill produces empty output
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: empty-skill
+out_pattern: CEO/reports/test/empty.md
+---
+PB
+  "$BIN_SCAN" >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/empty-skill/scripts"
+  cat > "$HOME/.claude/skills/empty-skill/scripts/run-report.sh" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$HOME/.claude/skills/empty-skill/scripts/run-report.sh"
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" skill-empty >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "runner:skill must exit 1 when skill output is empty"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "Skill produced empty output" "skips log must record empty output failure"
+}
+
+test_runner_skill_workload_report_stub_produces_output() {
+  cat > "$CEO_DIR/playbooks/workload-report.md" << 'PB'
+---
+name: workload-report
+description: The migrated workload-report playbook
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: workload-report
+out_pattern: CEO/reports/workload/${TODAY}-${HOSTNAME}.md
+---
+PB
+  "$BIN_SCAN" >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/workload-report/scripts"
+  cat > "$HOME/.claude/skills/workload-report/scripts/run-report.sh" << 'EOF'
+#!/bin/bash
+echo "workload report stub"
+EOF
+  chmod +x "$HOME/.claude/skills/workload-report/scripts/run-report.sh"
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" workload-report >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "workload-report skill runner must exit 0"
+
+  local expected_out="$CEO_DIR/reports/workload/$(date +%Y-%m-%d)-$(hostname -s).md"
+  assert_file_exists "$expected_out" "workload-report must produce correct interpolated file"
+}
+
 run_tests() {
   local count=0
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
