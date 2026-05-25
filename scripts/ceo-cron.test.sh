@@ -2379,7 +2379,7 @@ PB
 
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
-  assert_contains "$skips_log" "missing credential(s) MISSING_TEST_VAR" "skips log must record missing credential"
+  assert_contains "$skips_log" "missing credential MISSING_TEST_VAR" "skips log must record missing credential"
 }
 
 test_runner_skill_no_output_file_records_failure() {
