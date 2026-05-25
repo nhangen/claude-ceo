@@ -569,16 +569,16 @@ if [ "$RUNNER" = "skill" ]; then
     source "$CREDS_FILE"
   fi
 
-  local missing_creds=0
+  MISSING_CREDS=()
   while IFS= read -r req; do
     [ -z "$req" ] && continue
     if [ -z "${!req:-}" ]; then
-      _record_failure "missing credential $req for playbook $TRIGGER — see docs/playbooks/$TRIGGER.md"
-      missing_creds=1
+      MISSING_CREDS+=("$req")
     fi
   done < <(echo "$ENTRY" | jq -r '.requires[]?' 2>/dev/null || true)
   
-  if [ "$missing_creds" -eq 1 ]; then
+  if [ ${#MISSING_CREDS[@]} -gt 0 ]; then
+    _record_failure "missing credential(s) ${MISSING_CREDS[*]} for playbook $TRIGGER — see docs/playbooks/$TRIGGER.md"
     exit 1
   fi
 
@@ -598,20 +598,30 @@ if [ "$RUNNER" = "skill" ]; then
 
   _v "Runner: skill — exec $SKILL_SCRIPT"
   
-  TMP_OUT=$(mktemp)
+  TMP_DIR=$(mktemp -d)
+  trap 'rm -rf "$TMP_DIR"' EXIT
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
   SKILL_EXIT=0
-  "$SKILL_SCRIPT" "$CEO_DIR" "$TRIGGER" "$TODAY" > "$TMP_OUT" 2>>"$LOG_DIR/cron-stderr.log" || SKILL_EXIT=$?
+  "$SKILL_SCRIPT" --out "$TMP_DIR" >/dev/null 2>>"$LOG_DIR/cron-stderr.log" || SKILL_EXIT=$?
   
   if [ "$SKILL_EXIT" -ne 0 ]; then
     _record_failure "Skill exited $SKILL_EXIT for $TRIGGER"
-    rm -f "$TMP_OUT"
     exit "$SKILL_EXIT"
   fi
 
+  shopt -s nullglob
+  MD_FILES=("$TMP_DIR"/*.md)
+  shopt -u nullglob
+  
+  if [ "${#MD_FILES[@]}" -eq 0 ]; then
+    _record_failure "Skill produced no output file for $TRIGGER"
+    exit 1
+  fi
+  
+  TMP_OUT="${MD_FILES[0]}"
+
   if [ ! -s "$TMP_OUT" ]; then
     _record_failure "Skill produced empty output for $TRIGGER"
-    rm -f "$TMP_OUT"
     exit 1
   fi
 
@@ -619,6 +629,13 @@ if [ "$RUNNER" = "skill" ]; then
   FINAL_OUT_REL="${OUT_PATTERN//\$\{TODAY\}/$TODAY}"
   FINAL_OUT_REL="${FINAL_OUT_REL//\$\{HOSTNAME\}/$HOST_VAL}"
   FINAL_OUT_REL="${FINAL_OUT_REL//\$\{TRIGGER\}/$TRIGGER}"
+  
+  FINAL_OUT_REL="${FINAL_OUT_REL#"${FINAL_OUT_REL%%[!/]*}"}" # Strip leading slashes
+  if [[ "$FINAL_OUT_REL" == *"../"* ]] || [[ "$FINAL_OUT_REL" == ".." ]]; then
+    _record_failure "Playbook '$TRIGGER' out_pattern attempts to escape VAULT"
+    exit 1
+  fi
+
   FINAL_OUT="$VAULT/$FINAL_OUT_REL"
   
   mkdir -p "$(dirname "$FINAL_OUT")"
