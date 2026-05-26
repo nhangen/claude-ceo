@@ -2325,7 +2325,8 @@ EOF
   PATH=/usr/bin:/bin bash "$CRON" skill-success >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "runner:skill must exit 0 on success"
 
-  local expected_out="$CEO_DIR/reports/test/$(date +%Y-%m-%d)-$(hostname -s).md"
+  local expected_out
+  expected_out="$CEO_DIR/reports/test/$(date +%Y-%m-%d)-$(hostname -s).md"
   assert_file_exists "$expected_out" "runner:skill must write to interpolated out_pattern"
   local content
   content=$(cat "$expected_out" 2>/dev/null || echo "")
@@ -2379,7 +2380,7 @@ PB
 
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
-  assert_contains "$skips_log" "missing credential MISSING_TEST_VAR" "skips log must record missing credential"
+  assert_contains "$skips_log" "missing credential(s) MISSING_TEST_VAR" "skips log must record missing credential"
 }
 
 test_runner_skill_no_output_file_records_failure() {
@@ -2482,7 +2483,8 @@ EOF
   PATH=/usr/bin:/bin bash "$CRON" workload-report >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "workload-report skill runner must exit 0"
 
-  local expected_out="$CEO_DIR/reports/workload/$(date +%Y-%m-%d)-$(hostname -s).md"
+  local expected_out
+  expected_out="$CEO_DIR/reports/workload/$(date +%Y-%m-%d)-$(hostname -s).md"
   assert_file_exists "$expected_out" "workload-report must produce correct interpolated file"
 }
 

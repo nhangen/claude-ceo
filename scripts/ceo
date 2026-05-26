@@ -563,7 +563,7 @@ cmd_playbook_scan() {
     local from_repo=0
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
-    local name description trigger schedule model preflight tier status bin runner script inputs
+    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -610,6 +610,17 @@ cmd_playbook_scan() {
     bin=$(yq --front-matter=extract '.bin // ""' "$f" 2>/dev/null || echo "")
     runner=$(yq --front-matter=extract '.runner // ""' "$f" 2>/dev/null || echo "")
     script=$(yq --front-matter=extract '.script // ""' "$f" 2>/dev/null || echo "")
+    skill=$(yq --front-matter=extract '.skill // ""' "$f" 2>/dev/null || echo "")
+    out_pattern=$(yq --front-matter=extract '.out_pattern // ""' "$f" 2>/dev/null || echo "")
+    requires=$(yq --front-matter=extract --output-format=json '.requires // null' "$f" 2>/dev/null || echo "null")
+    case "$requires" in
+      "null"|"") requires="null" ;;
+      \[*\]) ;;
+      *)
+        echo "  WARN  $basename: 'requires' must be an array (got: $(echo "$requires" | head -c 60)) — defaulting to none" >&2
+        requires="null"
+        ;;
+    esac
     # `inputs` is an optional array of pre-gather keys to inject into the prompt.
     # Absent → all keys (backward-compatible default). [] → none. Non-array →
     # warn and treat as absent (per enum-config-typo-fallback rule). yq emits
@@ -705,9 +716,12 @@ cmd_playbook_scan() {
       --arg bin "$bin" \
       --arg runner "$runner" \
       --arg script "$script" \
+      --arg skill "$skill" \
+      --arg out_pattern "$out_pattern" \
       --argjson inputs "$inputs" \
+      --argjson requires "$requires" \
       --arg file "$entry_file" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, inputs:$inputs, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, inputs:$inputs, requires:$requires, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))
