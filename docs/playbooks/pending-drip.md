@@ -11,7 +11,7 @@ status: active
 
 # Pending Drip
 
-Surface 1-2 outstanding [ask] questions from Pending.md, matched to the current context.
+Surface 1-2 outstanding `- [ ]` questions from Pending.md, matched to the current context.
 
 ## Steps
 

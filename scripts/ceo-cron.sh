@@ -784,7 +784,7 @@ $(_escape_tag "$ACTIVE_DOMAINS_CONTENT")
   if _inputs_includes pending_ask; then
     PENDING_ASK_BLOCK="
 <external-data>
-Pending [ask] questions (Pending.md, top 20):
+Pending questions (Pending.md unchecked items, top 20):
 $(_escape_tag "$PENDING_ASK_QUESTIONS")
 </external-data>"
   fi
