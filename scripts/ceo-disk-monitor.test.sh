@@ -7,40 +7,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MONITOR="$SCRIPT_DIR/ceo-disk-monitor.sh"
 
-FAILS=0
-CURRENT_TEST=""
-
-assert_eq() {
-  local got="$1" want="$2" msg="${3:-}"
-  if [[ "$got" != "$want" ]]; then
-    printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_file_exists() {
-  local path="$1" msg="${2:-}"
-  if [[ ! -f "$path" ]]; then
-    printf '  FAIL [%s] %s\n    expected file: %q\n' "$CURRENT_TEST" "$msg" "$path"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_not_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" == *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    forbidden: %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
+source "$SCRIPT_DIR/test-harness.sh"
 
 setup() {
   TEST_HOME=$(mktemp -d)
@@ -125,6 +92,7 @@ test_first_run_clear_creates_state_file() {
     printf '  FAIL [%s] clear first run must not write inbox\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_first_run_firing_appends_one_inbox_task() {
@@ -133,6 +101,7 @@ test_first_run_firing_appends_one_inbox_task() {
   local count
   count=$(grep -c -F "Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "first firing run must append exactly one task"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_steady_state_firing_does_not_re_append() {
@@ -143,6 +112,7 @@ test_steady_state_firing_does_not_re_append() {
   local count
   count=$(grep -c -F "Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "steady-state firing must not re-append"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_firing_to_clear_flips_task_and_appends_resolution() {
@@ -157,6 +127,7 @@ test_firing_to_clear_flips_task_and_appends_resolution() {
     printf '  FAIL [%s] original unchecked task must no longer be present\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_measurement_failure_preserves_prior_firing() {
@@ -169,6 +140,7 @@ test_measurement_failure_preserves_prior_firing() {
   local inbox_after
   inbox_after=$(cat "$CEO_DIR/inbox/testhost.md")
   assert_eq "$inbox_after" "$inbox_before" "measurement failure must not mutate inbox"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_measurement_failure_on_clear_does_not_flip_to_firing() {
@@ -179,6 +151,7 @@ test_measurement_failure_on_clear_does_not_flip_to_firing() {
     printf '  FAIL [%s] measurement-failed run after clear must not write inbox\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_wsl_crashes_path_is_measurement_failure() {
@@ -190,6 +163,7 @@ test_missing_wsl_crashes_path_is_measurement_failure() {
     printf '  FAIL [%s] missing measurement path must not escalate inbox\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_corrupted_prior_status_does_not_mutate_inbox() {
@@ -208,6 +182,7 @@ EOF
     printf '  FAIL [%s] unknown prior status must not trigger inbox flip\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_corrupted_prior_status_emits_warning() {
@@ -223,6 +198,7 @@ EOF
   local stderr
   stderr=$(bash "$MONITOR" 2>&1 >/dev/null) || true
   assert_contains "$stderr" "unrecognized prior status" "unrecognized enum value must log to stderr"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_sustained_firing_re_pokes_after_user_checkoff() {
@@ -238,6 +214,7 @@ test_sustained_firing_re_pokes_after_user_checkoff() {
   local count
   count=$(grep -c -F -- "- [ ] Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "sustained firing past 24h after checkoff must re-append one task"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_two_hosts_write_disjoint_state_files() {
@@ -250,6 +227,7 @@ test_two_hosts_write_disjoint_state_files() {
   beta_status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$CEO_DIR/alerts/disk-beta.md" | tr -d '[:space:]')
   assert_eq "$alpha_status" "firing" "alpha must be firing"
   assert_eq "$beta_status" "clear" "beta must be clear (no overwrite from alpha)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_user_reformat_does_not_duplicate_task() {
@@ -268,6 +246,7 @@ test_user_reformat_does_not_duplicate_task() {
     printf '  FAIL [%s] reformat was overwritten — original wording reappeared\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_log_append_failure_emits_warning() {
@@ -282,6 +261,7 @@ test_log_append_failure_emits_warning() {
   stderr=$(DUMP_GB_STUB="0" bash "$MONITOR" 2>&1 >/dev/null) || true
   chmod 0600 "$log_file"
   assert_contains "$stderr" "failed to append log line" "read-only log file must surface a warning to stderr"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_rewrite_handles_host_with_regex_chars() {
@@ -294,24 +274,7 @@ test_inbox_rewrite_handles_host_with_regex_chars() {
   local body
   body=$(cat "$CEO_DIR/inbox/odd.host[1].md")
   assert_contains "$body" "[done] Cleaned wsl-crashes on odd.host[1]" "host with regex chars must flip cleanly"
-}
-
-run_tests() {
-  local count=0
-  for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
-    CURRENT_TEST="$fn"
-    setup
-    "$fn"
-    teardown
-    count=$((count + 1))
-  done
-  echo ""
-  if [ "$FAILS" -eq 0 ]; then
-    echo "All tests passed. ($count tests)"
-  else
-    echo "FAILED: $FAILS"
-    exit 1
-  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

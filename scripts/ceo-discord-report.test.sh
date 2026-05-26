@@ -6,24 +6,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPORT="$SCRIPT_DIR/ceo-discord-report.sh"
 
-FAILS=0
-CURRENT_TEST=""
-
-assert_eq() {
-  local got="$1" want="$2" msg="${3:-}"
-  if [[ "$got" != "$want" ]]; then
-    printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
+source "$SCRIPT_DIR/test-harness.sh"
 
 setup() {
   TMP=$(mktemp -d)
@@ -66,6 +49,7 @@ test_silent_without_report_webhook() {
   printf 'hello' | "$REPORT" morning-brief >/dev/null 2>&1
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "no webhook means no curl call"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_settings_defaults_to_morning_brief_only() {
@@ -74,6 +58,7 @@ test_missing_settings_defaults_to_morning_brief_only() {
 
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "missing settings must still default to morning-brief only"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_uses_dedicated_report_webhook_from_file() {
@@ -84,6 +69,7 @@ test_uses_dedicated_report_webhook_from_file() {
   payload=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
   assert_contains "$payload" "CEO full report: morning-brief" "first payload must identify report"
   assert_contains "$payload" "full report body" "payload must contain body"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_trigger_allowlist_filters_other_reports() {
@@ -93,6 +79,7 @@ test_trigger_allowlist_filters_other_reports() {
 
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "non-allowlisted trigger must not post"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_splits_large_report() {
@@ -110,24 +97,7 @@ test_splits_large_report() {
       "$CURRENT_TEST" "$count"
     FAILS=$((FAILS + 1))
   fi
-}
-
-run_tests() {
-  local count=0
-  for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
-    CURRENT_TEST="$fn"
-    setup
-    "$fn"
-    teardown
-    count=$((count + 1))
-  done
-  echo ""
-  if [ "$FAILS" -eq 0 ]; then
-    echo "All tests passed. ($count tests)"
-  else
-    echo "FAILED: $FAILS"
-    exit 1
-  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

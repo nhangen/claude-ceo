@@ -8,32 +8,7 @@ TRACKER="$SCRIPT_DIR/ceo-value-tracker.sh"
 
 WIKILINK_PREFIX="[[Projects/Development/nhangen/claude-ceo/value-tracker"
 
-FAILS=0
-CURRENT_TEST=""
-
-assert_eq() {
-  local got="$1" want="$2" msg="${3:-}"
-  if [[ "$got" != "$want" ]]; then
-    printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_file_exists() {
-  local path="$1" msg="${2:-}"
-  if [[ ! -f "$path" ]]; then
-    printf '  FAIL [%s] %s\n    expected file: %q\n' "$CURRENT_TEST" "$msg" "$path"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
+source "$SCRIPT_DIR/test-harness.sh"
 
 setup() {
   TEST_HOME=$(mktemp -d)
@@ -99,6 +74,7 @@ test_appends_inbox_line_and_invokes_bun() {
   assert_contains "$output" "bun-stub:" "script must invoke bun"
   assert_contains "$output" "--since $yesterday" "bun invocation must pass --since with yesterday's date"
   assert_contains "$output" "--obsidian-vault $CEO_VAULT" "bun invocation must pass obsidian-vault"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_idempotent_inbox_append() {
@@ -111,6 +87,7 @@ test_idempotent_inbox_append() {
 
   count=$(grep -c -F "$WIKILINK_PREFIX/$today]]" "$inbox" || true)
   assert_eq "$count" "1" "two runs must leave exactly one inbox line"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_idempotent_preserves_checked_off_line() {
@@ -130,6 +107,7 @@ test_idempotent_preserves_checked_off_line() {
   unchecked=$(grep -c -F -- "- [ ] Review daily value-tracker report $WIKILINK_PREFIX/$today]]" "$inbox" || true)
   assert_eq "$checked" "1" "checked-off line must survive re-run"
   assert_eq "$unchecked" "0" "must not re-append an unchecked line"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_exits_with_bun_exit_code_when_bun_fails() {
@@ -148,6 +126,7 @@ STUB
     printf '  FAIL [%s] inbox must NOT have a line when bun failed\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_home_is_empty() {
@@ -158,6 +137,7 @@ test_fails_when_home_is_empty() {
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$stderr" "HOME" "stderr must mention HOME (got: $stderr)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_ceo_vault_is_unset() {
@@ -167,6 +147,7 @@ test_fails_when_ceo_vault_is_unset() {
     printf '  FAIL [%s] unset CEO_VAULT must fail\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_bun_missing_from_path() {
@@ -180,6 +161,7 @@ test_fails_when_bun_missing_from_path() {
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$stderr" "bun" "stderr must mention bun (got: $stderr)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_entry_missing() {
@@ -190,6 +172,7 @@ test_fails_when_entry_missing() {
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$stderr" "entry not found" "stderr must mention entry not found (got: $stderr)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_two_hosts_write_to_disjoint_files() {
@@ -206,28 +189,7 @@ test_two_hosts_write_to_disjoint_files() {
   h2=$(grep -c -F "$WIKILINK_PREFIX/$today]]" "$CEO_DIR/inbox/otherhost.md" || true)
   assert_eq "$h1" "1" "host1 must have its own line"
   assert_eq "$h2" "1" "host2 must have its own line"
-}
-
-run_tests() {
-  local count=0
-  for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
-    CURRENT_TEST="$fn"
-    setup
-    "$fn"
-    teardown
-    count=$((count + 1))
-  done
-  echo ""
-  if [ "$count" -eq 0 ]; then
-    echo "ERROR: no tests discovered" >&2
-    exit 1
-  fi
-  if [ "$FAILS" -eq 0 ]; then
-    echo "All tests passed. ($count tests)"
-  else
-    echo "FAILED: $FAILS"
-    exit 1
-  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

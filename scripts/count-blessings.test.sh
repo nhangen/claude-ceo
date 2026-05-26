@@ -7,32 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLI="$SCRIPT_DIR/count-blessings.sh"
 LIB="$SCRIPT_DIR/blessings-lib.sh"
 
-FAILS=0
-CURRENT_TEST=""
-
-assert_eq() {
-  local got="$1" want="$2" msg="${3:-}"
-  if [[ "$got" != "$want" ]]; then
-    printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_fails() {
-  local msg="$1"; shift
-  if "$@" >/dev/null 2>&1; then
-    printf '  FAIL [%s] %s (expected non-zero exit)\n' "$CURRENT_TEST" "$msg"
-    FAILS=$((FAILS + 1))
-  fi
-}
+source "$SCRIPT_DIR/test-harness.sh"
 
 setup() {
   TEST_HOME=$(mktemp -d)
@@ -48,6 +23,7 @@ teardown() {
 
 test_harness_works() {
   assert_eq "1" "1" "arithmetic still works"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_writes_bullet_to_blessings_file() {
@@ -56,6 +32,7 @@ test_add_writes_bullet_to_blessings_file() {
   content=$(cat "$CEO_DIR/blessings.md")
   assert_contains "$content" "- family" "bullet written"
   assert_contains "$content" "type: ea-blessings" "frontmatter created"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_bootstraps_missing_ceo_dir() {
@@ -65,6 +42,7 @@ test_add_bootstraps_missing_ceo_dir() {
   bash "$CLI" add "first-blessing" >/dev/null
   [[ -d "$CEO_DIR" ]] || { printf '  FAIL [%s] CEO_DIR was not created\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); return; }
   assert_contains "$(cat "$CEO_DIR/blessings.md")" "- first-blessing" "bullet landed"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_appends_without_overwriting() {
@@ -74,20 +52,24 @@ test_add_appends_without_overwriting() {
   content=$(cat "$CEO_DIR/blessings.md")
   assert_contains "$content" "- first" "first preserved"
   assert_contains "$content" "- second" "second appended"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_rejects_empty_argument() {
   assert_fails "empty add should fail" bash "$CLI" add ""
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_rejects_newline_in_argument() {
   assert_fails "newline smuggling rejected" bash "$CLI" add $'line1\nline2'
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_rejects_overlong_argument() {
   local long
   long=$(printf 'x%.0s' {1..501})
   assert_fails "501-char entry rejected" bash "$CLI" add "$long"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_handles_shell_metacharacters_literally() {
@@ -95,6 +77,7 @@ test_add_handles_shell_metacharacters_literally() {
   local content
   content=$(cat "$CEO_DIR/blessings.md")
   assert_contains "$content" '$(rm -rf /tmp/should-not-happen); echo pwned' "metachars stored verbatim"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_ensures_trailing_newline_before_append() {
@@ -104,12 +87,14 @@ test_add_ensures_trailing_newline_before_append() {
   local lines
   lines=$(grep -c '^- ' "$CEO_DIR/blessings.md")
   assert_eq "$lines" "2" "both bullets present on their own lines"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_add_prints_confirmation() {
   local out
   out=$(bash "$CLI" add "gratitude")
   assert_contains "$out" "Added: gratitude" "confirmation printed to stdout"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_list_shows_numbered_bullets() {
@@ -122,6 +107,7 @@ test_list_shows_numbered_bullets() {
   assert_contains "$out" "- second" "second present"
   assert_contains "$out" "- third" "third present"
   assert_contains "$out" "     1	" "numbered"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_list_strips_frontmatter() {
@@ -132,6 +118,7 @@ test_list_strips_frontmatter() {
     printf '  FAIL [%s] frontmatter leaked into list output\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   }
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_list_on_missing_file_is_empty() {
@@ -139,6 +126,7 @@ test_list_on_missing_file_is_empty() {
   out=$(bash "$CLI" list 2>&1 || true)
   # Missing file is not an error — just empty output.
   assert_eq "$out" "" "empty output on missing file"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_list_on_empty_body_is_empty() {
@@ -149,6 +137,7 @@ test_list_on_empty_body_is_empty() {
   local rc=$?
   assert_eq "$rc" "0" "exit 0 on empty body"
   assert_eq "$out" "" "empty output on empty body"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_cache_picks_three_when_many_available() {
@@ -171,6 +160,7 @@ test_cache_picks_three_when_many_available() {
   local bullet_count
   bullet_count=$(grep -c '^- ' "$cache")
   assert_eq "$bullet_count" "3" "exactly three picks"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_cache_picks_all_when_fewer_than_three() {
@@ -182,6 +172,7 @@ test_cache_picks_all_when_fewer_than_three() {
   local count
   count=$(grep -c '^- ' "$CEO_DIR/cache/blessings-today.md")
   assert_eq "$count" "1" "one-entry file yields one pick"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_cache_no_op_when_already_today() {
@@ -194,6 +185,7 @@ test_cache_no_op_when_already_today() {
   ensure_blessings_cache
   # sentinel must still be present — helper skipped regen
   assert_contains "$(cat "$CEO_DIR/cache/blessings-today.md")" "cached-sentinel" "cache preserved"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_cache_regenerates_when_stale() {
@@ -209,6 +201,7 @@ test_cache_regenerates_when_stale() {
     printf '  FAIL [%s] stale cache was not replaced\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   }
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_cache_handles_missing_source_file() {
@@ -220,6 +213,7 @@ test_cache_handles_missing_source_file() {
   local bullet_count
   bullet_count=$(grep -c '^- ' "$cache" 2>/dev/null || true)
   assert_eq "$bullet_count" "0" "no bullets when source missing"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_cache_strips_frontmatter_before_picking() {
@@ -238,6 +232,7 @@ test_cache_strips_frontmatter_before_picking() {
     FAILS=$((FAILS + 1))
   }
   assert_contains "$content" "- real-entry" "real entry picked"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_show_outputs_cache_file() {
@@ -249,12 +244,14 @@ test_show_outputs_cache_file() {
   out=$(bash "$CLI" show)
   local today; today=$(date +%Y-%m-%d)
   assert_contains "$out" "date: $today" "cache date visible"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_show_on_missing_cache_is_empty() {
   local out
   out=$(bash "$CLI" show 2>&1 || true)
   assert_eq "$out" "" "empty on no cache"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_repick_prints_todays_picks() {
@@ -265,6 +262,7 @@ test_repick_prints_todays_picks() {
   out=$(bash "$CLI" repick)
   assert_contains "$out" "Repicked" "confirmation line present"
   assert_contains "$out" "- " "picks listed in output"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_repick_forces_regeneration() {
@@ -282,6 +280,7 @@ test_repick_forces_regeneration() {
     printf '  FAIL [%s] repick did not regenerate\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   }
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # --- runner ---
