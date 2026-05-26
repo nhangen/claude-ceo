@@ -268,13 +268,14 @@ else
   export ACTIVE_DOMAINS_CONTENT=""
 fi
 
-# --- Pending.md [ask] questions (top entries only) ---
-# Morning brief asks Claude to "pick 1-2 [ask] questions". Pre-extract them
-# so Claude doesn't need to read the full file. Cap at 20 lines to bound cost.
+# --- Pending.md outstanding questions (top entries only) ---
+# Pre-extract unchecked items so Claude doesn't need to read the full file.
+# Matches the same pattern PENDING_COUNT uses (line 38). Cap at 20 lines to
+# bound cost.
 PENDING_FILE="$VAULT/Pending.md"
 if [ -f "$PENDING_FILE" ]; then
 export PENDING_ASK_QUESTIONS
-PENDING_ASK_QUESTIONS=$(grep -n '\[ask\]' "$PENDING_FILE" 2>/dev/null | head -20)
+PENDING_ASK_QUESTIONS=$(grep -n '^- \[ \]' "$PENDING_FILE" 2>/dev/null | head -20)
 else
   export PENDING_ASK_QUESTIONS=""
 fi
