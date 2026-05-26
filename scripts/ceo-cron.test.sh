@@ -2262,6 +2262,43 @@ STUB
   assert_contains "$ollama_invoked" "mistral-small" "ollama must be invoked with default model during fallback"
 }
 
+test_claude_rate_limit_fallback_ignores_claude_model_frontmatter() {
+  # Regression: a runner:claude playbook with model:haiku|sonnet (Claude tier
+  # name) must NOT pass that name through to `ollama run` when the rate-limit
+  # fallback flips RUNNER to ollama. The invariant is "rate-limit fallback is
+  # 100% ollama-mapped"; frontmatter model overrides apply only to native
+  # runner:ollama playbooks, not to a runtime-flipped runner.
+  cat > "$CEO_DIR/playbooks/ratelimit-haiku.md" << 'PB'
+---
+name: ratelimit-haiku
+description: claude-tier playbook that declares model:haiku
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+echo "You've hit your session limit · resets 5:10am (America/New_York)"
+exit 1
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  local rc=0
+  bash "$CRON" ratelimit-haiku >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "cron must exit 0 after falling back to ollama"
+
+  local model
+  model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
+  assert_eq "$model" "mistral-small3.2:24b" "fallback must use the runner-default ollama model, not the Claude-tier frontmatter name"
+}
+
 test_ceo_cron_skips_read_tier_on_failed_gather() {
   cat > "$CEO_DIR/playbooks/morning-brief.md" << 'PB'
 ---
