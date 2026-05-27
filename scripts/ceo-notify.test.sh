@@ -1,38 +1,16 @@
 #!/bin/bash
 # Tests for ceo-notify.sh — exercises the helper without posting to Discord
 # by routing curl at a local responder served from a tempdir socket.
+#
+# shellcheck disable=SC2034
+# CURRENT_TEST is set per-test here and read by assertion helpers in test-harness.sh.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NOTIFY="$SCRIPT_DIR/ceo-notify.sh"
 
-FAILS=0
-CURRENT_TEST=""
-
-assert_eq() {
-  local got="$1" want="$2" msg="${3:-}"
-  if [[ "$got" != "$want" ]]; then
-    printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_no_match() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" == *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack contained forbidden needle: %q\n' "$CURRENT_TEST" "$msg" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
+source "$SCRIPT_DIR/test-harness.sh"
 
 setup() {
   TMP=$(mktemp -d)
@@ -57,6 +35,7 @@ test_silent_when_no_webhook_configured() {
   assert_eq "$rc" "0" "exit 0 when no webhook"
   assert_eq "$out" "" "no output when no webhook"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_silent_when_events_off() {
@@ -69,6 +48,7 @@ test_silent_when_events_off() {
   assert_eq "$rc" "0" "exit 0 when events=off"
   assert_eq "$out" "" "no output when events=off"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_silent_on_success_when_events_failures() {
@@ -82,6 +62,7 @@ test_silent_on_success_when_events_failures() {
   assert_eq "$rc" "0" "exit 0 when events=failures and status=success"
   assert_eq "$out" "" "no output when filtered"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_invalid_status_no_op() {
@@ -93,6 +74,7 @@ test_invalid_status_no_op() {
   assert_eq "$rc" "0" "exit 0 on unknown status"
   assert_contains "$out" "unknown status" "stderr explains"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_args_no_op() {
@@ -102,6 +84,7 @@ test_missing_args_no_op() {
   rc=$?
   assert_eq "$rc" "0" "exit 0 on missing args (must not break cron)"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_unknown_events_warns_and_defaults_to_failures() {
@@ -114,6 +97,7 @@ test_unknown_events_warns_and_defaults_to_failures() {
   assert_eq "$rc" "0" "exit 0 with typo'd events"
   assert_contains "$out" "unknown notify_events 'typoed'" "must warn on unknown value (enum-config-typo-fallback rule)"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_curl_unreachable_does_not_break() {
@@ -126,6 +110,7 @@ test_curl_unreachable_does_not_break() {
   rc=$?
   assert_eq "$rc" "0" "exit 0 even when curl fails"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_env_var_overrides_secrets_file() {
@@ -141,6 +126,7 @@ test_env_var_overrides_secrets_file() {
   assert_no_match "$trace" "from-file" "secrets-file URL must NOT be selected when env var is set"
   assert_eq "$rc" "0" "helper rc=0 even with unreachable host"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_does_not_log_webhook_url() {
@@ -155,6 +141,7 @@ test_does_not_log_webhook_url() {
   assert_eq "$rc" "0" "rc=0"
   assert_no_match "$out" "SECRET-TOKEN-12345" "webhook URL must not appear in script output"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_jq_argjson_color_no_injection() {
@@ -168,6 +155,7 @@ test_jq_argjson_color_no_injection() {
   rc=$?
   assert_eq "$rc" "0" "special chars in reason must not crash helper"
   teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # --- Run all tests ---

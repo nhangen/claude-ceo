@@ -7,32 +7,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CEO_CLI="$SCRIPT_DIR/ceo"
 
-FAILS=0
-CURRENT_TEST=""
-
-assert_eq() {
-  local got="$1" want="$2" msg="${3:-}"
-  if [[ "$got" != "$want" ]]; then
-    printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_not_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" == *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    forbidden:%q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
+source "$SCRIPT_DIR/test-harness.sh"
 
 setup() {
   TEST_HOME=$(mktemp -d)
@@ -62,6 +37,7 @@ test_clean_returns_0_and_says_no_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "0" "clean → exit 0"
   assert_contains "$out" "No drift detected" "clean → no-drift message"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_clean_quiet_silent() {
@@ -70,6 +46,7 @@ test_clean_quiet_silent() {
   out=$(bash "$CEO_CLI" playbook diff --quiet 2>&1); rc=$?
   assert_eq "$rc" "0" "clean --quiet → exit 0"
   assert_eq "$out" "" "clean --quiet → empty stdout+stderr"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_vault_only_drift() {
@@ -78,6 +55,7 @@ test_vault_only_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "1" "vault-only → exit 1"
   assert_contains "$out" "Vault only: only-in-vault.md" "drift message"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_repo_only_drift() {
@@ -86,6 +64,7 @@ test_repo_only_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "1" "repo-only → exit 1"
   assert_contains "$out" "Repo only: only-in-repo.md" "drift message"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_differs_shows_unified_diff() {
@@ -96,6 +75,7 @@ test_differs_shows_unified_diff() {
   assert_eq "$rc" "1" "differs → exit 1"
   assert_contains "$out" "Differs: foo.md" "differs label"
   assert_contains "$out" "+++" "unified diff header present"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_quiet_on_drift_silent_but_nonzero() {
@@ -104,6 +84,7 @@ test_quiet_on_drift_silent_but_nonzero() {
   out=$(bash "$CEO_CLI" playbook diff --quiet 2>&1); rc=$?
   assert_eq "$rc" "1" "quiet drift → exit 1"
   assert_eq "$out" "" "quiet drift → no output"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_quiet_arg_forwarded_from_dispatcher() {
@@ -113,6 +94,7 @@ test_quiet_arg_forwarded_from_dispatcher() {
   local out
   out=$(bash "$CEO_CLI" playbook diff --quiet 2>&1 || true)
   assert_not_contains "$out" "Vault only" "dispatcher must forward --quiet flag"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_vault_dir_returns_2_not_1() {
@@ -120,6 +102,7 @@ test_missing_vault_dir_returns_2_not_1() {
   local rc=0
   bash "$CEO_CLI" playbook diff --quiet >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "2" "missing vault dir → exit 2 (distinct from drift's 1)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_repo_dir_returns_2() {
@@ -127,6 +110,7 @@ test_missing_repo_dir_returns_2() {
   local rc=0
   bash "$CEO_CLI" playbook diff --quiet >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "2" "missing repo dir → exit 2"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_unset_vault_fails_loudly() {
@@ -140,6 +124,7 @@ test_unset_vault_fails_loudly() {
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$out" "CEO_VAULT" "error must name the missing variable"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_both_dirs_empty_no_drift() {
@@ -147,27 +132,7 @@ test_both_dirs_empty_no_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "0" "both empty → exit 0"
   assert_contains "$out" "No drift detected" "both empty → no drift"
-}
-
-run_tests() {
-  local count=0
-  for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
-    if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
-      continue
-    fi
-    CURRENT_TEST="$fn"
-    setup
-    "$fn"
-    teardown
-    count=$((count + 1))
-  done
-  echo ""
-  if [ "$FAILS" -eq 0 ]; then
-    echo "All tests passed. ($count tests)"
-  else
-    echo "FAILED: $FAILS"
-    exit 1
-  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

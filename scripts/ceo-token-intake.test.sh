@@ -7,32 +7,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INTAKE="$SCRIPT_DIR/ceo-token-intake.sh"
 
-FAILS=0
-CURRENT_TEST=""
-
-assert_eq() {
-  local got="$1" want="$2" msg="${3:-}"
-  if [[ "$got" != "$want" ]]; then
-    printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_file_exists() {
-  local path="$1" msg="${2:-}"
-  if [[ ! -f "$path" ]]; then
-    printf '  FAIL [%s] %s\n    expected file: %q\n' "$CURRENT_TEST" "$msg" "$path"
-    FAILS=$((FAILS + 1))
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" msg="${3:-}"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
-  fi
-}
+source "$SCRIPT_DIR/test-harness.sh"
 
 setup() {
   TEST_HOME=$(mktemp -d)
@@ -96,6 +71,7 @@ test_creates_host_suffixed_report_and_appends_per_host_inbox_line() {
   local count
   count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
   assert_eq "$count" "1" "per-host inbox must contain wikilink to host-suffixed report"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_does_not_write_to_shared_inbox_md() {
@@ -105,6 +81,7 @@ test_does_not_write_to_shared_inbox_md() {
       "$CURRENT_TEST" "$(cat "$CEO_DIR/inbox.md")"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_idempotent_same_day() {
@@ -115,6 +92,7 @@ test_idempotent_same_day() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
   assert_eq "$count" "1" "two runs must leave exactly one inbox line"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_does_not_re_append_after_inbox_checkoff() {
@@ -129,6 +107,7 @@ test_does_not_re_append_after_inbox_checkoff() {
   local count
   count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
   assert_eq "$count" "1" "checked-off line must not trigger re-append"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_two_hosts_write_disjoint_files() {
@@ -144,6 +123,7 @@ test_two_hosts_write_disjoint_files() {
     printf '  FAIL [%s] beta inbox shadow must not reference alpha\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_invokes_ceo_augment_path() {
@@ -158,6 +138,7 @@ test_invokes_ceo_augment_path() {
   assert_file_exists "$report" "report file must exist"
   body=$(cat "$report")
   assert_contains "$body" "rtk-stub:" "report must contain stub rtk output (proves ceo_augment_path resolved \$HOME/.bun/bin)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pins_home_to_resolved_user_home_before_capture() {
@@ -198,6 +179,7 @@ EOF
   body=$(cat "$report")
   assert_contains "$body" "rtk-saw-HOME=$pinned" \
     "rtk must see HOME=$pinned (resolver target), not the sandbox HOME the caller passed"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_exits_nonzero_when_capture_command_missing() {
@@ -219,6 +201,7 @@ test_exits_nonzero_when_capture_command_missing() {
     printf '  FAIL [%s] report must record the missing-binary sentinel for forensics\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_exits_nonzero_when_capture_command_fails() {
@@ -238,6 +221,7 @@ STUB
     printf '  FAIL [%s] inbox must NOT have a line when capture failed\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_augment_path_branches_per_os() {
@@ -265,6 +249,7 @@ test_augment_path_branches_per_os() {
   assert_contains "$got" "$HOME/.bun/bin" "macos branch must include \$HOME/.bun/bin"
   unset _CEO_PATH_AUGMENTED
   unset -f ceo_detect_os
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_aborts_on_unwritable_report_dir() {
@@ -283,6 +268,7 @@ test_aborts_on_unwritable_report_dir() {
     printf '  FAIL [%s] per-host inbox must NOT have an inbox line when the report write failed\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_prefers_plugin_cache_over_path_for_token_scope() {
@@ -336,24 +322,7 @@ STUB
     printf '  FAIL [%s] bun stub received wrong entry path (runtime+path pair mismatched)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-}
-
-run_tests() {
-  local count=0
-  for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
-    CURRENT_TEST="$fn"
-    setup
-    "$fn"
-    teardown
-    count=$((count + 1))
-  done
-  echo ""
-  if [ "$FAILS" -eq 0 ]; then
-    echo "All tests passed. ($count tests)"
-  else
-    echo "FAILED: $FAILS"
-    exit 1
-  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests
