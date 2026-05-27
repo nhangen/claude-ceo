@@ -2,7 +2,7 @@
 name: git-monitor
 description: Scans repositories for dirty worktrees and out-of-date branches
 trigger: cron
-schedule: "0 10,16 * * 1-5"
+schedule: "0 3 * * *"
 preflight: none
 tier: read
 status: active
