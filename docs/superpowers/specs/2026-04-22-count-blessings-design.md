@@ -22,7 +22,7 @@ Framing note: this is an EA-flavored feature, not a CEO-flavored one. It lives i
 
 ## File layout
 
-**Plugin (`/Users/nhangen/ML-AI/claude/ceo/`):**
+**Plugin (`<repo>/`):**
 
 - `scripts/count-blessings.sh` — CLI entrypoint
 - `scripts/blessings-lib.sh` — shared library (`ensure_blessings_cache`, `strip_frontmatter`, `require_ceo_dir`)

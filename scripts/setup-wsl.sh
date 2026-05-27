@@ -71,9 +71,21 @@ SSHEOF
 fi
 
 # 4. Git config
+# Set CEO_GIT_USER_NAME / CEO_GIT_USER_EMAIL in the environment to override,
+# or pre-configure git globally before running this script — existing values
+# are preserved.
 echo "[4/10] Configuring git..."
-git config --global user.name "Nathan Hangen (CEO Agent)"
-git config --global user.email "nhangen@users.noreply.github.com"
+if [ -z "$(git config --global --get user.name 2>/dev/null)" ]; then
+  git config --global user.name "${CEO_GIT_USER_NAME:-CEO Agent}"
+fi
+if [ -z "$(git config --global --get user.email 2>/dev/null)" ]; then
+  if [ -n "${CEO_GIT_USER_EMAIL:-}" ]; then
+    git config --global user.email "$CEO_GIT_USER_EMAIL"
+  else
+    echo "  WARNING: git user.email not set. Set CEO_GIT_USER_EMAIL or run:"
+    echo "    git config --global user.email <you@example.com>"
+  fi
+fi
 
 # 5. Syncthing
 # Syncthing — must be installed and configured separately (see README.md)
