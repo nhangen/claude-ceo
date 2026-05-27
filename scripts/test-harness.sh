@@ -66,7 +66,8 @@ _record_test_abort() {
 
 run_tests() {
   local count=0
-  export TEST_FAILS_TMP=$(mktemp)
+  export TEST_FAILS_TMP
+  TEST_FAILS_TMP=$(mktemp)
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue
@@ -87,7 +88,7 @@ run_tests() {
     
     if [ -s "$TEST_FAILS_TMP" ]; then
       FAILS=$((FAILS + $(wc -l < "$TEST_FAILS_TMP")))
-      > "$TEST_FAILS_TMP"
+      true > "$TEST_FAILS_TMP"
     fi
     
     if [ -f "${TEST_FAILS_TMP}.assertions" ]; then
