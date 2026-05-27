@@ -12,8 +12,12 @@ setup() {
   export CEO_DIR="$TMP/CEO"
   mkdir -p "$CEO_DIR"
   
+  
   export CEO_GIT_DIRS="$TMP/repos"
   mkdir -p "$TMP/repos"
+  
+  git config --global user.email "test@example.com"
+  git config --global user.name "Test User"
 }
 
 teardown() {
@@ -30,8 +34,7 @@ test_git_monitor_clean_state() {
   git add README.md
   git commit -q -m "Initial commit"
   
-  local out
-  out=$(bash "$SCRIPT_DIR/ceo-git-monitor.sh" 2>&1)
+  bash "$SCRIPT_DIR/ceo-git-monitor.sh" >/dev/null 2>&1
   
   local state_file="$CEO_DIR/alerts/git-monitor.md"
   assert_file_exists "$state_file" "state file must be created"
@@ -52,8 +55,7 @@ test_git_monitor_dirty_worktree() {
   
   echo "dirty" > README.md
   
-  local out
-  out=$(bash "$SCRIPT_DIR/ceo-git-monitor.sh" 2>&1)
+  bash "$SCRIPT_DIR/ceo-git-monitor.sh" >/dev/null 2>&1
   
   local state_file="$CEO_DIR/alerts/git-monitor.md"
   
