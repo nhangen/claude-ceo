@@ -1883,6 +1883,7 @@ PB
 {"schema_version":2,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
 JSON
   printf -- '- [ ] pending approval sentinel\n' > "$CEO_DIR/approvals/pending.md"
+  printf -- '- [ ] **file:** sentinel.md **question:** sentinel ask?\n' > "$CEO_VAULT/Pending.md"
 }
 
 _stub_claude_log_entry() {

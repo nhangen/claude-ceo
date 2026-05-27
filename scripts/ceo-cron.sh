@@ -362,7 +362,11 @@ preflight_has_prs_to_review() {
 }
 
 preflight_has_pending_items() {
-  [ "${PENDING_COUNT:-0}" -gt 0 ]
+  # pending-drip surfaces [ask] markers from $VAULT/Pending.md, not the
+  # CEO/approvals/pending.md queue that PENDING_COUNT measures. Gate on the
+  # gathered ask-question lines so an empty Pending.md skips instead of firing
+  # an LLM call that reports failure for lack of input.
+  [ -n "${PENDING_ASK_QUESTIONS:-}" ]
 }
 
 preflight_has_log_entries_after_4pm() {
