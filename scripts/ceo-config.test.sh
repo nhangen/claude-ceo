@@ -95,7 +95,6 @@ test_ceo_report_fails_loud_on_unresolved_vault() {
 test_ceo_callers_fail_loud_on_unresolved_vault() {
   local rc=0 out _outer_test="$CURRENT_TEST"
   for script in "ceo-log.sh" "ceo-cleanup.sh" "ceo-scan.sh" "ceo-gather.sh" "count-blessings.sh"; do
-    CURRENT_TEST="${_outer_test}::${script}"
     rc=0
     out=$(env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/$script" 2>&1) || rc=$?
     assert_eq "$rc" "1" "$script must exit 1 when no vault resolves"
@@ -104,7 +103,6 @@ test_ceo_callers_fail_loud_on_unresolved_vault() {
       *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
     esac
   done
-  CURRENT_TEST="$_outer_test"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

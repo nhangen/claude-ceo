@@ -290,7 +290,6 @@ if [[ -z "$tests" ]]; then
   exit 1
 fi
 for t in $tests; do
-  CURRENT_TEST="$t"
   printf 'RUN %s\n' "$t"
   setup
   "$t"
