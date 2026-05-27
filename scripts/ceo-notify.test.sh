@@ -1,6 +1,9 @@
 #!/bin/bash
 # Tests for ceo-notify.sh — exercises the helper without posting to Discord
 # by routing curl at a local responder served from a tempdir socket.
+#
+# shellcheck disable=SC2034
+# CURRENT_TEST is set per-test here and read by assertion helpers in test-harness.sh.
 
 set -uo pipefail
 
