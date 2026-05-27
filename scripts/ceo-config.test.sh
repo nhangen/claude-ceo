@@ -257,6 +257,7 @@ test_resolve_real_home_falls_back_to_dscl_when_getent_returns_empty() {
   # the dscl branch was unreachable once command -v getent succeeded.
   if [ "$(uname)" != "Darwin" ]; then
     printf "  SKIP [%s] non-Darwin\n" "$CURRENT_TEST"
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
     return 0
   fi
   local stub_dir="$TEST_HOME/stubs"
