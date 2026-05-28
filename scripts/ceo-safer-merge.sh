@@ -23,6 +23,11 @@ LOG_FILE="$LOG_DIR/ceo-admin-merges.log"
 
 GH_BIN="${GH_BIN:-gh}"
 
+command -v jq >/dev/null 2>&1 || {
+  echo "ERROR: ceo-safer-merge: jq is required but not on PATH" >&2
+  exit 5
+}
+
 usage() {
   cat >&2 <<EOF
 Usage: ceo-safer-merge.sh <pr> [--admin-reason "<text>"] [gh pr merge flags]
@@ -39,6 +44,24 @@ admin_reason=""
 pr_ref=""
 gh_args=()
 
+# Help is allowed without a PR ref.
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+# `pr_ref` MUST be the first positional. Parsing `--repo OWNER/NAME 87 ...`
+# instead of `87 --repo OWNER/NAME ...` previously captured the `OWNER/NAME`
+# slug as the PR ref (no awareness of value-taking options); making the PR
+# ref a required leading positional is the smallest fix.
+if [ $# -eq 0 ] || [[ "${1:-}" == -* ]]; then
+  echo "ERROR: ceo-safer-merge: first argument must be the PR ref (number, URL, or branch)" >&2
+  usage
+  exit 2
+fi
+pr_ref="$1"
+shift
+gh_args+=("$pr_ref")
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --admin)
@@ -48,6 +71,10 @@ while [ $# -gt 0 ]; do
       ;;
     --admin-reason)
       admin_reason="${2:-}"
+      if [[ "$admin_reason" == --* ]]; then
+        echo "ERROR: ceo-safer-merge: --admin-reason requires a value (got '$admin_reason')" >&2
+        exit 3
+      fi
       shift 2
       ;;
     --admin-reason=*)
@@ -59,18 +86,14 @@ while [ $# -gt 0 ]; do
       exit 0
       ;;
     *)
-      if [ -z "$pr_ref" ] && [[ "$1" != -* ]]; then
-        pr_ref="$1"
-      fi
       gh_args+=("$1")
       shift
       ;;
   esac
 done
 
-if [ -z "$pr_ref" ]; then
-  echo "ERROR: ceo-safer-merge: no PR specified" >&2
-  usage
+if [ -n "$admin_reason" ] && [ "$admin" -eq 0 ]; then
+  echo "ERROR: ceo-safer-merge: --admin-reason requires --admin" >&2
   exit 2
 fi
 
@@ -81,8 +104,15 @@ fi
 log_admin_merge() {
   local reason="$1"
   mkdir -p "$LOG_DIR"
-  local sha
-  sha=$("$GH_BIN" pr view "$pr_ref" --json headRefOid -q .headRefOid 2>/dev/null || echo "unknown")
+  local sha sha_err
+  if ! sha=$("$GH_BIN" pr view "$pr_ref" --json headRefOid -q .headRefOid 2>&1); then
+    sha_err="$sha"
+    echo "ERROR: ceo-safer-merge: could not resolve head SHA for PR $pr_ref; refusing override (audit log would be incomplete)" >&2
+    echo "$sha_err" >&2
+    exit 5
+  fi
+  # Sanitize: tab/newline in the reason would break the TSV log format.
+  reason=$(printf '%s' "$reason" | tr '\t\n' '  ')
   printf '%s\tPR=%s\tSHA=%s\tREASON=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pr_ref" "$sha" "$reason" >> "$LOG_FILE"
 }
@@ -103,17 +133,43 @@ if [ -n "$admin_reason" ]; then
   exec "$GH_BIN" pr merge "${gh_args[@]}"
 fi
 
-# Gate on PR head-SHA check status. statusCheckRollup mixes CheckRun
-# (`.conclusion`) and StatusContext (`.state`) entries; SUCCESS / NEUTRAL /
-# SKIPPED / PENDING are non-blocking, anything else (FAILURE / CANCELLED /
-# TIMED_OUT / ACTION_REQUIRED / STARTUP_FAILURE / ERROR) blocks the merge.
-checks_json=$("$GH_BIN" pr view "$pr_ref" --json statusCheckRollup -q '.statusCheckRollup' 2>/dev/null || echo "[]")
+# Gate on PR head-SHA check status. Fail closed: any failure to fetch or
+# parse the rollup refuses the merge — silently coercing the lookup error
+# into "[]" was the very bypass channel this wrapper exists to prevent.
+# statusCheckRollup mixes CheckRun (`.conclusion`) and StatusContext
+# (`.state`) entries; SUCCESS / NEUTRAL / SKIPPED / PENDING are non-blocking,
+# anything else (FAILURE / CANCELLED / TIMED_OUT / ACTION_REQUIRED /
+# STARTUP_FAILURE / ERROR) blocks the merge.
+if ! checks_json=$("$GH_BIN" pr view "$pr_ref" --json statusCheckRollup -q '.statusCheckRollup' 2>&1); then
+  echo "ERROR: ceo-safer-merge: could not read check status for PR $pr_ref; refusing --admin merge" >&2
+  echo "$checks_json" >&2
+  exit 5
+fi
 
-failing=$(printf '%s' "$checks_json" | jq -r '
+if ! failing=$(printf '%s' "$checks_json" | jq -r '
   ( . // [] )[] |
   ( .conclusion // .state // "" ) as $c |
   select($c != "" and $c != "SUCCESS" and $c != "NEUTRAL" and $c != "SKIPPED" and $c != "PENDING") |
-  "  - \(.name // .context // "check"): \($c)"' 2>/dev/null || true)
+  "  - \(.name // .context // "check"): \($c)"'); then
+  echo "ERROR: ceo-safer-merge: failed to parse statusCheckRollup; refusing --admin merge" >&2
+  exit 5
+fi
+
+if ! rollup_count=$(printf '%s' "$checks_json" | jq -r '( . // [] ) | length'); then
+  echo "ERROR: ceo-safer-merge: failed to count statusCheckRollup; refusing --admin merge" >&2
+  exit 5
+fi
+if [ "$rollup_count" = "0" ]; then
+  cat >&2 <<EOF
+REFUSED: ceo-safer-merge blocked \`gh pr merge --admin\` on PR $pr_ref —
+no checks reported on the head SHA. The wrapper cannot distinguish "all
+green" from "no signal" (broken workflow file, missing CI registration).
+
+To proceed, re-run with --admin-reason "<at least 10 chars>" or set
+CEO_ALLOW_RED_ADMIN_MERGE=1 if you've verified the absence is intentional.
+EOF
+  exit 4
+fi
 
 if [ -n "$failing" ]; then
   cat >&2 <<EOF
