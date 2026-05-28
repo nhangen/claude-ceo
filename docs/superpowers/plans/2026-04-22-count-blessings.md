@@ -196,14 +196,14 @@ printf '\nALL PASS\n'
 - [ ] **Step 1.4: Make the scripts executable**
 
 ```bash
-chmod +x /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.sh \
-         /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+chmod +x <repo>/scripts/count-blessings.sh \
+         <repo>/scripts/count-blessings.test.sh
 ```
 
 - [ ] **Step 1.5: Run the suite — confirm the harness works**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 Expected output ends with `ALL PASS`.
@@ -211,7 +211,7 @@ Expected output ends with `ALL PASS`.
 - [ ] **Step 1.6: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add scripts/blessings-lib.sh scripts/count-blessings.sh scripts/count-blessings.test.sh
 git commit -m "feat(blessings): scaffold CLI, lib, and test harness"
 ```
@@ -281,7 +281,7 @@ test_add_ensures_trailing_newline_before_append() {
 - [ ] **Step 2.2: Run tests — confirm they fail**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 Expected: failures on the new `test_add_*` tests (the dispatch currently dies with "not implemented").
@@ -353,7 +353,7 @@ Replace `add)    die "not implemented" ;;` with:
 - [ ] **Step 2.4: Run tests — confirm they pass**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 Expected: `ALL PASS`.
@@ -361,7 +361,7 @@ Expected: `ALL PASS`.
 - [ ] **Step 2.5: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add scripts/count-blessings.sh scripts/count-blessings.test.sh
 git commit -m "feat(blessings): implement add subcommand"
 ```
@@ -413,7 +413,7 @@ test_list_on_missing_file_is_empty() {
 - [ ] **Step 3.2: Run tests — confirm new ones fail**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 - [ ] **Step 3.3: Implement `list`**
@@ -437,7 +437,7 @@ Replace `list)   die "not implemented" ;;` with:
 - [ ] **Step 3.4: Run tests — confirm all pass**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 Expected: `ALL PASS`.
@@ -445,7 +445,7 @@ Expected: `ALL PASS`.
 - [ ] **Step 3.5: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add scripts/count-blessings.sh scripts/count-blessings.test.sh
 git commit -m "feat(blessings): implement list subcommand"
 ```
@@ -551,7 +551,7 @@ test_cache_strips_frontmatter_before_picking() {
 - [ ] **Step 4.2: Run — confirm failures**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 - [ ] **Step 4.3: Implement `ensure_blessings_cache` in `blessings-lib.sh`**
@@ -604,7 +604,7 @@ ensure_blessings_cache() {
 - [ ] **Step 4.4: Run — confirm all pass**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 Expected: `ALL PASS`.
@@ -612,7 +612,7 @@ Expected: `ALL PASS`.
 - [ ] **Step 4.5: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add scripts/blessings-lib.sh scripts/count-blessings.test.sh
 git commit -m "feat(blessings): daily cache picker in blessings-lib"
 ```
@@ -668,7 +668,7 @@ test_repick_forces_regeneration() {
 - [ ] **Step 5.2: Run — confirm failures**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 - [ ] **Step 5.3: Implement `show` and `repick`**
@@ -699,13 +699,13 @@ Replace the two placeholder dispatch arms:
 - [ ] **Step 5.4: Run — confirm pass**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 - [ ] **Step 5.5: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add scripts/count-blessings.sh scripts/count-blessings.test.sh
 git commit -m "feat(blessings): implement show and repick subcommands"
 ```
@@ -747,7 +747,7 @@ Also extend the `Exports:` header comment (lines 7-16) to add `BLESSINGS_TODAY`:
 - [ ] **Step 6.2: Verify by sourcing in a shell and echoing the variable**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 export CEO_VAULT="$(mktemp -d)/vault"
 mkdir -p "$CEO_VAULT/CEO/cache"
 printf -- '---\ntype: ea-blessings\n---\n\n- smoke-test-entry\n' > "$CEO_VAULT/CEO/blessings.md"
@@ -759,7 +759,7 @@ Expected: output includes `- smoke-test-entry` in the variable.
 - [ ] **Step 6.3: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add scripts/ceo-gather.sh
 git commit -m "feat(blessings): export BLESSINGS_TODAY from ceo-gather"
 ```
@@ -802,7 +802,7 @@ Do not edit the EXECUTE prompt — blessings are context for brief narration onl
 - [ ] **Step 7.3: Sanity check — syntax still parses**
 
 ```bash
-bash -n /Users/nhangen/ML-AI/claude/ceo/scripts/ceo-cron.sh
+bash -n <repo>/scripts/ceo-cron.sh
 ```
 
 Expected: exits 0, no output.
@@ -810,7 +810,7 @@ Expected: exits 0, no output.
 - [ ] **Step 7.4: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add scripts/ceo-cron.sh
 git commit -m "feat(blessings): inject BLESSINGS_TODAY into PLAN prompt"
 ```
@@ -904,7 +904,7 @@ bash "$PLUGIN_ROOT/scripts/count-blessings.sh" "$@"
 - [ ] **Step 9.2: Commit**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 git add skills/ea/count-blessings/SKILL.md
 git commit -m "feat(blessings): add /count-blessings slash skill"
 ```
@@ -919,7 +919,7 @@ git commit -m "feat(blessings): add /count-blessings slash skill"
 - [ ] **Step 10.1: Seed a test vault and run the full pipeline**
 
 ```bash
-cd /Users/nhangen/ML-AI/claude/ceo
+cd <repo>
 export CEO_VAULT="$(mktemp -d)/vault"
 mkdir -p "$CEO_VAULT/CEO/cache"
 
@@ -957,7 +957,7 @@ unset CEO_VAULT
 - [ ] **Step 10.4: Final test run on clean tree**
 
 ```bash
-bash /Users/nhangen/ML-AI/claude/ceo/scripts/count-blessings.test.sh
+bash <repo>/scripts/count-blessings.test.sh
 ```
 
 Expected: `ALL PASS`.

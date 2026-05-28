@@ -71,9 +71,33 @@ SSHEOF
 fi
 
 # 4. Git config
+# Set CEO_GIT_USER_NAME / CEO_GIT_USER_EMAIL in the environment to override,
+# or pre-configure git globally before running this script — existing values
+# are preserved (and echoed so a stale identity from a recycled box is visible).
 echo "[4/10] Configuring git..."
-git config --global user.name "Nathan Hangen (CEO Agent)"
-git config --global user.email "nhangen@users.noreply.github.com"
+MISSING_CONFIG=()
+EXISTING_NAME="$(git config --global --get user.name 2>/dev/null || true)"
+if [ -n "$EXISTING_NAME" ]; then
+  echo "  user.name preserved: $EXISTING_NAME"
+elif [ -n "${CEO_GIT_USER_NAME:-}" ]; then
+  git config --global user.name "$CEO_GIT_USER_NAME"
+  echo "  user.name set from CEO_GIT_USER_NAME: $CEO_GIT_USER_NAME"
+else
+  echo "  WARNING: git user.name not set. Set CEO_GIT_USER_NAME or run:" >&2
+  echo "    git config --global user.name \"Your Name\"" >&2
+  MISSING_CONFIG+=("git user.name")
+fi
+EXISTING_EMAIL="$(git config --global --get user.email 2>/dev/null || true)"
+if [ -n "$EXISTING_EMAIL" ]; then
+  echo "  user.email preserved: $EXISTING_EMAIL"
+elif [ -n "${CEO_GIT_USER_EMAIL:-}" ]; then
+  git config --global user.email "$CEO_GIT_USER_EMAIL"
+  echo "  user.email set from CEO_GIT_USER_EMAIL: $CEO_GIT_USER_EMAIL"
+else
+  echo "  WARNING: git user.email not set. Set CEO_GIT_USER_EMAIL or run:" >&2
+  echo "    git config --global user.email <you@example.com>" >&2
+  MISSING_CONFIG+=("git user.email")
+fi
 
 # 5. Syncthing
 # Syncthing — must be installed and configured separately (see README.md)
@@ -250,3 +274,14 @@ echo ""
 echo "NOTE: 'claude login' will clear your terminal."
 echo "To redisplay:  ceo next"
 echo "To verify:     ceo doctor"
+
+if [ "${#MISSING_CONFIG[@]}" -gt 0 ]; then
+  echo "" >&2
+  echo "=== MISSING REQUIRED CONFIG ===" >&2
+  for _missing in "${MISSING_CONFIG[@]}"; do
+    echo "  - $_missing" >&2
+  done
+  echo "" >&2
+  echo "Set the values above and re-run 'ceo doctor' before any CEO commits." >&2
+  exit 1
+fi

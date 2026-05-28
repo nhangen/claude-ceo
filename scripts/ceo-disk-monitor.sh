@@ -1,12 +1,13 @@
 #!/bin/bash
-# ceo-disk-monitor.sh — Six-hour disk-state check on ML-1 (WSL2).
+# ceo-disk-monitor.sh — Six-hour disk-state check (WSL2).
 # State machine, not signal generator. Writes one state file (overwrite),
 # one log line (append), and only touches the inbox on state transitions
 # or sustained firing.
 #
+# Windows paths (`/mnt/c/...`) make this WSL2-specific; override
+# CEO_DISK_WSL_CRASHES_PATH and CEO_DISK_C_MOUNT for other layouts.
+#
 # Invoked by ceo-cron.sh when the disk-monitor playbook (runner:script) fires.
-# Replaces the prior /home/nhang/disk-monitor.sh which appended to
-# CEO/inbox/disk-alert.md unconditionally every hour.
 
 set -euo pipefail
 
@@ -33,7 +34,9 @@ INBOX_FILE="$INBOX_DIR/$HOST.md"
 mkdir -p "$ALERTS_DIR" "$LOG_DIR" "$INBOX_DIR"
 
 # Paths are overridable so the test harness can drive without a real /mnt/c.
-WSL_CRASHES_PATH="${CEO_DISK_WSL_CRASHES_PATH:-/mnt/c/Users/nhang/AppData/Local/Temp/wsl-crashes}"
+# Default to ${USER} — WSL Linux user typically matches Windows username.
+# Set CEO_DISK_WSL_CRASHES_PATH explicitly if the Windows account differs.
+WSL_CRASHES_PATH="${CEO_DISK_WSL_CRASHES_PATH:-/mnt/c/Users/${USER:-$(whoami)}/AppData/Local/Temp/wsl-crashes}"
 C_MOUNT="${CEO_DISK_C_MOUNT:-/mnt/c}"
 DUMP_THRESHOLD_GB=5
 FREE_THRESHOLD_GB=50
@@ -167,7 +170,7 @@ if ! {
           echo "(unable to list)"
         fi
       fi
-      printf '```\n\n## Resolution\n\nDelete unwanted dumps:\n\n```bash\nrm /mnt/c/Users/nhang/AppData/Local/Temp/wsl-crashes/*.dmp\n```\n'
+      printf '```\n\n## Resolution\n\nDelete unwanted dumps:\n\n```bash\nrm %s/*.dmp\n```\n' "$WSL_CRASHES_PATH"
     fi
   elif [ "$CURRENT_STATUS" = "clear" ]; then
     printf 'No active disk pressure. C: free %sG, wsl-crashes %sG.\n' "$C_FREE_GB" "$DUMP_GB"

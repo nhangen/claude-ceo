@@ -22,7 +22,7 @@ Framing note: this is an EA-flavored feature, not a CEO-flavored one. It lives i
 
 ## File layout
 
-**Plugin (`/Users/nhangen/ML-AI/claude/ceo/`):**
+**Plugin (`<repo>/`):**
 
 - `scripts/count-blessings.sh` — CLI entrypoint
 - `scripts/blessings-lib.sh` — shared library (`ensure_blessings_cache`, `strip_frontmatter`, `require_ceo_dir`)
@@ -263,7 +263,7 @@ These were raised by the audit panel but are outside the scope of this feature. 
 
 ### 1. WSL vault path is not consistently overridable (HIGH, pre-existing)
 
-`ceo-gather.sh` respects `CEO_VAULT`, but `ceo-cron.sh:17` and `setup-wsl.sh:75,92` hard-code `$HOME/Documents/Obsidian`. A Windows user whose Obsidian vault lives on the Windows side (typical) syncs into WSL via Syncthing, but the default path will not match.
+`ceo-gather.sh` respects `CEO_VAULT`, but `ceo-cron.sh` and `setup-wsl.sh` (vault-detect section) hard-code `$HOME/Documents/Obsidian`. A Windows user whose Obsidian vault lives on the Windows side (typical) syncs into WSL via Syncthing, but the default path will not match.
 
 **Not fixed because**: touching all three scripts would widen this PR beyond the feature. The new code uses the `CEO_VAULT` override pattern correctly for its own reads; it does not make the pre-existing divergence worse.
 
@@ -271,7 +271,7 @@ These were raised by the audit panel but are outside the scope of this feature. 
 
 ### 2. WSL2 cron is not auto-started at boot (HIGH, pre-existing)
 
-`setup-wsl.sh:119-127` installs a crontab, but WSL2 does not start `cron` on boot. Cron entries silently never fire until the user manually opens a WSL shell and runs `sudo service cron start`.
+`setup-wsl.sh`'s `[10/10] Cron Setup` step installs a crontab, but WSL2 does not start `cron` on boot. Cron entries silently never fire until the user manually opens a WSL shell and runs `sudo service cron start`.
 
 **Not fixed because**: out of scope and does not regress with this feature (pure addition on top of the existing cron pipeline, which has the same issue for every other playbook).
 

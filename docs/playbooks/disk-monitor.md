@@ -1,6 +1,6 @@
 ---
 name: disk-monitor
-description: Six-hour disk/wsl-crashes check on ML-1; writes state to alerts/disk.md, escalates to inbox on sustained firing
+description: Six-hour disk/wsl-crashes check on a WSL2 host; writes state to alerts/disk-<host>.md, escalates to inbox on sustained firing
 trigger: cron
 schedule: "0 */6 * * *"
 preflight: none
@@ -10,16 +10,18 @@ runner: script
 script: ceo-disk-monitor.sh
 ---
 
-# Disk Monitor (ML-1)
+# Disk Monitor
 
-Shell-only playbook. Runs every six hours on ML-1 (WSL2). Checks:
+Shell-only playbook. Runs every six hours on a WSL2 host. Checks:
 
 - C: drive free space — alert if < 50 GB
-- `C:\Users\nhang\AppData\Local\Temp\wsl-crashes\` folder size — alert if > 5 GB
+- `C:\Users\<your-user>\AppData\Local\Temp\wsl-crashes\` folder size — alert if > 5 GB
+
+Override `CEO_DISK_WSL_CRASHES_PATH` and `CEO_DISK_C_MOUNT` if your paths differ from the defaults.
 
 ## Origin
 
-Written May 11 2026 by a Claude Code session on ML-1 as a follow-up to a 1.126 TB WSL node crash-dump cleanup (see `Projects/Development/nhangen/claude-ceo/2026-05-11-c-drive-exhaustion-wsl-crash-dump.md`). The first version was an append-on-every-fire signal generator, which spammed `CEO/inbox/disk-alert.md` after a May 11 CARLA crash dropped a 14 GB dump into `wsl-crashes/`. This version is a state machine.
+Written as a follow-up to a multi-TB WSL crash-dump exhaustion incident. The first version was an append-on-every-fire signal generator, which spammed `CEO/inbox/disk-alert.md` after a CARLA crash dropped a large dump into `wsl-crashes/`. This version is a state machine.
 
 ## Outputs
 

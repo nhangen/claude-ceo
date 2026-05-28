@@ -6,7 +6,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TRACKER="$SCRIPT_DIR/ceo-value-tracker.sh"
 
-WIKILINK_PREFIX="[[Projects/Development/nhangen/claude-ceo/value-tracker"
+WIKILINK_PREFIX="[[CEO/reports/value-tracker"
 
 source "$SCRIPT_DIR/test-harness.sh"
 
