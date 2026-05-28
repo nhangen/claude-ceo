@@ -1883,6 +1883,7 @@ PB
 {"schema_version":2,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
 JSON
   printf -- '- [ ] pending approval sentinel\n' > "$CEO_DIR/approvals/pending.md"
+  printf -- '- [ ] **file:** sentinel.md **question:** sentinel ask?\n' > "$CEO_VAULT/Pending.md"
 }
 
 _stub_claude_log_entry() {
@@ -1974,6 +1975,31 @@ test_pending_drip_failed_entry_uses_report_not_inbox() {
   assert_file_exists "$report" "failed pending-drip must use normal report path"
   report_body=$(cat "$report" 2>/dev/null)
   assert_contains "$report_body" "Something failed" "failed pending-drip report must include failure output"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_pending_drip_skips_when_pending_md_empty() {
+  _write_pending_drip_registry
+  # Setup line 32 + helper line 1885 leave $CEO_DIR/approvals/pending.md
+  # populated (PENDING_COUNT > 0). Remove Pending.md so PENDING_ASK_QUESTIONS
+  # is empty — this is the literal bug shape that motivated the fix at
+  # scripts/ceo-cron.sh:369. Reverting that gate must make this test fail.
+  rm -f "$CEO_VAULT/Pending.md"
+  _stub_claude_log_entry "completed" "should never run"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local skip_log="$CEO_DIR/log/cron-skips.log"
+  assert_file_exists "$skip_log" "preflight skip must write cron-skips.log"
+  local skip_body
+  skip_body=$(cat "$skip_log" 2>/dev/null)
+  assert_contains "$skip_body" "preflight 'has_pending_items' returned no-work" \
+    "empty Pending.md must trigger preflight no-work skip even when approvals/pending.md is populated"
+
+  if [ -s "$CEO_DIR/inbox/testhost.md" ]; then
+    printf '  FAIL [%s] empty Pending.md must not produce inbox entry\n    inbox: %q\n' "$CURRENT_TEST" "$(cat "$CEO_DIR/inbox/testhost.md")"
+    FAILS=$((FAILS + 1))
+  fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
