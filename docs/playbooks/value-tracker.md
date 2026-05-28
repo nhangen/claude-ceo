@@ -18,12 +18,12 @@ Shell-only playbook. The dispatcher invokes `scripts/ceo-value-tracker.sh` direc
 
 Runs `lib/value-tracker` against the last 24h of Claude Code session JSONLs and Cursor SQLite tool bubbles, classifies each MCP tool call as plausibly-used, trivially-wasted, or unclear, and writes:
 
-- `<VAULT>/Projects/Development/nhangen/claude-ceo/value-tracker/<TODAY>.md` — the report
+- `<VAULT>/CEO/reports/value-tracker/<TODAY>.md` — the report (sanctioned `reports/` location per `ceo-automated-writers-are-playbooks`)
 - A JSON snapshot under the tracker's default snapshot dir
 - One idempotent line in `CEO/inbox/<host>.md`:
 
 ```
-- [ ] Review daily value-tracker report [[Projects/Development/nhangen/claude-ceo/value-tracker/<TODAY>]]
+- [ ] Review daily value-tracker report [[CEO/reports/value-tracker/<TODAY>]]
 ```
 
 The chat-triggered `inbox` playbook surfaces the line via `ceo chat inbox`.
