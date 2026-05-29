@@ -233,7 +233,13 @@ cmd_doctor() {
 
   # bin symlinks for playbooks
   local registry_file="$CEO_DIR/registry.json"
-  if [ -f "$registry_file" ] && command -v jq &>/dev/null; then
+  if [ ! -f "$registry_file" ]; then
+    echo "  ⚠ bin-symlink check skipped: registry.json not found (run: ceo playbook scan)"
+    warn=$((warn + 1))
+  elif ! command -v jq &>/dev/null; then
+    echo "  ⚠ bin-symlink check skipped: jq not on PATH"
+    warn=$((warn + 1))
+  else
     local registry_rc=0
     ceo_registry_validate "$registry_file" || registry_rc=$?
     if [ "$registry_rc" != "0" ]; then
@@ -285,6 +291,69 @@ cmd_doctor() {
       echo ""
       echo "Vault and repo playbook trees diverged. Run \`ceo playbook diff\` for details."
     } > "$alert_file"
+  fi
+
+  # Completed-but-no-output cross-check — for every active runner:script
+  # playbook with a declared `artifact:`, if today's cron-runs.log says it
+  # completed, verify the artifact exists. This catches the #88 / #89 shape
+  # where the dispatcher records 'completed' but the script produced no
+  # visible side-effect.
+  if [ ! -f "$registry_file" ]; then
+    echo "  ⚠ doctor artifact cross-check skipped: registry.json not found (run: ceo playbook scan)"
+    warn=$((warn + 1))
+  elif ! command -v jq &>/dev/null; then
+    echo "  ⚠ doctor artifact cross-check skipped: jq not on PATH"
+    warn=$((warn + 1))
+  elif [ ! -f "$CEO_DIR/log/cron-runs.log" ]; then
+    echo "  ⚠ doctor artifact cross-check skipped: cron-runs.log not found"
+    warn=$((warn + 1))
+  else
+    # cron-runs.log lines look like: "Wed May 28 06:00:11 EDT 2026: <name> completed"
+    # (written by ceo-cron.sh:47 via $(date)). Force LC_TIME=C when building the
+    # prefix so a localized writer/reader pair can't false-negative every match
+    # (jeu. mai 28 vs Thu May 28). Anchor the playbook-name match with a regex
+    # ending in ` completed$` per `~/.claude/rules/anchored-regex-for-identifier-allowlists.md`
+    # so `value-tracker` doesn't substring-match `value-tracker-v2 completed`.
+    local _date_prefix _year _host _missing=0 _checked=0
+    _date_prefix=$(LC_TIME=C date '+%a %b %e')
+    _year=$(date '+%Y')
+    _host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo "")}"
+    while IFS= read -r row; do
+      local p_name p_artifact p_runner p_status
+      p_name=$(echo "$row" | jq -r '.name')
+      p_artifact=$(echo "$row" | jq -r '.artifact // ""')
+      p_runner=$(echo "$row" | jq -r '.runner // ""')
+      p_status=$(echo "$row" | jq -r '.status // ""')
+      [ "$p_runner" = "script" ] || continue
+      [ "$p_status" = "active" ] || continue
+      [ -n "$p_artifact" ] || continue
+      LC_TIME=C grep -F -- "$_date_prefix" "$CEO_DIR/log/cron-runs.log" 2>/dev/null \
+        | grep -F -- "$_year" \
+        | awk -v n="$p_name" '$0 ~ ": "n" completed$"' \
+        | grep -q . || continue
+      _checked=$((_checked + 1))
+      if [ -z "$_host" ] && [[ "$p_artifact" == *"{HOST}"* ]]; then
+        echo "  ⚠ '$p_name' artifact template uses {HOST} but hostname -s returned empty — set CEO_HOSTNAME"
+        warn=$((warn + 1))
+        continue
+      fi
+      local _rel _abs
+      if ! _rel=$(ceo_artifact_expand "$p_artifact" "$_host"); then
+        echo "  ✗ Playbook '$p_name' has malformed artifact template '$p_artifact' (unknown token)"
+        fail=$((fail + 1))
+        continue
+      fi
+      _abs="$CEO_DIR/${_rel#CEO/}"
+      if [ ! -s "$_abs" ]; then
+        echo "  ✗ '$p_name' logged 'completed' today but artifact missing or empty: $_abs"
+        fail=$((fail + 1))
+        _missing=$((_missing + 1))
+      fi
+    done < <(jq -c '.playbooks[]' "$registry_file" 2>/dev/null)
+    if [ "$_checked" -gt 0 ] && [ "$_missing" -eq 0 ]; then
+      echo "  ✓ Playbook artifacts present for today's completed runs ($_checked checked)"
+      ok=$((ok + 1))
+    fi
   fi
 
   echo ""
@@ -563,7 +632,7 @@ cmd_playbook_scan() {
     local from_repo=0
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
-    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires
+    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -612,6 +681,30 @@ cmd_playbook_scan() {
     script=$(yq --front-matter=extract '.script // ""' "$f" 2>/dev/null || echo "")
     skill=$(yq --front-matter=extract '.skill // ""' "$f" 2>/dev/null || echo "")
     out_pattern=$(yq --front-matter=extract '.out_pattern // ""' "$f" 2>/dev/null || echo "")
+    artifact=$(yq --front-matter=extract '.artifact // ""' "$f" 2>/dev/null || echo "")
+    # Validate at parse time per enum-config-typo-fallback: an artifact
+    # template must be vault-relative ("CEO/...") and reference only the
+    # supported tokens {TODAY} and {HOST}. Reject anything else with a warn,
+    # treating it as absent — better to skip the doctor cross-check than emit
+    # a broken path on every check.
+    if [ -n "$artifact" ]; then
+      case "$artifact" in
+        CEO/*) ;;
+        *)
+          echo "  WARN  $basename: 'artifact' must be vault-relative (start with 'CEO/'); got: $artifact — dropping" >&2
+          artifact=""
+          ;;
+      esac
+    fi
+    if [ -n "$artifact" ]; then
+      _artifact_residual=$(printf '%s' "$artifact" | sed -e 's/{TODAY}//g' -e 's/{HOST}//g')
+      case "$_artifact_residual" in
+        *\{*\}*)
+          echo "  WARN  $basename: 'artifact' contains unknown token(s) (supported: {TODAY}, {HOST}); got: $artifact — dropping" >&2
+          artifact=""
+          ;;
+      esac
+    fi
     requires=$(yq --front-matter=extract --output-format=json '.requires // null' "$f" 2>/dev/null || echo "null")
     case "$requires" in
       "null"|"") requires="null" ;;
@@ -718,10 +811,11 @@ cmd_playbook_scan() {
       --arg script "$script" \
       --arg skill "$skill" \
       --arg out_pattern "$out_pattern" \
+      --arg artifact "$artifact" \
       --argjson inputs "$inputs" \
       --argjson requires "$requires" \
       --arg file "$entry_file" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, inputs:$inputs, requires:$requires, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, inputs:$inputs, requires:$requires, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))

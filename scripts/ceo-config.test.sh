@@ -115,7 +115,7 @@ test_ceo_help_works_on_fresh_host() {
 
 test_registry_validate_accepts_integer_current_schema() {
   local registry="$TEST_HOME/registry.json"
-  printf '{"schema_version":2,"playbooks":[]}\n' > "$registry"
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$registry"
 
   local rc=0
   env -i PATH="$PATH" bash -c "
@@ -857,6 +857,36 @@ test_pr_sources_setup_writes_valid_json_when_no_sources() {
     jq empty "$TEST_HOME/.ceo/pr-sources.json" 2>/dev/null || rc=$?
   fi
   assert_eq "$rc" "0" "setup must either skip cleanly or write valid JSON"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_artifact_expand_substitutes_today_and_host() {
+  local today out
+  today=$(date +%Y-%m-%d)
+  out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/token/{TODAY}-{HOST}.md' 'testhost'")
+  assert_eq "$out" "CEO/reports/token/${today}-testhost.md" "ceo_artifact_expand must substitute {TODAY} and {HOST}"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_artifact_expand_uses_env_host_default() {
+  local today out
+  today=$(date +%Y-%m-%d)
+  out=$(CEO_HOSTNAME=envhost bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/x/{TODAY}-{HOST}.md'")
+  assert_eq "$out" "CEO/reports/x/${today}-envhost.md" "ceo_artifact_expand must fall back to \$CEO_HOSTNAME"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_artifact_expand_rejects_unknown_token() {
+  local rc=0 out
+  out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/{BOGUS}/{TODAY}.md' 'testhost'") || rc=$?
+  assert_eq "$rc" "1" "ceo_artifact_expand must reject unknown tokens per enum-config-typo-fallback"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_artifact_expand_rejects_empty_template() {
+  local rc=0
+  bash -c "source '$LIB'; ceo_artifact_expand ''" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "ceo_artifact_expand must return 1 on empty template"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

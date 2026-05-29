@@ -8,6 +8,7 @@ tier: read
 status: active
 runner: script
 script: ceo-value-tracker.sh
+artifact: CEO/reports/value-tracker/{TODAY}.md
 ---
 
 # Value Tracker

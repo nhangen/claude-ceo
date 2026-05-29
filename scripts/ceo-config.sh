@@ -307,10 +307,12 @@ ceo_pin_home_or_warn() {
 # the next `ceo playbook scan`.
 #
 # Version history:
+#   3 — adds optional artifact field (per-playbook expected-output path) so
+#       `ceo doctor` can flag completed-but-no-output runs (#88, #89)
 #   2 — adds runner, script fields (PR #4)
 #   1 — implicit (pre-runner-script registry; missing field treated as <2)
 # ---------------------------------------------------------------------------
-CEO_REGISTRY_SCHEMA_VERSION=2
+CEO_REGISTRY_SCHEMA_VERSION=3
 # shellcheck disable=SC2034
 CEO_VALID_RUNNERS=(claude script ollama ollama-think skill)
 
@@ -343,6 +345,36 @@ ceo_registry_validate() {
     return 2
   fi
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# ceo_artifact_expand <template> [host]
+#   Expand a playbook artifact template into a vault-relative path. Templates
+#   may reference {TODAY} (YYYY-MM-DD) and {HOST} (short hostname). Optional
+#   second arg overrides the host (used by tests).
+#
+#   Prints the expanded path on stdout. Returns 0 on success, 1 if the
+#   template is empty or contains an unknown {...} token (per the
+#   enum-config-typo-fallback rule: reject unknown tokens, do not silently
+#   coerce them to the empty string).
+# ---------------------------------------------------------------------------
+ceo_artifact_expand() {
+  local template="${1:-}"
+  local host="${2:-${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}}"
+  [ -z "$template" ] && return 1
+  local today
+  today=$(date +%Y-%m-%d)
+  local expanded="$template"
+  expanded="${expanded//\{TODAY\}/$today}"
+  expanded="${expanded//\{HOST\}/$host}"
+  # After expanding known tokens, any remaining {...} is a typo or an
+  # unsupported token — reject rather than emit a broken path.
+  case "$expanded" in
+    *\{*\}*)
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$expanded"
 }
 
 # ---------------------------------------------------------------------------

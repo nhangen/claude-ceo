@@ -1360,7 +1360,7 @@ PB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_playbook_scan_writes_schema_version_2() {
+test_playbook_scan_writes_schema_version_3() {
   cat > "$CEO_DIR/playbooks/example.md" << 'PB'
 ---
 name: example
@@ -1377,7 +1377,7 @@ PB
 
   local v
   v=$(jq -r '.schema_version // "missing"' "$CEO_DIR/registry.json")
-  assert_eq "$v" "2" "playbook scan must write schema_version=2 into registry.json"
+  assert_eq "$v" "3" "playbook scan must write schema_version=3 into registry.json"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -1880,7 +1880,7 @@ status: active
 ---
 PB
   cat > "$CEO_DIR/registry.json" << JSON
-{"schema_version":2,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
+{"schema_version":3,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
 JSON
   printf -- '- [ ] pending approval sentinel\n' > "$CEO_DIR/approvals/pending.md"
   printf -- '- [ ] **file:** sentinel.md **question:** sentinel ask?\n' > "$CEO_VAULT/Pending.md"
