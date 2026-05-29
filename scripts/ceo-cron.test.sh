@@ -1360,7 +1360,7 @@ PB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_playbook_scan_writes_schema_version_2() {
+test_playbook_scan_writes_schema_version_3() {
   cat > "$CEO_DIR/playbooks/example.md" << 'PB'
 ---
 name: example
@@ -1377,7 +1377,7 @@ PB
 
   local v
   v=$(jq -r '.schema_version // "missing"' "$CEO_DIR/registry.json")
-  assert_eq "$v" "2" "playbook scan must write schema_version=2 into registry.json"
+  assert_eq "$v" "3" "playbook scan must write schema_version=3 into registry.json"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

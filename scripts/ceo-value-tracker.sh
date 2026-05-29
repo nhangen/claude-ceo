@@ -65,10 +65,15 @@ bun "$ENTRY" \
 # Fail-closed: bun can exit 0 without writing the daily note (zero sessions
 # found, wrong write path, silent error). That's the shape behind #88 where
 # cron-runs.log showed 'completed' weekdays for weeks with no artifact on
-# disk. Assert the daily note exists and is non-empty before declaring
-# success — otherwise the dispatcher's _record_success is lying.
+# disk. Assert the daily note exists AND has a real markdown heading — a
+# bare newline / partial frontmatter / panic-traceback all pass `-s` but
+# aren't a real report.
 if [ ! -s "$NOTE_FILE" ]; then
   echo "ERROR: value-tracker exited 0 but did not write $NOTE_FILE" >&2
+  exit 1
+fi
+if ! grep -q '^# value-tracker' "$NOTE_FILE"; then
+  echo "ERROR: value-tracker wrote $NOTE_FILE but it has no '# value-tracker' h1 (truncated or panicked)" >&2
   exit 1
 fi
 

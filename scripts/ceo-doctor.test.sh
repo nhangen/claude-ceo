@@ -115,6 +115,51 @@ test_doctor_skips_when_playbook_not_completed_today() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_doctor_flags_malformed_artifact_template() {
+  # Per panel H5: the `ceo_artifact_expand` failure branch in cmd_doctor (the
+  # "malformed artifact template ... unknown token" path) had no end-to-end
+  # coverage before this test. Seed a registry with a {BOGUS} token + a
+  # completed log line and assert doctor surfaces the error and returns
+  # non-zero.
+  cat > "$CEO_DIR/registry.json" << EOF
+{
+  "schema_version": 3,
+  "generated": "2026-05-28T00:00:00Z",
+  "playbooks": [
+    {
+      "name": "bogus-token",
+      "runner": "script",
+      "status": "active",
+      "artifact": "CEO/reports/bogus-token/{BOGUS}-{TODAY}.md"
+    }
+  ]
+}
+EOF
+  _log_completed_today bogus-token
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "malformed artifact template" "doctor must name the malformed-template failure"
+  assert_contains "$output" "bogus-token" "doctor must name the offending playbook"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero on malformed artifact template\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_warns_when_cron_log_missing() {
+  # Per panel H3: the cross-check used to silently skip when its preconditions
+  # weren't met. The registry exists from setup() and jq is on PATH, but we
+  # leave cron-runs.log absent — the cross-check must emit a WARN naming the
+  # missing log file, not silently skip.
+  rm -f "$CEO_DIR/log/cron-runs.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "doctor artifact cross-check skipped" "doctor must surface skip-reason when log absent"
+  assert_contains "$output" "cron-runs.log not found" "skip message must name the missing log"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_doctor_skips_empty_artifact_field() {
   # Playbook with no artifact declared must not be checked.
   cat > "$CEO_DIR/registry.json" << EOF

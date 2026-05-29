@@ -37,7 +37,7 @@ done
 if [ -n "$vault" ]; then
   note_dir="$vault/CEO/reports/value-tracker"
   mkdir -p "$note_dir"
-  printf '# value-tracker stub %s\n' "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d).md"
+  printf '---\ndate: %s\n---\n\n# value-tracker — %s\n\nstub body\n' "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d).md"
 fi
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
@@ -263,6 +263,35 @@ STUB
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$stderr" "did not write" "stderr must name the missing-note failure (got: $stderr)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_fails_when_note_has_no_h1() {
+  # Bun wrote a non-empty file but it has no `## ` heading — partial frontmatter
+  # only, panic traceback, or any other not-a-real-report content. The content
+  # sentinel must catch this (per panel M7).
+  cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
+#!/bin/bash
+vault=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --obsidian-vault) vault="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+note_dir="$vault/CEO/reports/value-tracker"
+mkdir -p "$note_dir"
+printf -- '---\ndate: %s\n---\n\nno h1 here\n' "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d).md"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/bun"
+
+  local rc=0 stderr
+  stderr=$(bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] wrapper must exit non-zero when note has no '"'"'# value-tracker'"'"' h1\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$stderr" "no '# value-tracker' h1" "stderr must name the sentinel failure (got: $stderr)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

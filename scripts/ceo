@@ -233,7 +233,13 @@ cmd_doctor() {
 
   # bin symlinks for playbooks
   local registry_file="$CEO_DIR/registry.json"
-  if [ -f "$registry_file" ] && command -v jq &>/dev/null; then
+  if [ ! -f "$registry_file" ]; then
+    echo "  ⚠ bin-symlink check skipped: registry.json not found (run: ceo playbook scan)"
+    warn=$((warn + 1))
+  elif ! command -v jq &>/dev/null; then
+    echo "  ⚠ bin-symlink check skipped: jq not on PATH"
+    warn=$((warn + 1))
+  else
     local registry_rc=0
     ceo_registry_validate "$registry_file" || registry_rc=$?
     if [ "$registry_rc" != "0" ]; then
@@ -292,16 +298,26 @@ cmd_doctor() {
   # completed, verify the artifact exists. This catches the #88 / #89 shape
   # where the dispatcher records 'completed' but the script produced no
   # visible side-effect.
-  if [ -f "$registry_file" ] && command -v jq &>/dev/null && [ -f "$CEO_DIR/log/cron-runs.log" ]; then
+  if [ ! -f "$registry_file" ]; then
+    echo "  ⚠ doctor artifact cross-check skipped: registry.json not found (run: ceo playbook scan)"
+    warn=$((warn + 1))
+  elif ! command -v jq &>/dev/null; then
+    echo "  ⚠ doctor artifact cross-check skipped: jq not on PATH"
+    warn=$((warn + 1))
+  elif [ ! -f "$CEO_DIR/log/cron-runs.log" ]; then
+    echo "  ⚠ doctor artifact cross-check skipped: cron-runs.log not found"
+    warn=$((warn + 1))
+  else
     # cron-runs.log lines look like: "Wed May 28 06:00:11 EDT 2026: <name> completed"
-    # (written by ceo-cron.sh:47 via $(date)). Day-of-month is %e-padded — single
-    # space on 2-digit days, leading-space on 1-digit days. Match on the stable
-    # "<weekday> <month> <day>" prefix plus the year; substring-match is fine
-    # because the log doesn't repeat the same calendar day across years.
+    # (written by ceo-cron.sh:47 via $(date)). Force LC_TIME=C when building the
+    # prefix so a localized writer/reader pair can't false-negative every match
+    # (jeu. mai 28 vs Thu May 28). Anchor the playbook-name match with a regex
+    # ending in ` completed$` per `~/.claude/rules/anchored-regex-for-identifier-allowlists.md`
+    # so `value-tracker` doesn't substring-match `value-tracker-v2 completed`.
     local _date_prefix _year _host _missing=0 _checked=0
-    _date_prefix=$(date '+%a %b %e')
+    _date_prefix=$(LC_TIME=C date '+%a %b %e')
     _year=$(date '+%Y')
-    _host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}"
+    _host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo "")}"
     while IFS= read -r row; do
       local p_name p_artifact p_runner p_status
       p_name=$(echo "$row" | jq -r '.name')
@@ -311,11 +327,16 @@ cmd_doctor() {
       [ "$p_runner" = "script" ] || continue
       [ "$p_status" = "active" ] || continue
       [ -n "$p_artifact" ] || continue
-      grep -F -- "$_date_prefix" "$CEO_DIR/log/cron-runs.log" 2>/dev/null \
+      LC_TIME=C grep -F -- "$_date_prefix" "$CEO_DIR/log/cron-runs.log" 2>/dev/null \
         | grep -F -- "$_year" \
-        | grep -qF -- ": $p_name completed" \
-        || continue
+        | awk -v n="$p_name" '$0 ~ ": "n" completed$"' \
+        | grep -q . || continue
       _checked=$((_checked + 1))
+      if [ -z "$_host" ] && [[ "$p_artifact" == *"{HOST}"* ]]; then
+        echo "  ⚠ '$p_name' artifact template uses {HOST} but hostname -s returned empty — set CEO_HOSTNAME"
+        warn=$((warn + 1))
+        continue
+      fi
       local _rel _abs
       if ! _rel=$(ceo_artifact_expand "$p_artifact" "$_host"); then
         echo "  ✗ Playbook '$p_name' has malformed artifact template '$p_artifact' (unknown token)"
@@ -611,7 +632,7 @@ cmd_playbook_scan() {
     local from_repo=0
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
-    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact
+    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual
     name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -683,7 +704,6 @@ cmd_playbook_scan() {
           artifact=""
           ;;
       esac
-      unset _artifact_residual
     fi
     requires=$(yq --front-matter=extract --output-format=json '.requires // null' "$f" 2>/dev/null || echo "null")
     case "$requires" in
