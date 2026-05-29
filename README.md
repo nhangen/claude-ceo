@@ -284,6 +284,7 @@ ceo test             Smoke test: trigger morning-brief, check log
 ceo cron <name>      Manually run a cron trigger
 ceo chat [name]      Interactive playbook (no cron); empty = triage conversation; defaults to --effort medium
 ceo playbook scan|list|info     Self-registering playbook management
+ceo playbook scan --dry-run     Preview what scan would install, no writes
 ceo schedule [name]  List effective schedules; with name, reschedule one
 ceo preflight        Preview what cron would run vs skip
 ```
@@ -314,6 +315,7 @@ count-blessings show         Show today's three picks
 - **WSL2 cron does not auto-start at boot.** Add `[boot] command = service cron start` to `/etc/wsl.conf`, or set up a Windows Task Scheduler job that runs `wsl.exe -u <user> -- /etc/init.d/cron start` at logon.
 - **Portable timeout.** `ceo-cron.sh` uses `timeout` (Linux) or `gtimeout` (macOS via `brew install coreutils`). If neither is installed, the wrapper degrades to no wall-clock cap (`--max-turns` and API timeout still apply) and a `WARN` is logged.
 - **Schedule collisions are refused, not coerced.** Two cron-trigger playbooks on the same minute would race the global `/tmp/ceo-cron.lock`; `ceo playbook scan` refuses to install the crontab until you resolve via `ceo schedule <playbook>` or by editing `schedules.json`.
+- **Playbook frontmatter schema.** See [`docs/playbooks/SCHEMA.md`](docs/playbooks/SCHEMA.md) for the full field reference. `status:` is now an enum (`active` / `draft` / `disabled`) — drafts are runnable on-demand but never cron-installed, disabled tears down previously-installed cron lines. Unknown status values are rejected at parse time.
 
 ## License
 
