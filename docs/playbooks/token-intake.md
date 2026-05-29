@@ -8,6 +8,7 @@ tier: read
 status: active
 runner: script
 script: ceo-token-intake.sh
+artifact: CEO/reports/token/{TODAY}-{HOST}.md
 ---
 
 # Token Intake

@@ -50,6 +50,7 @@ SINCE=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev
 : "${SINCE:?SINCE computation failed; neither BSD nor GNU date resolved (check cron PATH)}"
 
 NOTE_DIR="$CEO_DIR/reports/value-tracker"
+NOTE_FILE="$NOTE_DIR/$TODAY.md"
 WIKILINK="[[CEO/reports/value-tracker/$TODAY]]"
 INBOX_LINE="- [ ] Review daily value-tracker report $WIKILINK"
 
@@ -60,6 +61,16 @@ mkdir -p "$INBOX_DIR" "$NOTE_DIR"
 bun "$ENTRY" \
   --since "$SINCE" \
   --obsidian-vault "$VAULT"
+
+# Fail-closed: bun can exit 0 without writing the daily note (zero sessions
+# found, wrong write path, silent error). That's the shape behind #88 where
+# cron-runs.log showed 'completed' weekdays for weeks with no artifact on
+# disk. Assert the daily note exists and is non-empty before declaring
+# success — otherwise the dispatcher's _record_success is lying.
+if [ ! -s "$NOTE_FILE" ]; then
+  echo "ERROR: value-tracker exited 0 but did not write $NOTE_FILE" >&2
+  exit 1
+fi
 
 # Idempotent inbox append — skip if the line is already there.
 if [ ! -f "$INBOX_FILE" ] || ! grep -qF -- "$WIKILINK" "$INBOX_FILE"; then

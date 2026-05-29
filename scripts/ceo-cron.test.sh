@@ -1880,7 +1880,7 @@ status: active
 ---
 PB
   cat > "$CEO_DIR/registry.json" << JSON
-{"schema_version":2,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
+{"schema_version":3,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
 JSON
   printf -- '- [ ] pending approval sentinel\n' > "$CEO_DIR/approvals/pending.md"
   printf -- '- [ ] **file:** sentinel.md **question:** sentinel ask?\n' > "$CEO_VAULT/Pending.md"

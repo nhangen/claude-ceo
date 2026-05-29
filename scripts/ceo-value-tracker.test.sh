@@ -20,9 +20,25 @@ setup() {
   export CEO_HOSTNAME="testhost"
 
   mkdir -p "$TEST_HOME/.bun/bin"
+  # Default stub mirrors production bun: echo args AND write the daily note.
+  # The wrapper's post-bun fail-closed check (#88) treats a missing note as
+  # failure, so happy-path tests need the stub to produce one. Tests that want
+  # the "exit 0 with no note" path override this stub.
   cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
 #!/bin/bash
 echo "bun-stub: $*"
+vault=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --obsidian-vault) vault="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$vault" ]; then
+  note_dir="$vault/CEO/reports/value-tracker"
+  mkdir -p "$note_dir"
+  printf '# value-tracker stub %s\n' "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d).md"
+fi
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
 
@@ -189,6 +205,64 @@ test_two_hosts_write_to_disjoint_files() {
   h2=$(grep -c -F "$WIKILINK_PREFIX/$today]]" "$CEO_DIR/inbox/otherhost.md" || true)
   assert_eq "$h1" "1" "host1 must have its own line"
   assert_eq "$h2" "1" "host2 must have its own line"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_fails_when_bun_exits_zero_but_writes_no_note() {
+  # Replace the default stub with one that exits 0 without writing the note —
+  # this is the production failure mode behind #88 (silent no-op under cron).
+  # The wrapper must reject this case and exit non-zero so the cron dispatcher
+  # records 'failed' instead of 'completed'.
+  cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
+#!/bin/bash
+echo "bun-stub silent: $*"
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/bun"
+
+  local rc=0 stderr
+  stderr=$(bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] wrapper must exit non-zero when bun produced no note (#88)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$stderr" "did not write" "stderr must name the missing-note failure (got: $stderr)"
+
+  local today inbox
+  today=$(date +%Y-%m-%d)
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  if [ -f "$inbox" ] && grep -qF "$WIKILINK_PREFIX/$today]]" "$inbox"; then
+    printf '  FAIL [%s] inbox must NOT have a line when no note was written\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_fails_when_bun_writes_empty_note() {
+  # An empty file shouldn't pass the fail-closed check either — a zero-byte
+  # note is indistinguishable from a missing note for the user.
+  cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
+#!/bin/bash
+vault=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --obsidian-vault) vault="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+note_dir="$vault/CEO/reports/value-tracker"
+mkdir -p "$note_dir"
+: > "$note_dir/$(date +%Y-%m-%d).md"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/bun"
+
+  local rc=0 stderr
+  stderr=$(bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] wrapper must exit non-zero on empty note file\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$stderr" "did not write" "stderr must name the missing-note failure (got: $stderr)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
