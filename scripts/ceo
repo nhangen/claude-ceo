@@ -356,6 +356,29 @@ cmd_doctor() {
     fi
   fi
 
+  # Drafts surfaced as info — not failures. Promotes via `status: active` flip.
+  # Per ~/.claude/rules/safety-invariant-scope.md, surface missing preconditions
+  # explicitly rather than silently hiding the check — drafts are exactly the
+  # incident shape this PR exists to prevent.
+  if [ ! -f "$registry_file" ]; then
+    echo "  ⚠ Drafts check skipped: registry.json not found (run: ceo playbook scan)"
+    warn=$((warn + 1))
+  elif ! command -v jq &>/dev/null; then
+    echo "  ⚠ Drafts check skipped: jq not on PATH"
+    warn=$((warn + 1))
+  else
+    local drafts
+    drafts=$(jq -r '.playbooks[] | select(.status == "draft") | .name' "$registry_file" 2>/dev/null)
+    if [ -n "$drafts" ]; then
+      echo ""
+      echo "  Drafts (not installed in cron; runnable on-demand):"
+      while IFS= read -r d; do
+        [ -z "$d" ] && continue
+        echo "    - $d  (flip frontmatter to 'status: active' then re-run 'ceo playbook scan' to install)"
+      done <<< "$drafts"
+    fi
+  fi
+
   echo ""
   echo "Result: $ok ok, $warn warnings, $fail failures"
   [ "$fail" -gt 0 ] && return 1
@@ -482,17 +505,18 @@ cmd_playbook() {
   local subcmd="${1:-help}"
   shift 2>/dev/null || true
   case "$subcmd" in
-    scan) cmd_playbook_scan ;;
+    scan) cmd_playbook_scan "$@" ;;
     list) cmd_playbook_list ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
     help|--help|-h)
       echo "Usage: ceo playbook <scan|list|info|diff>"
       echo ""
-      echo "  scan          Discover playbooks, update registry + crontab"
-      echo "  list          Show all registered playbooks"
-      echo "  info <name>   Show details for one playbook"
-      echo "  diff [--quiet] Detect drift between vault and repo playbooks"
+      echo "  scan [--dry-run]   Discover playbooks, update registry + crontab"
+      echo "                     (--dry-run prints would-be cron block, no writes)"
+      echo "  list               Show all registered playbooks"
+      echo "  info <name>        Show details for one playbook"
+      echo "  diff [--quiet]     Detect drift between vault and repo playbooks"
       ;;
     *)
       echo "Unknown playbook command: $subcmd"
@@ -574,6 +598,20 @@ cmd_playbook_scan() {
     exit 1
   fi
 
+  local dry_run=0
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) dry_run=1 ;;
+      *)
+        # Reject unknown args rather than fall through to a real scan —
+        # `--dryrun` typo must not silently run the destructive path. Per
+        # ~/.claude/rules/enum-config-typo-fallback.md.
+        echo "ERROR: unknown scan argument: '$arg' (supported: --dry-run)" >&2
+        return 1
+        ;;
+    esac
+  done
+
   ceo_validate_vault || exit 1
   ceo_assert_primary_host || exit 1
 
@@ -616,6 +654,10 @@ cmd_playbook_scan() {
     '{schema_version: $v, generated: $ts, playbooks: []}')
   local found=0
   local skipped=0
+  # Tracked separately from `skipped` so a typo'd enum can propagate to
+  # cmd_playbook_scan's exit code per ~/.claude/rules/enum-config-typo-fallback.md
+  # ("failed dispatch counts toward failure observability").
+  local invalid_status=0
 
   local seen_names_vault=""
   local seen_names_repo=""
@@ -676,6 +718,12 @@ cmd_playbook_scan() {
     preflight=$(yq --front-matter=extract '.preflight // ""' "$f" 2>/dev/null || echo "")
     tier=$(yq --front-matter=extract '.tier // ""' "$f" 2>/dev/null || echo "")
     status=$(yq --front-matter=extract '.status // ""' "$f" 2>/dev/null || echo "")
+    if [ -n "$status" ] && ! ceo_status_valid "$status"; then
+      echo "  SKIP  $basename (unknown status: '$status', expected: ${CEO_VALID_STATUSES[*]})" >&2
+      skipped=$((skipped + 1))
+      invalid_status=$((invalid_status + 1))
+      continue
+    fi
     bin=$(yq --front-matter=extract '.bin // ""' "$f" 2>/dev/null || echo "")
     runner=$(yq --front-matter=extract '.runner // ""' "$f" 2>/dev/null || echo "")
     script=$(yq --front-matter=extract '.script // ""' "$f" 2>/dev/null || echo "")
@@ -857,6 +905,19 @@ cmd_playbook_scan() {
   # Apply schedule overrides — registry should reflect effective schedules.
   new_registry=$(_playbook_apply_schedule_overrides "$new_registry")
 
+  if [ "$dry_run" -eq 1 ]; then
+    echo ""
+    echo "=== DRY-RUN: would-be crontab block (no changes applied) ==="
+    _playbook_print_cron_block "$new_registry"
+    echo ""
+    echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed) — NOT written"
+    if [ "$invalid_status" -gt 0 ]; then
+      echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+      return 1
+    fi
+    return 0
+  fi
+
   # Update crontab FIRST. If collision detection refuses, abort before
   # touching the registry on disk — otherwise a refused scan would persist
   # the conflicting state into registry.json and confuse later `ceo schedule`
@@ -875,6 +936,11 @@ cmd_playbook_scan() {
   echo "Wrote: $registry_file"
 
   _playbook_sync_bins "$new_registry"
+
+  if [ "$invalid_status" -gt 0 ]; then
+    echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+    return 1
+  fi
 }
 
 _playbook_sync_bins() {
@@ -994,6 +1060,29 @@ _playbook_apply_schedule_overrides() {
   echo "$registry"
 }
 
+# _playbook_print_cron_block <registry-json>
+#   Prints the CEO Agent crontab block that would be installed for <registry>
+#   to stdout, without touching the user's crontab. Skips collision detection
+#   (dry-run only — collisions are caught by _playbook_update_crontab on the
+#   real install path).
+_playbook_print_cron_block() {
+  local registry="$1"
+  local marker_start="# CEO Agent START"
+  local marker_end="# CEO Agent END"
+  echo "$marker_start"
+  while IFS= read -r row; do
+    local p_name p_trigger p_schedule p_status
+    p_name=$(echo "$row" | jq -r '.name')
+    p_trigger=$(echo "$row" | jq -r '.trigger')
+    p_schedule=$(echo "$row" | jq -r '.schedule')
+    p_status=$(echo "$row" | jq -r '.status')
+    if [ "$p_trigger" = "cron" ] && [ "$p_status" = "active" ] && [ -n "$p_schedule" ]; then
+      echo "$p_schedule $CEO_CRON $p_name  # ceo:$p_name"
+    fi
+  done < <(echo "$registry" | jq -c '.playbooks[]')
+  echo "$marker_end"
+}
+
 _playbook_update_crontab() {
   local registry="$1"
   local marker_start="# CEO Agent START"
@@ -1019,25 +1108,11 @@ _playbook_update_crontab() {
     return 1
   fi
 
-  local cron_block="$marker_start"
-  local cron_count=0
-
-  while IFS= read -r row; do
-    local p_name p_trigger p_schedule p_status
-    p_name=$(echo "$row" | jq -r '.name')
-    p_trigger=$(echo "$row" | jq -r '.trigger')
-    p_schedule=$(echo "$row" | jq -r '.schedule')
-    p_status=$(echo "$row" | jq -r '.status')
-
-    if [ "$p_trigger" = "cron" ] && [ "$p_status" = "active" ] && [ -n "$p_schedule" ]; then
-      cron_block="$cron_block
-$p_schedule $CEO_CRON $p_name  # ceo:$p_name"
-      cron_count=$((cron_count + 1))
-    fi
-  done < <(echo "$registry" | jq -c '.playbooks[]')
-
-  cron_block="$cron_block
-$marker_end"
+  # Share the emission body with _playbook_print_cron_block so dry-run and
+  # real install can't drift on the active+cron+scheduled filter.
+  local cron_block cron_count
+  cron_block=$(_playbook_print_cron_block "$registry")
+  cron_count=$(printf '%s\n' "$cron_block" | grep -c '# ceo:' || true)
 
   local existing
   existing=$(crontab -l 2>/dev/null || true)

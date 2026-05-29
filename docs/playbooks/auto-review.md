@@ -6,7 +6,7 @@ schedule: "17 9,13 * * 1-5"
 model: sonnet
 preflight: has_auto_review_prs
 tier: read
-status: active
+status: draft
 ---
 
 # Auto PR Review

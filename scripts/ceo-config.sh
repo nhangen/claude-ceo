@@ -315,6 +315,21 @@ ceo_pin_home_or_warn() {
 CEO_REGISTRY_SCHEMA_VERSION=3
 # shellcheck disable=SC2034
 CEO_VALID_RUNNERS=(claude script ollama ollama-think skill)
+# shellcheck disable=SC2034
+CEO_VALID_STATUSES=(active draft disabled)
+
+# ceo_status_valid <value>
+#   Returns 0 if <value> is one of the supported statuses, 1 otherwise.
+#   Empty string is treated as "not active" by the dispatcher but is NOT
+#   accepted here — callers decide whether to allow missing/empty separately
+#   from typos.
+ceo_status_valid() {
+  local v="${1:-}"
+  for s in "${CEO_VALID_STATUSES[@]}"; do
+    [ "$v" = "$s" ] && return 0
+  done
+  return 1
+}
 
 # ceo_registry_version <registry_file>
 #   Prints the integer schema_version, or nothing if missing/malformed.

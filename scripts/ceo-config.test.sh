@@ -890,4 +890,29 @@ test_artifact_expand_rejects_empty_template() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_status_valid_accepts_canonical_values() {
+  for s in active draft disabled; do
+    local rc=0
+    bash -c "source '$LIB'; ceo_status_valid '$s'" || rc=$?
+    assert_eq "$rc" "0" "ceo_status_valid must accept canonical status: $s"
+  done
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_status_valid_rejects_typos_and_case_variants() {
+  for s in scrpt Active ACTIVE 'active ' ' active' disable enabled drft; do
+    local rc=0
+    bash -c "source '$LIB'; ceo_status_valid '$s'" || rc=$?
+    assert_eq "$rc" "1" "ceo_status_valid must reject non-canonical status: '$s'"
+  done
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_status_valid_rejects_empty() {
+  local rc=0
+  bash -c "source '$LIB'; ceo_status_valid ''" || rc=$?
+  assert_eq "$rc" "1" "ceo_status_valid must reject empty string"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
