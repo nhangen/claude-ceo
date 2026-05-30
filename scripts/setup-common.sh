@@ -106,6 +106,9 @@ ceo_setup_repos_dir() {
   done
   if [ "$INSTALL_DIR" = "/" ]; then
     INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
+    echo "  WARNING: could not locate .claude-plugin/ above $SCRIPT_DIR — falling back to $INSTALL_DIR" >&2
+    echo "  'ceo doctor' may not find plugin assets if this is wrong." >&2
+    MISSING_CONFIG+=("plugin INSTALL_DIR")
   fi
   REPOS_DIR="$(dirname "$INSTALL_DIR")/repos"
   echo "[7/10] Creating repo directory at $REPOS_DIR..."
