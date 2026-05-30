@@ -915,4 +915,37 @@ test_status_valid_rejects_empty() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_discovery_skips_mnt_candidates_on_macos() {
+  local trace rc=0
+  trace=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_detect_os() { echo macos; }
+    set -x
+    ceo_load_config || true
+  " 2>&1) || rc=$?
+  if echo "$trace" | grep -qE '/mnt/[zc]/'; then
+    printf '  FAIL [%s] discovery probed /mnt/ candidates on macos\n    trace: %q\n' \
+      "$CURRENT_TEST" "$(echo "$trace" | grep -E '/mnt/[zc]/' | head -2)"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_discovery_probes_mnt_candidates_on_wsl() {
+  local trace
+  trace=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_detect_os() { echo wsl; }
+    set -x
+    ceo_load_config || true
+  " 2>&1)
+  if ! echo "$trace" | grep -qE '/mnt/[zc]/.*Documents/Obsidian'; then
+    printf '  FAIL [%s] wsl discovery did not probe /mnt/ candidates\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
