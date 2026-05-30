@@ -37,16 +37,20 @@ ceo_setup_print_or_run sudo apt install -y -qq git curl jq
 # 2. GitHub CLI
 if command -v gh &>/dev/null; then
   echo "[2/10] gh CLI already installed ($(gh --version | head -1))"
-elif [ "$CEO_SETUP_DRY_RUN" = "1" ]; then
-  echo "[2/10] Installing GitHub CLI..."
-  echo "  [dry-run] curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg"
-  echo "  [dry-run] add cli.github.com apt source to /etc/apt/sources.list.d/github-cli.list"
-  echo "  [dry-run] sudo apt update -qq && sudo apt install -y -qq gh"
 else
   echo "[2/10] Installing GitHub CLI..."
-  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-  sudo apt update -qq && sudo apt install -y -qq gh
+  _gh_keyring='curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg'
+  _gh_apt_src='echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null'
+  _gh_install='sudo apt update -qq && sudo apt install -y -qq gh'
+  if [ "$CEO_SETUP_DRY_RUN" = "1" ]; then
+    echo "  [dry-run] $_gh_keyring"
+    echo "  [dry-run] $_gh_apt_src"
+    echo "  [dry-run] $_gh_install"
+  else
+    bash -eo pipefail -c "$_gh_keyring"
+    bash -eo pipefail -c "$_gh_apt_src"
+    bash -eo pipefail -c "$_gh_install"
+  fi
 fi
 
 if gh auth status &>/dev/null; then
