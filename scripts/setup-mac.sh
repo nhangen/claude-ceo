@@ -3,6 +3,9 @@ set -euo pipefail
 
 # setup-mac.sh — Provision a Mac as the CEO agent's execution environment.
 # Run this once, interactively, on the Mac.
+#
+# Flags:
+#   --dry-run   Print package-install commands instead of executing them.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -14,23 +17,35 @@ source "$SCRIPT_DIR/ceo-config.sh"
 # shellcheck source=setup-common.sh
 source "$SCRIPT_DIR/setup-common.sh"
 
+CEO_SETUP_DRY_RUN=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --dry-run) CEO_SETUP_DRY_RUN=1 ;;
+    *) echo "setup-mac.sh: unknown argument '$_arg'" >&2; exit 2 ;;
+  esac
+done
+export CEO_SETUP_DRY_RUN
+
 echo "=== CEO Agent — Mac Setup ==="
 echo ""
 
-# 1. System packages — manual install at this stage (#96 will add brew driver)
-echo "[1/10] Required CLIs (install manually for now):"
-echo "  brew install git gh jq yq"
-echo ""
+# 1. System packages via Homebrew
+if ! command -v brew &>/dev/null; then
+  echo "[1/10] ERROR: brew not found. Install Homebrew from https://brew.sh and re-run." >&2
+  exit 1
+fi
+echo "[1/10] Installing required CLIs via brew..."
+ceo_setup_print_or_run brew install git gh jq yq
+
 _missing_tools=()
 for _tool in git gh jq; do
   command -v "$_tool" &>/dev/null || _missing_tools+=("$_tool")
 done
-if [ "${#_missing_tools[@]}" -gt 0 ]; then
-  echo "  Missing: ${_missing_tools[*]}"
-  echo "  Install the above with brew and re-run 'ceo setup'."
+if [ "${#_missing_tools[@]}" -gt 0 ] && [ "$CEO_SETUP_DRY_RUN" = "0" ]; then
+  echo "  Missing after install: ${_missing_tools[*]}" >&2
+  echo "  Check brew output above for errors." >&2
   exit 1
 fi
-echo "  All required CLIs present."
 
 # 2. gh authentication
 if gh auth status &>/dev/null; then
@@ -40,7 +55,7 @@ else
   gh auth login
 fi
 
-ceo_setup_ssh_key "mac"
+ceo_setup_ssh_key "$(hostname -s 2>/dev/null || echo mac)"
 ceo_setup_git_config
 ceo_setup_check_syncthing
 ceo_setup_check_yq "brew install yq"
