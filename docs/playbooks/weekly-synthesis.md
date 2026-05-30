@@ -27,7 +27,7 @@ Loads `CEO/agents/synthesist.md`. Distinct voice from `CEO/IDENTITY.md` — dire
 
 | File | Mode | When |
 |---|---|---|
-| `CEO/reports/weekly-synthesis-YYYY-W{NN}.md` | create | Every Sunday 08:00. The full memo. |
+| `CEO/reports/weekly-synthesis-YYYY-MM-DD.md` | create | Every Sunday 08:00. The full memo. (Ceo-cron substitutes `${TODAY}`.) |
 | `Daily/YYYY-MM-DD.md` (today's daily) | append link under `## Session Links` | Every run. |
 | Discord webhook (`weekly-synthesis` trigger) | post | Executive summary only (top line + new ideas + flagged items) + vault link. Requires `weekly-synthesis` in `CEO/settings.json -> .discord_report_triggers`. |
 
@@ -49,8 +49,8 @@ Loads `CEO/agents/synthesist.md`. Distinct voice from `CEO/IDENTITY.md` — dire
 
 ## Documented Gaps
 
-- **Graph layer not exercised.** As of 2026-05-30 the claude-mem MCP on this Mac install is running in `worker` mode, not `server-beta`. `memory_context` (relationship-aware graph retrieval) is unavailable; only `timeline` / `observation_search` / `smart_search` reads run. If `CLAUDE_MEM_RUNTIME=server-beta` is enabled, the skill should be updated to use `memory_context` for idea-cluster traversal.
-- **Plugin distribution.** Skill is in the `nhangen-tools/ceo` plugin source at `skills/ceo/weekly-synthesis/SKILL.md` (commit `98ed853`). For the first test on ML-1 the skill was sideloaded into the `0.13.5` cache directory; a proper plugin release is needed before the next plugin update to avoid losing it.
+- **Graph layer not exercised.** As of 2026-05-30 the claude-mem MCP runs in `worker` mode. `memory_context` (relationship-aware graph retrieval) is unavailable to the cron shell; only static reads of repos / daily notes / rules are gathered. If `CLAUDE_MEM_RUNTIME=server-beta` becomes available and a CLI surface exists, extend `run-report.sh` to include claude-mem idea-cluster context.
+- **Skill distribution.** Source lives at `~/Code/llm-tools/home/.claude/skills/weekly-synthesis/` (canonical, git-tracked in llm-tools, sibling to `workload-report`). Installed at `~/.claude/skills/weekly-synthesis/` on each host via the llm-tools sync mechanism. NOT shipped via the `nhangen-tools/ceo` plugin — the `runner: skill` ceo-cron field references CEO-skill names under `~/.claude/skills/`, distinct from Claude Code plugin skills.
 - **No retry / failure routing.** If the synthesis run fails mid-flight, no alert lands in `CEO/inbox/`. Add a `CEO/alerts/weekly-synthesis.md` state file with `last_run_status` if this becomes load-bearing.
 
 ## Disable
@@ -61,5 +61,5 @@ Set `status: inactive` in this file and the vault playbook, then run `ceo playbo
 
 - Vault playbook: `CEO/playbooks/weekly-synthesis.md` (active definition; this doc is the registry-side declaration per `ceo-automated-writers-are-playbooks` rule).
 - Identity: `CEO/agents/synthesist.md`.
-- Skill: `nhangen-tools/ceo` plugin → `skills/ceo/weekly-synthesis/SKILL.md`.
+- Skill source: `llm-tools` repo → `home/.claude/skills/weekly-synthesis/` (scripts/run-report.sh + prompt.md + SKILL.md). Installed at `~/.claude/skills/weekly-synthesis/` per host.
 - Sibling discord-reporting playbook: `morning-brief`.
