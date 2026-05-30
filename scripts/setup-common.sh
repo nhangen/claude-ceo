@@ -25,6 +25,7 @@ ceo_setup_print_or_run() {
 
 ceo_setup_ssh_key() {
   local host_label="$1"
+  [ -n "$host_label" ] || host_label="host"
   local ssh_key="$HOME/.ssh/github_ceo"
   if [ -f "$ssh_key" ]; then
     echo "[3/10] SSH key already exists at $ssh_key"
