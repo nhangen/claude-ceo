@@ -1465,9 +1465,21 @@ cmd_creds() {
 cmd_setup() {
   if [ "${1:-}" = "discord" ]; then
     bash "$SCRIPT_DIR/ceo-setup-discord.sh"
-  else
-    bash "$SCRIPT_DIR/setup-wsl.sh"
+    return
   fi
+  local _os
+  _os="$(ceo_detect_os)"
+  case "$_os" in
+    wsl)     bash "$SCRIPT_DIR/setup-wsl.sh" ;;
+    macos)   bash "$SCRIPT_DIR/setup-mac.sh" ;;
+    linux)   bash "$SCRIPT_DIR/setup-linux.sh" ;;
+    unknown|*)
+      echo "ceo setup: unsupported or undetected platform ('$_os')." >&2
+      echo "  Supported: wsl, macos, linux." >&2
+      echo "  Re-run on a supported host, or hand-write ~/.ceo/config (see docs)." >&2
+      exit 1
+      ;;
+  esac
 }
 
 cmd_pr_sources() {
