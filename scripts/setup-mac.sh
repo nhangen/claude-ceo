@@ -5,13 +5,14 @@ set -euo pipefail
 # Run this once, interactively, on the Mac.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# shellcheck disable=SC2034  # populated by setup-common.sh's ceo_setup_git_config / read by ceo_setup_exit_if_missing
+MISSING_CONFIG=()
+
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
 # shellcheck source=setup-common.sh
 source "$SCRIPT_DIR/setup-common.sh"
-
-# shellcheck disable=SC2034  # populated by setup-common.sh's ceo_setup_git_config / read by ceo_setup_exit_if_missing
-MISSING_CONFIG=()
 
 echo "=== CEO Agent — Mac Setup ==="
 echo ""
