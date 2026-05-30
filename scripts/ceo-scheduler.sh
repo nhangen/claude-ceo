@@ -4,7 +4,9 @@
 # (provides ceo_detect_os).
 #
 # Public API:
-#   ceo_scheduler_backend       — prints the resolved backend name to stdout
+#   ceo_scheduler_backend       — prints the resolved backend name to stdout;
+#                                  returns 1 (with stderr message) on an
+#                                  unknown CEO_SCHEDULER value
 #   ceo_scheduler_list          — prints the current scheduler state to stdout
 #                                  (crontab content on the crontab backend; empty on noop)
 #   ceo_scheduler_install <payload>
@@ -13,14 +15,26 @@
 #                                  rc=2 on noop-launchd (not yet implemented).
 #
 # Backend selection priority:
-#   1. CEO_SCHEDULER env (explicit override for tests/dev)
+#   1. CEO_SCHEDULER env (explicit override for tests/dev); must be one of
+#      the known names — unknown values fail loud rather than fall through
+#      (per enum-config-typo-fallback)
 #   2. CEO_CRONTAB_BIN env set ⇒ crontab backend (legacy override)
 #   3. ceo_detect_os: wsl/linux ⇒ crontab; macos ⇒ noop-launchd
 
+_CEO_SCHEDULER_KNOWN="crontab noop-launchd"
+
 ceo_scheduler_backend() {
   if [ -n "${CEO_SCHEDULER:-}" ]; then
-    echo "$CEO_SCHEDULER"
-    return 0
+    case " $_CEO_SCHEDULER_KNOWN " in
+      *" $CEO_SCHEDULER "*)
+        echo "$CEO_SCHEDULER"
+        return 0
+        ;;
+      *)
+        echo "ERROR: unknown CEO_SCHEDULER='$CEO_SCHEDULER'; valid: $_CEO_SCHEDULER_KNOWN" >&2
+        return 1
+        ;;
+    esac
   fi
   if [ -n "${CEO_CRONTAB_BIN:-}" ]; then
     echo "crontab"
@@ -31,14 +45,16 @@ ceo_scheduler_backend() {
       echo "crontab"
       ;;
     macos)
-      # A `crontab` resolving under $HOME is a test stub (per test-harness
-      # conventions: stubs live under $TEST_HOME/.bun/bin). Real macOS
-      # crontab is at /usr/bin/crontab, outside $HOME. The sniffer lets
-      # ceo-cron.test.sh / ceo-schedule.test.sh exercise the crontab
-      # backend on Mac dev hosts without modification.
+      : "${HOME:?HOME must be set to resolve scheduler backend on macOS}"
+      # A `crontab` resolving under $HOME/.bun/bin/ is a test stub (per
+      # test-harness conventions). Real macOS crontab is /usr/bin/crontab,
+      # outside $HOME. The narrow path check (not just any-$HOME-prefix)
+      # avoids matching unrelated $HOME/bin or asdf/Volta shims a user
+      # might legitimately have. Lets ceo-cron.test.sh / ceo-schedule.test.sh
+      # exercise the crontab backend on Mac dev hosts without modification.
       local _ct
       _ct="$(command -v crontab 2>/dev/null || true)"
-      if [ -n "$_ct" ] && [ -n "${HOME:-}" ] && [ "${_ct#"$HOME"}" != "$_ct" ]; then
+      if [ -n "$_ct" ] && [ "${_ct#"$HOME/.bun/bin/"}" != "$_ct" ]; then
         echo "crontab"
       else
         echo "noop-launchd"
@@ -51,7 +67,10 @@ ceo_scheduler_backend() {
 }
 
 ceo_scheduler_list() {
-  case "$(ceo_scheduler_backend)" in
+  local _backend _rc=0
+  _backend="$(ceo_scheduler_backend)" || _rc=$?
+  [ "$_rc" -eq 0 ] || return "$_rc"
+  case "$_backend" in
     crontab)
       "${CEO_CRONTAB_BIN:-crontab}" -l 2>/dev/null
       ;;
@@ -59,6 +78,7 @@ ceo_scheduler_list() {
       : # empty schedule
       ;;
     *)
+      echo "ERROR: unknown scheduler backend '$_backend'" >&2
       return 1
       ;;
   esac
@@ -66,7 +86,10 @@ ceo_scheduler_list() {
 
 ceo_scheduler_install() {
   local payload="$1"
-  case "$(ceo_scheduler_backend)" in
+  local _backend _rc=0
+  _backend="$(ceo_scheduler_backend)" || _rc=$?
+  [ "$_rc" -eq 0 ] || return "$_rc"
+  case "$_backend" in
     crontab)
       local crontab_bin="${CEO_CRONTAB_BIN:-crontab}"
       local err
@@ -83,7 +106,7 @@ ceo_scheduler_install() {
       return 2
       ;;
     *)
-      echo "ERROR: unknown scheduler backend '$(ceo_scheduler_backend)'" >&2
+      echo "ERROR: unknown scheduler backend '$_backend'" >&2
       return 1
       ;;
   esac

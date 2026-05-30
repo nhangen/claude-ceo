@@ -938,10 +938,14 @@ cmd_playbook_scan() {
   # Update crontab FIRST. If collision detection refuses, abort before
   # touching the registry on disk — otherwise a refused scan would persist
   # the conflicting state into registry.json and confuse later `ceo schedule`
-  # listings.
-  if ! _playbook_update_crontab "$new_registry"; then
+  # listings. Propagate the scheduler's rc (rc=2 from noop-launchd, rc=1 for
+  # other errors) so callers / cron / CI can distinguish "not implemented"
+  # from "transient failure."
+  local _scan_install_rc=0
+  _playbook_update_crontab "$new_registry" || _scan_install_rc=$?
+  if [ "$_scan_install_rc" -ne 0 ]; then
     echo "Aborted: registry not updated. See error above and re-run." >&2
-    return 1
+    return "$_scan_install_rc"
   fi
 
   local registry_tmp="$registry_file.tmp"
@@ -1149,8 +1153,10 @@ _playbook_update_crontab() {
     crontab_payload="$cron_block"
   fi
 
-  if ! ceo_scheduler_install "$crontab_payload"; then
-    return 1
+  local _install_rc=0
+  ceo_scheduler_install "$crontab_payload" || _install_rc=$?
+  if [ "$_install_rc" -ne 0 ]; then
+    return "$_install_rc"
   fi
 
   echo "Crontab: $cron_count entries installed"

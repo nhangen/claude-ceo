@@ -60,12 +60,88 @@ test_noop_launchd_install_returns_rc_2_with_message() {
   assert_contains "$out" "launchd backend not yet implemented" "must surface not-implemented message"
 }
 
-test_noop_launchd_list_is_empty() {
+test_noop_launchd_list_is_empty_and_does_not_invoke_crontab() {
+  # Place a tripwire stub that records any invocation; noop backend must
+  # never call it. If `ceo_scheduler_list`'s noop arm is reverted to fall
+  # through to the crontab branch, the tripwire fires and the assertion
+  # on the witness file's absence fails.
+  cat > "$TEST_HOME/tripwire-crontab" <<STUB
+#!/bin/bash
+touch "$TEST_HOME/tripwire-fired"
+STUB
+  chmod +x "$TEST_HOME/tripwire-crontab"
+  export CEO_CRONTAB_BIN="$TEST_HOME/tripwire-crontab"
   export CEO_SCHEDULER=noop-launchd
-  local out
-  out=$(ceo_scheduler_list 2>&1)
+  local out rc=0
+  out=$(ceo_scheduler_list 2>&1) || rc=$?
+  assert_eq "$rc" "0" "noop-launchd list must succeed"
   assert_eq "$out" "" "noop-launchd list must produce empty output"
+  if [ -f "$TEST_HOME/tripwire-fired" ]; then
+    assert_eq "tripwire" "untouched" "noop backend must not invoke CEO_CRONTAB_BIN"
+  fi
 }
+
+test_unknown_ceo_scheduler_fails_loud() {
+  export CEO_SCHEDULER=noop-luanchd
+  local out rc=0
+  out=$(ceo_scheduler_backend 2>&1) || rc=$?
+  assert_eq "$rc" "1" "unknown CEO_SCHEDULER must return rc=1"
+  assert_contains "$out" "unknown CEO_SCHEDULER='noop-luanchd'" "must surface typo to user"
+  # _list and _install must propagate the rc, not masquerade as empty/zero
+  rc=0; out=$(ceo_scheduler_list 2>&1) || rc=$?
+  assert_eq "$rc" "1" "ceo_scheduler_list must propagate unknown-backend rc=1"
+  rc=0; out=$(ceo_scheduler_install "x" 2>&1) || rc=$?
+  assert_eq "$rc" "1" "ceo_scheduler_install must propagate unknown-backend rc=1"
+}
+
+test_playbook_scan_propagates_rc_2_from_noop_backend() {
+  # The public API at ceo-scheduler.sh advertises rc=2 for the noop backend.
+  # Callers must preserve it instead of collapsing to rc=1.
+  : > "$CEO_DIR/inbox.md"
+  cat > "$CEO_DIR/registry.json" <<'EOF'
+{"schema_version": 3, "generated": "1970-01-01T00:00:00Z", "playbooks": []}
+EOF
+  export CEO_SCHEDULER=noop-launchd
+  local rc=0
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "2" "playbook scan must propagate rc=2 from noop-launchd backend"
+}
+
+test_macos_sniffer_picks_crontab_only_under_bun_bin() {
+  # Stub ceo_detect_os in this shell to force the macos branch.
+  ceo_detect_os() { echo "macos"; }
+  # Stub under the documented test path → expect crontab backend.
+  mkdir -p "$TEST_HOME/.bun/bin"
+  cat > "$TEST_HOME/.bun/bin/crontab" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/crontab"
+  PATH="$TEST_HOME/.bun/bin:$PATH" assert_eq \
+    "$(PATH="$TEST_HOME/.bun/bin:$PATH" ceo_scheduler_backend)" "crontab" \
+    "macOS + crontab under \$HOME/.bun/bin must pick crontab backend"
+
+  # Stub OUTSIDE .bun/bin (under $HOME/bin) → must NOT trigger the sniffer.
+  mkdir -p "$TEST_HOME/bin"
+  cp "$TEST_HOME/.bun/bin/crontab" "$TEST_HOME/bin/crontab"
+  rm -f "$TEST_HOME/.bun/bin/crontab"
+  assert_eq \
+    "$(PATH="$TEST_HOME/bin:$PATH" ceo_scheduler_backend)" "noop-launchd" \
+    "macOS + crontab outside \$HOME/.bun/bin must pick noop-launchd (narrow sniffer)"
+}
+
+test_macos_empty_home_fails_loud() {
+  ceo_detect_os() { echo "macos"; }
+  local rc=0
+  ( HOME="" ceo_scheduler_backend >/dev/null 2>&1 ) || rc=$?
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "empty HOME on macOS must abort (per shell-required-env-vars)"
+}
+
+# Production-entry-point payload capture is covered by
+# ceo-schedule.test.sh:test_collision_resolved_after_override (line 126) —
+# it drives `_playbook_update_crontab` through CEO_CRONTAB_BIN and asserts
+# the captured payload contains the ceo:<name> line. No duplicate test here.
 
 test_crontab_backend_install_routes_payload_to_ceo_crontab_bin() {
   local capture="$TEST_HOME/crontab-capture.out"
