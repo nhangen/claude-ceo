@@ -7,6 +7,11 @@
 #   - SCRIPT_DIR resolved (the dirname of the calling installer)
 #   - MISSING_CONFIG array declared (callers populate this; final exit check reads it)
 
+declare -p MISSING_CONFIG &>/dev/null || {
+  echo "setup-common.sh: caller must declare MISSING_CONFIG=() before sourcing." >&2
+  exit 1
+}
+
 ceo_setup_ssh_key() {
   local host_label="$1"
   local ssh_key="$HOME/.ssh/github_ceo"
