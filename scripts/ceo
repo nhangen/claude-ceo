@@ -107,6 +107,17 @@ cmd_doctor() {
   echo "=== CEO Doctor ==="
   echo ""
 
+  # platform
+  local _platform
+  _platform="$(ceo_detect_os)"
+  if [ "$_platform" = "unknown" ]; then
+    echo "  ! Platform: unknown — setup helpers may not work"
+    warn=$((warn + 1))
+  else
+    echo "  ✓ Platform: $_platform"
+    ok=$((ok + 1))
+  fi
+
   # config file
   local _cfg_path
   _cfg_path="$(ceo_config_path)"
