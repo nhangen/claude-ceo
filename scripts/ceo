@@ -1470,9 +1470,9 @@ cmd_setup() {
   local _os
   _os="$(ceo_detect_os)"
   case "$_os" in
-    wsl)     bash "$SCRIPT_DIR/setup-wsl.sh" ;;
-    macos)   bash "$SCRIPT_DIR/setup-mac.sh" ;;
-    linux)   bash "$SCRIPT_DIR/setup-linux.sh" ;;
+    wsl)     bash "$SCRIPT_DIR/setup-wsl.sh" "$@" ;;
+    macos)   bash "$SCRIPT_DIR/setup-mac.sh" "$@" ;;
+    linux)   bash "$SCRIPT_DIR/setup-linux.sh" "$@" ;;
     unknown|*)
       echo "ceo setup: unsupported or undetected platform ('$_os')." >&2
       echo "  Supported: wsl, macos, linux." >&2

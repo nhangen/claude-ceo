@@ -12,8 +12,20 @@ declare -p MISSING_CONFIG &>/dev/null || {
   exit 1
 }
 
+# Echo the command (with a [dry-run] prefix) when CEO_SETUP_DRY_RUN=1; otherwise execute it.
+# Callers pass `argv...` with no shell quoting tricks — this is for package-install drivers,
+# not arbitrary shell pipelines.
+ceo_setup_print_or_run() {
+  if [ "${CEO_SETUP_DRY_RUN:-0}" = "1" ]; then
+    echo "  [dry-run] $*"
+  else
+    "$@"
+  fi
+}
+
 ceo_setup_ssh_key() {
   local host_label="$1"
+  [ -n "$host_label" ] || host_label="host"
   local ssh_key="$HOME/.ssh/github_ceo"
   if [ -f "$ssh_key" ]; then
     echo "[3/10] SSH key already exists at $ssh_key"
