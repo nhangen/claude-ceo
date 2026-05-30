@@ -929,6 +929,11 @@ test_discovery_skips_mnt_candidates_on_macos() {
       "$CURRENT_TEST" "$(echo "$trace" | grep -E '/mnt/[zc]/' | head -2)"
     FAILS=$((FAILS + 1))
   fi
+  if ! echo "$trace" | grep -qF "$TEST_HOME/Documents/Obsidian"; then
+    printf '  FAIL [%s] discovery did not probe HOME candidate (loop may have been short-circuited)\n' \
+      "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
