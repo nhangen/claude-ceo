@@ -75,8 +75,8 @@ ceo_load_config() {
     fi
   fi
 
-  # Step 3: Legacy discovery loop — kept as fallback until 2026-05-26.
-  # TODO: Remove this block after 2026-05-26 once all machines have ~/.ceo/config.
+  # Step 3: Legacy discovery loop — kept as fallback while older hosts catch up to ~/.ceo/config.
+  # TODO: Re-evaluate removal once every machine has ~/.ceo/config; original 2026-05-26 target slipped.
   local _user="${USER:-$(whoami)}"
   local _candidates=()
   if [ "$(ceo_detect_os)" = "wsl" ]; then
