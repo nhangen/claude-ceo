@@ -186,4 +186,15 @@ EOF
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_doctor_reports_platform() {
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "Platform:" "doctor must report the detected platform"
+  if ! echo "$output" | grep -qE "Platform: (wsl|linux|macos|unknown)"; then
+    printf '  FAIL [%s] doctor platform line must name wsl/linux/macos/unknown\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
