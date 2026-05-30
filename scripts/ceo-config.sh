@@ -75,16 +75,22 @@ ceo_load_config() {
     fi
   fi
 
-  # Step 3: Legacy discovery loop — kept as fallback until 2026-05-26.
-  # TODO: Remove this block after 2026-05-26 once all machines have ~/.ceo/config.
+  # Step 3: Legacy discovery loop — kept as fallback while older hosts catch up to ~/.ceo/config.
+  # TODO: Re-evaluate removal once every machine has ~/.ceo/config; original 2026-05-26 target slipped.
   local _user="${USER:-$(whoami)}"
-  local _candidate
-  for _candidate in \
-    "/mnt/z/Users/$_user/Documents/Obsidian" \
-    "/mnt/c/Users/$_user/Documents/Obsidian" \
+  local _candidates=()
+  if [ "$(ceo_detect_os)" = "wsl" ]; then
+    _candidates+=( \
+      "/mnt/z/Users/$_user/Documents/Obsidian" \
+      "/mnt/c/Users/$_user/Documents/Obsidian" \
+    )
+  fi
+  _candidates+=( \
     "$HOME/Documents/Obsidian" \
-    "$HOME/Obsidian"
-  do
+    "$HOME/Obsidian" \
+  )
+  local _candidate
+  for _candidate in "${_candidates[@]}"; do
     if [ -d "$_candidate/CEO" ]; then
       export CEO_VAULT="$_candidate"
       return 0
