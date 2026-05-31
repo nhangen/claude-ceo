@@ -355,6 +355,71 @@ BLOCK
     "bootout must reference the stale plist by name"
 }
 
+test_launchd_install_refuses_to_wipe_live_jobs_when_every_payload_line_rejected() {
+  export CEO_SCHEDULER=launchd
+  # Prior live install: a real job we'd be heartbroken to lose.
+  ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh keeper  # ceo:keeper" >/dev/null 2>&1
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.keeper-0.plist" "seed: keeper plist present"
+
+  # Rescan with a payload whose every entry has a DOM/Month constraint
+  # (rejected by the launchd backend). _ceo_launchd_tuples_from_payload
+  # emits zero tuples. Without the install-level gate, the cleanup pass
+  # would walk com.ceo.*.plist with kept_labels empty and wipe keeper.
+  local bad_payload
+  bad_payload=$(cat <<'BLOCK'
+15 10 5 * * /tmp/ceo-cron.sh foo  # ceo:foo
+0 9 * 6 * /tmp/ceo-cron.sh bar  # ceo:bar
+BLOCK
+)
+  local rc=0
+  ceo_scheduler_install "$bad_payload" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "install must return non-zero when every registry entry is rejected"
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.keeper-0.plist" \
+    "keeper plist must survive an all-rejected rescan (no silent wipe)"
+}
+
+# Counter-control: a payload mixing one rejected line with one valid line
+# still installs the valid line and leaves prior live plists alone.
+test_launchd_install_partial_reject_installs_valid_and_keeps_other_priors() {
+  export CEO_SCHEDULER=launchd
+  ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh older  # ceo:older" >/dev/null 2>&1
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.older-0.plist" "seed: older plist present"
+
+  local mixed
+  mixed=$(cat <<'BLOCK'
+0 11 * * * /tmp/ceo-cron.sh newer  # ceo:newer
+15 10 5 * * /tmp/ceo-cron.sh bad  # ceo:bad
+BLOCK
+)
+  local rc=0
+  ceo_scheduler_install "$mixed" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "partial-reject install must still succeed for valid entries"
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.newer-0.plist" "valid line must install"
+  assert_no_match "$(ls "$CEO_LAUNCHD_DIR")" "com.ceo.bad-0.plist" \
+    "rejected line must not produce a plist"
+  # older was not in the new payload — stale cleanup should remove it.
+  # (Symmetric with test_launchd_install_removes_stale_plists_on_rescan.)
+}
+
+# Symmetric Month counter-control to test_tuples_rejects_bad_line_keeps_good_line.
+test_tuples_rejects_bad_month_keeps_good_line() {
+  local payload
+  payload=$(cat <<'BLOCK'
+0 9 * * * /tmp/ceo-cron.sh good  # ceo:good
+15 10 * 6 * /tmp/ceo-cron.sh bad  # ceo:bad
+BLOCK
+)
+  local stderr_file out
+  stderr_file=$(mktemp)
+  out=$(_ceo_launchd_tuples_from_payload "$payload" 2>"$stderr_file")
+  local err
+  err=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  assert_contains "$out" "com.ceo.good-0" "valid sibling must still emit a tuple"
+  assert_not_contains "$out" "com.ceo.bad-" "rejected month line must not emit a tuple"
+  assert_contains "$err" "Month" "WARN must name Month for bad line"
+}
+
 test_launchd_install_rolls_back_on_bootstrap_failure_mid_loop() {
   export CEO_SCHEDULER=launchd
   # Seed a prior live install so we can verify rollback doesn't disturb it.

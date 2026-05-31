@@ -377,6 +377,17 @@ ceo_scheduler_install() {
         kept_labels="$kept_labels$label "
       done < <(_ceo_launchd_tuples_from_payload "$payload")
 
+      # Refuse to proceed if the payload named registry entries (lines tagged
+      # `# ceo:`) but every one was rejected by the parser. Otherwise the
+      # stale-plist cleanup below treats an empty desired-state as "wipe
+      # everything", silently unloading live jobs whenever a registry update
+      # ships a typo. WARN to stderr alone is not enough — cron callers
+      # routinely redirect 2>/dev/null.
+      if [ -z "$rendered" ] && printf '%s\n' "$payload" | grep -q '# ceo:'; then
+        echo "ERROR: ceo_scheduler_install: every registry entry was rejected by the launchd parser; refusing to tear down existing jobs" >&2
+        return 1
+      fi
+
       # Phase 2: commit each rendered .tmp to its final path, then bootout +
       # bootstrap. On bootstrap failure, roll back: bootout everything we
       # installed in this run, restore-via-delete the newly-committed plists,
