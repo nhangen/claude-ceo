@@ -237,6 +237,7 @@ _ceo_launchd_tuples_from_payload() {
     local dom mon
     read -r m h dom mon dow cmd_rest <<< "$schedule_and_cmd"
     if [ -z "$cmd_rest" ]; then
+      echo "WARN: skipping ceo:${name} (malformed schedule line; expected 'MIN HOUR DOM MON DOW CMD')" >&2
       continue
     fi
     if [ "$dom" != "*" ]; then
@@ -248,9 +249,18 @@ _ceo_launchd_tuples_from_payload() {
       continue
     fi
     local minutes hours weekdays
-    minutes="$(_ceo_cron_field_expand "$m" 0 59)" || continue
-    hours="$(_ceo_cron_field_expand "$h" 0 23)" || continue
-    weekdays="$(_ceo_cron_field_expand "$dow" 0 6)" || continue
+    if ! minutes="$(_ceo_cron_field_expand "$m" 0 59 2>/dev/null)"; then
+      echo "WARN: skipping ceo:${name} (Minute field '${m}' rejected)" >&2
+      continue
+    fi
+    if ! hours="$(_ceo_cron_field_expand "$h" 0 23 2>/dev/null)"; then
+      echo "WARN: skipping ceo:${name} (Hour field '${h}' rejected)" >&2
+      continue
+    fi
+    if ! weekdays="$(_ceo_cron_field_expand "$dow" 0 6 2>/dev/null)"; then
+      echo "WARN: skipping ceo:${name} (DOW field '${dow}' rejected)" >&2
+      continue
+    fi
     local idx=0
     local mi hi wi
     # Disable filename globbing so a bare `*` from _ceo_cron_field_expand
