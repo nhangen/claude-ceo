@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/ceo-config.sh"
 ceo_load_config || true
 
-# Scheduler abstraction (crontab on linux/wsl; noop-launchd on macOS)
+# Scheduler abstraction (crontab on linux/wsl; launchd on macOS)
 # shellcheck source=ceo-scheduler.sh
 source "$SCRIPT_DIR/ceo-scheduler.sh"
 
@@ -938,9 +938,8 @@ cmd_playbook_scan() {
   # Update crontab FIRST. If collision detection refuses, abort before
   # touching the registry on disk — otherwise a refused scan would persist
   # the conflicting state into registry.json and confuse later `ceo schedule`
-  # listings. Propagate the scheduler's rc (rc=2 from noop-launchd, rc=1 for
-  # other errors) so callers / cron / CI can distinguish "not implemented"
-  # from "transient failure."
+  # listings. Propagate the scheduler's rc so callers / cron / CI can see
+  # transient failures (rc=1) distinctly from a clean abort.
   local _scan_install_rc=0
   _playbook_update_crontab "$new_registry" || _scan_install_rc=$?
   if [ "$_scan_install_rc" -ne 0 ]; then
