@@ -27,7 +27,38 @@ setup() {
   export CEO_DIR="$CEO_VAULT/CEO"
   export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
   export CEO_LAUNCHCTL_BIN="$TEST_HOME/stub-launchctl"
+  export CEO_PLUTIL_BIN="$TEST_HOME/stub-plutil"
   mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_LAUNCHD_DIR"
+
+  # plutil stub. Real plutil is macOS-only; CI runs on Linux. Stub uses
+  # python3's stdlib plistlib (present on both ubuntu-latest and macOS) so
+  # the test exercises the same key-extraction contract real plutil offers.
+  cat > "$CEO_PLUTIL_BIN" <<'STUB'
+#!/bin/bash
+# Honors `plutil -extract <key> raw -o - <file>` invocation shape only.
+key="$2"
+file="${!#}"
+[ -f "$file" ] || { echo "stub-plutil: file not found: $file" >&2; exit 1; }
+python3 - "$key" "$file" <<'PY'
+import plistlib, sys
+key, path = sys.argv[1], sys.argv[2]
+with open(path, "rb") as f:
+    d = plistlib.load(f)
+v = d
+for p in key.split("."):
+    if p.isdigit():
+        try:
+            v = v[int(p)]
+        except (IndexError, TypeError):
+            sys.exit(1)
+    else:
+        if not isinstance(v, dict) or p not in v:
+            sys.exit(1)
+        v = v[p]
+print(v)
+PY
+STUB
+  chmod +x "$CEO_PLUTIL_BIN"
   : > "$CEO_DIR/AGENTS.md"
   : > "$CEO_DIR/inbox.md"
 
@@ -49,7 +80,7 @@ STUB
 teardown() {
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_SCHEDULER CEO_CRONTAB_BIN CEO_VAULT CEO_DIR CEO_LAUNCHD_DIR CEO_LAUNCHCTL_BIN
+  unset CEO_SCHEDULER CEO_CRONTAB_BIN CEO_VAULT CEO_DIR CEO_LAUNCHD_DIR CEO_LAUNCHCTL_BIN CEO_PLUTIL_BIN
   rm -rf "$TEST_HOME"
 }
 
@@ -305,8 +336,107 @@ test_launchd_list_reconstructs_cron_lines_for_doctor() {
   ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh morning  # ceo:morning" >/dev/null 2>&1
   local out
   out=$(ceo_scheduler_list 2>&1)
-  assert_contains "$out" "ceo-cron.sh" "list output must contain ceo-cron.sh (doctor greps for this)"
-  assert_contains "$out" "# ceo:morning" "list output must carry the ceo:NAME tag"
+  # Full leading prefix incl. weekday `*` — pins both extraction AND the
+  # absent-Weekday fallback branch. Substring check too weak (hour 9 from
+  # fixture would let grep+sed reintroduce midnight defaults silently).
+  assert_contains "$out" "0 9 * * * /tmp/ceo-cron.sh morning  # ceo:morning" \
+    "full line must reconstruct from plutil extracts, not fabricated defaults"
+}
+
+test_launchd_list_warns_and_skips_when_plutil_missing() {
+  export CEO_SCHEDULER=launchd
+  ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh morning  # ceo:morning" >/dev/null 2>&1
+  # Point CEO_PLUTIL_BIN at a binary that doesn't exist. The function must
+  # emit a WARN per plist to stderr and skip the line, not silently return
+  # empty (which would reproduce #108's failure mode one branch deeper).
+  export CEO_PLUTIL_BIN="$TEST_HOME/does-not-exist-plutil"
+  local out err
+  out=$(ceo_scheduler_list 2>/tmp/ceo-sched-stderr.$$)
+  err=$(cat /tmp/ceo-sched-stderr.$$); rm -f /tmp/ceo-sched-stderr.$$
+  assert_no_match "$out" "ceo-cron.sh" "stdout must be empty — no fabricated line on plutil failure"
+  assert_contains "$err" "WARN: skipping" "stderr must surface the skip with a WARN line"
+}
+
+_ceo_test_write_plist_missing_field() {
+  local label="$1" missing="$2"
+  local has_label=1 has_minute=1 has_hour=1 has_cmd=1
+  case "$missing" in
+    Label) has_label=0 ;;
+    Minute) has_minute=0 ;;
+    Hour) has_hour=0 ;;
+    ProgramArguments) has_cmd=0 ;;
+  esac
+  {
+    echo '<?xml version="1.0" encoding="UTF-8"?>'
+    echo '<plist version="1.0"><dict>'
+    [ "$has_label" -eq 1 ] && echo "  <key>Label</key><string>com.ceo.$label-0</string>"
+    if [ "$has_cmd" -eq 1 ]; then
+      echo '  <key>ProgramArguments</key><array>'
+      echo '    <string>/bin/bash</string><string>-lc</string>'
+      echo "    <string>/tmp/ceo-cron.sh $label</string>"
+      echo '  </array>'
+    fi
+    echo '  <key>StartCalendarInterval</key><dict>'
+    [ "$has_minute" -eq 1 ] && echo "    <key>Minute</key><integer>0</integer>"
+    [ "$has_hour" -eq 1 ] && echo "    <key>Hour</key><integer>9</integer>"
+    echo '  </dict></dict></plist>'
+  } > "$CEO_LAUNCHD_DIR/com.ceo.$label-0.plist"
+}
+
+test_launchd_list_skips_plist_missing_any_required_field() {
+  export CEO_SCHEDULER=launchd
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  # Parameterised across the 4 required-field branches. Each writes a plist
+  # missing exactly one required key; the resulting line must NOT render and
+  # stderr must carry the field-named WARN.
+  local field expected_token
+  for field in Label Minute Hour ProgramArguments; do
+    rm -f "$CEO_LAUNCHD_DIR"/com.ceo.*.plist
+    _ceo_test_write_plist_missing_field "missing-$field" "$field"
+    local out err
+    out=$(ceo_scheduler_list 2>/tmp/ceo-sched-stderr.$$)
+    err=$(cat /tmp/ceo-sched-stderr.$$); rm -f /tmp/ceo-sched-stderr.$$
+    assert_no_match "$out" "missing-$field" "missing-$field plist must NOT render"
+    case "$field" in
+      ProgramArguments) expected_token="ProgramArguments.2 extract failed" ;;
+      *) expected_token="$field extract failed" ;;
+    esac
+    assert_contains "$err" "$expected_token" "stderr must surface the missing-$field skip"
+  done
+}
+
+test_launchd_list_reconstructs_weekday_constrained_line() {
+  export CEO_SCHEDULER=launchd
+  # eod 17:47 Mon-Fri → 5 plists with Weekday 1..5
+  ceo_scheduler_install "47 17 * * 1-5 /tmp/ceo-cron.sh eod  # ceo:eod" >/dev/null 2>&1
+  local out
+  out=$(ceo_scheduler_list 2>&1)
+  assert_contains "$out" "47 17 * * 1" "weekday=1 reconstruction must carry hour+minute"
+  assert_contains "$out" "47 17 * * 5" "weekday=5 reconstruction must carry hour+minute"
+  assert_contains "$out" "# ceo:eod" "ceo:NAME tag survives weekday-constrained plists"
+}
+
+test_launchd_list_skips_malformed_plist_without_fabricating_midnight() {
+  export CEO_SCHEDULER=launchd
+  # Write a plist that's missing the StartCalendarInterval block. plutil
+  # extract for Minute/Hour will fail; the function must not fabricate "0 0".
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.broken-0.plist" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ceo.broken-0</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>/tmp/ceo-cron.sh broken</string>
+  </array>
+</dict></plist>
+XML
+  local out
+  out=$(ceo_scheduler_list 2>&1)
+  # No "0 0 * * *" line should appear — that's exactly the fabricated-midnight
+  # failure mode this fix exists to prevent.
+  assert_no_match "$out" "0 0 * * * /tmp/ceo-cron.sh broken" \
+    "malformed plist must NOT silently render as fabricated midnight cron line"
 }
 
 # === launchd: loaded-job count via launchctl print (#107) ===

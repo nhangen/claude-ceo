@@ -267,24 +267,37 @@ _ceo_launchd_tuples_from_payload() {
 }
 
 # Reconstruct an approximate crontab-style line from a plist file for use in
-# ceo_scheduler_list. Keeps the "ceo-cron.sh" substring that ceo doctor greps
-# for, plus the "# ceo:NAME" tag. One line per plist (since one plist == one
-# concrete trigger time).
+# ceo_scheduler_list. Uses `plutil -extract <key> raw -o - <file>` to read
+# fields, so reformatting/whitespace-shifting the plist (Apple's xml1 ↔ binary1
+# canonical reformat) can't silently produce empty fields that get defaulted
+# to midnight. Required fields (Label, Minute, Hour, command) failing extract
+# → skip the line entirely rather than fabricating a wrong trigger time.
+# Optional Weekday → "*" when absent.
 _ceo_launchd_plist_to_cron_line() {
   local plist="$1"
-  if [ ! -f "$plist" ]; then
+  [ -f "$plist" ] || return 0
+  local plutil_bin="${CEO_PLUTIL_BIN:-plutil}"
+  local label minute hour weekday cmd
+  if ! label=$("$plutil_bin" -extract Label raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (Label extract failed)" >&2
     return 0
   fi
-  local label minute hour weekday cmd
-  label="$(grep -A1 '<key>Label</key>' "$plist" | tail -1 | sed -E 's|.*<string>(.*)</string>.*|\1|')"
-  minute="$(grep -A1 '<key>Minute</key>' "$plist" | tail -1 | sed -E 's|.*<integer>([0-9]+)</integer>.*|\1|')"
-  hour="$(grep -A1 '<key>Hour</key>' "$plist" | tail -1 | sed -E 's|.*<integer>([0-9]+)</integer>.*|\1|')"
-  weekday="$(grep -A1 '<key>Weekday</key>' "$plist" 2>/dev/null | tail -1 | sed -nE 's|.*<integer>([0-9]+)</integer>.*|\1|p')"
-  # Last <string> inside ProgramArguments array is the command.
-  cmd="$(awk '/<key>ProgramArguments<\/key>/,/<\/array>/' "$plist" | grep '<string>' | tail -1 | sed -E 's|.*<string>(.*)</string>.*|\1|')"
+  if ! minute=$("$plutil_bin" -extract StartCalendarInterval.Minute raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (Minute extract failed)" >&2
+    return 0
+  fi
+  if ! hour=$("$plutil_bin" -extract StartCalendarInterval.Hour raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (Hour extract failed)" >&2
+    return 0
+  fi
+  weekday=$("$plutil_bin" -extract StartCalendarInterval.Weekday raw -o - "$plist" 2>/dev/null) || weekday="*"
+  if ! cmd=$("$plutil_bin" -extract ProgramArguments.2 raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (ProgramArguments.2 extract failed)" >&2
+    return 0
+  fi
   local name="${label#com.ceo.}"
   name="${name%-*}"
-  printf '%s %s * * %s %s  # ceo:%s\n' "${minute:-0}" "${hour:-0}" "${weekday:-*}" "$cmd" "$name"
+  printf '%s %s * * %s %s  # ceo:%s\n' "$minute" "$hour" "$weekday" "$cmd" "$name"
 }
 
 ceo_scheduler_list() {

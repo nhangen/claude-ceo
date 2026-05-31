@@ -44,6 +44,35 @@ STUB
   rm -f "$TEST_HOME/stubs/jq"
   export PATH="$TEST_HOME/stubs:$PATH_BACKUP"
 
+  # plutil stub for launchd tests. Real plutil is macOS-only; CI runs on
+  # Linux. Uses python3+plistlib to honor the same -extract contract.
+  export CEO_PLUTIL_BIN="$TEST_HOME/stubs/plutil"
+  cat > "$CEO_PLUTIL_BIN" <<'STUB'
+#!/bin/bash
+key="$2"
+file="${!#}"
+[ -f "$file" ] || { echo "stub-plutil: file not found: $file" >&2; exit 1; }
+python3 - "$key" "$file" <<'PY'
+import plistlib, sys
+key, path = sys.argv[1], sys.argv[2]
+with open(path, "rb") as f:
+    d = plistlib.load(f)
+v = d
+for p in key.split("."):
+    if p.isdigit():
+        try:
+            v = v[int(p)]
+        except (IndexError, TypeError):
+            sys.exit(1)
+    else:
+        if not isinstance(v, dict) or p not in v:
+            sys.exit(1)
+        v = v[p]
+print(v)
+PY
+STUB
+  chmod +x "$CEO_PLUTIL_BIN"
+
   # Minimal registry with one runner:script playbook + artifact template.
   cat > "$CEO_DIR/registry.json" << EOF
 {
@@ -65,7 +94,7 @@ teardown() {
   rm -rf "$TEST_HOME"
   export PATH="$PATH_BACKUP"
   export HOME="$HOME_BACKUP"
-  unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_HOSTNAME
+  unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_HOSTNAME CEO_PLUTIL_BIN
 }
 
 _log_completed_today() {
