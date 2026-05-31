@@ -222,15 +222,69 @@ BLOCK
 
   # Second install: stale playbook removed from registry.
   local payload_v2="0 9 * * * /tmp/ceo-cron.sh keeper  # ceo:keeper"
+  # Truncate the launchctl log before v2 so the bootout assertion below only
+  # observes v2 activity — otherwise the per-install bootout from v1 would
+  # satisfy a bare "bootout" assertion regardless of stale cleanup.
+  : > "$TEST_HOME/launchctl.log"
   ceo_scheduler_install "$payload_v2" >/dev/null 2>&1
   assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.keeper-0.plist" "v2: keeper plist preserved"
-  if [ -f "$CEO_LAUNCHD_DIR/com.ceo.stale-0.plist" ]; then
-    assert_eq "stale plist" "removed" "v2: stale plist must be cleaned up on rescan"
-  fi
-  # And launchctl bootout must have been called for the stale plist.
+  assert_no_match "$(ls "$CEO_LAUNCHD_DIR")" "com.ceo.stale-0.plist" \
+    "v2: stale plist must be cleaned up on rescan"
+  # bootout must fire specifically against the stale plist's path.
   local log
   log=$(cat "$TEST_HOME/launchctl.log" 2>/dev/null || echo "")
-  assert_contains "$log" "bootout" "launchctl bootout must fire for stale plists"
+  assert_contains "$log" "bootout gui/" "launchctl bootout must fire during v2"
+  assert_contains "$log" "com.ceo.stale-0.plist" \
+    "bootout must reference the stale plist by name"
+}
+
+test_launchd_install_rolls_back_on_bootstrap_failure_mid_loop() {
+  export CEO_SCHEDULER=launchd
+  # Seed a prior live install so we can verify rollback doesn't disturb it.
+  ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh prior  # ceo:prior" >/dev/null 2>&1
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.prior-0.plist" "prior install must seed"
+
+  # Stub that fails the second bootstrap call. Counter persisted via a file
+  # so it survives the stub's per-invocation subshell.
+  local counter="$TEST_HOME/bootstrap-counter"
+  echo 0 > "$counter"
+  cat > "$CEO_LAUNCHCTL_BIN" <<STUB
+#!/bin/bash
+echo "\$@" >> "$TEST_HOME/launchctl.log"
+if [ "\$1" = "bootstrap" ]; then
+  n=\$(cat "$counter")
+  n=\$((n + 1))
+  echo \$n > "$counter"
+  if [ "\$n" -eq 2 ]; then
+    echo "simulated bootstrap failure" >&2
+    exit 5
+  fi
+fi
+exit 0
+STUB
+  chmod +x "$CEO_LAUNCHCTL_BIN"
+
+  : > "$TEST_HOME/launchctl.log"
+  # 3 tuples; bootstrap #2 of this install will fail.
+  local payload
+  payload=$(cat <<'BLOCK'
+0 9 * * * /tmp/ceo-cron.sh new-a  # ceo:new-a
+0 10 * * * /tmp/ceo-cron.sh new-b  # ceo:new-b
+0 11 * * * /tmp/ceo-cron.sh new-c  # ceo:new-c
+BLOCK
+)
+  local rc=0
+  ceo_scheduler_install "$payload" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "bootstrap failure mid-loop must propagate as rc=1"
+  # Rolled back: none of the new plists remain on disk.
+  for label in new-a new-b new-c; do
+    if [ -f "$CEO_LAUNCHD_DIR/com.ceo.$label-0.plist" ]; then
+      assert_eq "$label rolled back" "true" "v2: $label plist must be removed on rollback"
+    fi
+    if [ -f "$CEO_LAUNCHD_DIR/com.ceo.$label-0.plist.tmp" ]; then
+      assert_eq "$label tmp cleaned" "true" "v2: $label .tmp must be cleaned on rollback"
+    fi
+  done
 }
 
 test_launchd_install_does_not_touch_unrelated_plists() {
