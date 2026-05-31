@@ -344,4 +344,50 @@ test_doctor_reports_platform() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# #110: AC #3 of #98 was "doctor reports loaded agent count parity with
+# crontab". Existing tests pin the drift sub-check line but not the outer
+# "Cron entries installed (N triggers)" line. This test installs N plists
+# via the launchd backend, runs ceo doctor end-to-end, and asserts that
+# line for N=3.
+test_doctor_reports_cron_entries_installed_count_under_launchd() {
+  export CEO_SCHEDULER=launchd
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
+  export CEO_LAUNCHCTL_BIN="$TEST_HOME/stubs/launchctl"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+
+  local label
+  for label in alpha-0 beta-0 gamma-0; do
+    cat > "$CEO_LAUNCHD_DIR/com.ceo.$label.plist" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ceo.$label</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>/tmp/ceo-cron.sh $label</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Minute</key><integer>0</integer>
+    <key>Hour</key><integer>9</integer>
+  </dict>
+</dict></plist>
+XML
+  done
+
+  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
+#!/bin/bash
+if [ "$1" = "print" ]; then
+  echo "services = { 0 com.ceo.alpha-0 1 com.ceo.beta-0 2 com.ceo.gamma-0 }"
+fi
+exit 0
+STUB
+  chmod +x "$CEO_LAUNCHCTL_BIN"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "Cron entries installed (3 triggers)" \
+    "doctor must print the outer count line with N=3 under launchd"
+  assert_contains "$output" "Launchd jobs loaded (3 matches plist count)" \
+    "doctor must confirm loaded-vs-plist parity at N=3"
+}
+
 run_tests
