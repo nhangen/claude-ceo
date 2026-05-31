@@ -311,10 +311,12 @@ test_launchd_list_reconstructs_cron_lines_for_doctor() {
 
 # === launchd: loaded-job count via launchctl print (#107) ===
 
-test_loaded_count_parses_com_ceo_lines_from_launchctl_print() {
+test_loaded_count_parses_unique_labels_from_realistic_launchctl_print() {
   export CEO_SCHEDULER=launchd
-  # Stub: emit a fake `launchctl print gui/$uid` output with 3 com.ceo lines
-  # interspersed with unrelated services.
+  # Stub emits a realistic multi-section `launchctl print gui/$uid` output:
+  # the same label appears in `services`, `endpoints`, `enabled services`,
+  # AND as an `executable = .../com.ceo.foo.plist` path line. Counting lines
+  # naively → 9; counting unique labels → 3. Pins the unique-label fix.
   cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
 #!/bin/bash
 if [ "$1" = "print" ]; then
@@ -327,13 +329,37 @@ services = {
     0  com.ceo.weekly-0
     0  com.apple.other
 }
+endpoints = {
+    com.ceo.morning-0
+    com.ceo.eod-3
+    com.ceo.weekly-0
+}
+enabled services = {
+    com.ceo.morning-0 => enabled
+    com.ceo.eod-3 => enabled
+    com.ceo.weekly-0 => enabled
+}
+executable = /Users/me/Library/LaunchAgents/com.ceo.morning-0.plist
+executable = /Users/me/Library/LaunchAgents/com.ceo.eod-3.plist
+executable = /Users/me/Library/LaunchAgents/com.ceo.weekly-0.plist
 OUT
   exit 0
 fi
 exit 0
 STUB
   chmod +x "$CEO_LAUNCHCTL_BIN"
-  assert_eq "$(ceo_scheduler_loaded_count)" "3" "must count exactly the com.ceo.* lines from launchctl print"
+  assert_eq "$(ceo_scheduler_loaded_count)" "3" "must count UNIQUE com.ceo.* labels across realistic multi-section launchctl output"
+}
+
+test_loaded_count_emits_unknown_when_launchctl_fails() {
+  export CEO_SCHEDULER=launchd
+  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
+#!/bin/bash
+echo "launchctl: domain not found" >&2
+exit 3
+STUB
+  chmod +x "$CEO_LAUNCHCTL_BIN"
+  assert_eq "$(ceo_scheduler_loaded_count)" "unknown" "launchctl failure must surface 'unknown', not silent 0"
 }
 
 test_loaded_count_is_zero_when_no_ceo_jobs_loaded() {

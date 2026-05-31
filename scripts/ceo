@@ -223,7 +223,10 @@ cmd_doctor() {
       local loaded
       loaded="$(ceo_scheduler_loaded_count 2>/dev/null || echo unknown)"
       case "$loaded" in
-        n/a|unknown) ;;
+        unknown)
+          echo "  ! Launchd state unreadable — could not query launchctl"
+          warn=$((warn + 1))
+          ;;
         "$count")
           echo "  ✓ Launchd jobs loaded ($loaded matches plist count)"
           ok=$((ok + 1))

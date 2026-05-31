@@ -422,13 +422,26 @@ ceo_scheduler_loaded_count() {
       uid="$(id -u 2>/dev/null)"
       : "${uid:?id -u failed; cannot resolve launchd GUI domain}"
       local launchctl_bin="${CEO_LAUNCHCTL_BIN:-launchctl}"
-      # `launchctl print gui/$uid` enumerates loaded services. Match any line
-      # referencing a com.ceo.* label. grep -c returns 1 with no matches —
-      # normalize via `|| true`.
-      local n
-      n=$("$launchctl_bin" print "gui/$uid" 2>/dev/null \
-        | grep -cE 'com\.ceo\.[A-Za-z0-9._-]+' || true)
-      printf '%s\n' "${n:-0}"
+      # Capture launchctl stdout separately so we can distinguish "ran ok,
+      # 0 com.ceo jobs loaded" from "couldn't query launchd at all". Real
+      # `launchctl print gui/$uid` references each label across multiple
+      # sections (services / endpoints / executable path), so count UNIQUE
+      # labels — not lines — to avoid double-counting.
+      local out rc
+      out="$("$launchctl_bin" print "gui/$uid" 2>/dev/null)"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "unknown"
+        return 0
+      fi
+      # Labels are `com.ceo.<name>-<idx>`; the suffix has no internal dots.
+      # Excluding `.` from the character class avoids matching the trailing
+      # `.plist` of `executable = .../com.ceo.foo-0.plist` as part of the label.
+      printf '%s\n' "$out" \
+        | grep -oE 'com\.ceo\.[A-Za-z0-9_-]+' \
+        | sort -u \
+        | wc -l \
+        | tr -d ' '
       return 0
       ;;
     *)
