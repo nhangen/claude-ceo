@@ -6,12 +6,22 @@ FAILS=0
 CURRENT_TEST=""
 ASSERTION_COUNT=0
 
+# Each assert_* failure must propagate through TEST_FAILS_TMP because the
+# per-test subshell in run_tests discards local FAILS increments. Bumping
+# FAILS in-process is kept for the case where assert_* is called outside
+# the subshell (e.g. directly from a helper) but the durable signal is the
+# tmp file.
+_record_assertion_fail() {
+  FAILS=$((FAILS + 1))
+  [ -n "${TEST_FAILS_TMP:-}" ] && echo 1 >> "$TEST_FAILS_TMP"
+}
+
 assert_eq() {
   local got="$1" want="$2" msg="${3:-}"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   if [[ "$got" != "$want" ]]; then
     printf '  FAIL [%s] %s\n    got:  %q\n    want: %q\n' "$CURRENT_TEST" "$msg" "$got" "$want"
-    FAILS=$((FAILS + 1))
+    _record_assertion_fail
   fi
 }
 
@@ -20,7 +30,7 @@ assert_file_exists() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   if [[ ! -f "$path" ]]; then
     printf '  FAIL [%s] %s\n    expected file: %q\n' "$CURRENT_TEST" "$msg" "$path"
-    FAILS=$((FAILS + 1))
+    _record_assertion_fail
   fi
 }
 
@@ -29,7 +39,7 @@ assert_contains() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   if [[ "$haystack" != *"$needle"* ]]; then
     printf '  FAIL [%s] %s\n    haystack: %q\n    needle:   %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
+    _record_assertion_fail
   fi
 }
 
@@ -38,7 +48,7 @@ assert_not_contains() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   if [[ "$haystack" == *"$needle"* ]]; then
     printf '  FAIL [%s] %s\n    haystack: %q\n    forbidden: %q\n' "$CURRENT_TEST" "$msg" "$haystack" "$needle"
-    FAILS=$((FAILS + 1))
+    _record_assertion_fail
   fi
 }
 
@@ -52,7 +62,7 @@ assert_fails() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   if "$@" >/dev/null 2>&1; then
     printf '  FAIL [%s] %s (expected non-zero exit)\n' "$CURRENT_TEST" "$msg"
-    FAILS=$((FAILS + 1))
+    _record_assertion_fail
   fi
 }
 

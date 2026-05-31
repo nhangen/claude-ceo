@@ -14,6 +14,14 @@
 #   ceo_scheduler_install <payload>
 #                                — replaces the user's schedule with <payload>;
 #                                  rc=0 on success, rc=1 on backend error.
+#   ceo_scheduler_loaded_count   — prints the count of currently-loaded ceo
+#                                  jobs (launchd only — queries `launchctl
+#                                  print gui/$uid` for com.ceo.* lines). For
+#                                  the crontab backend the concept doesn't
+#                                  apply: prints "n/a" and returns 0. Lets
+#                                  `ceo doctor` flag drift between on-disk
+#                                  plist files and what launchd actually
+#                                  has loaded.
 #
 # Backend selection priority:
 #   1. CEO_SCHEDULER env (explicit override for tests/dev); must be one of
@@ -389,6 +397,51 @@ ceo_scheduler_install() {
             ;;
         esac
       done
+      return 0
+      ;;
+    *)
+      echo "ERROR: unknown scheduler backend '$_backend'" >&2
+      return 1
+      ;;
+  esac
+}
+
+ceo_scheduler_loaded_count() {
+  local _backend _rc=0
+  _backend="$(ceo_scheduler_backend)" || _rc=$?
+  [ "$_rc" -eq 0 ] || return "$_rc"
+  case "$_backend" in
+    crontab)
+      # cron entries don't "load" — they run on schedule. Doctor's plist-
+      # vs-loaded drift check doesn't apply.
+      echo "n/a"
+      return 0
+      ;;
+    launchd)
+      local uid
+      uid="$(id -u 2>/dev/null)"
+      : "${uid:?id -u failed; cannot resolve launchd GUI domain}"
+      local launchctl_bin="${CEO_LAUNCHCTL_BIN:-launchctl}"
+      # Capture launchctl stdout separately so we can distinguish "ran ok,
+      # 0 com.ceo jobs loaded" from "couldn't query launchd at all". Real
+      # `launchctl print gui/$uid` references each label across multiple
+      # sections (services / endpoints / executable path), so count UNIQUE
+      # labels — not lines — to avoid double-counting.
+      local out rc
+      out="$("$launchctl_bin" print "gui/$uid" 2>/dev/null)"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "unknown"
+        return 0
+      fi
+      # Labels are `com.ceo.<name>-<idx>`; the suffix has no internal dots.
+      # Excluding `.` from the character class avoids matching the trailing
+      # `.plist` of `executable = .../com.ceo.foo-0.plist` as part of the label.
+      printf '%s\n' "$out" \
+        | grep -oE 'com\.ceo\.[A-Za-z0-9_-]+' \
+        | sort -u \
+        | wc -l \
+        | tr -d ' '
       return 0
       ;;
     *)
