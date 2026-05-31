@@ -23,6 +23,27 @@ ceo_setup_print_or_run() {
   fi
 }
 
+# Verify each <tool> is on PATH; on any missing, echo a diagnostic with the
+# caller-supplied follow-up hint (e.g. "Check brew output above for errors.")
+# and return 1. Returns 0 if all tools present, or if CEO_SETUP_DRY_RUN=1
+# (dry-run doesn't install anything, so don't fail it on a fresh shell).
+# Helper does NOT exit — callers must propagate.
+#
+# Sites collapsed from setup-mac.sh + setup-linux.sh per #122.
+ceo_setup_check_required_tools() {
+  local followup_hint="$1"; shift
+  local _missing=() _tool
+  for _tool in "$@"; do
+    command -v "$_tool" &>/dev/null || _missing+=("$_tool")
+  done
+  if [ "${#_missing[@]}" -gt 0 ] && [ "${CEO_SETUP_DRY_RUN:-0}" = "0" ]; then
+    echo "  Missing after install: ${_missing[*]}" >&2
+    echo "  $followup_hint" >&2
+    return 1
+  fi
+  return 0
+}
+
 # Authenticate gh, distinguishing "not logged in" from "network/transient
 # failure". Pre-#102 each installer used `gh auth status &>/dev/null` and
 # fell through to `gh auth login` on any non-zero exit — including DNS
