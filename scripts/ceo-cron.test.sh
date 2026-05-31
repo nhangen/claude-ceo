@@ -2218,11 +2218,6 @@ PB
 }
 
 test_vault_playbook_shadows_repo_playbook_with_same_name() {
-  # TODO(#114): pre-existing failure surfaced by the test-harness fix in
-  # PR #113. Was always failing but silently passing before the harness
-  # propagated assert_* failures. Out of scope for #107.
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  return 0
   local repo_dir="$TEST_HOME/repo-pb"
   local repo_pb="$repo_dir/_test-shadow.md"
   mkdir -p "$repo_dir"
@@ -2245,7 +2240,7 @@ description: Vault override
 trigger: chat
 preflight: none
 tier: read
-status: inactive
+status: disabled
 ---
 PB
 
@@ -2259,7 +2254,7 @@ PB
   desc=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .description' "$CEO_DIR/registry.json")
   status=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .status' "$CEO_DIR/registry.json")
   assert_eq "$desc" "Vault override" "vault entry must win on collision"
-  assert_eq "$status" "inactive" "vault status must override repo status"
+  assert_eq "$status" "disabled" "vault status must override repo status"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
