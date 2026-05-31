@@ -141,6 +141,66 @@ test_setup_wsl_refuses_non_tty_invocation() {
   _assert_installer_refuses_non_tty setup-wsl.sh
 }
 
+# === ceo_setup_check_required_tools — extracted from mac/linux installers (#122) ===
+
+test_check_required_tools_passes_when_all_present() {
+  local t
+  for t in tool_a tool_b; do
+    printf '#!/bin/bash\nexit 0\n' > "$TEST_HOME/stubs/$t"
+    chmod +x "$TEST_HOME/stubs/$t"
+  done
+  export PATH="$TEST_HOME/stubs:$PATH_BACKUP"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local err_file rc=0
+  err_file=$(mktemp)
+  ceo_setup_check_required_tools "Check pkg output above." tool_a tool_b 2>"$err_file" || rc=$?
+  local err
+  err=$(cat "$err_file"); rm -f "$err_file"
+  assert_eq "$rc" "0" "all tools present must return 0"
+  assert_eq "$err" "" "no stderr when nothing missing"
+}
+
+test_check_required_tools_returns_one_with_diagnostic_on_missing() {
+  printf '#!/bin/bash\nexit 0\n' > "$TEST_HOME/stubs/tool_a"
+  chmod +x "$TEST_HOME/stubs/tool_a"
+  # tool_b NOT stubbed → missing.
+  export PATH="$TEST_HOME/stubs:$PATH_BACKUP"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local err_file rc=0
+  err_file=$(mktemp)
+  ceo_setup_check_required_tools "Check pkg output above." tool_a tool_b 2>"$err_file" || rc=$?
+  local err
+  err=$(cat "$err_file"); rm -f "$err_file"
+  assert_eq "$rc" "1" "missing tool must return 1"
+  assert_contains "$err" "Missing after install: tool_b" "diagnostic must name the missing tool"
+  assert_contains "$err" "Check pkg output above" "followup hint must be propagated"
+}
+
+test_check_required_tools_skipped_under_dry_run() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  # Scope the empty PATH to the helper call only so the test shell keeps
+  # its own utilities (mktemp/rm/cat etc.). Use the env-var-prefix form
+  # so the override is local to the single function call.
+  local rc=0
+  # shellcheck disable=SC2123  # intentional: scope PATH to this one call
+  PATH="$TEST_HOME/empty_bin" CEO_SETUP_DRY_RUN=1 \
+    ceo_setup_check_required_tools "hint" tool_a tool_b >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "dry-run must skip the fail-when-missing path"
+}
+
+test_check_required_tools_lists_all_missing_tools() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local err_file rc=0
+  err_file=$(mktemp)
+  # shellcheck disable=SC2123
+  PATH="$TEST_HOME/empty_bin" \
+    ceo_setup_check_required_tools "hint" git gh jq 2>"$err_file" || rc=$?
+  local err
+  err=$(cat "$err_file"); rm -f "$err_file"
+  assert_eq "$rc" "1" "any missing must return 1"
+  assert_contains "$err" "git gh jq" "all 3 missing tools must appear in the diagnostic"
+}
+
 # === ceo_setup_gh_auth — distinguish authed vs not-authed vs error (#102 item 2) ===
 
 # Helper to install a `gh` stub at $TEST_HOME/stubs/gh with given behavior.

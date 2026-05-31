@@ -49,15 +49,7 @@ fi
 echo "[1/10] Installing required CLIs via brew..."
 ceo_setup_print_or_run brew install git gh jq yq
 
-_missing_tools=()
-for _tool in git gh jq; do
-  command -v "$_tool" &>/dev/null || _missing_tools+=("$_tool")
-done
-if [ "${#_missing_tools[@]}" -gt 0 ] && [ "$CEO_SETUP_DRY_RUN" = "0" ]; then
-  echo "  Missing after install: ${_missing_tools[*]}" >&2
-  echo "  Check brew output above for errors." >&2
-  exit 1
-fi
+ceo_setup_check_required_tools "Check brew output above for errors." git gh jq || exit 1
 
 # 2. gh authentication — disambiguate not-authed from transient network failures.
 ceo_setup_gh_auth "[2/10]"

@@ -62,15 +62,7 @@ fi
 echo "[1/10] Installing required CLIs via $_pkg_mgr..."
 ceo_setup_print_or_run "${_pkg_install[@]}" "${_pkg_argv[@]}"
 
-_missing_tools=()
-for _tool in git gh jq; do
-  command -v "$_tool" &>/dev/null || _missing_tools+=("$_tool")
-done
-if [ "${#_missing_tools[@]}" -gt 0 ] && [ "$CEO_SETUP_DRY_RUN" = "0" ]; then
-  echo "  Missing after install: ${_missing_tools[*]}" >&2
-  echo "  Check $_pkg_mgr output above. On Ubuntu, 'gh' may require https://cli.github.com/." >&2
-  exit 1
-fi
+ceo_setup_check_required_tools "Check $_pkg_mgr output above. On Ubuntu, 'gh' may require https://cli.github.com/." git gh jq || exit 1
 
 # 2. gh authentication — disambiguate not-authed from transient network failures.
 ceo_setup_gh_auth "[2/10]"
