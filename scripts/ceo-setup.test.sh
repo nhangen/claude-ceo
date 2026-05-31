@@ -177,6 +177,80 @@ test_gh_auth_helper_invokes_auth_login_on_not_logged_message() {
   assert_contains "$out" "[2/10] Authenticating gh CLI" "must transition to auth login"
 }
 
+test_is_yes_helper_accepts_y_yes_uppercase_mixedcase() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local v
+  for v in y Y yes YES Yes yEs; do
+    if ! _ceo_is_yes "$v"; then
+      printf '  FAIL [%s] _ceo_is_yes must accept %q as yes\n' "$CURRENT_TEST" "$v"
+      FAILS=$((FAILS + 1))
+    fi
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  done
+}
+
+test_is_yes_helper_rejects_n_no_empty_other() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local v
+  for v in n N no NO No "" yep ya whatever 1 0; do
+    if _ceo_is_yes "$v"; then
+      printf '  FAIL [%s] _ceo_is_yes must reject %q as no\n' "$CURRENT_TEST" "$v"
+      FAILS=$((FAILS + 1))
+    fi
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  done
+}
+
+# `ceo_setup_cron` interpretation: `Y` / `yes` / `YES` route to scan;
+# anything else surfaces the "interpreted as no" diagnostic. The cron
+# scan itself shells out to `bash $SCRIPT_DIR/ceo playbook scan` which
+# would need a full environment to run; we point ceo at a stub that
+# echoes a marker so the test verifies routing without invoking real
+# scan logic.
+_install_ceo_stub_for_cron_test() {
+  cat > "$TEST_HOME/stubs/yq" << 'STUB'
+#!/bin/bash
+echo "yq stub 4.0.0"
+exit 0
+STUB
+  chmod +x "$TEST_HOME/stubs/yq"
+  # Stub `ceo` next to the test sandbox; SCRIPT_DIR is reset to TEST_HOME
+  # so the function picks up THIS ceo, not the real one.
+  cat > "$TEST_HOME/ceo" << 'STUB'
+#!/bin/bash
+echo "STUB_CEO_RAN:$*"
+STUB
+  chmod +x "$TEST_HOME/ceo"
+  export PATH="$TEST_HOME/stubs:$PATH_BACKUP"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  # Override SCRIPT_DIR in the sourced function's view by re-pointing it
+  # after the source. The function reads $SCRIPT_DIR at call time.
+  SCRIPT_DIR="$TEST_HOME"
+}
+
+test_cron_setup_runs_scan_on_uppercase_Y() {
+  _install_ceo_stub_for_cron_test
+  local out
+  out=$(echo "Y" | ceo_setup_cron 2>&1)
+  assert_contains "$out" "STUB_CEO_RAN:playbook scan" "uppercase Y must run playbook scan"
+  assert_not_contains "$out" "interpreted as no" "Y must NOT route to the skipped branch"
+}
+
+test_cron_setup_runs_scan_on_yes_word() {
+  _install_ceo_stub_for_cron_test
+  local out
+  out=$(echo "yes" | ceo_setup_cron 2>&1)
+  assert_contains "$out" "STUB_CEO_RAN:playbook scan" "literal 'yes' must run playbook scan"
+}
+
+test_cron_setup_skips_with_diagnostic_on_typo() {
+  _install_ceo_stub_for_cron_test
+  local out
+  out=$(echo "ya" | ceo_setup_cron 2>&1)
+  assert_not_contains "$out" "STUB_CEO_RAN" "typo must NOT run scan"
+  assert_contains "$out" "interpreted as no" "typo must surface the interpretation in the skip line"
+}
+
 test_gh_auth_helper_refuses_on_network_failure() {
   _install_gh_stub 1 "Get \"https://api.github.com\": dial tcp: lookup api.github.com: no such host"
   _source_common_with_stubs "$SCRIPT_DIR"

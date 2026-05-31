@@ -62,6 +62,18 @@ ceo_setup_gh_auth() {
   esac
 }
 
+# Treat y / Y / yes / YES / Yes / 'y ' (trailing whitespace) all as yes; any
+# other input (including empty / n / N / no / typos) as no. Bash 3.2 has no
+# `${var,,}` so we route through tr for the lowercase fold.
+_ceo_is_yes() {
+  local _v
+  _v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$_v" in
+    y|yes) return 0 ;;
+    *)     return 1 ;;
+  esac
+}
+
 ceo_setup_ssh_key() {
   local host_label="$1"
   [ -n "$host_label" ] || host_label="host"
@@ -257,10 +269,10 @@ ceo_setup_cron() {
     echo "[10/10] Cron Setup"
     local install_cron
     read -p "  Scan playbooks and install cron entries? (y/n) " install_cron
-    if [ "$install_cron" = "y" ]; then
+    if _ceo_is_yes "$install_cron"; then
       bash "$ceo_cli" playbook scan
     else
-      echo "  Skipped. Run 'ceo playbook scan' later to install cron entries."
+      echo "  Skipped ('${install_cron}' interpreted as no). Run 'ceo playbook scan' later to install cron entries."
     fi
   else
     echo ""
@@ -288,7 +300,7 @@ ceo_setup_path_symlink() {
     echo "  This creates a symlink in ~/.local/bin/ so you can run 'ceo' from anywhere."
     local add_path
     read -p "  Add to PATH? (y/n) " add_path
-    if [ "$add_path" = "y" ]; then
+    if _ceo_is_yes "$add_path"; then
       mkdir -p "$HOME/.local/bin"
       ln -sf "$ceo_cli" "$HOME/.local/bin/ceo"
       echo "  Symlinked: ~/.local/bin/ceo → $ceo_cli"
@@ -297,6 +309,8 @@ ceo_setup_path_symlink() {
         echo "  Add this to your ~/.bashrc or ~/.zshrc:"
         echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
       fi
+    else
+      echo "  Skipped ('${add_path}' interpreted as no). Add the alias manually if needed."
     fi
   fi
 }
