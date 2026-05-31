@@ -251,6 +251,62 @@ test_cron_setup_skips_with_diagnostic_on_typo() {
   assert_contains "$out" "interpreted as no" "typo must surface the interpretation in the skip line"
 }
 
+# === ceo_setup_vault — empty vault is a missing-config event (#102 item 4) ===
+
+# Drive ceo_setup_vault with an empty stdin (simulating Enter pressed with
+# no detected vault). The function must:
+#   - NOT write ~/.ceo/config
+#   - push "CEO_VAULT" onto MISSING_CONFIG
+#   - return 0 (the missing-config sweep is the canonical exit-1 site;
+#     vault is just one input)
+test_setup_vault_pushes_to_missing_config_on_empty_input() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  # No CEO directory anywhere — auto-detect candidate list is empty,
+  # function falls into the "no vault auto-detected" prompt.
+  rm -rf "$TEST_HOME/Documents" "$TEST_HOME/Obsidian"
+  : > "$TEST_HOME/.ceo-pretest-marker"  # ensure HOME points at TEST_HOME
+  local out
+  out=$(printf '\n' | ceo_setup_vault 2>&1)
+  local cfg="$TEST_HOME/.ceo/config"
+  if [ -f "$cfg" ] && grep -q 'CEO_VAULT=""' "$cfg"; then
+    printf '  FAIL [%s] ~/.ceo/config must NOT be written with CEO_VAULT="" (got: %s)\n' \
+      "$CURRENT_TEST" "$(cat "$cfg")"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_contains "$out" "empty vault path" "must surface the empty-vault diagnostic"
+  # MISSING_CONFIG was mutated inside the subshell — assert via a re-source
+  # in-process so we can read the array.
+  MISSING_CONFIG=()
+  # Use heredoc (not a pipe) so ceo_setup_vault runs in the current shell
+  # and MISSING_CONFIG mutations are visible here.
+  ceo_setup_vault >/dev/null 2>&1 <<< ""
+  local joined="${MISSING_CONFIG[*]:-}"
+  assert_contains "$joined" "CEO_VAULT" \
+    "MISSING_CONFIG must contain CEO_VAULT after empty-vault input"
+}
+
+# Counter-control: a real vault path written into config exits the empty-vault
+# branch and lands a config file.
+test_setup_vault_writes_config_on_non_empty_input() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  mkdir -p "$TEST_HOME/myvault/CEO"
+  : > "$TEST_HOME/myvault/CEO/inbox.md"
+  rm -f "$TEST_HOME/.ceo/config"
+  MISSING_CONFIG=()
+  ceo_setup_vault <<< "$TEST_HOME/myvault" >/dev/null 2>&1
+  assert_file_exists "$TEST_HOME/.ceo/config" "config must be written on valid vault input"
+  local cfg
+  cfg=$(cat "$TEST_HOME/.ceo/config")
+  assert_contains "$cfg" "CEO_VAULT=\"$TEST_HOME/myvault\"" "config must persist the typed path"
+  local joined="${MISSING_CONFIG[*]:-}"
+  if [[ "$joined" == *"CEO_VAULT"* ]]; then
+    printf '  FAIL [%s] MISSING_CONFIG must NOT contain CEO_VAULT on valid input\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_gh_auth_helper_refuses_on_network_failure() {
   _install_gh_stub 1 "Get \"https://api.github.com\": dial tcp: lookup api.github.com: no such host"
   _source_common_with_stubs "$SCRIPT_DIR"

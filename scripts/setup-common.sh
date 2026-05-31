@@ -235,6 +235,20 @@ ceo_setup_vault() {
     read -rp "  Vault path (e.g. $_example_path): " VAULT
   fi
 
+  # Empty vault is a missing-required-config event, not a default. Writing
+  # CEO_VAULT="" to ~/.ceo/config silently breaks every downstream helper
+  # (doctor probe, value-tracker, scheduler install) and the user has no
+  # signal until something else fails far from the cause. Push onto
+  # MISSING_CONFIG; ceo_setup_exit_if_missing surfaces it at the bottom
+  # of the installer.
+  if [ -z "$VAULT" ]; then
+    echo "  ERROR: empty vault path." >&2
+    echo "  CEO_VAULT must be set explicitly. Re-run 'ceo setup' and enter the full path." >&2
+    MISSING_CONFIG+=("CEO_VAULT")
+    export VAULT CEO_OS
+    return 0
+  fi
+
   if [ -f "$VAULT/CEO/inbox.md" ]; then
     echo "  Vault OK — CEO/inbox.md found at $VAULT/CEO/"
   else
