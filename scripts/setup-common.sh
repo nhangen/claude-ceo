@@ -23,6 +23,57 @@ ceo_setup_print_or_run() {
   fi
 }
 
+# Authenticate gh, distinguishing "not logged in" from "network/transient
+# failure". Pre-#102 each installer used `gh auth status &>/dev/null` and
+# fell through to `gh auth login` on any non-zero exit — including DNS
+# failures and 5xx — silently restarting the interactive auth flow when
+# the real fix was retrying later. command-v-presence-vs-success applied
+# to rc.
+#
+# Contract:
+#   rc=0 → already authed; echo "$1 gh already authenticated" and return 0
+#   rc=1 + stderr contains "not logged" or "not authenticated" → echo
+#     "$1 Authenticating gh CLI..." then `gh auth login`; return its rc
+#   otherwise → echo a network/error diagnostic with the captured stderr
+#     and return 1 without invoking `gh auth login`
+#
+# $1 is the step prefix the caller wants on the success/auth-prompt lines
+# ("[2/10]" on mac/linux; "  " on wsl).
+ceo_setup_gh_auth() {
+  local prefix="${1:-}"
+  local _err _rc=0
+  _err=$(gh auth status 2>&1 >/dev/null) || _rc=$?
+  if [ "$_rc" = "0" ]; then
+    echo "${prefix} gh already authenticated"
+    return 0
+  fi
+  case "$_err" in
+    *"not logged"*|*"not authenticated"*)
+      echo "${prefix} Authenticating gh CLI..."
+      gh auth login
+      return $?
+      ;;
+    *)
+      echo "${prefix} ERROR: gh auth status failed and did not indicate 'not logged in'." >&2
+      echo "  Likely a transient network / GitHub API failure — re-run later." >&2
+      echo "  gh stderr: ${_err}" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Treat y / Y / yes / YES / Yes / 'y ' (trailing whitespace) all as yes; any
+# other input (including empty / n / N / no / typos) as no. Bash 3.2 has no
+# `${var,,}` so we route through tr for the lowercase fold.
+_ceo_is_yes() {
+  local _v
+  _v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$_v" in
+    y|yes) return 0 ;;
+    *)     return 1 ;;
+  esac
+}
+
 ceo_setup_ssh_key() {
   local host_label="$1"
   [ -n "$host_label" ] || host_label="host"
@@ -184,6 +235,20 @@ ceo_setup_vault() {
     read -rp "  Vault path (e.g. $_example_path): " VAULT
   fi
 
+  # Empty vault is a missing-required-config event, not a default. Writing
+  # CEO_VAULT="" to ~/.ceo/config silently breaks every downstream helper
+  # (doctor probe, value-tracker, scheduler install) and the user has no
+  # signal until something else fails far from the cause. Push onto
+  # MISSING_CONFIG; ceo_setup_exit_if_missing surfaces it at the bottom
+  # of the installer.
+  if [ -z "$VAULT" ]; then
+    echo "  ERROR: empty vault path." >&2
+    echo "  CEO_VAULT must be set explicitly. Re-run 'ceo setup' and enter the full path." >&2
+    MISSING_CONFIG+=("CEO_VAULT")
+    export VAULT CEO_OS
+    return 0
+  fi
+
   if [ -f "$VAULT/CEO/inbox.md" ]; then
     echo "  Vault OK — CEO/inbox.md found at $VAULT/CEO/"
   else
@@ -218,10 +283,10 @@ ceo_setup_cron() {
     echo "[10/10] Cron Setup"
     local install_cron
     read -p "  Scan playbooks and install cron entries? (y/n) " install_cron
-    if [ "$install_cron" = "y" ]; then
+    if _ceo_is_yes "$install_cron"; then
       bash "$ceo_cli" playbook scan
     else
-      echo "  Skipped. Run 'ceo playbook scan' later to install cron entries."
+      echo "  Skipped ('${install_cron}' interpreted as no). Run 'ceo playbook scan' later to install cron entries."
     fi
   else
     echo ""
@@ -249,7 +314,7 @@ ceo_setup_path_symlink() {
     echo "  This creates a symlink in ~/.local/bin/ so you can run 'ceo' from anywhere."
     local add_path
     read -p "  Add to PATH? (y/n) " add_path
-    if [ "$add_path" = "y" ]; then
+    if _ceo_is_yes "$add_path"; then
       mkdir -p "$HOME/.local/bin"
       ln -sf "$ceo_cli" "$HOME/.local/bin/ceo"
       echo "  Symlinked: ~/.local/bin/ceo → $ceo_cli"
@@ -258,6 +323,8 @@ ceo_setup_path_symlink() {
         echo "  Add this to your ~/.bashrc or ~/.zshrc:"
         echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
       fi
+    else
+      echo "  Skipped ('${add_path}' interpreted as no). Add the alias manually if needed."
     fi
   fi
 }

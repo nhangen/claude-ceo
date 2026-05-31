@@ -107,6 +107,216 @@ test_setup_common_sources_cleanly_when_missing_config_declared() {
   assert_eq "$rc" "0" "sourcing with MISSING_CONFIG declared must succeed"
 }
 
+# === TTY check at installer entrypoints (#102 item 1) ===
+
+# Non-TTY invocation (curl-install | bash, CI, < /dev/null) must refuse to
+# proceed rather than silently fall through interactive `read` prompts and
+# persist a broken config. The check belongs at each installer's entry
+# point per safety-invariant-scope (gate at the function, not at each
+# read site).
+_assert_installer_refuses_non_tty() {
+  local installer="$1"
+  local rc=0 out
+  # </dev/null forces non-TTY stdin even when the test harness itself
+  # runs under a TTY.
+  out=$(bash "$SCRIPT_DIR/$installer" </dev/null 2>&1) || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] %s under </dev/null must exit non-zero (got rc=0)\n' "$CURRENT_TEST" "$installer"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$out" "interactive terminal" \
+    "$installer must surface the 'interactive terminal' diagnostic"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_setup_mac_refuses_non_tty_invocation() {
+  _assert_installer_refuses_non_tty setup-mac.sh
+}
+
+test_setup_linux_refuses_non_tty_invocation() {
+  _assert_installer_refuses_non_tty setup-linux.sh
+}
+
+test_setup_wsl_refuses_non_tty_invocation() {
+  _assert_installer_refuses_non_tty setup-wsl.sh
+}
+
+# === ceo_setup_gh_auth — distinguish authed vs not-authed vs error (#102 item 2) ===
+
+# Helper to install a `gh` stub at $TEST_HOME/stubs/gh with given behavior.
+_install_gh_stub() {
+  local rc="$1" stderr="$2"
+  cat > "$TEST_HOME/stubs/gh" <<STUB
+#!/bin/bash
+if [ "\$1" = "auth" ] && [ "\$2" = "status" ]; then
+  printf '%s\n' "${stderr}" >&2
+  exit ${rc}
+fi
+# Other gh invocations (e.g. \`gh auth login\` fall-through) are no-ops.
+exit 0
+STUB
+  chmod +x "$TEST_HOME/stubs/gh"
+  export PATH="$TEST_HOME/stubs:$PATH_BACKUP"
+}
+
+test_gh_auth_helper_reports_authed_on_rc_zero() {
+  _install_gh_stub 0 "Logged in to github.com account testuser"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out rc=0
+  out=$(ceo_setup_gh_auth "[2/10]" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "authed path must return 0"
+  assert_contains "$out" "[2/10] gh already authenticated" "must echo authed-line with prefix"
+}
+
+test_gh_auth_helper_invokes_auth_login_on_not_logged_message() {
+  _install_gh_stub 1 "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out rc=0
+  out=$(ceo_setup_gh_auth "[2/10]" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "not-logged path must succeed (stub exits 0 on the login call)"
+  assert_contains "$out" "[2/10] Authenticating gh CLI" "must transition to auth login"
+}
+
+test_is_yes_helper_accepts_y_yes_uppercase_mixedcase() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local v
+  for v in y Y yes YES Yes yEs; do
+    if ! _ceo_is_yes "$v"; then
+      printf '  FAIL [%s] _ceo_is_yes must accept %q as yes\n' "$CURRENT_TEST" "$v"
+      FAILS=$((FAILS + 1))
+    fi
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  done
+}
+
+test_is_yes_helper_rejects_n_no_empty_other() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local v
+  for v in n N no NO No "" yep ya whatever 1 0; do
+    if _ceo_is_yes "$v"; then
+      printf '  FAIL [%s] _ceo_is_yes must reject %q as no\n' "$CURRENT_TEST" "$v"
+      FAILS=$((FAILS + 1))
+    fi
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  done
+}
+
+# `ceo_setup_cron` interpretation: `Y` / `yes` / `YES` route to scan;
+# anything else surfaces the "interpreted as no" diagnostic. The cron
+# scan itself shells out to `bash $SCRIPT_DIR/ceo playbook scan` which
+# would need a full environment to run; we point ceo at a stub that
+# echoes a marker so the test verifies routing without invoking real
+# scan logic.
+_install_ceo_stub_for_cron_test() {
+  cat > "$TEST_HOME/stubs/yq" << 'STUB'
+#!/bin/bash
+echo "yq stub 4.0.0"
+exit 0
+STUB
+  chmod +x "$TEST_HOME/stubs/yq"
+  # Stub `ceo` next to the test sandbox; SCRIPT_DIR is reset to TEST_HOME
+  # so the function picks up THIS ceo, not the real one.
+  cat > "$TEST_HOME/ceo" << 'STUB'
+#!/bin/bash
+echo "STUB_CEO_RAN:$*"
+STUB
+  chmod +x "$TEST_HOME/ceo"
+  export PATH="$TEST_HOME/stubs:$PATH_BACKUP"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  # Override SCRIPT_DIR in the sourced function's view by re-pointing it
+  # after the source. The function reads $SCRIPT_DIR at call time.
+  SCRIPT_DIR="$TEST_HOME"
+}
+
+test_cron_setup_runs_scan_on_uppercase_Y() {
+  _install_ceo_stub_for_cron_test
+  local out
+  out=$(echo "Y" | ceo_setup_cron 2>&1)
+  assert_contains "$out" "STUB_CEO_RAN:playbook scan" "uppercase Y must run playbook scan"
+  assert_not_contains "$out" "interpreted as no" "Y must NOT route to the skipped branch"
+}
+
+test_cron_setup_runs_scan_on_yes_word() {
+  _install_ceo_stub_for_cron_test
+  local out
+  out=$(echo "yes" | ceo_setup_cron 2>&1)
+  assert_contains "$out" "STUB_CEO_RAN:playbook scan" "literal 'yes' must run playbook scan"
+}
+
+test_cron_setup_skips_with_diagnostic_on_typo() {
+  _install_ceo_stub_for_cron_test
+  local out
+  out=$(echo "ya" | ceo_setup_cron 2>&1)
+  assert_not_contains "$out" "STUB_CEO_RAN" "typo must NOT run scan"
+  assert_contains "$out" "interpreted as no" "typo must surface the interpretation in the skip line"
+}
+
+# === ceo_setup_vault — empty vault is a missing-config event (#102 item 4) ===
+
+# Drive ceo_setup_vault with an empty stdin (simulating Enter pressed with
+# no detected vault). The function must:
+#   - NOT write ~/.ceo/config
+#   - push "CEO_VAULT" onto MISSING_CONFIG
+#   - return 0 (the missing-config sweep is the canonical exit-1 site;
+#     vault is just one input)
+test_setup_vault_pushes_to_missing_config_on_empty_input() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  # No CEO directory anywhere — auto-detect candidate list is empty,
+  # function falls into the "no vault auto-detected" prompt.
+  rm -rf "$TEST_HOME/Documents" "$TEST_HOME/Obsidian"
+  : > "$TEST_HOME/.ceo-pretest-marker"  # ensure HOME points at TEST_HOME
+  local out
+  out=$(printf '\n' | ceo_setup_vault 2>&1)
+  local cfg="$TEST_HOME/.ceo/config"
+  if [ -f "$cfg" ] && grep -q 'CEO_VAULT=""' "$cfg"; then
+    printf '  FAIL [%s] ~/.ceo/config must NOT be written with CEO_VAULT="" (got: %s)\n' \
+      "$CURRENT_TEST" "$(cat "$cfg")"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_contains "$out" "empty vault path" "must surface the empty-vault diagnostic"
+  # MISSING_CONFIG was mutated inside the subshell — assert via a re-source
+  # in-process so we can read the array.
+  MISSING_CONFIG=()
+  # Use heredoc (not a pipe) so ceo_setup_vault runs in the current shell
+  # and MISSING_CONFIG mutations are visible here.
+  ceo_setup_vault >/dev/null 2>&1 <<< ""
+  local joined="${MISSING_CONFIG[*]:-}"
+  assert_contains "$joined" "CEO_VAULT" \
+    "MISSING_CONFIG must contain CEO_VAULT after empty-vault input"
+}
+
+# Counter-control: a real vault path written into config exits the empty-vault
+# branch and lands a config file.
+test_setup_vault_writes_config_on_non_empty_input() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  mkdir -p "$TEST_HOME/myvault/CEO"
+  : > "$TEST_HOME/myvault/CEO/inbox.md"
+  rm -f "$TEST_HOME/.ceo/config"
+  MISSING_CONFIG=()
+  ceo_setup_vault <<< "$TEST_HOME/myvault" >/dev/null 2>&1
+  assert_file_exists "$TEST_HOME/.ceo/config" "config must be written on valid vault input"
+  local cfg
+  cfg=$(cat "$TEST_HOME/.ceo/config")
+  assert_contains "$cfg" "CEO_VAULT=\"$TEST_HOME/myvault\"" "config must persist the typed path"
+  local joined="${MISSING_CONFIG[*]:-}"
+  if [[ "$joined" == *"CEO_VAULT"* ]]; then
+    printf '  FAIL [%s] MISSING_CONFIG must NOT contain CEO_VAULT on valid input\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_gh_auth_helper_refuses_on_network_failure() {
+  _install_gh_stub 1 "Get \"https://api.github.com\": dial tcp: lookup api.github.com: no such host"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out rc=0
+  out=$(ceo_setup_gh_auth "[2/10]" 2>&1) || rc=$?
+  assert_eq "$rc" "1" "transient/network failure must NOT fall through to auth login"
+  assert_contains "$out" "transient network" "must surface the network/transient classification"
+  assert_contains "$out" "no such host" "must include the captured stderr context"
+}
+
 # Mac/Linux tools-check exit-1 path is deferred — running setup-mac.sh
 # end-to-end past step 1 requires either reaching the interactive ssh-key
 # prompt (which hangs CI) or a portable PATH that excludes git/jq but

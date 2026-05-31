@@ -26,6 +26,18 @@ for _arg in "$@"; do
 done
 export CEO_SETUP_DRY_RUN
 
+# Refuse to proceed on a non-interactive stdin unless the caller is just
+# previewing the package plan. Several steps below use `read -p`; without
+# a TTY they silently accept empty input and persist a broken config
+# (CEO_VAULT="") to ~/.ceo/config. Gate at the installer entrypoint per
+# safety-invariant-scope so no read site can opt out.
+if [ "$CEO_SETUP_DRY_RUN" = "0" ] && [ ! -t 0 ]; then
+  echo "ceo setup requires an interactive terminal." >&2
+  echo "  Re-run from a terminal (not piped, not </dev/null, not CI)." >&2
+  echo "  For non-interactive package planning, pass --dry-run." >&2
+  exit 1
+fi
+
 echo "=== CEO Agent — Mac Setup ==="
 echo ""
 
@@ -47,13 +59,8 @@ if [ "${#_missing_tools[@]}" -gt 0 ] && [ "$CEO_SETUP_DRY_RUN" = "0" ]; then
   exit 1
 fi
 
-# 2. gh authentication
-if gh auth status &>/dev/null; then
-  echo "[2/10] gh already authenticated"
-else
-  echo "[2/10] Authenticating gh CLI..."
-  gh auth login
-fi
+# 2. gh authentication — disambiguate not-authed from transient network failures.
+ceo_setup_gh_auth "[2/10]"
 
 ceo_setup_ssh_key "$(hostname -s 2>/dev/null || echo mac)"
 ceo_setup_git_config
