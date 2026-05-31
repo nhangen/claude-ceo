@@ -277,15 +277,24 @@ _ceo_launchd_plist_to_cron_line() {
   local plist="$1"
   [ -f "$plist" ] || return 0
   local plutil_bin="${CEO_PLUTIL_BIN:-plutil}"
-  command -v "$plutil_bin" >/dev/null 2>&1 || return 0
   local label minute hour weekday cmd
-  label=$("$plutil_bin" -extract Label raw -o - "$plist" 2>/dev/null) || return 0
-  minute=$("$plutil_bin" -extract StartCalendarInterval.Minute raw -o - "$plist" 2>/dev/null) || return 0
-  hour=$("$plutil_bin" -extract StartCalendarInterval.Hour raw -o - "$plist" 2>/dev/null) || return 0
+  if ! label=$("$plutil_bin" -extract Label raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (Label extract failed)" >&2
+    return 0
+  fi
+  if ! minute=$("$plutil_bin" -extract StartCalendarInterval.Minute raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (Minute extract failed)" >&2
+    return 0
+  fi
+  if ! hour=$("$plutil_bin" -extract StartCalendarInterval.Hour raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (Hour extract failed)" >&2
+    return 0
+  fi
   weekday=$("$plutil_bin" -extract StartCalendarInterval.Weekday raw -o - "$plist" 2>/dev/null) || weekday="*"
-  # ProgramArguments is `["/bin/bash", "-lc", "<cmd>"]` — the third element is
-  # the command we shipped.
-  cmd=$("$plutil_bin" -extract ProgramArguments.2 raw -o - "$plist" 2>/dev/null) || return 0
+  if ! cmd=$("$plutil_bin" -extract ProgramArguments.2 raw -o - "$plist" 2>/dev/null); then
+    echo "WARN: skipping $plist (ProgramArguments.2 extract failed)" >&2
+    return 0
+  fi
   local name="${label#com.ceo.}"
   name="${name%-*}"
   printf '%s %s * * %s %s  # ceo:%s\n' "$minute" "$hour" "$weekday" "$cmd" "$name"

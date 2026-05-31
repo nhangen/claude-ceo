@@ -336,10 +336,73 @@ test_launchd_list_reconstructs_cron_lines_for_doctor() {
   ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh morning  # ceo:morning" >/dev/null 2>&1
   local out
   out=$(ceo_scheduler_list 2>&1)
-  assert_contains "$out" "ceo-cron.sh" "list output must contain ceo-cron.sh (doctor greps for this)"
-  assert_contains "$out" "# ceo:morning" "list output must carry the ceo:NAME tag"
-  # Concrete time fields, not midnight defaults — pins #108 (plutil) fix.
-  assert_contains "$out" "0 9 " "minute/hour must be extracted, not fabricated"
+  # Full leading prefix incl. weekday `*` — pins both extraction AND the
+  # absent-Weekday fallback branch. Substring check too weak (hour 9 from
+  # fixture would let grep+sed reintroduce midnight defaults silently).
+  assert_contains "$out" "0 9 * * * /tmp/ceo-cron.sh morning  # ceo:morning" \
+    "full line must reconstruct from plutil extracts, not fabricated defaults"
+}
+
+test_launchd_list_warns_and_skips_when_plutil_missing() {
+  export CEO_SCHEDULER=launchd
+  ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh morning  # ceo:morning" >/dev/null 2>&1
+  # Point CEO_PLUTIL_BIN at a binary that doesn't exist. The function must
+  # emit a WARN per plist to stderr and skip the line, not silently return
+  # empty (which would reproduce #108's failure mode one branch deeper).
+  export CEO_PLUTIL_BIN="$TEST_HOME/does-not-exist-plutil"
+  local out err
+  out=$(ceo_scheduler_list 2>/tmp/ceo-sched-stderr.$$)
+  err=$(cat /tmp/ceo-sched-stderr.$$); rm -f /tmp/ceo-sched-stderr.$$
+  assert_no_match "$out" "ceo-cron.sh" "stdout must be empty — no fabricated line on plutil failure"
+  assert_contains "$err" "WARN: skipping" "stderr must surface the skip with a WARN line"
+}
+
+_ceo_test_write_plist_missing_field() {
+  local label="$1" missing="$2"
+  local has_label=1 has_minute=1 has_hour=1 has_cmd=1
+  case "$missing" in
+    Label) has_label=0 ;;
+    Minute) has_minute=0 ;;
+    Hour) has_hour=0 ;;
+    ProgramArguments) has_cmd=0 ;;
+  esac
+  {
+    echo '<?xml version="1.0" encoding="UTF-8"?>'
+    echo '<plist version="1.0"><dict>'
+    [ "$has_label" -eq 1 ] && echo "  <key>Label</key><string>com.ceo.$label-0</string>"
+    if [ "$has_cmd" -eq 1 ]; then
+      echo '  <key>ProgramArguments</key><array>'
+      echo '    <string>/bin/bash</string><string>-lc</string>'
+      echo "    <string>/tmp/ceo-cron.sh $label</string>"
+      echo '  </array>'
+    fi
+    echo '  <key>StartCalendarInterval</key><dict>'
+    [ "$has_minute" -eq 1 ] && echo "    <key>Minute</key><integer>0</integer>"
+    [ "$has_hour" -eq 1 ] && echo "    <key>Hour</key><integer>9</integer>"
+    echo '  </dict></dict></plist>'
+  } > "$CEO_LAUNCHD_DIR/com.ceo.$label-0.plist"
+}
+
+test_launchd_list_skips_plist_missing_any_required_field() {
+  export CEO_SCHEDULER=launchd
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  # Parameterised across the 4 required-field branches. Each writes a plist
+  # missing exactly one required key; the resulting line must NOT render and
+  # stderr must carry the field-named WARN.
+  local field expected_token
+  for field in Label Minute Hour ProgramArguments; do
+    rm -f "$CEO_LAUNCHD_DIR"/com.ceo.*.plist
+    _ceo_test_write_plist_missing_field "missing-$field" "$field"
+    local out err
+    out=$(ceo_scheduler_list 2>/tmp/ceo-sched-stderr.$$)
+    err=$(cat /tmp/ceo-sched-stderr.$$); rm -f /tmp/ceo-sched-stderr.$$
+    assert_no_match "$out" "missing-$field" "missing-$field plist must NOT render"
+    case "$field" in
+      ProgramArguments) expected_token="ProgramArguments.2 extract failed" ;;
+      *) expected_token="$field extract failed" ;;
+    esac
+    assert_contains "$err" "$expected_token" "stderr must surface the missing-$field skip"
+  done
 }
 
 test_launchd_list_reconstructs_weekday_constrained_line() {
