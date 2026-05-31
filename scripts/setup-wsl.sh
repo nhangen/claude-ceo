@@ -65,12 +65,8 @@ else
   fi
 fi
 
-if gh auth status &>/dev/null; then
-  echo "  gh already authenticated"
-else
-  echo "  Authenticating gh CLI..."
-  gh auth login
-fi
+# gh authentication — disambiguate not-authed from transient network failures.
+ceo_setup_gh_auth " "
 
 ceo_setup_ssh_key "$(hostname -s 2>/dev/null || echo wsl)"
 ceo_setup_git_config

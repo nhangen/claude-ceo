@@ -23,6 +23,45 @@ ceo_setup_print_or_run() {
   fi
 }
 
+# Authenticate gh, distinguishing "not logged in" from "network/transient
+# failure". Pre-#102 each installer used `gh auth status &>/dev/null` and
+# fell through to `gh auth login` on any non-zero exit — including DNS
+# failures and 5xx — silently restarting the interactive auth flow when
+# the real fix was retrying later. command-v-presence-vs-success applied
+# to rc.
+#
+# Contract:
+#   rc=0 → already authed; echo "$1 gh already authenticated" and return 0
+#   rc=1 + stderr contains "not logged" or "not authenticated" → echo
+#     "$1 Authenticating gh CLI..." then `gh auth login`; return its rc
+#   otherwise → echo a network/error diagnostic with the captured stderr
+#     and return 1 without invoking `gh auth login`
+#
+# $1 is the step prefix the caller wants on the success/auth-prompt lines
+# ("[2/10]" on mac/linux; "  " on wsl).
+ceo_setup_gh_auth() {
+  local prefix="${1:-}"
+  local _err _rc=0
+  _err=$(gh auth status 2>&1 >/dev/null) || _rc=$?
+  if [ "$_rc" = "0" ]; then
+    echo "${prefix} gh already authenticated"
+    return 0
+  fi
+  case "$_err" in
+    *"not logged"*|*"not authenticated"*)
+      echo "${prefix} Authenticating gh CLI..."
+      gh auth login
+      return $?
+      ;;
+    *)
+      echo "${prefix} ERROR: gh auth status failed and did not indicate 'not logged in'." >&2
+      echo "  Likely a transient network / GitHub API failure — re-run later." >&2
+      echo "  gh stderr: ${_err}" >&2
+      return 1
+      ;;
+  esac
+}
+
 ceo_setup_ssh_key() {
   local host_label="$1"
   [ -n "$host_label" ] || host_label="host"

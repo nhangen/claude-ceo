@@ -59,13 +59,8 @@ if [ "${#_missing_tools[@]}" -gt 0 ] && [ "$CEO_SETUP_DRY_RUN" = "0" ]; then
   exit 1
 fi
 
-# 2. gh authentication
-if gh auth status &>/dev/null; then
-  echo "[2/10] gh already authenticated"
-else
-  echo "[2/10] Authenticating gh CLI..."
-  gh auth login
-fi
+# 2. gh authentication — disambiguate not-authed from transient network failures.
+ceo_setup_gh_auth "[2/10]"
 
 ceo_setup_ssh_key "$(hostname -s 2>/dev/null || echo mac)"
 ceo_setup_git_config

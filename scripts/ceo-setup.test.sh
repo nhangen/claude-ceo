@@ -141,6 +141,52 @@ test_setup_wsl_refuses_non_tty_invocation() {
   _assert_installer_refuses_non_tty setup-wsl.sh
 }
 
+# === ceo_setup_gh_auth — distinguish authed vs not-authed vs error (#102 item 2) ===
+
+# Helper to install a `gh` stub at $TEST_HOME/stubs/gh with given behavior.
+_install_gh_stub() {
+  local rc="$1" stderr="$2"
+  cat > "$TEST_HOME/stubs/gh" <<STUB
+#!/bin/bash
+if [ "\$1" = "auth" ] && [ "\$2" = "status" ]; then
+  printf '%s\n' "${stderr}" >&2
+  exit ${rc}
+fi
+# Other gh invocations (e.g. \`gh auth login\` fall-through) are no-ops.
+exit 0
+STUB
+  chmod +x "$TEST_HOME/stubs/gh"
+  export PATH="$TEST_HOME/stubs:$PATH_BACKUP"
+}
+
+test_gh_auth_helper_reports_authed_on_rc_zero() {
+  _install_gh_stub 0 "Logged in to github.com account testuser"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out rc=0
+  out=$(ceo_setup_gh_auth "[2/10]" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "authed path must return 0"
+  assert_contains "$out" "[2/10] gh already authenticated" "must echo authed-line with prefix"
+}
+
+test_gh_auth_helper_invokes_auth_login_on_not_logged_message() {
+  _install_gh_stub 1 "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out rc=0
+  out=$(ceo_setup_gh_auth "[2/10]" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "not-logged path must succeed (stub exits 0 on the login call)"
+  assert_contains "$out" "[2/10] Authenticating gh CLI" "must transition to auth login"
+}
+
+test_gh_auth_helper_refuses_on_network_failure() {
+  _install_gh_stub 1 "Get \"https://api.github.com\": dial tcp: lookup api.github.com: no such host"
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out rc=0
+  out=$(ceo_setup_gh_auth "[2/10]" 2>&1) || rc=$?
+  assert_eq "$rc" "1" "transient/network failure must NOT fall through to auth login"
+  assert_contains "$out" "transient network" "must surface the network/transient classification"
+  assert_contains "$out" "no such host" "must include the captured stderr context"
+}
+
 # Mac/Linux tools-check exit-1 path is deferred — running setup-mac.sh
 # end-to-end past step 1 requires either reaching the interactive ssh-key
 # prompt (which hangs CI) or a portable PATH that excludes git/jq but
