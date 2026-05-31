@@ -309,6 +309,52 @@ test_launchd_list_reconstructs_cron_lines_for_doctor() {
   assert_contains "$out" "# ceo:morning" "list output must carry the ceo:NAME tag"
 }
 
+# === launchd: loaded-job count via launchctl print (#107) ===
+
+test_loaded_count_parses_com_ceo_lines_from_launchctl_print() {
+  export CEO_SCHEDULER=launchd
+  # Stub: emit a fake `launchctl print gui/$uid` output with 3 com.ceo lines
+  # interspersed with unrelated services.
+  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
+#!/bin/bash
+if [ "$1" = "print" ]; then
+  cat <<OUT
+services = {
+    0  com.apple.dock.extra
+    -  com.example.unrelated
+    0  com.ceo.morning-0
+    -  com.ceo.eod-3
+    0  com.ceo.weekly-0
+    0  com.apple.other
+}
+OUT
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$CEO_LAUNCHCTL_BIN"
+  assert_eq "$(ceo_scheduler_loaded_count)" "3" "must count exactly the com.ceo.* lines from launchctl print"
+}
+
+test_loaded_count_is_zero_when_no_ceo_jobs_loaded() {
+  export CEO_SCHEDULER=launchd
+  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
+#!/bin/bash
+if [ "$1" = "print" ]; then
+  echo "services = { 0 com.apple.dock.extra }"
+fi
+exit 0
+STUB
+  chmod +x "$CEO_LAUNCHCTL_BIN"
+  assert_eq "$(ceo_scheduler_loaded_count)" "0" "no com.ceo.* lines must yield 0"
+}
+
+test_loaded_count_returns_na_on_crontab_backend() {
+  export CEO_CRONTAB_BIN="$TEST_HOME/fake-crontab"
+  echo '#!/bin/bash' > "$CEO_CRONTAB_BIN"; chmod +x "$CEO_CRONTAB_BIN"
+  assert_eq "$(ceo_scheduler_loaded_count)" "n/a" "crontab backend must surface n/a (concept doesn't apply)"
+}
+
 # === Integration: ceo playbook scan end-to-end on launchd ===
 
 test_playbook_scan_writes_plists_via_launchd_backend() {

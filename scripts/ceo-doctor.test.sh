@@ -186,6 +186,85 @@ EOF
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_doctor_flags_launchd_loaded_vs_plist_drift() {
+  # #107: when on the launchd backend, doctor must surface drift between
+  # plist files on disk and com.ceo.* services actually loaded by launchd.
+  export CEO_SCHEDULER=launchd
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
+  export CEO_LAUNCHCTL_BIN="$TEST_HOME/stubs/launchctl"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+
+  # Two plist files on disk but stub launchctl reports only one loaded.
+  for label in foo-0 bar-0; do
+    cat > "$CEO_LAUNCHD_DIR/com.ceo.$label.plist" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ceo.$label</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>/tmp/ceo-cron.sh $label</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Minute</key><integer>0</integer>
+    <key>Hour</key><integer>9</integer>
+  </dict>
+</dict></plist>
+XML
+  done
+
+  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
+#!/bin/bash
+if [ "$1" = "print" ]; then
+  echo "services = { 0 com.ceo.foo-0 }"
+fi
+exit 0
+STUB
+  chmod +x "$CEO_LAUNCHCTL_BIN"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "Launchd job count drift" "doctor must flag plist-vs-loaded drift on launchd"
+  assert_contains "$output" "1 loaded vs 2 plist" "drift message must name both counts"
+}
+
+test_doctor_passes_when_launchd_loaded_matches_plist_count() {
+  export CEO_SCHEDULER=launchd
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
+  export CEO_LAUNCHCTL_BIN="$TEST_HOME/stubs/launchctl"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.solo-0.plist" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.ceo.solo-0</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>/tmp/ceo-cron.sh solo</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Minute</key><integer>0</integer>
+    <key>Hour</key><integer>9</integer>
+  </dict>
+</dict></plist>
+XML
+  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
+#!/bin/bash
+if [ "$1" = "print" ]; then
+  echo "services = { 0 com.ceo.solo-0 }"
+fi
+exit 0
+STUB
+  chmod +x "$CEO_LAUNCHCTL_BIN"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "Launchd jobs loaded (1 matches plist count)" "doctor must report match on launchd"
+  if echo "$output" | grep -qF "Launchd job count drift"; then
+    printf '  FAIL [%s] doctor must NOT flag drift when counts match\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_doctor_reports_platform() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)

@@ -14,6 +14,14 @@
 #   ceo_scheduler_install <payload>
 #                                — replaces the user's schedule with <payload>;
 #                                  rc=0 on success, rc=1 on backend error.
+#   ceo_scheduler_loaded_count   — prints the count of currently-loaded ceo
+#                                  jobs (launchd only — queries `launchctl
+#                                  print gui/$uid` for com.ceo.* lines). For
+#                                  the crontab backend the concept doesn't
+#                                  apply: prints "n/a" and returns 0. Lets
+#                                  `ceo doctor` flag drift between on-disk
+#                                  plist files and what launchd actually
+#                                  has loaded.
 #
 # Backend selection priority:
 #   1. CEO_SCHEDULER env (explicit override for tests/dev); must be one of
@@ -389,6 +397,38 @@ ceo_scheduler_install() {
             ;;
         esac
       done
+      return 0
+      ;;
+    *)
+      echo "ERROR: unknown scheduler backend '$_backend'" >&2
+      return 1
+      ;;
+  esac
+}
+
+ceo_scheduler_loaded_count() {
+  local _backend _rc=0
+  _backend="$(ceo_scheduler_backend)" || _rc=$?
+  [ "$_rc" -eq 0 ] || return "$_rc"
+  case "$_backend" in
+    crontab)
+      # cron entries don't "load" — they run on schedule. Doctor's plist-
+      # vs-loaded drift check doesn't apply.
+      echo "n/a"
+      return 0
+      ;;
+    launchd)
+      local uid
+      uid="$(id -u 2>/dev/null)"
+      : "${uid:?id -u failed; cannot resolve launchd GUI domain}"
+      local launchctl_bin="${CEO_LAUNCHCTL_BIN:-launchctl}"
+      # `launchctl print gui/$uid` enumerates loaded services. Match any line
+      # referencing a com.ceo.* label. grep -c returns 1 with no matches —
+      # normalize via `|| true`.
+      local n
+      n=$("$launchctl_bin" print "gui/$uid" 2>/dev/null \
+        | grep -cE 'com\.ceo\.[A-Za-z0-9._-]+' || true)
+      printf '%s\n' "${n:-0}"
       return 0
       ;;
     *)
