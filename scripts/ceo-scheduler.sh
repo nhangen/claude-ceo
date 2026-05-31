@@ -234,13 +234,17 @@ _ceo_launchd_tuples_from_payload() {
     name="${name%%[[:space:]]*}"
     local schedule_and_cmd="${line%%#*}"
     schedule_and_cmd="${schedule_and_cmd%"${schedule_and_cmd##*[![:space:]]}"}"  # rtrim
-    # Split into 5 cron fields + remaining command. DOM and Month are
-    # accepted on input for crontab-style parity but ignored — launchd's
-    # StartCalendarInterval Day/Month keys are not encoded in this backend
-    # (documented limitation).
-    local _dom _mon
-    read -r m h _dom _mon dow cmd_rest <<< "$schedule_and_cmd"
+    local dom mon
+    read -r m h dom mon dow cmd_rest <<< "$schedule_and_cmd"
     if [ -z "$cmd_rest" ]; then
+      continue
+    fi
+    if [ "$dom" != "*" ]; then
+      echo "WARN: skipping ceo:${name} (DOM constraints not supported on launchd backend; got '${dom}')" >&2
+      continue
+    fi
+    if [ "$mon" != "*" ]; then
+      echo "WARN: skipping ceo:${name} (Month constraints not supported on launchd backend; got '${mon}')" >&2
       continue
     fi
     local minutes hours weekdays
@@ -297,6 +301,9 @@ _ceo_launchd_plist_to_cron_line() {
   fi
   local name="${label#com.ceo.}"
   name="${name%-*}"
+  # DOM/Month positions are hardcoded `*` because the install side
+  # (_ceo_launchd_tuples_from_payload) rejects non-`*` DOM/Month with a
+  # WARN diagnostic — no plist on disk can have encoded them. See #109.
   printf '%s %s * * %s %s  # ceo:%s\n' "$minute" "$hour" "$weekday" "$cmd" "$name"
 }
 
@@ -369,6 +376,17 @@ ceo_scheduler_install() {
         rendered="$rendered $label"
         kept_labels="$kept_labels$label "
       done < <(_ceo_launchd_tuples_from_payload "$payload")
+
+      # Refuse to proceed if the payload named registry entries (lines tagged
+      # `# ceo:`) but every one was rejected by the parser. Otherwise the
+      # stale-plist cleanup below treats an empty desired-state as "wipe
+      # everything", silently unloading live jobs whenever a registry update
+      # ships a typo. WARN to stderr alone is not enough — cron callers
+      # routinely redirect 2>/dev/null.
+      if [ -z "$rendered" ] && printf '%s\n' "$payload" | grep -q '# ceo:'; then
+        echo "ERROR: ceo_scheduler_install: every registry entry was rejected by the launchd parser; refusing to tear down existing jobs" >&2
+        return 1
+      fi
 
       # Phase 2: commit each rendered .tmp to its final path, then bootout +
       # bootstrap. On bootstrap failure, roll back: bootout everything we

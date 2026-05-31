@@ -205,6 +205,92 @@ BLOCK
   assert_eq "$lines" "7" "must emit 7 tuples for 3 triggers (1 + 5 + 1)"
 }
 
+# === launchd: DOM/Month constraints are rejected (issue #109) ===
+
+# Run a single bad DOM/Month case: stdout must be empty for the tagged name,
+# stderr must contain a WARN that names the offending field + value.
+_ceo_test_assert_rejects_dom_mon() {
+  local cron_line="$1" expect_field="$2" expect_value="$3" tag="$4"
+  local payload="${cron_line}  # ceo:${tag}"
+  local stderr_file out
+  stderr_file=$(mktemp)
+  out=$(_ceo_launchd_tuples_from_payload "$payload" 2>"$stderr_file")
+  local err
+  err=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  assert_not_contains "$out" "com.ceo.${tag}-" "must emit no tuples for ${tag} (${cron_line})"
+  assert_contains "$err" "WARN" "stderr must carry WARN for ${tag}"
+  assert_contains "$err" "${expect_field}" "WARN must name field ${expect_field} for ${tag}"
+  assert_contains "$err" "${expect_value}" "WARN must include offending value ${expect_value} for ${tag}"
+}
+
+test_tuples_rejects_dom_literal_value() {
+  _ceo_test_assert_rejects_dom_mon \
+    "* * 5 * * /tmp/ceo-cron.sh foo" "DOM" "5" "dom-literal"
+}
+
+test_tuples_rejects_dom_range() {
+  _ceo_test_assert_rejects_dom_mon \
+    "* * 1-7 * * /tmp/ceo-cron.sh foo" "DOM" "1-7" "dom-range"
+}
+
+test_tuples_rejects_dom_list() {
+  _ceo_test_assert_rejects_dom_mon \
+    "* * 1,15 * * /tmp/ceo-cron.sh foo" "DOM" "1,15" "dom-list"
+}
+
+test_tuples_rejects_dom_step() {
+  _ceo_test_assert_rejects_dom_mon \
+    "* * */2 * * /tmp/ceo-cron.sh foo" "DOM" "*/2" "dom-step"
+}
+
+test_tuples_rejects_dom_high_value() {
+  _ceo_test_assert_rejects_dom_mon \
+    "* * 31 * * /tmp/ceo-cron.sh foo" "DOM" "31" "dom-31"
+}
+
+test_tuples_rejects_month_literal() {
+  _ceo_test_assert_rejects_dom_mon \
+    "* * * 6 * /tmp/ceo-cron.sh foo" "Month" "6" "mon-literal"
+}
+
+test_tuples_rejects_month_range() {
+  _ceo_test_assert_rejects_dom_mon \
+    "* * * 1-3 * /tmp/ceo-cron.sh foo" "Month" "1-3" "mon-range"
+}
+
+# Mixed payload: bad DOM line is rejected while a sibling valid line still emits.
+test_tuples_rejects_bad_line_keeps_good_line() {
+  local payload
+  payload=$(cat <<'BLOCK'
+0 9 * * * /tmp/ceo-cron.sh good  # ceo:good
+15 10 5 * * /tmp/ceo-cron.sh bad  # ceo:bad
+BLOCK
+)
+  local stderr_file out
+  stderr_file=$(mktemp)
+  out=$(_ceo_launchd_tuples_from_payload "$payload" 2>"$stderr_file")
+  local err
+  err=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  assert_contains "$out" "com.ceo.good-0" "valid sibling must still emit a tuple"
+  assert_not_contains "$out" "com.ceo.bad-" "rejected line must not emit a tuple"
+  assert_contains "$err" "DOM" "WARN must fire for bad line"
+}
+
+# Negative control: literal `*` for both fields must NOT trigger the WARN.
+test_tuples_accepts_star_dom_and_month() {
+  local payload="0 9 * * * /tmp/ceo-cron.sh ok  # ceo:ok"
+  local stderr_file out
+  stderr_file=$(mktemp)
+  out=$(_ceo_launchd_tuples_from_payload "$payload" 2>"$stderr_file")
+  local err
+  err=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  assert_contains "$out" "com.ceo.ok-0" "happy-path must emit"
+  assert_not_contains "$err" "WARN" "happy-path must not WARN about DOM/Month"
+}
+
 # === launchd: install writes plists + bootstraps + cleans stale ===
 
 test_launchd_install_writes_one_plist_per_tuple() {
@@ -267,6 +353,71 @@ BLOCK
   assert_contains "$log" "bootout gui/" "launchctl bootout must fire during v2"
   assert_contains "$log" "com.ceo.stale-0.plist" \
     "bootout must reference the stale plist by name"
+}
+
+test_launchd_install_refuses_to_wipe_live_jobs_when_every_payload_line_rejected() {
+  export CEO_SCHEDULER=launchd
+  # Prior live install: a real job we'd be heartbroken to lose.
+  ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh keeper  # ceo:keeper" >/dev/null 2>&1
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.keeper-0.plist" "seed: keeper plist present"
+
+  # Rescan with a payload whose every entry has a DOM/Month constraint
+  # (rejected by the launchd backend). _ceo_launchd_tuples_from_payload
+  # emits zero tuples. Without the install-level gate, the cleanup pass
+  # would walk com.ceo.*.plist with kept_labels empty and wipe keeper.
+  local bad_payload
+  bad_payload=$(cat <<'BLOCK'
+15 10 5 * * /tmp/ceo-cron.sh foo  # ceo:foo
+0 9 * 6 * /tmp/ceo-cron.sh bar  # ceo:bar
+BLOCK
+)
+  local rc=0
+  ceo_scheduler_install "$bad_payload" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "install must return non-zero when every registry entry is rejected"
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.keeper-0.plist" \
+    "keeper plist must survive an all-rejected rescan (no silent wipe)"
+}
+
+# Counter-control: a payload mixing one rejected line with one valid line
+# still installs the valid line and leaves prior live plists alone.
+test_launchd_install_partial_reject_installs_valid_and_keeps_other_priors() {
+  export CEO_SCHEDULER=launchd
+  ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh older  # ceo:older" >/dev/null 2>&1
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.older-0.plist" "seed: older plist present"
+
+  local mixed
+  mixed=$(cat <<'BLOCK'
+0 11 * * * /tmp/ceo-cron.sh newer  # ceo:newer
+15 10 5 * * /tmp/ceo-cron.sh bad  # ceo:bad
+BLOCK
+)
+  local rc=0
+  ceo_scheduler_install "$mixed" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "partial-reject install must still succeed for valid entries"
+  assert_file_exists "$CEO_LAUNCHD_DIR/com.ceo.newer-0.plist" "valid line must install"
+  assert_no_match "$(ls "$CEO_LAUNCHD_DIR")" "com.ceo.bad-0.plist" \
+    "rejected line must not produce a plist"
+  # older was not in the new payload — stale cleanup should remove it.
+  # (Symmetric with test_launchd_install_removes_stale_plists_on_rescan.)
+}
+
+# Symmetric Month counter-control to test_tuples_rejects_bad_line_keeps_good_line.
+test_tuples_rejects_bad_month_keeps_good_line() {
+  local payload
+  payload=$(cat <<'BLOCK'
+0 9 * * * /tmp/ceo-cron.sh good  # ceo:good
+15 10 * 6 * /tmp/ceo-cron.sh bad  # ceo:bad
+BLOCK
+)
+  local stderr_file out
+  stderr_file=$(mktemp)
+  out=$(_ceo_launchd_tuples_from_payload "$payload" 2>"$stderr_file")
+  local err
+  err=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  assert_contains "$out" "com.ceo.good-0" "valid sibling must still emit a tuple"
+  assert_not_contains "$out" "com.ceo.bad-" "rejected month line must not emit a tuple"
+  assert_contains "$err" "Month" "WARN must name Month for bad line"
 }
 
 test_launchd_install_rolls_back_on_bootstrap_failure_mid_loop() {
