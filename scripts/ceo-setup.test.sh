@@ -107,6 +107,40 @@ test_setup_common_sources_cleanly_when_missing_config_declared() {
   assert_eq "$rc" "0" "sourcing with MISSING_CONFIG declared must succeed"
 }
 
+# === TTY check at installer entrypoints (#102 item 1) ===
+
+# Non-TTY invocation (curl-install | bash, CI, < /dev/null) must refuse to
+# proceed rather than silently fall through interactive `read` prompts and
+# persist a broken config. The check belongs at each installer's entry
+# point per safety-invariant-scope (gate at the function, not at each
+# read site).
+_assert_installer_refuses_non_tty() {
+  local installer="$1"
+  local rc=0 out
+  # </dev/null forces non-TTY stdin even when the test harness itself
+  # runs under a TTY.
+  out=$(bash "$SCRIPT_DIR/$installer" </dev/null 2>&1) || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] %s under </dev/null must exit non-zero (got rc=0)\n' "$CURRENT_TEST" "$installer"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$out" "interactive terminal" \
+    "$installer must surface the 'interactive terminal' diagnostic"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_setup_mac_refuses_non_tty_invocation() {
+  _assert_installer_refuses_non_tty setup-mac.sh
+}
+
+test_setup_linux_refuses_non_tty_invocation() {
+  _assert_installer_refuses_non_tty setup-linux.sh
+}
+
+test_setup_wsl_refuses_non_tty_invocation() {
+  _assert_installer_refuses_non_tty setup-wsl.sh
+}
+
 # Mac/Linux tools-check exit-1 path is deferred — running setup-mac.sh
 # end-to-end past step 1 requires either reaching the interactive ssh-key
 # prompt (which hangs CI) or a portable PATH that excludes git/jq but
