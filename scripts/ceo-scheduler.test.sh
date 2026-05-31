@@ -291,6 +291,59 @@ test_tuples_accepts_star_dom_and_month() {
   assert_not_contains "$err" "WARN" "happy-path must not WARN about DOM/Month"
 }
 
+# === launchd: symmetric WARN for non-DOM/Month skip branches (#117) ===
+
+# Helper for the four sibling skip branches in _ceo_launchd_tuples_from_payload
+# that historically `continue`d silently while DOM/Month emitted WARN. Each
+# branch must emit `WARN:` + the field name + the offending value to stderr,
+# and must NOT emit a tuple for that name.
+_ceo_test_assert_silent_skip_warns() {
+  local cron_line="$1" expect_field="$2" tag="$3"
+  local payload="${cron_line}  # ceo:${tag}"
+  local stderr_file out
+  stderr_file=$(mktemp)
+  out=$(_ceo_launchd_tuples_from_payload "$payload" 2>"$stderr_file")
+  local err
+  err=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  assert_not_contains "$out" "com.ceo.${tag}-" "must emit no tuples for ${tag}"
+  assert_contains "$err" "WARN" "stderr must carry WARN for ${tag}"
+  assert_contains "$err" "${expect_field}" "WARN must name field ${expect_field} for ${tag}"
+  assert_contains "$err" "ceo:${tag}" "WARN must name the offending ceo:NAME tag"
+}
+
+test_tuples_warns_on_invalid_minute() {
+  _ceo_test_assert_silent_skip_warns \
+    "99 * * * * /tmp/ceo-cron.sh foo" "Minute" "bad-min"
+}
+
+test_tuples_warns_on_invalid_hour() {
+  _ceo_test_assert_silent_skip_warns \
+    "0 25 * * * /tmp/ceo-cron.sh foo" "Hour" "bad-hour"
+}
+
+test_tuples_warns_on_invalid_dow() {
+  _ceo_test_assert_silent_skip_warns \
+    "0 9 * * 9 /tmp/ceo-cron.sh foo" "DOW" "bad-dow"
+}
+
+test_tuples_warns_on_malformed_line_missing_command() {
+  # Line tagged ceo:foo but missing command field after the 5 cron fields.
+  # The schedule_and_cmd parse yields cmd_rest="" — historically a silent
+  # continue.
+  local payload="0 9 * * *  # ceo:bad-malformed"
+  local stderr_file out
+  stderr_file=$(mktemp)
+  out=$(_ceo_launchd_tuples_from_payload "$payload" 2>"$stderr_file")
+  local err
+  err=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  assert_not_contains "$out" "com.ceo.bad-malformed-" "malformed line must not emit"
+  assert_contains "$err" "WARN" "malformed line must WARN"
+  assert_contains "$err" "ceo:bad-malformed" "WARN must name the offending tag"
+  assert_contains "$err" "malformed" "WARN must classify the reason as malformed"
+}
+
 # === launchd: install writes plists + bootstraps + cleans stale ===
 
 test_launchd_install_writes_one_plist_per_tuple() {
