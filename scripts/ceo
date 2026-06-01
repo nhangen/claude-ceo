@@ -1655,20 +1655,41 @@ cmd_trace() {
     echo "plus linked commits captured during the run."
     exit 1
   fi
+  if [[ ! "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+    echo "ERROR: invalid playbook name '$name' (must start with [A-Za-z0-9_]; allowed thereafter: A-Z a-z 0-9 . _ -)" >&2
+    exit 1
+  fi
   shift
   local limit=50
   while [ $# -gt 0 ]; do
     case "$1" in
-      --limit) limit="$2"; shift 2 ;;
-      --limit=*) limit="${1#--limit=}"; shift ;;
-      *) echo "Unknown arg: $1"; exit 1 ;;
+      --limit)
+        if [ -z "${2:-}" ] || [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+          echo "ERROR: --limit must be a positive integer" >&2
+          exit 1
+        fi
+        limit="$2"; shift 2 ;;
+      --limit=*)
+        limit="${1#--limit=}"
+        if [[ ! "$limit" =~ ^[1-9][0-9]*$ ]]; then
+          echo "ERROR: --limit must be a positive integer" >&2
+          exit 1
+        fi
+        shift ;;
+      *) echo "Unknown arg: $1" >&2; exit 1 ;;
     esac
   done
 
   ceo_validate_vault || exit 1
   local registry_file="$CEO_DIR/registry.json"
-  if [ -f "$registry_file" ] && ! jq -e --arg n "$name" '.playbooks[] | select(.name == $n)' "$registry_file" >/dev/null 2>&1; then
-    echo "Warning: '$name' is not in $registry_file — searching anyway." >&2
+  if [ -f "$registry_file" ]; then
+    if ! jq empty "$registry_file" 2>/dev/null; then
+      echo "ERROR: $registry_file is not valid JSON. Run 'ceo playbook scan' to regenerate." >&2
+      exit 1
+    fi
+    if ! jq -e --arg n "$name" '.playbooks[] | select(.name == $n)' "$registry_file" >/dev/null 2>&1; then
+      echo "Warning: '$name' is not in $registry_file — searching anyway." >&2
+    fi
   fi
 
   if ! command -v claude >/dev/null 2>&1; then
