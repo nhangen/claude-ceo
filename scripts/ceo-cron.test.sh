@@ -124,6 +124,57 @@ SH
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_cron_rejects_trigger_with_quote() {
+  local rc=0
+  bash "$CRON" 'bad"trigger' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject trigger names containing shell metacharacters"
+  assert_contains "$(cat "$TEST_HOME/cron-stderr")" "invalid trigger" "stderr must explain rejection"
+}
+
+test_cron_rejects_trigger_with_path_traversal() {
+  local rc=0
+  bash "$CRON" '../etc' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject trigger names containing path separators"
+}
+
+test_cron_rejects_pure_dot_trigger() {
+  local rc=0
+  bash "$CRON" '..' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject '..' (would land in .last-run-.. path)"
+}
+
+test_cron_rejects_leading_dot_trigger() {
+  local rc=0
+  bash "$CRON" '.hidden' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject names starting with '.'"
+}
+
+test_cron_accepts_valid_trigger_shapes() {
+  cat > "$CEO_DIR/playbooks/valid-trigger_1.md" << 'PB'
+---
+name: valid-trigger_1
+description: shape-validation acceptance fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: shape-noop.sh
+---
+PB
+  cat > "$SCRIPT_DIR/shape-noop.sh" << 'SH'
+#!/bin/bash
+exit 0
+SH
+  chmod +x "$SCRIPT_DIR/shape-noop.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" valid-trigger_1 >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo-cron.sh must accept trigger names matching [A-Za-z0-9._-]+"
+  rm -f "$SCRIPT_DIR/shape-noop.sh"
+}
+
 test_runner_claude_exports_ceo_playbook_id_to_child() {
   cat > "$CEO_DIR/playbooks/playbook-id-claude.md" << 'PB'
 ---
