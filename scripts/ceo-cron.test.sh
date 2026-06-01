@@ -124,6 +124,183 @@ SH
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_cron_rejects_trigger_with_quote() {
+  local rc=0
+  bash "$CRON" 'bad"trigger' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject trigger names containing shell metacharacters"
+  assert_contains "$(cat "$TEST_HOME/cron-stderr")" "invalid trigger" "stderr must explain rejection"
+}
+
+test_cron_rejects_trigger_with_path_traversal() {
+  local rc=0
+  bash "$CRON" '../etc' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject trigger names containing path separators"
+}
+
+test_cron_rejects_pure_dot_trigger() {
+  local rc=0
+  bash "$CRON" '..' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject '..' (would land in .last-run-.. path)"
+}
+
+test_cron_rejects_leading_dot_trigger() {
+  local rc=0
+  bash "$CRON" '.hidden' >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "ceo-cron.sh must reject names starting with '.'"
+}
+
+test_cron_accepts_valid_trigger_shapes() {
+  cat > "$CEO_DIR/playbooks/valid-trigger_1.md" << 'PB'
+---
+name: valid-trigger_1
+description: shape-validation acceptance fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: shape-noop.sh
+---
+PB
+  cat > "$SCRIPT_DIR/shape-noop.sh" << 'SH'
+#!/bin/bash
+exit 0
+SH
+  chmod +x "$SCRIPT_DIR/shape-noop.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" valid-trigger_1 >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo-cron.sh must accept trigger names matching [A-Za-z0-9._-]+"
+  rm -f "$SCRIPT_DIR/shape-noop.sh"
+}
+
+test_runner_claude_exports_ceo_playbook_id_to_child() {
+  cat > "$CEO_DIR/playbooks/playbook-id-claude.md" << 'PB'
+---
+name: playbook-id-claude
+description: Verifies CEO_PLAYBOOK_ID is exported to the claude runner
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/claude" << SH
+#!/bin/bash
+printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-claude.txt"
+cat >/dev/null
+echo "ACTION: 1 | read | noop | n/a"
+SH
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" playbook-id-claude >/dev/null 2>&1 || true
+  local got
+  got=$(cat "$TEST_HOME/playbook-id-from-claude.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got" "playbook-id-claude" "claude runner must export CEO_PLAYBOOK_ID=<trigger> to its child"
+}
+
+test_runner_ollama_exports_ceo_playbook_id_to_child() {
+  cat > "$CEO_DIR/playbooks/playbook-id-ollama.md" << 'PB'
+---
+name: playbook-id-ollama
+description: Verifies CEO_PLAYBOOK_ID is exported to the ollama runner
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# Body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/ollama" << SH
+#!/bin/bash
+if [ "\${1:-}" = "run" ]; then
+  printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-ollama.txt"
+  cat >/dev/null
+  echo "ollama-stub-response"
+fi
+exit 0
+SH
+  chmod +x "$TEST_HOME/.bun/bin/ollama"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" playbook-id-ollama >/dev/null 2>&1 || true
+  local got
+  got=$(cat "$TEST_HOME/playbook-id-from-ollama.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got" "playbook-id-ollama" "ollama runner must export CEO_PLAYBOOK_ID=<trigger> to its child"
+}
+
+test_runner_skill_exports_ceo_playbook_id_to_child() {
+  cat > "$CEO_DIR/playbooks/playbook-id-skill.md" << 'PB'
+---
+name: playbook-id-skill
+description: Verifies CEO_PLAYBOOK_ID is exported to the skill runner
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: playbook-id-skill
+out_pattern: CEO/reports/playbook-id-skill/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/playbook-id-skill/scripts"
+  cat > "$HOME/.claude/skills/playbook-id-skill/scripts/run-report.sh" << SH
+#!/bin/bash
+printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-skill.txt"
+while [[ "\$#" -gt 0 ]]; do
+  case \$1 in --out) out_dir="\$2"; shift ;; esac
+  shift
+done
+echo "skill stub" > "\$out_dir/report.md"
+SH
+  chmod +x "$HOME/.claude/skills/playbook-id-skill/scripts/run-report.sh"
+
+  PATH=/usr/bin:/bin bash "$CRON" playbook-id-skill >/dev/null 2>&1 || true
+  local got
+  got=$(cat "$TEST_HOME/playbook-id-from-skill.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got" "playbook-id-skill" "skill runner must export CEO_PLAYBOOK_ID=<trigger> to its child"
+}
+
+test_runner_script_exports_ceo_playbook_id_to_child() {
+  cat > "$CEO_DIR/playbooks/playbook-id-script.md" << 'PB'
+---
+name: playbook-id-script
+description: Verifies CEO_PLAYBOOK_ID is exported to script-runner children
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: playbook-id-script.sh
+---
+PB
+
+  cat > "$SCRIPT_DIR/playbook-id-script.sh" << SH
+#!/bin/bash
+printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-child.txt"
+SH
+  chmod +x "$SCRIPT_DIR/playbook-id-script.sh"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" playbook-id-script >/dev/null 2>&1
+  local got
+  got=$(cat "$TEST_HOME/playbook-id-from-child.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got" "playbook-id-script" "script-runner must export CEO_PLAYBOOK_ID=<trigger> to its child"
+
+  rm -f "$SCRIPT_DIR/playbook-id-script.sh"
+}
+
 test_runner_default_invokes_claude() {
   cat > "$CEO_DIR/playbooks/fake-claude.md" << 'PB'
 ---

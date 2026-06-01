@@ -64,6 +64,7 @@ Commands:
   chat        Interactive CEO conversation for a playbook (e.g. ceo chat inbox)
   cron        Run a cron trigger autonomously (e.g. ceo cron pr-triage)
   playbook    Manage playbooks (scan, list, info)
+  trace       Show claude-mem observations tagged by a playbook run (ceo trace <name>)
   schedule    List/edit per-user playbook schedules (overrides frontmatter)
   creds       Manage CEO credentials (list, check, path)
   help        Show this message
@@ -1645,6 +1646,77 @@ $YESTERDAY_REPORT"
   cd "$VAULT" && claude --model "$model" --effort "$effort" --system-prompt "$sys_prompt"
 }
 
+cmd_trace() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "Usage: ceo trace <playbook-name> [--limit N]"
+    echo ""
+    echo "Returns claude-mem observations tagged with metadata.playbook_id == <playbook-name>,"
+    echo "plus linked commits captured during the run."
+    exit 1
+  fi
+  if [[ ! "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+    echo "ERROR: invalid playbook name '$name' (must start with [A-Za-z0-9_]; allowed thereafter: A-Z a-z 0-9 . _ -)" >&2
+    exit 1
+  fi
+  shift
+  local limit=50
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)
+        if [ -z "${2:-}" ] || [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+          echo "ERROR: --limit must be a positive integer" >&2
+          exit 1
+        fi
+        limit="$2"; shift 2 ;;
+      --limit=*)
+        limit="${1#--limit=}"
+        if [[ ! "$limit" =~ ^[1-9][0-9]*$ ]]; then
+          echo "ERROR: --limit must be a positive integer" >&2
+          exit 1
+        fi
+        shift ;;
+      *) echo "Unknown arg: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  ceo_validate_vault || exit 1
+  local registry_file="$CEO_DIR/registry.json"
+  if [ -f "$registry_file" ]; then
+    if ! jq empty "$registry_file" 2>/dev/null; then
+      echo "ERROR: $registry_file is not valid JSON. Run 'ceo playbook scan' to regenerate." >&2
+      exit 1
+    fi
+    if ! jq -e --arg n "$name" '.playbooks[] | select(.name == $n)' "$registry_file" >/dev/null 2>&1; then
+      echo "Warning: '$name' is not in $registry_file — searching anyway." >&2
+    fi
+  fi
+
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "ERROR: 'claude' CLI not found. ceo trace uses claude --print to invoke MCP tools." >&2
+    exit 1
+  fi
+
+  local prompt
+  prompt="You are the CEO trace helper. Use the claude-mem MCP tools to find every observation tagged with playbook_id='$name', then summarize.
+
+Steps:
+1. Call mcp__claude-mem__observation_search with query='$name' and limit=$limit. If that tool is unavailable, fall back to mcp__claude-mem__memory_search.
+2. For each result, call mcp__claude-mem__get_observations with the id and check metadata.playbook_id == '$name'. Discard non-matching ids.
+3. Output a markdown table with columns: id | created_at | content (first 120 chars) | linked_commit (from metadata if present).
+4. End with a one-line count: 'Total observations tagged $name: N'.
+
+Do not call any tool other than the three above. Do not write to the filesystem."
+
+  (
+    cd "$VAULT" || exit 1
+    unset CEO_PLAYBOOK_ID
+    printf '%s' "$prompt" | claude --print --max-turns 8 --model sonnet \
+      --allowed-tools "mcp__claude-mem__observation_search mcp__claude-mem__memory_search mcp__claude-mem__get_observations" \
+      --disallowed-tools "Bash Write Edit"
+  )
+}
+
 # Bind vault globals after ceo_require_vault has set CEO_VAULT.
 _bind_vault() { VAULT="$CEO_VAULT"; CEO_DIR="$VAULT/CEO"; }
 
@@ -1665,6 +1737,7 @@ case "${1:-help}" in
   chat)     ceo_require_vault; _bind_vault; shift; cmd_chat "$@" ;;
   cron)     ceo_require_vault; _bind_vault; shift; cmd_cron "$@" ;;
   playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
+  trace)    ceo_require_vault; _bind_vault; shift; cmd_trace "$@" ;;
   schedule) ceo_require_vault; _bind_vault; shift; cmd_schedule "$@" ;;
   creds)    shift; cmd_creds "$@" ;;
   help|-h|--help) cmd_help ;;
