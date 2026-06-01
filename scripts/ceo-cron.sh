@@ -442,6 +442,9 @@ if [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ] && [ "$TIER" = "read" ]; then
 fi
 
 export CEO_RUNNER="$RUNNER"
+# Propagates to claude/ollama/script/MCP server children so observation_add
+# can stamp metadata.playbook_id and `ceo trace` can query by it.
+export CEO_PLAYBOOK_ID="$TRIGGER"
 
 
 _runner_valid=0
@@ -820,6 +823,8 @@ $DOMAIN_TRAINING
   SINGLE_PROMPT_BODY="PLAYBOOK ($TRIGGER):
 $PLAYBOOK_CONTENT
 
+TRACING: If you call mcp__claude-mem__observation_add (or any memory_add alias), include {\"playbook_id\": \"$TRIGGER\"} in the metadata object so this run can be traced with \`ceo trace $TRIGGER\`.
+
 PRE-GATHERED DATA (from shell — do not re-fetch; the answer must be derived from this block alone, do not call Read/Grep/Glob):
 $PRE_GATHERED
 $BRIEFINGS_BLOCK
@@ -1041,6 +1046,8 @@ $IDENTITY_CONTENT
 
 PLAYBOOK ($TRIGGER):
 $PLAYBOOK_CONTENT
+
+TRACING: If you call mcp__claude-mem__observation_add (or any memory_add alias), include {\"playbook_id\": \"$TRIGGER\"} in the metadata object so this run can be traced with \`ceo trace $TRIGGER\`.
 
 Execute ONLY the following pre-approved actions. Do NOT execute anything else.
 Do NOT run any `gh` command — all GitHub data is in PRE-GATHERED DATA below. The shell already fetched it.
