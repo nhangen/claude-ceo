@@ -24,16 +24,17 @@ Issue #125. Initial design used a Stop hook on `pr-review-panel` — that doesn'
 
 | File | Mode | When |
 |---|---|---|
-| `CEO/alerts/triage-autopilot-<host>.md` | overwrite | Every run. Frontmatter: `status: firing\|clear`, `since:`, `last_check:`, `host:`, `last_merge_check:` (the search-cursor timestamp for the next run), `new_merges:` (count seen this run), `triage_ran:` (`0\|1`). |
+| `CEO/alerts/triage-autopilot-<host>.md` | overwrite | Every run. Frontmatter: `status: firing\|clear`, `since:`, `last_check:`, `host:`, `last_merge_check:` (the search-cursor timestamp for the next run), `new_merges:` (count seen this run), `triage_ran:` (`0\|1`), `consec_failures:`, `last_error:` (one of `none`, `gh_failed:<slug>`, `jq_annotate:<slug>`, `missing_remote:<basename>`, `inbox_append_failed`). |
 | `CEO/log/triage-autopilot/YYYY-MM.md` | append | Every run. One line. |
-| `CEO/inbox.md` | append `- [ ]` lines | Only on a tick where new merges were seen AND triage emitted valid JSON. One line per ticket; capped at 3 per tick. Idempotency via per-ticket HTML-comment marker `<!-- triage-autopilot:<ticket-id> -->`. |
+| `CEO/inbox.md` | append `- [ ]` lines | (a) On a tick where new merges were seen AND triage emitted valid JSON: one line per ticket (≤3). (b) On retry-cap give-up: one self-deduping `<!-- triage-autopilot:giveup:<date> -->` line so the user knows the playbook abandoned a merge window. Per-ticket idempotency via `<!-- triage-autopilot:<ticket-id> -->`. |
 
 ## State-machine semantics
 
 - **First run**: records `last_merge_check = now`, status `clear`, does NOT spawn triage. The first cron tick after install establishes the baseline; the first *real* fire happens on the next merge after that.
 - **No new merges**: status `clear`, refresh `last_merge_check`, log a one-liner.
 - **New merges seen, triage runs, JSON valid**: status `firing`, append up to 3 inbox lines (dedup against existing markers in `inbox.md`), advance `last_merge_check` to "now".
-- **New merges seen but triage fails or JSON invalid**: status `firing`, do NOT advance `last_merge_check` (so the next tick will retry the same merge window), log the failure, no inbox writes. Bounded retry: after 3 consecutive failures the state advances anyway and logs a give-up; this prevents a permanently-broken triage from blocking the cursor forever.
+- **`gh` failure on every repo (auth expiry, rate-limit, network)**: status `clear`, `last_error: gh_failed:<slug>`, cursor does NOT advance. The next tick retries the same merge window. Per `safety-invariant-scope`, `gh` errors and "no merges" are distinguished structurally — failures never collapse to a clean tick.
+- **New merges seen but triage fails or JSON invalid**: status `firing`, do NOT advance `last_merge_check`, log the failure, no inbox writes. Bounded retry: after 3 consecutive failures the cursor advances AND a `- [ ] Triage autopilot gave up after N tries — manual /ticket-triage needed for merges since <ts> <!-- triage-autopilot:giveup:<date> -->` line is appended to `inbox.md` (idempotent within the day). This prevents a permanently-broken triage from blocking the cursor *and* surfaces the give-up to the user.
 
 ## Idempotency
 

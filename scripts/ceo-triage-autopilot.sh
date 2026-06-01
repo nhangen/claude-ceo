@@ -69,7 +69,11 @@ esac
 PRIOR_SINCE=$(ceo_read_alert_field "$STATE_FILE" since) || PRIOR_SINCE=""
 PRIOR_LAST_CHECK=$(ceo_read_alert_field "$STATE_FILE" last_merge_check) || PRIOR_LAST_CHECK=""
 _pf=$(ceo_read_alert_field "$STATE_FILE" consec_failures) || _pf=""
-[[ "$_pf" =~ ^[0-9]+$ ]] && PRIOR_FAILS="$_pf"
+if [[ "$_pf" =~ ^[0-9]+$ ]]; then
+  PRIOR_FAILS="$_pf"
+elif [ -n "$_pf" ]; then
+  printf 'WARN: ceo-triage-autopilot: corrupted consec_failures field %q; resetting to 0\n' "$_pf" >&2
+fi
 
 FIRST_RUN=0
 if [ -z "$PRIOR_LAST_CHECK" ]; then
@@ -98,28 +102,45 @@ fi
 # First run: baseline only, do not spawn triage.
 NEW_MERGES_JSON="[]"
 NEW_MERGE_COUNT=0
+TICK_HAD_ERRORS=0
+LAST_ERROR=""
 if [ "$FIRST_RUN" -eq 0 ] && [ "${#REPO_PATHS[@]}" -gt 0 ]; then
   SEARCH_SINCE="$PRIOR_LAST_CHECK"
-  ALL_MERGES=""
+  MERGES_PARTS=()
   for repo_path in "${REPO_PATHS[@]}"; do
     [ -d "$repo_path/.git" ] || [ -f "$repo_path/.git" ] || continue
-    # gh pr list runs in the repo dir; --search merged:>=<ts> author:@me
-    if out=$("$GH_BIN" -C "$repo_path" pr list \
+    repo_slug=$(git -C "$repo_path" config --get remote.origin.url 2>/dev/null \
+      | sed -E 's#.*[:/]([^/:]+/[^/]+)$#\1#; s#\.git$##')
+    if [ -z "$repo_slug" ] || [[ "$repo_slug" != */* ]]; then
+      printf 'WARN: ceo-triage-autopilot: could not derive OWNER/REPO from %s\n' "$repo_path" >&2
+      TICK_HAD_ERRORS=1
+      LAST_ERROR="missing_remote:$(basename "$repo_path")"
+      continue
+    fi
+    gh_stderr=$(mktemp)
+    if out=$("$GH_BIN" pr list --repo "$repo_slug" \
                 --search "is:merged author:@me merged:>=$SEARCH_SINCE" \
                 --json number,title,mergedAt,url \
-                --limit 20 2>/dev/null); then
+                --limit 100 2>"$gh_stderr"); then
+      rm -f "$gh_stderr"
       if [ -n "$out" ] && [ "$out" != "[]" ]; then
-        repo_basename=$(basename "$repo_path")
-        # Annotate each row with the repo basename.
-        annotated=$(printf '%s' "$out" | jq --arg r "$repo_basename" '[.[] | . + {repo: $r}]' 2>/dev/null) || annotated=""
-        if [ -n "$annotated" ] && [ "$annotated" != "[]" ]; then
-          ALL_MERGES="${ALL_MERGES:+$ALL_MERGES,}${annotated:1:${#annotated}-2}"
+        if annotated=$(printf '%s' "$out" | jq -c --arg r "$repo_slug" 'map(. + {repo: $r})' 2>/dev/null); then
+          [ -n "$annotated" ] && [ "$annotated" != "[]" ] && MERGES_PARTS+=("$annotated")
+        else
+          printf 'WARN: ceo-triage-autopilot: jq annotation failed for %s\n' "$repo_slug" >&2
+          TICK_HAD_ERRORS=1
+          LAST_ERROR="jq_annotate:$repo_slug"
         fi
       fi
+    else
+      printf 'WARN: ceo-triage-autopilot: gh pr list failed for %s: %s\n' "$repo_slug" "$(head -c 200 "$gh_stderr" 2>/dev/null)" >&2
+      rm -f "$gh_stderr"
+      TICK_HAD_ERRORS=1
+      LAST_ERROR="gh_failed:$repo_slug"
     fi
   done
-  if [ -n "$ALL_MERGES" ]; then
-    NEW_MERGES_JSON="[$ALL_MERGES]"
+  if [ "${#MERGES_PARTS[@]}" -gt 0 ]; then
+    NEW_MERGES_JSON=$(printf '%s\n' "${MERGES_PARTS[@]}" | jq -s 'add // []' 2>/dev/null || printf '[]')
     NEW_MERGE_COUNT=$(printf '%s' "$NEW_MERGES_JSON" | jq 'length' 2>/dev/null || echo 0)
   fi
 fi
@@ -132,19 +153,23 @@ CONSEC_FAILURES="$PRIOR_FAILS"
 
 if [ "$NEW_MERGE_COUNT" -gt 0 ]; then
   TRIAGE_RAN=1
-  PROMPT=$(cat <<EOF
+  # Build the merge list outside the heredoc so PR titles can't shell-expand.
+  merge_lines=$(printf '%s' "$NEW_MERGES_JSON" \
+    | jq -r '.[] | "- \(.repo)#\(.number): \(.title)"' 2>/dev/null \
+    | sed 's/`/'\''/g; s/\$/_/g')
+  PROMPT=$(cat <<PROMPT_EOF
 You are running on behalf of an automated playbook. Newly merged PRs since the last triage:
 
-$(printf '%s' "$NEW_MERGES_JSON" | jq -r '.[] | "- \(.repo)#\(.number): \(.title)"' 2>/dev/null)
+${merge_lines}
 
-Invoke the /ticket-triage skill against the "$PIPELINE" pipeline. Output exactly one fenced JSON block at the end of your response with this schema, and nothing else after it:
+Invoke the /ticket-triage skill against the "${PIPELINE}" pipeline. Output exactly one fenced JSON block at the end of your response with this schema, and nothing else after it:
 
 \`\`\`json
 {"tickets":[{"id":"<ticket-id>","title":"<short title>","url":"<url>","score":<0..1>,"reason":"<one-line>"}]}
 \`\`\`
 
 At most 3 tickets. If triage cannot run (auth failure, no candidates), emit \`{"tickets":[]}\`. Do not emit any other JSON block.
-EOF
+PROMPT_EOF
 )
   if claude_out=$("$CLAUDE_BIN" --print "$PROMPT" 2>/dev/null); then
     # Extract the last fenced ```json ... ``` block.
@@ -168,6 +193,9 @@ EOF
           TICKETS_WRITTEN=$((TICKETS_WRITTEN + 1))
         else
           printf 'ERROR: ceo-triage-autopilot: failed to append to %s\n' "$INBOX_FILE" >&2
+          TRIAGE_OK=0
+          CONSEC_FAILURES=$((CONSEC_FAILURES + 1))
+          LAST_ERROR="inbox_append_failed"
           break
         fi
       done < <(printf '%s' "$json_block" | jq -r '.tickets[] | [.id, .title, .url, (.score|tostring), .reason] | @tsv')
@@ -193,15 +221,24 @@ fi
 #   - no new merges this tick
 #   - new merges + triage succeeded
 #   - new merges + triage failed BUT we've hit the retry cap (give up)
-if [ "$FIRST_RUN" -eq 1 ] \
-   || [ "$NEW_MERGE_COUNT" -eq 0 ] \
-   || [ "$TRIAGE_OK" -eq 1 ] \
-   || [ "$CONSEC_FAILURES" -ge "$MAX_RETRIES" ]; then
+if [ "$FIRST_RUN" -eq 1 ]; then
   NEW_LAST_CHECK="$NOW"
-  if [ "$CONSEC_FAILURES" -ge "$MAX_RETRIES" ] && [ "$TRIAGE_OK" -eq 0 ] && [ "$NEW_MERGE_COUNT" -gt 0 ]; then
-    printf 'WARN: ceo-triage-autopilot: %d consecutive failures; advancing cursor anyway\n' "$CONSEC_FAILURES" >&2
-    CONSEC_FAILURES=0
+elif [ "$TICK_HAD_ERRORS" -eq 1 ]; then
+  # ANY per-repo gh/jq error holds the cursor. A partial success would
+  # otherwise drop the failed repo's merge window permanently. Re-running
+  # triage next tick is cheap (marker dedup no-ops already-written tickets).
+  NEW_LAST_CHECK="$PRIOR_LAST_CHECK"
+elif [ "$NEW_MERGE_COUNT" -eq 0 ] || [ "$TRIAGE_OK" -eq 1 ]; then
+  NEW_LAST_CHECK="$NOW"
+elif [ "$CONSEC_FAILURES" -ge "$MAX_RETRIES" ]; then
+  NEW_LAST_CHECK="$NOW"
+  giveup_marker="<!-- triage-autopilot:giveup:$(date +%Y-%m-%d) -->"
+  if ! grep -qF -- "$giveup_marker" "$INBOX_FILE" 2>/dev/null; then
+    printf -- '- [ ] Triage autopilot gave up after %d tries — manual /ticket-triage needed for merges since %s %s\n' \
+      "$CONSEC_FAILURES" "$PRIOR_LAST_CHECK" "$giveup_marker" >> "$INBOX_FILE"
   fi
+  printf 'WARN: ceo-triage-autopilot: %d consecutive failures; advancing cursor anyway\n' "$CONSEC_FAILURES" >&2
+  CONSEC_FAILURES=0
 else
   NEW_LAST_CHECK="$PRIOR_LAST_CHECK"
 fi
@@ -230,7 +267,8 @@ if ! {
     --field new_merges="$NEW_MERGE_COUNT" \
     --field triage_ran="$TRIAGE_RAN" \
     --field tickets_written="$TICKETS_WRITTEN" \
-    --field consec_failures="$CONSEC_FAILURES"
+    --field consec_failures="$CONSEC_FAILURES" \
+    --field last_error="${LAST_ERROR:-none}"
   printf '\n# Triage Autopilot — %s\n\n' "$HOST"
   if [ "$FIRST_RUN" -eq 1 ]; then
     printf 'Baseline established. The first cron tick after install does not trigger triage; the next merge will.\n'
