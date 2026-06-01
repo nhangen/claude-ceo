@@ -14,6 +14,12 @@ set -euo pipefail
 # High-stakes actions are written to CEO/approvals/pending.md, not executed.
 
 TRIGGER="${1:?Usage: ceo-cron.sh <trigger>}"
+# Gates filesystem path (.last-run-${TRIGGER}), env export (CEO_PLAYBOOK_ID),
+# and LLM prompt JSON interpolation against quote/escape/traversal injection.
+if [[ ! "$TRIGGER" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+  echo "ERROR: invalid trigger '$TRIGGER' (must start with [A-Za-z0-9_]; allowed thereafter: A-Z a-z 0-9 . _ -)" >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=ceo-config.sh
