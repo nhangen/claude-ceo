@@ -1160,6 +1160,128 @@ PB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_runner_ollama_chunked_scan_when_prompt_exceeds_budget() {
+  # Trigger chunking by creating real vault files so ceo-scan.sh produces enough
+  # scan data to push the prompt over CEO_OLLAMA_MAX_PROMPT_BYTES=5000.
+  # The mock ollama appends to a call log so we can count invocations.
+  #
+  # yq stub: ceo-cron.sh requires yq to be on PATH. We bypass playbook scan
+  # by creating registry.json directly, so a no-op stub is sufficient.
+  cat > "$TEST_HOME/.bun/bin/yq" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/yq"
+
+  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "run" ]; then
+  echo "$2" >> "$HOME/ollama-invoked-model.txt"
+  cat >> "$HOME/ollama-invoked-prompts.txt"
+  printf '\n---CALL---\n' >> "$HOME/ollama-invoked-prompts.txt"
+  echo "LOG_ENTRY:"
+  echo "## 03:10 — morning-scan"
+  echo "**Status:** completed"
+  echo "**Playbook:** playbooks/morning-scan.md"
+  echo "**Output:**"
+  echo "- chunked-scan-sentinel"
+  echo "**Errors:**"
+  echo "- none"
+  echo "END_LOG_ENTRY"
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/ollama"
+
+  cat > "$CEO_DIR/playbooks/morning-scan.md" << 'PB'
+---
+name: morning-scan
+description: chunked scan test
+trigger: cron
+schedule: "50 8 * * 1-5"
+runner: ollama
+model: mistral-small3.2:24b
+preflight: none
+tier: read
+status: active
+---
+# morning-scan body
+PB
+
+  cat > "$CEO_DIR/registry.json" << JSON
+{
+  "schema_version": 2,
+  "generated": "2026-06-02T00:00:00Z",
+  "playbooks": [{
+    "name": "morning-scan",
+    "description": "chunked scan test",
+    "trigger": "cron",
+    "schedule": "50 8 * * 1-5",
+    "model": "mistral-small3.2:24b",
+    "preflight": "none",
+    "tier": "read",
+    "status": "active",
+    "runner": "ollama",
+    "script": "",
+    "skill": "",
+    "out_pattern": "",
+    "inputs": null,
+    "requires": null,
+    "file": "playbooks/morning-scan.md"
+  }]
+}
+JSON
+
+  # Set last-scan marker to the past so all vault files look new to ceo-scan.sh
+  touch -t 202501010000 "$CEO_DIR/log/.last-scan" 2>/dev/null || touch "$CEO_DIR/log/.last-scan"
+
+  # Create vault files to populate VAULT_CHANGES_BY_DOMAIN
+  mkdir -p "$CEO_VAULT/Projects" "$CEO_VAULT/Areas"
+  for i in $(seq 1 8); do
+    echo "project note content $i" > "$CEO_VAULT/Projects/note-$i.md"
+  done
+  echo "area work content" > "$CEO_VAULT/Areas/work.md"
+
+  # Create daily notes with ~2 KB each so SCAN_DATA exceeds 5000 bytes total
+  local _yesterday _today
+  _yesterday=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+  _today=$(date +%Y-%m-%d)
+  mkdir -p "$CEO_VAULT/Daily"
+  { echo "# Yesterday Daily Note"; for _ in $(seq 1 80); do echo "yesterday content line for morning scan test"; done; } \
+    > "$CEO_VAULT/Daily/$_yesterday.md"
+  { echo "# Today Daily Note"; for _ in $(seq 1 40); do echo "today content line for morning scan test"; done; } \
+    > "$CEO_VAULT/Daily/$_today.md"
+
+  # Create a yesterday report to add to SCAN_DATA
+  { echo "# CEO Report"; for _ in $(seq 1 40); do echo "yesterday report line for morning scan test"; done; } \
+    > "$CEO_DIR/reports/$_yesterday.md"
+
+  local rc=0
+  CEO_OLLAMA_MAX_PROMPT_BYTES=5000 CEO_VERBOSE=1 bash "$CRON" morning-scan >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "chunked scan must exit 0 when scan data exceeds budget"
+
+  local calls
+  calls=$(wc -l < "$HOME/ollama-invoked-model.txt" 2>/dev/null | tr -d ' ' || echo 0)
+  if [ "${calls:-0}" -lt 2 ]; then
+    printf '  FAIL [%s] chunked scan must invoke ollama at least twice (chunks + synthesis), got %s\n' \
+      "$CURRENT_TEST" "${calls:-0}"
+    FAILS=$((FAILS + 1))
+  fi
+
+  local report
+  report=$(cat "$CEO_DIR/reports/$_today.md" 2>/dev/null || echo "")
+  assert_contains "$report" "chunked-scan-sentinel" "today's report must contain synthesized output from chunked scan"
+
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  if echo "$skips" | grep -q "exceeds budget"; then
+    printf '  FAIL [%s] chunked scan must not fall through to the budget-exceeded failure path\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
 test_runner_ollama_rejects_non_read_tier() {
   cat > "$CEO_DIR/playbooks/ollama-writetier.md" << 'PB'
 ---

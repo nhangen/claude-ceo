@@ -254,6 +254,114 @@ _append_pending_drip_to_inbox() {
   } >> "$inbox_file"
 }
 
+# _ollama_chunked_scan — run an ollama playbook whose scan data exceeds the
+# context budget by splitting SCAN_BLOCK into per-chunk extraction passes then
+# synthesizing the findings into one final call that produces the LOG_ENTRY.
+# Uses outer-scope vars set before the ollama branch:
+#   SCAN_BLOCK, PLAYBOOK_CONTENT, PRE_GATHERED, BRIEFINGS_BLOCK,
+#   ACTIVE_DOMAINS_BLOCK, PENDING_ASK_BLOCK, BLESSINGS_BLOCK_OUT,
+#   PLAYBOOK_REL, NOW, LOG_DIR, CEO_OLLAMA_MAX_PROMPT_BYTES
+_ollama_chunked_scan() {
+  local model="$1"
+  local trigger="$2"
+
+  local base_prompt
+  base_prompt="PLAYBOOK ($trigger):
+$PLAYBOOK_CONTENT
+
+PRE-GATHERED DATA (from shell — do not re-fetch):
+$PRE_GATHERED
+$BRIEFINGS_BLOCK
+$ACTIVE_DOMAINS_BLOCK
+$PENDING_ASK_BLOCK
+$BLESSINGS_BLOCK_OUT
+
+Output your result in this format:
+LOG_ENTRY:
+## $NOW — $trigger
+**Status:** {completed|failed|partial}
+**Playbook:** $PLAYBOOK_REL
+**Output:**
+{your findings, brief, summary — the main content}
+**Errors:**
+- {any errors, or 'none'}
+END_LOG_ENTRY"
+
+  local base_bytes
+  base_bytes=$(printf '%s' "$base_prompt" | wc -c | tr -d ' ')
+  # Reserve 3 KB for chunk preamble text and synthesis overhead
+  local chunk_budget=$(( CEO_OLLAMA_MAX_PROMPT_BYTES - base_bytes - 3072 ))
+
+  if [ "$chunk_budget" -le 512 ]; then
+    printf '%s [%s] chunked scan: base prompt alone is %s bytes, no room to chunk\n' \
+      "$(date)" "$trigger" "$base_bytes" >> "$LOG_DIR/cron-raw.log"
+    return 1
+  fi
+
+  local total_bytes
+  total_bytes=$(printf '%s' "$SCAN_BLOCK" | wc -c | tr -d ' ')
+  local n_chunks=$(( (total_bytes + chunk_budget - 1) / chunk_budget ))
+  _v "  Chunked scan: $total_bytes bytes → $n_chunks chunk(s) (~$chunk_budget bytes each)"
+
+  local partial_findings="" i offset piece chunk_prompt chunk_out chunk_exit
+  for i in $(seq 1 "$n_chunks"); do
+    offset=$(( (i - 1) * chunk_budget ))
+    piece=$(printf '%s' "$SCAN_BLOCK" | tail -c "+$((offset + 1))" | head -c "$chunk_budget")
+    [ -z "$(printf '%s' "$piece" | tr -d '[:space:]')" ] && continue
+
+    chunk_prompt="Extract actionable findings from this vault data fragment for a morning scan. Output a concise bullet list only — no preamble or commentary.
+
+VAULT DATA FRAGMENT $i of $n_chunks:
+$piece"
+
+    chunk_exit=0
+    chunk_out=$(printf '%s' "$chunk_prompt" | ollama run "$model" \
+      2>>"$LOG_DIR/cron-stderr.log") || chunk_exit=$?
+    if [ "$chunk_exit" -ne 0 ] || [ -z "$(printf '%s' "$chunk_out" | tr -d '[:space:]')" ]; then
+      _v "  WARNING: chunk $i/$n_chunks failed (exit $chunk_exit) — skipping"
+      printf '%s [%s] chunked scan: chunk %s/%s failed (exit %s)\n' \
+        "$(date)" "$trigger" "$i" "$n_chunks" "$chunk_exit" >> "$LOG_DIR/cron-raw.log"
+      continue
+    fi
+    partial_findings="${partial_findings}
+=== Vault fragment $i/$n_chunks ===
+${chunk_out}"
+  done
+
+  if [ -z "$(printf '%s' "$partial_findings" | tr -d '[:space:]')" ]; then
+    printf '%s [%s] chunked scan: all %s chunks failed or empty\n' \
+      "$(date)" "$trigger" "$n_chunks" >> "$LOG_DIR/cron-raw.log"
+    return 1
+  fi
+
+  # Synthesis: base prompt + condensed findings → final LOG_ENTRY
+  local synth_prompt synth_bytes synth_out synth_exit
+  synth_prompt="${base_prompt}
+PRE-SUMMARIZED VAULT FINDINGS (from ${n_chunks}-chunk scan):
+${partial_findings}"
+
+  synth_bytes=$(printf '%s' "$synth_prompt" | wc -c | tr -d ' ')
+  if [ "$synth_bytes" -gt "$CEO_OLLAMA_MAX_PROMPT_BYTES" ]; then
+    _v "  Synthesis prompt too large ($synth_bytes bytes) — truncating findings"
+    local avail=$(( CEO_OLLAMA_MAX_PROMPT_BYTES - base_bytes - 512 ))
+    partial_findings=$(printf '%s' "$partial_findings" | head -c "$avail")
+    synth_prompt="${base_prompt}
+PRE-SUMMARIZED VAULT FINDINGS (truncated):
+${partial_findings}"
+  fi
+
+  synth_exit=0
+  synth_out=$(printf '%s' "$synth_prompt" | ollama run "$model" \
+    2>>"$LOG_DIR/cron-stderr.log") || synth_exit=$?
+  if [ "$synth_exit" -ne 0 ] || [ -z "$(printf '%s' "$synth_out" | tr -d '[:space:]')" ]; then
+    printf '%s [%s] chunked scan synthesis failed (exit %s)\n' \
+      "$(date)" "$trigger" "$synth_exit" >> "$LOG_DIR/cron-raw.log"
+    return 1
+  fi
+
+  printf '%s' "$synth_out"
+}
+
 # --- Settings reader (safe fallback on missing file/bad JSON/no jq) ---
 SETTINGS_FILE="$CEO_DIR/settings.json"
 _cfg() {
@@ -893,6 +1001,18 @@ END_LOG_ENTRY"
     : "${CEO_OLLAMA_MAX_PROMPT_BYTES:=24576}"
     OLLAMA_PROMPT_BYTES=$(printf '%s' "$OLLAMA_PROMPT" | wc -c | tr -d ' ')
     if [ "$OLLAMA_PROMPT_BYTES" -gt "$CEO_OLLAMA_MAX_PROMPT_BYTES" ]; then
+      if [ -n "${SCAN_BLOCK:-}" ]; then
+        _v "Prompt over budget ($OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes) — chunking scan data"
+        OLLAMA_EXIT=0
+        OLLAMA_OUT=$(_ollama_chunked_scan "$OLLAMA_MODEL" "$TRIGGER") || OLLAMA_EXIT=$?
+        if [ "$OLLAMA_EXIT" -ne 0 ] || [ -z "$(printf '%s' "$OLLAMA_OUT" | tr -d '[:space:]')" ]; then
+          _v "FAILED (chunked scan failed)"
+          _record_failure "ollama chunked scan failed for $TRIGGER (original prompt: $OLLAMA_PROMPT_BYTES bytes)"
+          exit 1
+        fi
+        _dispatch_single_output "$TRIGGER" "$OLLAMA_OUT" "model: $OLLAMA_MODEL (chunked)" || exit 1
+        exit 0
+      fi
       _v "FAILED (prompt exceeds budget: $OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes)"
       printf '%s [%s] Prompt exceeds budget (%s bytes > %s) for model: %s\n---\n' \
         "$(date)" "$TRIGGER" "$OLLAMA_PROMPT_BYTES" "$CEO_OLLAMA_MAX_PROMPT_BYTES" "$OLLAMA_MODEL" >> "$LOG_DIR/cron-raw.log"
