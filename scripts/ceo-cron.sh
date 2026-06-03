@@ -172,12 +172,6 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
-# --- Require yq ---
-if ! command -v yq &>/dev/null; then
-  echo "$(date): FATAL — yq not installed. Run: sudo snap install yq" >&2
-  exit 1
-fi
-
 # --- Resolve timeout binary (portable: GNU coreutils on Linux, gtimeout on macOS, no-op fallback) ---
 # macOS ships without `timeout`; `brew install coreutils` provides `gtimeout`. If neither is
 # installed, we fall back to a no-op that just runs the command — claude has its own internal
