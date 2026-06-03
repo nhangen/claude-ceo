@@ -2929,7 +2929,6 @@ requires: [gh]
 PB
 
   # Remove yq from stubbed PATH to simulate a machine without it installed.
-  local saved_path="$PATH"
   rm -f "$TEST_HOME/.bun/bin/yq"
   local rc=0
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
