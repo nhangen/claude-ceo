@@ -1175,8 +1175,8 @@ exec node "$(dirname "$0")/jq.js" "$@"
 SHIM
   chmod +x "$TEST_HOME/.bun/bin/jq"
 
-  # yq stub: ceo-cron.sh requires yq to be on PATH. We bypass playbook scan
-  # by creating registry.json directly, so a no-op stub is sufficient.
+  # yq stub: prevents path-lookup noise in the controlled test PATH. ceo-cron.sh
+  # itself does not call yq (removed in PR #130); stub retained for test isolation.
   cat > "$TEST_HOME/.bun/bin/yq" << 'STUB'
 #!/bin/bash
 exit 0
