@@ -647,35 +647,57 @@ cmd_playbook_scan() {
           print val; exit
         }
       }
-    ' "$file"
+    ' "$file" 2>/dev/null
   }
   # Extract a YAML flow-sequence field and emit as a JSON array, or "null".
   # Handles: [item1, item2] -> ["item1","item2"]. Scalars/absent -> null.
   _fm_array_json() {
     local field="$1" file="$2"
+    # Two-pass approach avoids awk function definitions (which confuse bash quoting).
+    # Pass 1: look for an inline flow sequence or scalar on the same line as the field.
+    local inline
+    inline=$(_fm_scalar "$field" "$file")
+    if [ -n "$inline" ] && [ "$inline" != "null" ]; then
+      if [ "${inline:0:1}" = "[" ] && [ "${inline: -1}" = "]" ]; then
+        # Flow sequence — convert to JSON array.
+        echo "$inline" | awk '{
+          inner = substr($0, 2, length($0)-2)
+          n = split(inner, a, /,[[:space:]]*/);
+          printf "["
+          for (i=1;i<=n;i++) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/,"",a[i])
+            gsub(/^["'"'"']|["'"'"']$/,"",a[i])
+            printf "%s\"%s\"",(i>1?",":""),a[i]
+          }
+          printf "]\n"
+        }' 2>/dev/null
+      else
+        # Scalar — return raw so caller can warn "must be an array".
+        echo "$inline"
+      fi
+      return
+    fi
+    # Pass 2: look for a block sequence (field: on its own line, then "  - item" lines).
     awk -v f="$field" '
       /^---[[:space:]]*$/ { fence++; next }
       fence >= 2 { exit }
-      fence == 1 {
-        if (match($0, "^" f ":")) {
-          val = substr($0, RSTART + length(f) + 1)
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
-          if (val == "" || val == "null") { print "null"; exit }
-          if (substr(val,1,1) == "[" && substr(val,length(val),1) == "]") {
-            inner = substr(val, 2, length(val)-2)
-            n = split(inner, items, /,[[:space:]]*/);
-            printf "["
-            for (i=1; i<=n; i++) {
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", items[i])
-              gsub(/^["'"'"']|["'"'"']$/, "", items[i])
-              printf "%s\"%s\"", (i>1?",":""), items[i]
-            }
-            printf "]\n"; exit
-          }
-          print "null"; exit
-        }
+      fence == 1 && !found && match($0, "^" f ":") {
+        val = substr($0, RSTART+length(f)+1); gsub(/^[[:space:]]+/,"",val)
+        if (val == "" || val == "null") { found=1 }
       }
-    ' "$file"
+      found && /^[[:space:]]+-[[:space:]]/ {
+        item=$0; gsub(/^[[:space:]]+-[[:space:]]+/,"",item)
+        gsub(/^[[:space:]]+|[[:space:]]+$/,"",item)
+        items[++n]=item
+      }
+      found && n>0 && !/^[[:space:]]+-[[:space:]]/ && !/^---/ && !/^[[:space:]]*$/ && !match($0,"^"f":") { exit }
+      END {
+        if (n==0) { print "null"; exit }
+        printf "["
+        for(i=1;i<=n;i++) printf "%s\"%s\"",(i>1?",":""),items[i]
+        printf "]\n"
+      }
+    ' "$file" 2>/dev/null
   }
 
   local dry_run=0

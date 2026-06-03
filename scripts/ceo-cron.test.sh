@@ -2913,4 +2913,40 @@ EOF
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_playbook_scan_succeeds_without_yq() {
+  cat > "$CEO_DIR/playbooks/no-yq-test.md" << 'PB'
+---
+name: no-yq-test
+description: Verify scan works without yq
+trigger: cron
+schedule: "0 9 * * *"
+runner: script
+script: fake-no-yq.sh
+tier: read
+status: active
+requires: [gh]
+---
+PB
+
+  # Remove yq from stubbed PATH to simulate a machine without it installed.
+  local saved_path="$PATH"
+  rm -f "$TEST_HOME/.bun/bin/yq"
+  local rc=0
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo playbook scan must succeed even when yq is not on PATH"
+  assert_file_exists "$CEO_DIR/registry.json" "registry.json must be written without yq"
+  local reg_name
+  reg_name=$(jq -r '.playbooks[] | select(.name=="no-yq-test") | .name' "$CEO_DIR/registry.json" 2>/dev/null)
+  assert_eq "$reg_name" "no-yq-test" "playbook must be registered without yq"
+
+  # Restore yq stub for subsequent tests.
+  cat > "$TEST_HOME/.bun/bin/yq" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/yq"
+  rm -f "$CEO_DIR/playbooks/no-yq-test.md"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
 run_tests
