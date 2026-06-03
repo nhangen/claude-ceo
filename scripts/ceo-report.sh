@@ -68,7 +68,7 @@ type: ceo-daily-report
 HEADER
 fi
 
-HOST="${CEO_HOSTNAME:-$(hostname -s)}"
+HOST="${CEO_HOSTNAME:-$(hostname 2>/dev/null | cut -d. -f1 || echo "unknown")}"
 OS="$(uname -s)"
 META_BLOCK="> **Platform:** $HOST ($OS)"
 if [ -n "${CEO_RUNNER:-}" ]; then

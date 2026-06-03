@@ -1165,6 +1165,16 @@ test_runner_ollama_chunked_scan_when_prompt_exceeds_budget() {
   # scan data to push the prompt over CEO_OLLAMA_MAX_PROMPT_BYTES=5000.
   # The mock ollama appends to a call log so we can count invocations.
   #
+  # jq stub: ceo-cron.sh and ceo-config.sh require jq for registry parsing
+  # (schema validation, entry lookup). Install the shared jq-stub.js which
+  # handles the jq subset used by these scripts.
+  cp "$SCRIPT_DIR/jq-stub.js" "$TEST_HOME/.bun/bin/jq.js"
+  cat > "$TEST_HOME/.bun/bin/jq" << 'SHIM'
+#!/bin/bash
+exec node "$(dirname "$0")/jq.js" "$@"
+SHIM
+  chmod +x "$TEST_HOME/.bun/bin/jq"
+
   # yq stub: ceo-cron.sh requires yq to be on PATH. We bypass playbook scan
   # by creating registry.json directly, so a no-op stub is sufficient.
   cat > "$TEST_HOME/.bun/bin/yq" << 'STUB'
@@ -1211,7 +1221,7 @@ PB
 
   cat > "$CEO_DIR/registry.json" << JSON
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generated": "2026-06-02T00:00:00Z",
   "playbooks": [{
     "name": "morning-scan",
