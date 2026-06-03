@@ -632,11 +632,51 @@ cmd_playbook_diff() {
 }
 
 cmd_playbook_scan() {
-  if ! command -v yq &>/dev/null; then
-    echo "ERROR: yq is required for playbook scanning."
-    echo "Install: brew install yq (macOS) or snap install yq (Linux)"
-    exit 1
-  fi
+  # Extract a scalar field from YAML frontmatter without requiring yq.
+  # Handles quoted and unquoted values; returns empty string if absent.
+  _fm_scalar() {
+    local field="$1" file="$2"
+    awk -v f="$field" '
+      /^---[[:space:]]*$/ { fence++; next }
+      fence >= 2 { exit }
+      fence == 1 {
+        if (match($0, "^" f ":")) {
+          val = substr($0, RSTART + length(f) + 1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+          gsub(/^["'"'"']|["'"'"']$/, "", val)
+          print val; exit
+        }
+      }
+    ' "$file"
+  }
+  # Extract a YAML flow-sequence field and emit as a JSON array, or "null".
+  # Handles: [item1, item2] -> ["item1","item2"]. Scalars/absent -> null.
+  _fm_array_json() {
+    local field="$1" file="$2"
+    awk -v f="$field" '
+      /^---[[:space:]]*$/ { fence++; next }
+      fence >= 2 { exit }
+      fence == 1 {
+        if (match($0, "^" f ":")) {
+          val = substr($0, RSTART + length(f) + 1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+          if (val == "" || val == "null") { print "null"; exit }
+          if (substr(val,1,1) == "[" && substr(val,length(val),1) == "]") {
+            inner = substr(val, 2, length(val)-2)
+            n = split(inner, items, /,[[:space:]]*/);
+            printf "["
+            for (i=1; i<=n; i++) {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", items[i])
+              gsub(/^["'"'"']|["'"'"']$/, "", items[i])
+              printf "%s\"%s\"", (i>1?",":""), items[i]
+            }
+            printf "]\n"; exit
+          }
+          print "null"; exit
+        }
+      }
+    ' "$file"
+  }
 
   local dry_run=0
   for arg in "$@"; do
@@ -715,7 +755,7 @@ cmd_playbook_scan() {
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
     local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual
-    name=$(yq --front-matter=extract '.name // ""' "$f" 2>/dev/null || echo "")
+    name=$(_fm_scalar name "$f")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
       skipped=$((skipped + 1))
@@ -751,25 +791,25 @@ cmd_playbook_scan() {
       seen_names_vault="${seen_names_vault}${name}"$'\n'
     fi
 
-    description=$(yq --front-matter=extract '.description // ""' "$f" 2>/dev/null || echo "")
-    trigger=$(yq --front-matter=extract '.trigger // ""' "$f" 2>/dev/null || echo "")
-    schedule=$(yq --front-matter=extract '.schedule // ""' "$f" 2>/dev/null || echo "")
-    model=$(yq --front-matter=extract '.model // ""' "$f" 2>/dev/null || echo "")
-    preflight=$(yq --front-matter=extract '.preflight // ""' "$f" 2>/dev/null || echo "")
-    tier=$(yq --front-matter=extract '.tier // ""' "$f" 2>/dev/null || echo "")
-    status=$(yq --front-matter=extract '.status // ""' "$f" 2>/dev/null || echo "")
+    description=$(_fm_scalar description "$f")
+    trigger=$(_fm_scalar trigger "$f")
+    schedule=$(_fm_scalar schedule "$f")
+    model=$(_fm_scalar model "$f")
+    preflight=$(_fm_scalar preflight "$f")
+    tier=$(_fm_scalar tier "$f")
+    status=$(_fm_scalar status "$f")
     if [ -n "$status" ] && ! ceo_status_valid "$status"; then
       echo "  SKIP  $basename (unknown status: '$status', expected: ${CEO_VALID_STATUSES[*]})" >&2
       skipped=$((skipped + 1))
       invalid_status=$((invalid_status + 1))
       continue
     fi
-    bin=$(yq --front-matter=extract '.bin // ""' "$f" 2>/dev/null || echo "")
-    runner=$(yq --front-matter=extract '.runner // ""' "$f" 2>/dev/null || echo "")
-    script=$(yq --front-matter=extract '.script // ""' "$f" 2>/dev/null || echo "")
-    skill=$(yq --front-matter=extract '.skill // ""' "$f" 2>/dev/null || echo "")
-    out_pattern=$(yq --front-matter=extract '.out_pattern // ""' "$f" 2>/dev/null || echo "")
-    artifact=$(yq --front-matter=extract '.artifact // ""' "$f" 2>/dev/null || echo "")
+    bin=$(_fm_scalar bin "$f")
+    runner=$(_fm_scalar runner "$f")
+    script=$(_fm_scalar script "$f")
+    skill=$(_fm_scalar skill "$f")
+    out_pattern=$(_fm_scalar out_pattern "$f")
+    artifact=$(_fm_scalar artifact "$f")
     # Validate at parse time per enum-config-typo-fallback: an artifact
     # template must be vault-relative ("CEO/...") and reference only the
     # supported tokens {TODAY} and {HOST}. Reject anything else with a warn,
@@ -793,7 +833,7 @@ cmd_playbook_scan() {
           ;;
       esac
     fi
-    requires=$(yq --front-matter=extract --output-format=json '.requires // null' "$f" 2>/dev/null || echo "null")
+    requires=$(_fm_array_json requires "$f")
     case "$requires" in
       "null"|"") requires="null" ;;
       \[*\]) ;;
@@ -806,7 +846,7 @@ cmd_playbook_scan() {
     # Absent → all keys (backward-compatible default). [] → none. Non-array →
     # warn and treat as absent (per enum-config-typo-fallback rule). yq emits
     # a JSON array as a "compact" string when shaped right; we capture raw JSON.
-    inputs=$(yq --front-matter=extract --output-format=json '.inputs // null' "$f" 2>/dev/null || echo "null")
+    inputs=$(_fm_array_json inputs "$f")
     case "$inputs" in
       "null"|"") inputs="null" ;;
       \[*\])
