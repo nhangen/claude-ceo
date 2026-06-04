@@ -151,7 +151,7 @@ async function main() {
   }
 
   if (args.obsidianVault) {
-    const noteDir = join(args.obsidianVault, "Projects", "Development", "nhangen", "claude-ceo", "value-tracker");
+    const noteDir = join(args.obsidianVault, "CEO", "reports", "value-tracker");
     mkdirSync(noteDir, { recursive: true });
     const notePath = join(noteDir, `${snap.generatedAt.slice(0, 10)}.md`);
     writeFileSync(notePath, formatObsidian(snap));
