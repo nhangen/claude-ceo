@@ -5,7 +5,7 @@ trigger: cron
 schedule: "*/30 * * * *"
 preflight: none
 tier: low-stakes write
-status: active
+status: disabled
 runner: script
 script: ceo-triage-autopilot.sh
 ---
