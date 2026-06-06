@@ -891,6 +891,27 @@ cmd_playbook_scan() {
         ;;
     esac
 
+    # `hosts` scopes which machines a playbook runs on. Absent → ["*"] (all
+    # hosts). Recorded in the registry but NOT enforced in Phase 1 — the daemon
+    # (Phase 1.5) consumes it. Validate shape at parse and default malformed
+    # values to ["*"] rather than silently scoping to nowhere or a typo'd host
+    # (per enum-config-typo-fallback). An empty array means "runs nowhere",
+    # which is a likely mistake — use status:disabled to stop a playbook.
+    hosts=$(_fm_array_json hosts "$f")
+    case "$hosts" in
+      "null"|"") hosts='["*"]' ;;
+      \[*\])
+        if ! echo "$hosts" | jq -e 'type=="array" and length>0 and all(.[]; type=="string" and test("\\S"))' >/dev/null 2>&1; then
+          echo "  WARN  $basename: 'hosts' must be a non-empty array of host names (got: $(echo "$hosts" | head -c 60)) — defaulting to [\"*\"] (all hosts)" >&2
+          hosts='["*"]'
+        fi
+        ;;
+      *)
+        echo "  WARN  $basename: 'hosts' must be an array (got: $(echo "$hosts" | head -c 60)) — defaulting to [\"*\"] (all hosts)" >&2
+        hosts='["*"]'
+        ;;
+    esac
+
     local runner_valid=0
     [ -z "$runner" ] && runner_valid=1
     for r in "${CEO_VALID_RUNNERS[@]}"; do
@@ -964,8 +985,9 @@ cmd_playbook_scan() {
       --arg artifact "$artifact" \
       --argjson inputs "$inputs" \
       --argjson requires "$requires" \
+      --argjson hosts "$hosts" \
       --arg file "$entry_file" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, inputs:$inputs, requires:$requires, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))

@@ -3408,4 +3408,165 @@ SH
   rm -f "$SCRIPT_DIR/dr-trunc.sh"
 }
 
+# --- #139: hosts: frontmatter (host-scoped scheduling, recorded not enforced) ---
+_hosts_in_registry() {
+  jq -r --arg n "$1" '.playbooks[] | select(.name==$n) | .hosts | tojson' "$CEO_DIR/registry.json" 2>/dev/null
+}
+
+# Absent hosts → recorded as ["*"] (all hosts), the backward-compatible default.
+test_hosts_absent_defaults_to_wildcard() {
+  cat > "$CEO_DIR/playbooks/h-absent.md" << 'PB'
+---
+name: h-absent
+description: no hosts field
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_eq "$(_hosts_in_registry h-absent)" '["*"]' "absent hosts must default to [\"*\"]"
+}
+
+# Explicit flow-sequence host list is recorded verbatim.
+test_hosts_explicit_list_recorded() {
+  cat > "$CEO_DIR/playbooks/h-list.md" << 'PB'
+---
+name: h-list
+description: explicit host list
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts: ["ml-1", "mac-mini"]
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_eq "$(_hosts_in_registry h-list)" '["ml-1","mac-mini"]' "explicit hosts list must be recorded verbatim"
+}
+
+# Block-sequence YAML form is parsed identically.
+test_hosts_block_sequence_recorded() {
+  cat > "$CEO_DIR/playbooks/h-block.md" << 'PB'
+---
+name: h-block
+description: block-sequence host list
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts:
+  - ml-1
+  - wsl-carla
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_eq "$(_hosts_in_registry h-block)" '["ml-1","wsl-carla"]' "block-sequence hosts must parse to a JSON array"
+}
+
+# A scalar (non-array) hosts value must warn and default to ["*"], never silently
+# scope to a single host (enum-config-typo-fallback: don't coerce a typo).
+test_hosts_non_array_warns_and_defaults() {
+  cat > "$CEO_DIR/playbooks/h-scalar.md" << 'PB'
+---
+name: h-scalar
+description: scalar hosts
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts: ml-1
+---
+PB
+  local out; out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  assert_contains "$out" "must be an array" "scan must warn when hosts is not an array"
+  assert_eq "$(_hosts_in_registry h-scalar)" '["*"]' "non-array hosts must default to [\"*\"]"
+}
+
+# An empty array would mean "runs nowhere" — a likely mistake that would silently
+# disable the playbook. Warn and default to all; use status:disabled to stop one.
+test_hosts_empty_array_warns_and_defaults() {
+  cat > "$CEO_DIR/playbooks/h-empty.md" << 'PB'
+---
+name: h-empty
+description: empty hosts array
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts: []
+---
+PB
+  local out; out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  assert_contains "$out" "must be a non-empty array" "scan must warn on empty hosts array"
+  assert_eq "$(_hosts_in_registry h-empty)" '["*"]' "empty hosts array must default to [\"*\"]"
+}
+
+# An empty/whitespace element is malformed → warn and default to all.
+test_hosts_empty_element_warns_and_defaults() {
+  cat > "$CEO_DIR/playbooks/h-blank.md" << 'PB'
+---
+name: h-blank
+description: hosts with an empty element
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts: ["ml-1", ""]
+---
+PB
+  local out; out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  assert_contains "$out" "must be a non-empty array" "scan must warn on a blank host element"
+  assert_eq "$(_hosts_in_registry h-blank)" '["*"]' "a blank host element must default to [\"*\"]"
+}
+
+# A whitespace-only element pins the test("\\S") clause specifically (distinct
+# from the empty-string case above) — if someone simplifies \S to !="" this
+# test is the only thing that catches the regression.
+test_hosts_whitespace_element_warns_and_defaults() {
+  cat > "$CEO_DIR/playbooks/h-ws.md" << 'PB'
+---
+name: h-ws
+description: hosts with a whitespace-only element
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts: ["ml-1", "  "]
+---
+PB
+  local out; out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  assert_contains "$out" "must be a non-empty array" "scan must warn on a whitespace-only host element"
+  assert_eq "$(_hosts_in_registry h-ws)" '["*"]' "a whitespace-only element must default to [\"*\"]"
+}
+
+# Phase 1 records hosts but does NOT enforce them: a playbook scoped to a
+# different host still dispatches here. Enforcement arrives with the daemon (1.5).
+test_hosts_recorded_but_not_enforced_in_phase1() {
+  cat > "$CEO_DIR/playbooks/h-other.md" << 'PB'
+---
+name: h-other
+description: scoped to a host that is not this one
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts: ["definitely-not-this-host"]
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_eq "$(_hosts_in_registry h-other)" '["definitely-not-this-host"]' "off-host scope must still be recorded"
+  bash "$CRON" h-other --scheduled >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "Phase 1 must NOT enforce hosts — playbook still dispatches"
+}
+
 run_tests
