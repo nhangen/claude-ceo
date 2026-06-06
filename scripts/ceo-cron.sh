@@ -13,7 +13,60 @@ set -euo pipefail
 #
 # High-stakes actions are written to CEO/approvals/pending.md, not executed.
 
-TRIGGER="${1:?Usage: ceo-cron.sh <trigger>}"
+# One positional trigger plus optional run-mode flags.
+#   - manual (default, or --manual): the human on-demand path. Runs any valid
+#     status — active, draft, or disabled — per docs/playbooks/SCHEMA.md, so a
+#     bare `ceo-cron.sh <name>` smoke-tests a draft exactly as the schema documents.
+#   - scheduled (--scheduled): the cron/daemon path. Enforces status:active.
+# `ceo playbook scan` installs cron lines for active playbooks only, so a bare
+# cron line never targets a draft; the Phase-1.5 daemon fires from the registry
+# and passes --scheduled to enforce active itself.
+RUN_MODE="manual"
+_mode_set=""
+FORCE_REQUESTED=0
+TRIGGER=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scheduled|--manual)
+      _m="${1#--}"
+      if [ -n "$_mode_set" ] && [ "$_mode_set" != "$_m" ]; then
+        echo "ERROR: --scheduled and --manual are mutually exclusive" >&2
+        exit 1
+      fi
+      RUN_MODE="$_m"; _mode_set="$_m"
+      ;;
+    --force) FORCE_REQUESTED=1 ;;
+    -*)
+      echo "ERROR: unknown flag '$1' (expected: --scheduled, --manual, --force)" >&2
+      exit 1
+      ;;
+    *)
+      if [ -n "$TRIGGER" ]; then
+        echo "ERROR: unexpected extra argument '$1' (only one trigger allowed)" >&2
+        exit 1
+      fi
+      TRIGGER="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$TRIGGER" ]; then
+  echo "Usage: ceo-cron.sh <trigger> [--scheduled|--manual] [--force]" >&2
+  exit 1
+fi
+
+# --force is a manual-only smoke-test escape hatch from the per-trigger cooldown.
+# Honouring it on scheduled runs would let a stray crontab/daemon flag defeat the
+# runaway-protection invariant, so it is rejected outside manual mode.
+if [ "$FORCE_REQUESTED" = "1" ]; then
+  if [ "$RUN_MODE" != "manual" ]; then
+    echo "ERROR: --force is only valid with manual (on-demand) runs, not --scheduled" >&2
+    exit 1
+  fi
+  CEO_FORCE=1
+fi
+
 # Gates filesystem path (.last-run-${TRIGGER}), env export (CEO_PLAYBOOK_ID),
 # and LLM prompt JSON interpolation against quote/escape/traversal injection.
 if [[ ! "$TRIGGER" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
@@ -410,7 +463,7 @@ else
   fi
 fi
 
-# --- Per-trigger runaway protection (skip with --force) ---
+# --- Per-trigger runaway protection (bypass with --force or CEO_FORCE=1) ---
 if [ "${CEO_FORCE:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
   LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null || echo 0)
   case "$LAST_RUN" in (''|*[!0-9]*) LAST_RUN=0 ;; esac
@@ -539,7 +592,8 @@ MODEL=$(echo "$ENTRY" | jq -r '.model // ""')
 # claude-default fallback below. Empty string = no override.
 MODEL_FROM_FRONTMATTER="$MODEL"
 PREFLIGHT=$(echo "$ENTRY" | jq -r '.preflight // "none"')
-STATUS=$(echo "$ENTRY" | jq -r '.status // "active"')
+STATUS=$(echo "$ENTRY" | jq -r '.status // "unset"')
+[ -z "$STATUS" ] && STATUS="unset"
 TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
 TIER=$(echo "$ENTRY" | jq -r '.tier // "read"')
 RUNNER=$(echo "$ENTRY" | jq -r '.runner // ""')
@@ -599,10 +653,26 @@ if [ ! -f "$PLAYBOOK_FILE" ]; then
   exit 1
 fi
 
-if [ "$STATUS" != "active" ]; then
-  echo "$(date): Playbook '$TRIGGER' is not active (status: $STATUS)" >> "$LOG_DIR/cron-skips.log"
-  exit 0
-fi
+# Run-mode gate (#137):
+#   - scheduled (cron/daemon): runs status:active only.
+#   - manual (default / --manual, on-demand): runs any valid status
+#     (active|draft|disabled) per docs/playbooks/SCHEMA.md status-semantics.
+# A missing status normalises to "unset" above and is treated as "not active":
+# runnable on-demand but never under a scheduler. Non-empty STATUS is validated
+# against CEO_VALID_STATUSES at scan time (scripts/ceo); the catch-all is
+# defense-in-depth against a hand-edited registry.
+case "$RUN_MODE:$STATUS" in
+  scheduled:active) ;;
+  manual:active|manual:draft|manual:disabled|manual:unset) ;;
+  scheduled:draft|scheduled:disabled|scheduled:unset)
+    echo "$(date): Playbook '$TRIGGER' not runnable in scheduled mode (status: $STATUS)" >> "$LOG_DIR/cron-skips.log"
+    exit 0
+    ;;
+  *)
+    echo "$(date): Playbook '$TRIGGER' not runnable — unexpected run-mode:status '$RUN_MODE:$STATUS'" >> "$LOG_DIR/cron-skips.log"
+    exit 0
+    ;;
+esac
 
 # --- Run preflight check ---
 PREFLIGHT_FN="preflight_${PREFLIGHT}"
