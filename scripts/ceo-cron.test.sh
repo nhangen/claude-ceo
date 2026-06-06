@@ -2948,4 +2948,80 @@ STUB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
+# --- #137 run-modes: scheduled enforces active; manual allows draft ---
+
+_register_status_playbook() {
+  cat > "$CEO_DIR/playbooks/$1.md" << PB
+---
+name: $1
+description: run-mode fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: $2
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+}
+
+test_cron_manual_mode_runs_draft_playbook() {
+  _register_status_playbook rm-draft draft
+  bash "$CRON" rm-draft --manual >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "manual run of a draft playbook must dispatch"
+}
+
+test_cron_scheduled_mode_skips_draft_playbook() {
+  _register_status_playbook rm-draft2 draft
+  bash "$CRON" rm-draft2 --scheduled >/dev/null 2>&1 || true
+  assert_fails "scheduled run of a draft must NOT dispatch" test -f "$HOME/claude-invoked.txt"
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "rm-draft2" "draft skip must be logged"
+}
+
+test_cron_default_mode_skips_draft_playbook() {
+  _register_status_playbook rm-draft3 draft
+  bash "$CRON" rm-draft3 >/dev/null 2>&1 || true
+  assert_fails "bare invocation (default=scheduled) of a draft must NOT dispatch" test -f "$HOME/claude-invoked.txt"
+}
+
+test_cron_manual_mode_skips_disabled_playbook() {
+  _register_status_playbook rm-disabled disabled
+  bash "$CRON" rm-disabled --manual >/dev/null 2>&1 || true
+  assert_fails "manual run of a disabled playbook must NOT dispatch" test -f "$HOME/claude-invoked.txt"
+}
+
+test_cron_scheduled_mode_runs_active_playbook() {
+  _register_status_playbook rm-active active
+  bash "$CRON" rm-active --scheduled >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "scheduled run of an active playbook must dispatch"
+}
+
+test_cron_rejects_unknown_run_mode_flag() {
+  _register_status_playbook rm-active2 active
+  local rc=0
+  bash "$CRON" rm-active2 --bogus >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "unknown flag must be rejected with non-zero exit"
+  assert_contains "$(cat "$TEST_HOME/cron-stderr")" "unknown" "stderr must explain the rejected flag"
+}
+
+test_cron_force_flag_bypasses_cooldown() {
+  _register_status_playbook rm-cool active
+  bash "$CRON" rm-cool --scheduled >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "first run must dispatch and record last-run"
+  rm -f "$HOME/claude-invoked.txt"
+  bash "$CRON" rm-cool --scheduled >/dev/null 2>&1 || true
+  assert_fails "second run within cooldown must be skipped" test -f "$HOME/claude-invoked.txt"
+  bash "$CRON" rm-cool --manual --force >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "--force must bypass the per-trigger cooldown"
+}
+
+test_cron_catchall_skips_unknown_status() {
+  _register_status_playbook rm-weird active
+  local reg="$CEO_DIR/registry.json"
+  jq '(.playbooks[] | select(.name=="rm-weird") | .status) = "bogus"' "$reg" > "$reg.tmp" && mv "$reg.tmp" "$reg"
+  bash "$CRON" rm-weird --manual >/dev/null 2>&1 || true
+  assert_fails "out-of-set status must never dispatch (defense-in-depth catch-all)" test -f "$HOME/claude-invoked.txt"
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "rm-weird" "catch-all skip must be logged"
+}
+
 run_tests

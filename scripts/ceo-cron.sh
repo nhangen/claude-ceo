@@ -13,7 +13,37 @@ set -euo pipefail
 #
 # High-stakes actions are written to CEO/approvals/pending.md, not executed.
 
-TRIGGER="${1:?Usage: ceo-cron.sh <trigger>}"
+# One positional trigger plus optional run-mode flags. RUN_MODE defaults to
+# "scheduled" (safe-fail): a bare invocation — as every existing crontab line
+# uses — enforces status:active exactly as before. A human passes --manual to
+# run a draft; forgetting the flag fails safe rather than auto-running a draft.
+RUN_MODE="scheduled"
+TRIGGER=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scheduled) RUN_MODE="scheduled" ;;
+    --manual)    RUN_MODE="manual" ;;
+    --force)     CEO_FORCE=1 ;;
+    -*)
+      echo "ERROR: unknown flag '$1' (expected: --scheduled, --manual, --force)" >&2
+      exit 1
+      ;;
+    *)
+      if [ -n "$TRIGGER" ]; then
+        echo "ERROR: unexpected extra argument '$1' (only one trigger allowed)" >&2
+        exit 1
+      fi
+      TRIGGER="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$TRIGGER" ]; then
+  echo "Usage: ceo-cron.sh <trigger> [--scheduled|--manual] [--force]" >&2
+  exit 1
+fi
+
 # Gates filesystem path (.last-run-${TRIGGER}), env export (CEO_PLAYBOOK_ID),
 # and LLM prompt JSON interpolation against quote/escape/traversal injection.
 if [[ ! "$TRIGGER" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
@@ -410,7 +440,7 @@ else
   fi
 fi
 
-# --- Per-trigger runaway protection (skip with --force) ---
+# --- Per-trigger runaway protection (bypass with --force or CEO_FORCE=1) ---
 if [ "${CEO_FORCE:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
   LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null || echo 0)
   case "$LAST_RUN" in (''|*[!0-9]*) LAST_RUN=0 ;; esac
@@ -599,10 +629,23 @@ if [ ! -f "$PLAYBOOK_FILE" ]; then
   exit 1
 fi
 
-if [ "$STATUS" != "active" ]; then
-  echo "$(date): Playbook '$TRIGGER' is not active (status: $STATUS)" >> "$LOG_DIR/cron-skips.log"
-  exit 0
-fi
+# Run-mode gate (#137): scheduled invocations enforce status:active; manual
+# (human, --manual) invocations may also run a draft for smoke-testing. disabled
+# and any unexpected status never auto-run. STATUS is validated against
+# CEO_VALID_STATUSES at scan time and RUN_MODE at arg-parse; the catch-all is
+# defense-in-depth against a hand-edited registry.
+case "$RUN_MODE:$STATUS" in
+  scheduled:active|manual:active|manual:draft)
+    ;;
+  scheduled:draft|scheduled:disabled|manual:disabled)
+    echo "$(date): Playbook '$TRIGGER' not runnable in $RUN_MODE mode (status: $STATUS)" >> "$LOG_DIR/cron-skips.log"
+    exit 0
+    ;;
+  *)
+    echo "$(date): Playbook '$TRIGGER' not runnable — unexpected run-mode:status '$RUN_MODE:$STATUS'" >> "$LOG_DIR/cron-skips.log"
+    exit 0
+    ;;
+esac
 
 # --- Run preflight check ---
 PREFLIGHT_FN="preflight_${PREFLIGHT}"
