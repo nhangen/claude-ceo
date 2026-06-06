@@ -3242,6 +3242,7 @@ STUB
   bash "$CRON" dr-write --dry-run >/dev/null 2>&1 || true
 
   assert_eq "$(wc -l < "$HOME/claude-calls.log" 2>/dev/null | tr -d ' ')" "1" "dry-run tier:write must run PLAN only — EXECUTE must be skipped"
+  assert_fails "write-tier dry-run must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dr-write"
   assert_not_contains "$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null)" "deploy the thing" "dry-run must not append high-stakes proposals to the approvals queue"
   local pf; pf=$(_preview_file dr-write)
   assert_contains "$(cat "$pf" 2>/dev/null)" "deploy the thing" "preview must list the deferred high-stakes action"
@@ -3316,6 +3317,95 @@ test_dry_run_under_scheduled_warns() {
   bash "$CRON" dr-sched --scheduled --dry-run >/dev/null 2>&1 || true
   assert_file_exists "$(_preview_file dr-sched)" "dry-run under scheduled must still preview"
   assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "dry-run" "a dry-run under --scheduled must emit a WARN"
+}
+
+# Failure path: a dry-run that hits a failure must NOT increment the fail-count,
+# stamp .last-run, fire the pending alert, or notify — it previews the would-fail.
+# (read-tier claude exit 1 reaches _record_failure.)
+test_dry_run_failure_path_has_no_side_effects() {
+  _register_status_playbook dr-fail active
+  echo 3 > "$CEO_DIR/log/.fail-count"
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+exit 1
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CRON" dr-fail --dry-run >/dev/null 2>&1 || true
+
+  assert_eq "$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null)" "3" "dry-run failure must not increment the fail-count"
+  assert_fails "dry-run failure must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dr-fail"
+  assert_contains "$(cat "$(_preview_file dr-fail)" 2>/dev/null)" "Would record FAILURE" "preview must record the would-be failure"
+}
+
+# pending-drip writes to the host inbox (a CEO decision-state mutation). A dry-run
+# must preview that instead of mutating the inbox.
+test_dry_run_pending_drip_does_not_write_inbox() {
+  cat > "$CEO_DIR/playbooks/pending-drip.md" << 'PB'
+---
+name: pending-drip
+description: dry-run pending-drip fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+cat << 'OUT'
+LOG_ENTRY:
+## 09:00 — pending-drip
+**Status:** completed
+**Playbook:** playbooks/pending-drip.md
+**Output:**
+- A genuine pending question to surface.
+**Errors:**
+- none
+END_LOG_ENTRY
+OUT
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  bash "$CRON" pending-drip --dry-run >/dev/null 2>&1 || true
+
+  assert_fails "dry-run must not create the host inbox" test -d "$CEO_DIR/inbox"
+  assert_contains "$(cat "$(_preview_file pending-drip)" 2>/dev/null)" "inbox" "preview must note the would-be inbox append"
+}
+
+# _preview truncates the per-day file on the first write of each run, so a second
+# dry-run of the same trigger/day REPLACES rather than appends.
+test_dry_run_preview_truncates_per_run() {
+  cat > "$CEO_DIR/playbooks/dr-trunc.md" << 'PB'
+---
+name: dr-trunc
+description: dry-run truncation fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: dr-trunc.sh
+---
+PB
+  cat > "$SCRIPT_DIR/dr-trunc.sh" << 'SH'
+#!/bin/bash
+true
+SH
+  chmod +x "$SCRIPT_DIR/dr-trunc.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  bash "$CRON" dr-trunc --dry-run >/dev/null 2>&1 || true
+  bash "$CRON" dr-trunc --dry-run >/dev/null 2>&1 || true
+
+  assert_eq "$(grep -c '# DRY-RUN preview' "$(_preview_file dr-trunc)" 2>/dev/null | tr -d ' ')" "1" "a re-run must replace the preview, not append a second header"
+
+  rm -f "$SCRIPT_DIR/dr-trunc.sh"
 }
 
 run_tests
