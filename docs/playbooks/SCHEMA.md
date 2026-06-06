@@ -35,9 +35,22 @@ Unknown values for enum fields are **rejected at parse time** with a `SKIP` diag
 | missing / empty | yes | no (treated as inactive) | yes (`status: -`) | no special surface |
 | anything else | **rejected at parse** with `SKIP <basename> (unknown status: ...)` — entry is dropped from the registry, no fallback to a default | — | — | — |
 
+### Run modes — on-demand vs scheduled
+
+`ceo-cron.sh` distinguishes who is invoking it:
+
+| Invocation | Mode | Status enforcement |
+|---|---|---|
+| `ceo-cron.sh <name>` (bare) or `--manual` | manual (on-demand) | runs any valid status — the "on-demand" column above |
+| `ceo-cron.sh <name> --scheduled` | scheduled (cron/daemon) | runs `status: active` only; `draft` / `disabled` / missing are skipped |
+
+The default is **manual**, so a bare `ceo-cron.sh <name>` is the on-demand path the table documents. The scheduler (the Phase-1.5 daemon, and any cron line that opts in) passes `--scheduled` to enforce `active`. Because `ceo playbook scan` installs cron lines for `active` playbooks only, a real cron line never targets a non-active playbook regardless of mode.
+
+`--scheduled` and `--manual` are mutually exclusive. `--force` (manual-only) bypasses the per-trigger cooldown for iterative smoke-testing; it is rejected with `--scheduled`.
+
 ### Use draft for WIP playbooks
 
-`draft` exists for "exists, runnable on demand, not ready for cron." Author iteratively via `bash scripts/ceo-cron.sh <name>` until happy with the behavior, then flip frontmatter to `status: active` and re-run `ceo playbook scan` to install.
+`draft` exists for "exists, runnable on demand, not ready for cron." Author iteratively via `bash scripts/ceo-cron.sh <name>` (optionally `--force` to bypass the cooldown between runs) until happy with the behavior, then flip frontmatter to `status: active` and re-run `ceo playbook scan` to install.
 
 ### Use disabled to durably tear down
 

@@ -2948,7 +2948,9 @@ STUB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
-# --- #137 run-modes: scheduled enforces active; manual allows draft ---
+# --- #137 run-modes: scheduled (cron/daemon, --scheduled) enforces active;
+#     manual (default / --manual, on-demand) runs any valid status per
+#     docs/playbooks/SCHEMA.md status-semantics. ---
 
 _register_status_playbook() {
   cat > "$CEO_DIR/playbooks/$1.md" << PB
@@ -2971,6 +2973,21 @@ test_cron_manual_mode_runs_draft_playbook() {
   assert_file_exists "$HOME/claude-invoked.txt" "manual run of a draft playbook must dispatch"
 }
 
+# SCHEMA: bare ceo-cron.sh <name> IS the on-demand path. Default mode is manual,
+# so a bare invocation runs a draft. Fails on the old gate and on a default=scheduled impl.
+test_cron_default_mode_runs_draft_playbook() {
+  _register_status_playbook rm-draft-d draft
+  bash "$CRON" rm-draft-d >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "bare (default=manual) run of a draft must dispatch (SCHEMA on-demand)"
+}
+
+# SCHEMA: on-demand runs disabled too (explicit human force-run).
+test_cron_manual_mode_runs_disabled_playbook() {
+  _register_status_playbook rm-disabled disabled
+  bash "$CRON" rm-disabled --manual >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "manual run of a disabled playbook must dispatch (SCHEMA on-demand)"
+}
+
 test_cron_scheduled_mode_skips_draft_playbook() {
   _register_status_playbook rm-draft2 draft
   bash "$CRON" rm-draft2 --scheduled >/dev/null 2>&1 || true
@@ -2978,16 +2995,10 @@ test_cron_scheduled_mode_skips_draft_playbook() {
   assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "rm-draft2" "draft skip must be logged"
 }
 
-test_cron_default_mode_skips_draft_playbook() {
-  _register_status_playbook rm-draft3 draft
-  bash "$CRON" rm-draft3 >/dev/null 2>&1 || true
-  assert_fails "bare invocation (default=scheduled) of a draft must NOT dispatch" test -f "$HOME/claude-invoked.txt"
-}
-
-test_cron_manual_mode_skips_disabled_playbook() {
-  _register_status_playbook rm-disabled disabled
-  bash "$CRON" rm-disabled --manual >/dev/null 2>&1 || true
-  assert_fails "manual run of a disabled playbook must NOT dispatch" test -f "$HOME/claude-invoked.txt"
+test_cron_scheduled_mode_skips_disabled_playbook() {
+  _register_status_playbook rm-disabled2 disabled
+  bash "$CRON" rm-disabled2 --scheduled >/dev/null 2>&1 || true
+  assert_fails "scheduled run of a disabled playbook must NOT dispatch" test -f "$HOME/claude-invoked.txt"
 }
 
 test_cron_scheduled_mode_runs_active_playbook() {
@@ -2996,32 +3007,94 @@ test_cron_scheduled_mode_runs_active_playbook() {
   assert_file_exists "$HOME/claude-invoked.txt" "scheduled run of an active playbook must dispatch"
 }
 
+# Missing status: SCHEMA treats it as "not active". The old `// "active"`
+# coercion would wrongly run it under --scheduled; it must skip.
+test_cron_scheduled_mode_skips_missing_status() {
+  cat > "$CEO_DIR/playbooks/rm-nostatus.md" << 'PB'
+---
+name: rm-nostatus
+description: run-mode fixture, no status field
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_contains "$(jq -r '.playbooks[].name' "$CEO_DIR/registry.json" 2>/dev/null)" "rm-nostatus" "missing-status playbook must be registered (so the gate, not a missing entry, is what skips it)"
+  bash "$CRON" rm-nostatus --scheduled >/dev/null 2>&1 || true
+  assert_fails "scheduled run of a missing-status playbook must NOT dispatch (SCHEMA: missing = not active)" test -f "$HOME/claude-invoked.txt"
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "not runnable in scheduled mode" "skip must come from the run-mode gate, not a missing registry entry"
+}
+
+test_cron_flag_before_trigger_is_accepted() {
+  _register_status_playbook rm-order draft
+  bash "$CRON" --manual rm-order >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "flags before the trigger must parse (order-independent)"
+}
+
 test_cron_rejects_unknown_run_mode_flag() {
   _register_status_playbook rm-active2 active
   local rc=0
   bash "$CRON" rm-active2 --bogus >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
   assert_eq "$rc" "1" "unknown flag must be rejected with non-zero exit"
   assert_contains "$(cat "$TEST_HOME/cron-stderr")" "unknown" "stderr must explain the rejected flag"
+  assert_fails "a rejected invocation must not dispatch" test -f "$HOME/claude-invoked.txt"
 }
 
+test_cron_rejects_conflicting_run_modes() {
+  _register_status_playbook rm-active3 active
+  local rc=0
+  bash "$CRON" rm-active3 --scheduled --manual >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "--scheduled and --manual together must be rejected"
+  assert_fails "a rejected invocation must not dispatch" test -f "$HOME/claude-invoked.txt"
+}
+
+test_cron_rejects_empty_trigger() {
+  local rc=0
+  bash "$CRON" --manual >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "a flag with no trigger must exit non-zero"
+  assert_contains "$(cat "$TEST_HOME/cron-stderr")" "Usage" "stderr must print usage"
+}
+
+test_cron_rejects_double_trigger() {
+  local rc=0
+  bash "$CRON" alpha beta >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "two positional triggers must be rejected"
+}
+
+# --force is a manual-only smoke-test escape hatch; it must not weaken the
+# runaway-protection invariant on scheduled (cron/daemon) runs.
+test_cron_rejects_force_on_scheduled() {
+  _register_status_playbook rm-active4 active
+  local rc=0
+  bash "$CRON" rm-active4 --scheduled --force >/dev/null 2>"$TEST_HOME/cron-stderr" || rc=$?
+  assert_eq "$rc" "1" "--force with --scheduled must be rejected"
+}
+
+# Isolate --force: all three runs are manual+active, so only --force can explain
+# the third dispatch surviving the cooldown.
 test_cron_force_flag_bypasses_cooldown() {
   _register_status_playbook rm-cool active
-  bash "$CRON" rm-cool --scheduled >/dev/null 2>&1 || true
+  bash "$CRON" rm-cool --manual >/dev/null 2>&1 || true
   assert_file_exists "$HOME/claude-invoked.txt" "first run must dispatch and record last-run"
   rm -f "$HOME/claude-invoked.txt"
-  bash "$CRON" rm-cool --scheduled >/dev/null 2>&1 || true
-  assert_fails "second run within cooldown must be skipped" test -f "$HOME/claude-invoked.txt"
+  bash "$CRON" rm-cool --manual >/dev/null 2>&1 || true
+  assert_fails "second manual run within cooldown must be skipped" test -f "$HOME/claude-invoked.txt"
   bash "$CRON" rm-cool --manual --force >/dev/null 2>&1 || true
   assert_file_exists "$HOME/claude-invoked.txt" "--force must bypass the per-trigger cooldown"
 }
 
+# The catch-all arm must skip an out-of-set status (hand-edited registry) AND emit
+# its distinct diagnostic — not the message any non-active status produced under
+# the old gate (that would be a tautology passing on pre-change code).
 test_cron_catchall_skips_unknown_status() {
   _register_status_playbook rm-weird active
   local reg="$CEO_DIR/registry.json"
   jq '(.playbooks[] | select(.name=="rm-weird") | .status) = "bogus"' "$reg" > "$reg.tmp" && mv "$reg.tmp" "$reg"
   bash "$CRON" rm-weird --manual >/dev/null 2>&1 || true
   assert_fails "out-of-set status must never dispatch (defense-in-depth catch-all)" test -f "$HOME/claude-invoked.txt"
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "rm-weird" "catch-all skip must be logged"
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unexpected run-mode:status" "catch-all must emit its distinct diagnostic"
 }
 
 run_tests
