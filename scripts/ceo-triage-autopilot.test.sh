@@ -158,8 +158,70 @@ OUT
 EOF
   chmod +x "$TEST_HOME/stubs/fake-claude-malformed"
 
+  # gh stub that returns one deterministic merge for ANY --repo slug, so
+  # routing tests can seed merges for arbitrary owners.
+  cat > "$TEST_HOME/stubs/fake-gh-any" << 'EOF'
+#!/bin/bash
+slug=""; prev=""
+for a in "$@"; do [ "$prev" = "--repo" ] && slug="$a"; prev="$a"; done
+case "$*" in
+  *"pr list"*"--repo "*"--search "*"--json "*)
+    n=$(printf '%s' "$slug" | cksum | cut -d' ' -f1); n=$((n % 900 + 100))
+    printf '[{"number":%s,"title":"Merge in %s","mergedAt":"2026-06-01T00:00:00Z","url":"https://github.com/%s/pull/%s"}]\n' "$n" "$slug" "$slug" "$n" ;;
+  *) echo "fake-gh-any: unexpected argv: $*" >&2; exit 99 ;;
+esac
+EOF
+  chmod +x "$TEST_HOME/stubs/fake-gh-any"
+
+  # claude stub that records the prompt it was handed, then emits valid JSON.
+  cat > "$TEST_HOME/stubs/fake-claude-record" << 'EOF'
+#!/bin/bash
+case "$1" in --print) ;; *) echo "fake-claude-record: bad argv: $*" >&2; exit 99 ;; esac
+printf '%s\n----\n' "$2" >> "${CLAUDE_PROMPT_LOG:-/dev/null}"
+cat <<OUT
+\`\`\`json
+{"tickets":[{"id":"OM-1","title":"First","url":"https://zenhub/1","score":0.9,"reason":"adjacent"}]}
+\`\`\`
+OUT
+EOF
+  chmod +x "$TEST_HOME/stubs/fake-claude-record"
+
+  # claude stub: records prompt; succeeds for ZenHub prompts, FAILS for the
+  # GitHub-issues prompt (exercises per-source partial failure).
+  cat > "$TEST_HOME/stubs/fake-claude-failgithub" << 'EOF'
+#!/bin/bash
+case "$1" in --print) ;; *) echo "fake-claude-failgithub: bad argv: $*" >&2; exit 99 ;; esac
+printf '%s\n----\n' "$2" >> "${CLAUDE_PROMPT_LOG:-/dev/null}"
+if printf '%s' "$2" | grep -q "GitHub-issues source"; then
+  echo "fake-claude-failgithub: simulated github triage failure" >&2; exit 1
+fi
+cat <<OUT
+\`\`\`json
+{"tickets":[{"id":"OM-1","title":"First","url":"https://zenhub/1","score":0.9,"reason":"adjacent"}]}
+\`\`\`
+OUT
+EOF
+  chmod +x "$TEST_HOME/stubs/fake-claude-failgithub"
+
+  # claude stub: tickets array passes the type/length validation but an element
+  # has a non-scalar field, so the @tsv extraction errors mid-stream.
+  cat > "$TEST_HOME/stubs/fake-claude-badrow" << 'EOF'
+#!/bin/bash
+case "$1" in --print) ;; *) echo "fake-claude-badrow: bad argv: $*" >&2; exit 99 ;; esac
+cat <<OUT
+\`\`\`json
+{"tickets":[{"id":"OM-9","title":"bad","url":{"nested":"object"},"score":0.5,"reason":"r"}]}
+\`\`\`
+OUT
+EOF
+  chmod +x "$TEST_HOME/stubs/fake-claude-badrow"
+
   export CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-empty"
   export CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-ok"
+  # Route the test owner (`test/*`) to ZenHub so existing tests are unaffected;
+  # `nhangen/*` to GitHub. Other owners fall through to skip.
+  export CEO_TRIAGE_ZENHUB_OWNERS="awesomemotive nhangenam test"
+  export CEO_TRIAGE_GITHUB_OWNERS="nhangen"
 }
 
 teardown() {
@@ -167,7 +229,25 @@ teardown() {
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
   unset CEO_VAULT CEO_DIR CEO_HOSTNAME TEST_HOME HOME_BACKUP PATH_BACKUP \
-        CEO_GH_BIN CEO_TRIAGE_CLAUDE_BIN CEO_TRIAGE_REPO_LIST
+        CEO_GH_BIN CEO_TRIAGE_CLAUDE_BIN CEO_TRIAGE_REPO_LIST \
+        CEO_TRIAGE_ZENHUB_OWNERS CEO_TRIAGE_GITHUB_OWNERS CLAUDE_PROMPT_LOG
+}
+
+# Reset the repo list to exactly the given slugs (git-inits each repo).
+reset_repo_list_with() {
+  cat > "$TEST_HOME/repo-list.md" << 'EOF'
+| Repo | Local Path |
+|------|------------|
+EOF
+  local slug name dir
+  for slug in "$@"; do
+    name=$(basename "$slug")
+    dir="$TEST_HOME/repos/$name"
+    git init -q "$dir"
+    git -C "$dir" remote remove origin 2>/dev/null || true
+    git -C "$dir" remote add origin "git@github.com:${slug}.git"
+    printf '| `%s` | `%s` |\n' "$name" "$dir" >> "$TEST_HOME/repo-list.md"
+  done
 }
 
 run_autopilot() {
@@ -410,6 +490,120 @@ test_log_line_records_status_tokens() {
   assert_contains "$body" "status=" "log line must record status"
   assert_contains "$body" "new_merges=" "log line must record new_merges count"
   assert_contains "$body" "triage_ran=" "log line must record triage_ran"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_personal_owner_routes_to_github_source() {
+  reset_repo_list_with "nhangen/personal-x"
+  export CLAUDE_PROMPT_LOG="$TEST_HOME/prompts.log"; : > "$CLAUDE_PROMPT_LOG"
+  run_autopilot   # baseline
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-record" run_autopilot
+  assert_eq "$(state_field triage_ran)" "1" "personal merge should spawn triage"
+  local prompts; prompts=$(cat "$CLAUDE_PROMPT_LOG")
+  assert_contains "$prompts" "nhangen/personal-x" "github prompt must name the repo slug"
+  assert_contains "$prompts" "GitHub-issues source" "github prompt must declare the github source"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_am_owner_routes_to_zenhub_pipeline() {
+  reset_repo_list_with "awesomemotive/optin-monster-app"
+  export CLAUDE_PROMPT_LOG="$TEST_HOME/prompts.log"; : > "$CLAUDE_PROMPT_LOG"
+  run_autopilot   # baseline
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-record" run_autopilot
+  assert_eq "$(state_field triage_ran)" "1" "AM merge should spawn triage"
+  local prompts; prompts=$(cat "$CLAUDE_PROMPT_LOG")
+  assert_contains "$prompts" "pipeline" "zenhub prompt must target a pipeline"
+  if printf '%s' "$prompts" | grep -q "GitHub-issues source"; then
+    printf '  FAIL [%s] AM repo must NOT use the github source\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_unknown_owner_is_skipped_but_advances_cursor() {
+  reset_repo_list_with "altamira2/some-thing"
+  export CLAUDE_PROMPT_LOG="$TEST_HOME/prompts.log"; : > "$CLAUDE_PROMPT_LOG"
+  run_autopilot   # baseline
+  sed -i.bak 's/^last_merge_check: .*/last_merge_check: 2026-01-01T00:00:00+0000/' \
+    "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md"
+  rm -f "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md.bak"
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-record" run_autopilot
+  assert_eq "$(state_field triage_ran)" "0" "unknown-owner merge must NOT spawn triage"
+  assert_eq "$(state_field status)" "clear" "skip-only tick is clear"
+  if [ -s "$CLAUDE_PROMPT_LOG" ]; then
+    printf '  FAIL [%s] skipped owner must not invoke claude\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  if [ "$(state_field last_merge_check)" = "2026-01-01T00:00:00+0000" ]; then
+    printf '  FAIL [%s] skip-only merges must still advance the cursor\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_partial_source_failure_holds_cursor() {
+  reset_repo_list_with "test/sample" "nhangen/personal-x"
+  export CLAUDE_PROMPT_LOG="$TEST_HOME/prompts.log"; : > "$CLAUDE_PROMPT_LOG"
+  run_autopilot   # baseline
+  sed -i.bak 's/^last_merge_check: .*/last_merge_check: 2026-01-01T00:00:00+0000/' \
+    "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md"
+  rm -f "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md.bak"
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-failgithub" run_autopilot
+  assert_eq "$(state_field last_merge_check)" "2026-01-01T00:00:00+0000" \
+    "a failed github spawn must hold the cursor (don't drop the merge window)"
+  assert_eq "$(state_field consec_failures)" "1" "partial failure counts as one failure"
+  # Prove it's genuinely PARTIAL, not total: the surviving ZenHub source must
+  # have written its ticket even though the GitHub source failed. Without this,
+  # the test passes identically when both sources fail.
+  assert_eq "$(state_field tickets_written)" "1" "surviving zenhub source still wrote its ticket"
+  if ! grep -qF -- '<!-- triage-autopilot:OM-1 -->' "$CEO_DIR/inbox.md"; then
+    printf '  FAIL [%s] zenhub ticket OM-1 must be in inbox despite github failure\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  # The held-cursor tick must record WHICH failure occurred, not last_error: none.
+  if [ "$(state_field last_error)" = "none" ]; then
+    printf '  FAIL [%s] spawn failure must set last_error, got none\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_spawn_cardinality_one_zenhub_spawn_per_tick() {
+  # Two AM repos in one tick -> exactly ONE ZenHub spawn (unified board), and
+  # two personal repos -> one GitHub spawn each. Prompts are '----'-separated
+  # in the recording stub's log.
+  reset_repo_list_with "awesomemotive/a" "nhangenam/b" "nhangen/p1" "nhangen/p2"
+  export CLAUDE_PROMPT_LOG="$TEST_HOME/prompts.log"; : > "$CLAUDE_PROMPT_LOG"
+  run_autopilot   # baseline
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-record" run_autopilot
+  local zenhub_spawns github_spawns
+  zenhub_spawns=$(grep -c '"inbox" pipeline' "$CLAUDE_PROMPT_LOG")
+  github_spawns=$(grep -c 'GitHub-issues source' "$CLAUDE_PROMPT_LOG")
+  assert_eq "$zenhub_spawns" "1" "two AM repos collapse to one ZenHub spawn"
+  assert_eq "$github_spawns" "2" "two personal repos get one GitHub spawn each"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_validated_tickets_with_bad_row_is_failure_not_silent_advance() {
+  # tickets array passes type/length validation but a row breaks @tsv. This must
+  # be a recorded failure (cursor held), NOT a silent zero-row "success" that
+  # advances the cursor and drops the merge window.
+  reset_repo_list_with "test/sample"
+  run_autopilot   # baseline
+  sed -i.bak 's/^last_merge_check: .*/last_merge_check: 2026-01-01T00:00:00+0000/' \
+    "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md"
+  rm -f "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md.bak"
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-badrow" run_autopilot
+  assert_eq "$(state_field last_merge_check)" "2026-01-01T00:00:00+0000" \
+    "bad ticket row must hold the cursor, not silently advance"
+  assert_eq "$(state_field consec_failures)" "1" "bad ticket row counts as a failure"
+  assert_eq "$(state_field tickets_written)" "0" "no tickets written from a broken row"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
