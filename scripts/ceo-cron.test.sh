@@ -3504,7 +3504,7 @@ hosts: []
 ---
 PB
   local out; out=$(bash "$CEO_CLI" playbook scan 2>&1)
-  assert_contains "$out" "hosts" "scan must warn on empty hosts array"
+  assert_contains "$out" "must be a non-empty array" "scan must warn on empty hosts array"
   assert_eq "$(_hosts_in_registry h-empty)" '["*"]' "empty hosts array must default to [\"*\"]"
 }
 
@@ -3523,8 +3523,29 @@ hosts: ["ml-1", ""]
 ---
 PB
   local out; out=$(bash "$CEO_CLI" playbook scan 2>&1)
-  assert_contains "$out" "hosts" "scan must warn on a blank host element"
+  assert_contains "$out" "must be a non-empty array" "scan must warn on a blank host element"
   assert_eq "$(_hosts_in_registry h-blank)" '["*"]' "a blank host element must default to [\"*\"]"
+}
+
+# A whitespace-only element pins the test("\\S") clause specifically (distinct
+# from the empty-string case above) — if someone simplifies \S to !="" this
+# test is the only thing that catches the regression.
+test_hosts_whitespace_element_warns_and_defaults() {
+  cat > "$CEO_DIR/playbooks/h-ws.md" << 'PB'
+---
+name: h-ws
+description: hosts with a whitespace-only element
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+hosts: ["ml-1", "  "]
+---
+PB
+  local out; out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  assert_contains "$out" "must be a non-empty array" "scan must warn on a whitespace-only host element"
+  assert_eq "$(_hosts_in_registry h-ws)" '["*"]' "a whitespace-only element must default to [\"*\"]"
 }
 
 # Phase 1 records hosts but does NOT enforce them: a playbook scoped to a
