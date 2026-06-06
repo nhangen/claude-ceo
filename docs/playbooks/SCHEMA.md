@@ -22,6 +22,7 @@ Unknown values for enum fields are **rejected at parse time** with a `SKIP` diag
 | `bin` | no | string | If set, `ceo playbook scan` installs a `~/.local/bin/<bin-without-.sh>` symlink pointing at `scripts/<bin>`. Only created for `status: active`. |
 | `inputs` | no | JSON array | Pre-gather keys the dispatcher injects into the prompt context. Empty array = no pre-gathered context. Absent = all keys (back-compat default). Unknown keys warn-and-skip at dispatch. Valid keys: `pr_data`, `pending_count`, `today_log`, `yesterday_log`, `daily_note`, `briefings_training`, `active_domains`, `pending_ask`, `scan_data`, `blessings`. |
 | `requires` | no | JSON array of env-var names | Credentials the playbook needs (e.g. `["HUBSPOT_REFRESH_TOKEN"]`). `ceo creds check <name>` reports missing values. Non-array entries are warned and dropped. |
+| `hosts` | no | JSON array of host names | Which machines the playbook runs on. Absent or `["*"]` → all hosts. **Recorded in the registry but not yet enforced** — the Phase-1.5 daemon consumes it; see [Host scoping](#host-scoping). Malformed values (scalar, empty array, blank element) warn and default to `["*"]`. |
 | `artifact` | recommended for `runner: script` | string template | Expected output path relative to the vault. Must start with `CEO/`. Supports `{TODAY}` (YYYY-MM-DD) and `{HOST}` (short hostname). Unknown tokens reject at parse. `ceo doctor` cross-checks declared artifact vs disk for every active script that logged "completed" today. |
 | `out_pattern` | no | string | Legacy reporting pattern (output filename hint). Kept for back-compat with older playbooks. New playbooks should use `artifact`. |
 
@@ -53,6 +54,22 @@ The default is **manual**, so a bare `ceo-cron.sh <name>` is the on-demand path 
 That preview is **host-local**: `CEO/log/preview/` is excluded from Syncthing in `syncthing/shared.stignore`, so a dry-run on one host never propagates to the others. The rest of `CEO/log/` *is* synced — the daily log and the operational diagnostic journals (`cron-skips.log`, `cron-stderr.log`) — which is why the daily-log header write is also skipped in dry-run. A dry-run still appends clearly-labelled diagnostic lines to `cron-skips.log` (e.g. the `--scheduled` WARN below); that journal is the dispatcher's operational debug channel, not CEO decision-state.
 
 `--dry-run` bypasses the cooldown so it can be run iteratively, and is allowed under `--scheduled` (with a WARN to `cron-skips.log`) so a daemon can smoke-test without acting. Non-guarantee: read-only external calls still run and still cost tokens — `--dry-run` skips effects, not reads.
+
+### Host scoping
+
+The `hosts` field declares which machines a playbook may run on:
+
+| `hosts` value | Meaning |
+|---|---|
+| absent | all hosts (recorded as `["*"]`) |
+| `["*"]` | all hosts |
+| `["ml-1", "mac-mini"]` | only those named hosts (matched against the short hostname) |
+| `["*", "ml-1"]` | `*` mixed with names is reserved to mean **all hosts** — the wildcard dominates |
+| scalar / `[]` / blank element | **malformed** — `ceo playbook scan` warns and records `["*"]` |
+
+`ceo playbook scan` validates the shape at parse time and never silently scopes a playbook to nowhere or to a typo'd host: any malformed value defaults to `["*"]` with a `WARN` (per [`enum-config-typo-fallback`](../../../.claude/rules/enum-config-typo-fallback.md)). To stop a playbook entirely, use `status: disabled`, not an empty `hosts` list.
+
+**Phase 1 records `hosts` but does not enforce it** — every host still runs every playbook regardless of scope. Enforcement arrives with the Phase-1.5 daemon, which will bump the registry `schema_version` so a non-enforcing peer binary can't run a host-scoped playbook everywhere.
 
 ### Use draft for WIP playbooks
 
