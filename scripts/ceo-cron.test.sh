@@ -3097,4 +3097,163 @@ test_cron_catchall_skips_unknown_status() {
   assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unexpected run-mode:status" "catch-all must emit its distinct diagnostic"
 }
 
+# --- #138: --dry-run preview mode ---
+# Preview file lives in non-synced host-local scratch: $CEO_DIR/log/preview/<trigger>-<TODAY>.md
+_preview_file() { echo "$CEO_DIR/log/preview/$1-$(date +%Y-%m-%d).md"; }
+
+# A runner:script playbook in dry-run must NOT exec the script; it previews the
+# would-run command instead. This is the core "show what would happen, do nothing".
+test_dry_run_script_runner_skips_exec_and_previews() {
+  cat > "$CEO_DIR/playbooks/dr-script.md" << 'PB'
+---
+name: dr-script
+description: dry-run script fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: dr-script.sh
+---
+PB
+  cat > "$SCRIPT_DIR/dr-script.sh" << SH
+#!/bin/bash
+echo "ran" > "$TEST_HOME/dr-script-fired.txt"
+SH
+  chmod +x "$SCRIPT_DIR/dr-script.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  bash "$CRON" dr-script --dry-run >/dev/null 2>&1 || true
+
+  assert_fails "dry-run must NOT exec the script" test -f "$TEST_HOME/dr-script-fired.txt"
+  local pf; pf=$(_preview_file dr-script)
+  assert_file_exists "$pf" "dry-run must write a preview file"
+  assert_contains "$(cat "$pf" 2>/dev/null)" "dr-script.sh" "preview must name the would-run script"
+
+  rm -f "$SCRIPT_DIR/dr-script.sh"
+}
+
+# Cooldown integrity: a dry-run must not stamp .last-run, or it would silently
+# suppress the next real scheduled run.
+test_dry_run_does_not_write_last_run() {
+  _register_status_playbook dr-nolastrun active
+  bash "$CRON" dr-nolastrun --dry-run >/dev/null 2>&1 || true
+  assert_fails "dry-run must not write the .last-run stamp" test -f "$CEO_DIR/log/.last-run-dr-nolastrun"
+  assert_file_exists "$(_preview_file dr-nolastrun)" "dry-run must still produce a preview"
+}
+
+# A dry-run must bypass the per-trigger cooldown so it can be run iteratively
+# right after a real run.
+test_dry_run_bypasses_cooldown() {
+  _register_status_playbook dr-cool active
+  bash "$CRON" dr-cool --manual >/dev/null 2>&1 || true
+  assert_file_exists "$CEO_DIR/log/.last-run-dr-cool" "real run must stamp last-run"
+  bash "$CRON" dr-cool --dry-run >/dev/null 2>&1 || true
+  assert_file_exists "$(_preview_file dr-cool)" "dry-run must run despite a recent real run (cooldown bypassed)"
+}
+
+# read-tier dry-run: the read-only model call may happen, but its output is
+# routed to the preview file — NOT posted to Discord and NOT recorded as a run.
+test_dry_run_read_tier_no_discord_and_previews_output() {
+  cat > "$CEO_DIR/playbooks/dr-read.md" << 'PB'
+---
+name: dr-read
+description: dry-run read fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+cat << 'OUT'
+LOG_ENTRY:
+## 09:00 — dr-read
+**Status:** completed
+**Playbook:** playbooks/dr-read.md
+**Output:**
+Preview body from the read model.
+**Errors:**
+- none
+END_LOG_ENTRY
+OUT
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  mkdir -p "$TEST_HOME/curl"
+  export CURL_CAPTURE_DIR="$TEST_HOME/curl"
+  cat > "$HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+out="$CURL_CAPTURE_DIR/payload.json"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d) shift; printf '%s' "$1" > "$out" ;;
+  esac
+  shift || true
+done
+exit 0
+STUB
+  chmod +x "$HOME/.bun/bin/curl"
+  mkdir -p "$HOME/.config/claude-ceo"
+  echo '{"discord_report_webhook":"http://127.0.0.1/report-channel"}' > "$HOME/.config/claude-ceo/secrets.json"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" dr-read --dry-run >/dev/null 2>&1 || true
+
+  assert_fails "dry-run must not post to Discord" test -f "$CURL_CAPTURE_DIR/payload.json"
+  local pf; pf=$(_preview_file dr-read)
+  assert_contains "$(cat "$pf" 2>/dev/null)" "Preview body from the read model." "preview must capture the model output"
+  assert_not_contains "$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null)" "dr-read completed" "dry-run must not append to cron-runs.log"
+
+  unset CURL_CAPTURE_DIR
+}
+
+# tier:write dry-run: PLAN runs (read-only) but EXECUTE is skipped, and the
+# high-stakes proposal is previewed rather than appended to the approvals queue.
+test_dry_run_write_tier_skips_execute_and_pending() {
+  cat > "$CEO_DIR/playbooks/dr-write.md" << 'PB'
+---
+name: dr-write
+description: dry-run write fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+echo "call" >> "$HOME/claude-calls.log"
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | deploy the thing | gh deploy"
+echo "ACTION: 2 | read | check the status | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" dr-write --dry-run >/dev/null 2>&1 || true
+
+  assert_eq "$(wc -l < "$HOME/claude-calls.log" 2>/dev/null | tr -d ' ')" "1" "dry-run tier:write must run PLAN only — EXECUTE must be skipped"
+  assert_not_contains "$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null)" "deploy the thing" "dry-run must not append high-stakes proposals to the approvals queue"
+  local pf; pf=$(_preview_file dr-write)
+  assert_contains "$(cat "$pf" 2>/dev/null)" "deploy the thing" "preview must list the deferred high-stakes action"
+  assert_contains "$(cat "$pf" 2>/dev/null)" "check the status" "preview must list the safe action that would execute"
+}
+
+# Dry-run is allowed under --scheduled (e.g. a daemon smoke-test) but must warn,
+# so a cron stuck in dry-run is observable rather than silently doing nothing.
+test_dry_run_under_scheduled_warns() {
+  _register_status_playbook dr-sched active
+  bash "$CRON" dr-sched --scheduled --dry-run >/dev/null 2>&1 || true
+  assert_file_exists "$(_preview_file dr-sched)" "dry-run under scheduled must still preview"
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "dry-run" "a dry-run under --scheduled must emit a WARN"
+}
+
 run_tests

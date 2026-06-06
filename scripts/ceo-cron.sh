@@ -24,6 +24,7 @@ set -euo pipefail
 RUN_MODE="manual"
 _mode_set=""
 FORCE_REQUESTED=0
+DRY_RUN=0
 TRIGGER=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,8 +37,9 @@ while [ $# -gt 0 ]; do
       RUN_MODE="$_m"; _mode_set="$_m"
       ;;
     --force) FORCE_REQUESTED=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     -*)
-      echo "ERROR: unknown flag '$1' (expected: --scheduled, --manual, --force)" >&2
+      echo "ERROR: unknown flag '$1' (expected: --scheduled, --manual, --force, --dry-run)" >&2
       exit 1
       ;;
     *)
@@ -52,7 +54,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$TRIGGER" ]; then
-  echo "Usage: ceo-cron.sh <trigger> [--scheduled|--manual] [--force]" >&2
+  echo "Usage: ceo-cron.sh <trigger> [--scheduled|--manual] [--force] [--dry-run]" >&2
   exit 1
 fi
 
@@ -65,6 +67,19 @@ if [ "$FORCE_REQUESTED" = "1" ]; then
     exit 1
   fi
   CEO_FORCE=1
+fi
+
+# --dry-run is a preview mode, orthogonal to run-mode: it runs every read-only
+# phase (gather, PLAN, read-tier model call) but performs NO side effect —
+# EXECUTE is skipped, scripts/skills are not run, nothing is written to the
+# approvals queue, Discord, the report intake, .last-run, or the fail-counter.
+# What WOULD happen is written to a host-local, non-synced preview file.
+# It bypasses the cooldown so it can be run iteratively, and is allowed under
+# --scheduled (with a WARN) so a daemon can smoke-test without acting.
+# Non-guarantee: read-only external calls (gather, PLAN, read-tier call) still
+# run and still cost tokens — dry-run skips effects, not reads.
+if [ "$DRY_RUN" = "1" ]; then
+  export CEO_DRY_RUN=1
 fi
 
 # Gates filesystem path (.last-run-${TRIGGER}), env export (CEO_PLAYBOOK_ID),
@@ -91,15 +106,56 @@ LOG_FILE="$LOG_DIR/$TODAY.md"
 LOCK_FILE="${CEO_LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}"
 LAST_RUN_FILE="$LOG_DIR/.last-run-${TRIGGER}"
 FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
+# Host-local, non-synced preview scratch (see output-locations.md). A dry-run
+# overwrites this per (trigger, day) so repeated previews don't accumulate.
+PREVIEW_DIR="$LOG_DIR/preview"
+PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
 
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
 _v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }
+
+# _preview <heading-line> [body]: append a section to the dry-run preview file.
+# No-op outside dry-run. First write of a run truncates the per-day file so a
+# re-run shows the latest preview rather than stacking onto stale ones.
+_preview() {
+  [ "${CEO_DRY_RUN:-}" = "1" ] || return 0
+  mkdir -p "$PREVIEW_DIR"
+  if [ -z "${_preview_started:-}" ]; then
+    {
+      echo "# DRY-RUN preview — $TRIGGER ($TODAY $NOW)"
+      echo "# No side effects performed. Read-only phases (gather/PLAN/read call) may still have run."
+      echo ""
+    } > "$PREVIEW_FILE"
+    _preview_started=1
+  fi
+  {
+    printf -- '- %s\n' "$1"
+    [ -n "${2:-}" ] && printf '%s\n' "$2" | sed 's/^/    /'
+    echo ""
+  } >> "$PREVIEW_FILE"
+}
+
+# _report <subcommand> <trigger> <content>: single chokepoint for ceo-report.sh.
+# In dry-run the report (and its Discord side-channel) is folded into the
+# preview file instead of being posted/written, so no path can leak a dry-run
+# to Discord or the report intake.
+_report() {
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    _preview "Report (${1}) that would post to Discord / report intake:" "${3:-}"
+    return 0
+  fi
+  "$SCRIPT_DIR/ceo-report.sh" "$@"
+}
 
 # Single source of truth for terminal-exit bookkeeping. Every success path
 # calls _record_success; every failure path calls _record_failure. Deferral
 # paths (chat-only, status-not-active, missing playbook, preflight no-work)
 # are not failures and exit directly without invoking either helper.
 _record_success() {
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    _preview "Would record SUCCESS (no .last-run / fail-count reset / cron-runs.log / notify)."
+    return 0
+  fi
   echo 0 > "$FAIL_COUNT_FILE"
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
@@ -112,6 +168,11 @@ _record_success() {
 
 _record_failure() {
   local reason="$1"
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    echo "$(date): DRY-RUN — would record failure: $reason" >> "$LOG_DIR/cron-skips.log"
+    _preview "Would record FAILURE: $reason (no fail-count increment / pending alert / notify / .last-run)."
+    return 0
+  fi
   echo "$(date): ERROR — $reason" >> "$LOG_DIR/cron-skips.log"
   local fails
   fails=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
@@ -159,7 +220,7 @@ _check_rate_limit() {
     fi
 
     _v "SKIPPED (rate-limited in $phase)"
-    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** skipped: rate-limited
+    _report action "$TRIGGER" "**Status:** skipped: rate-limited
 **Playbook:** $PLAYBOOK_REL
 **Note:** Claude API session limit reached. Raw output saved to cron-raw.log."
     echo "$(date) [$TRIGGER] Rate-limited ($phase):" >> "$LOG_DIR/cron-skips.log"
@@ -186,7 +247,7 @@ _dispatch_single_output() {
 
   if [ -z "$log_entry" ]; then
     _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-    "$SCRIPT_DIR/ceo-report.sh" action "$trigger" "**Status:** completed (unparseable output)
+    _report action "$trigger" "**Status:** completed (unparseable output)
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution succeeded but log format could not be parsed ($model_label)."
     printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
@@ -208,7 +269,7 @@ _dispatch_single_output() {
   if [ "$trigger" = "pending-drip" ] && [ "$self_reported_failed" -eq 0 ]; then
     _append_pending_drip_to_inbox "$log_entry"
   else
-    "$SCRIPT_DIR/ceo-report.sh" intake "$trigger" "$log_entry"
+    _report intake "$trigger" "$log_entry"
   fi
 
   if [ "$self_reported_failed" -eq 1 ]; then
@@ -265,6 +326,11 @@ _escape_tag() {
 
 _append_pending_drip_to_inbox() {
   local log_entry="$1"
+
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    _preview "pending-drip — would append questions to the host inbox (skipped: dry-run):" "$log_entry"
+    return 0
+  fi
 
   if printf '%s\n' "$log_entry" | grep -Eiq 'no relevant .*questions?'; then
     _v "Pending drip found no relevant questions; inbox unchanged."
@@ -463,8 +529,8 @@ else
   fi
 fi
 
-# --- Per-trigger runaway protection (bypass with --force or CEO_FORCE=1) ---
-if [ "${CEO_FORCE:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
+# --- Per-trigger runaway protection (bypass with --force, CEO_FORCE=1, or --dry-run) ---
+if [ "${CEO_FORCE:-}" != "1" ] && [ "${CEO_DRY_RUN:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
   LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null || echo 0)
   case "$LAST_RUN" in (''|*[!0-9]*) LAST_RUN=0 ;; esac
   NOW_EPOCH=$(date +%s)
@@ -674,13 +740,23 @@ case "$RUN_MODE:$STATUS" in
     ;;
 esac
 
+# A scheduler firing in dry-run does no work — surface it so a cron/daemon stuck
+# in dry-run is observable rather than silently inert.
+if [ "${CEO_DRY_RUN:-}" = "1" ] && [ "$RUN_MODE" = "scheduled" ]; then
+  echo "$(date): WARN — $TRIGGER invoked with --dry-run under --scheduled; previewing only, no side effects" >> "$LOG_DIR/cron-skips.log"
+fi
+
 # --- Run preflight check ---
 PREFLIGHT_FN="preflight_${PREFLIGHT}"
 if type "$PREFLIGHT_FN" &>/dev/null; then
   if ! "$PREFLIGHT_FN"; then
     _v "Preflight '$PREFLIGHT' says no work to do. Skipping."
     echo "$(date): Skipping $TRIGGER — preflight '$PREFLIGHT' returned no-work" >> "$LOG_DIR/cron-skips.log"
-    date +%s > "$LAST_RUN_FILE"
+    if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+      _preview "Preflight '$PREFLIGHT' returned no-work — a real run would skip here (no .last-run stamp in dry-run)."
+    else
+      date +%s > "$LAST_RUN_FILE"
+    fi
     exit 0
   fi
   _v "Preflight '$PREFLIGHT' passed"
@@ -717,6 +793,10 @@ if [ "$RUNNER" = "script" ]; then
     echo "$(date): ERROR — Script not executable: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
     _v "ERROR: Script not executable at $SCRIPT_FULL"
     exit 1
+  fi
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    _preview "runner:script — would exec scripts/$SCRIPT_PATH (skipped: dry-run)."
+    exit 0
   fi
   _v "Runner: script — exec $SCRIPT_PATH"
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
@@ -781,8 +861,12 @@ if [ "$RUNNER" = "skill" ]; then
     exit 1
   fi
 
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    _preview "runner:skill — would exec $SKILL_SCRIPT → $OUT_PATTERN (skipped: dry-run)."
+    exit 0
+  fi
   _v "Runner: skill — exec $SKILL_SCRIPT"
-  
+
   TMP_DIR=$(mktemp -d)
   trap 'rm -rf "$TMP_DIR"' EXIT
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
@@ -922,7 +1006,7 @@ if [ "$TIER" = "read" ]; then
     
     if [ "$CEO_GATHER_STATUS" = "failed" ] || [ "$CEO_GATHER_STATUS" = "empty" ]; then
       _v "SKIPPED (gather phase $CEO_GATHER_STATUS)"
-      "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** skipped: gather-$CEO_GATHER_STATUS
+      _report action "$TRIGGER" "**Status:** skipped: gather-$CEO_GATHER_STATUS
 **Playbook:** $PLAYBOOK_REL
 **Note:** $CEO_GATHER_REASONS. Skipping run to prevent empty confident brief."
       exit 0
@@ -1114,7 +1198,7 @@ END_LOG_ENTRY"
   if [ $SINGLE_EXIT -ne 0 ]; then
     _check_rate_limit "$SINGLE_OUTPUT" "single-call"
     _v "FAILED (exit: $SINGLE_EXIT)"
-    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** failed
+    _report action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
 **Note:** Single-call execution failed (exit: $SINGLE_EXIT). Raw output saved to cron-raw.log."
     echo "$(date) [$TRIGGER] Single-call output:" >> "$LOG_DIR/cron-raw.log"
@@ -1201,20 +1285,31 @@ _v "  Safe actions: $SAFE_COUNT | High-stakes (deferred): $HIGH_COUNT"
 
 # Write high-stakes proposals to pending.md
 if [ -n "$HIGH_STAKES" ]; then
-  PENDING="$CEO_DIR/approvals/pending.md"
-  {
-    echo ""
-    echo "## $TODAY $NOW"
-    echo ""
-    while IFS= read -r line; do
-      DESC=$(echo "$line" | awk -F'|' '{print $3}' | xargs)
-      CMD=$(echo "$line" | awk -F'|' '{print $4}' | xargs)
-      echo "- [ ] **$DESC**"
-      echo "  - playbook: $TRIGGER"
-      echo "  - command: \`$CMD\`"
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    _preview "Would defer $HIGH_COUNT high-stakes action(s) to approvals/pending.md:" "$HIGH_STAKES"
+  else
+    PENDING="$CEO_DIR/approvals/pending.md"
+    {
       echo ""
-    done <<< "$HIGH_STAKES"
-  } >> "$PENDING"
+      echo "## $TODAY $NOW"
+      echo ""
+      while IFS= read -r line; do
+        DESC=$(echo "$line" | awk -F'|' '{print $3}' | xargs)
+        CMD=$(echo "$line" | awk -F'|' '{print $4}' | xargs)
+        echo "- [ ] **$DESC**"
+        echo "  - playbook: $TRIGGER"
+        echo "  - command: \`$CMD\`"
+        echo ""
+      done <<< "$HIGH_STAKES"
+    } >> "$PENDING"
+  fi
+fi
+
+# In dry-run, PLAN+FILTER have produced the safe/high-stakes split above; the
+# EXECUTE phase (the only write-capable claude call) is skipped entirely.
+if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+  _preview "Would EXECUTE $SAFE_COUNT safe action(s) (claude EXECUTE phase skipped: dry-run):" "${SAFE_ACTIONS:-none}"
+  exit 0
 fi
 
 # --- Phase 3: EXECUTE (only safe actions) ---
@@ -1222,7 +1317,7 @@ if [ -z "$SAFE_ACTIONS" ]; then
   _v "No safe actions to execute (all high-stakes). Done."
   _v ""
   _v "All actions were high-stakes — written to CEO/approvals/pending.md"
-  "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (no safe actions to execute)
+  _report action "$TRIGGER" "**Status:** completed (no safe actions to execute)
 **Playbook:** $PLAYBOOK_REL
 **Actions:** none (all actions were high-stakes, written to approvals)"
 else
@@ -1281,7 +1376,7 @@ END_LOG_ENTRY"
   if [ $EXEC_EXIT -ne 0 ]; then
     _check_rate_limit "$EXEC_OUTPUT" "exec"
     _v "FAILED — raw output saved to cron-raw.log"
-    "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** failed
+    _report action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution phase failed (exit: $EXEC_EXIT). Raw output saved to cron-raw.log."
     echo "$(date) [$TRIGGER] Exec output:" >> "$LOG_DIR/cron-raw.log"
@@ -1299,10 +1394,10 @@ END_LOG_ENTRY"
       [ "${CEO_VERBOSE:-}" = "1" ] && echo "$LOG_ENTRY"
       _v "--- End ---"
       _v ""
-      "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "$LOG_ENTRY"
+      _report action "$TRIGGER" "$LOG_ENTRY"
     else
       _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-      "$SCRIPT_DIR/ceo-report.sh" action "$TRIGGER" "**Status:** completed (unparseable output)
+      _report action "$TRIGGER" "**Status:** completed (unparseable output)
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution succeeded but log format could not be parsed. Raw output saved to cron-raw.log."
       echo "$(date) [$TRIGGER] Unparseable exec output:" >> "$LOG_DIR/cron-raw.log"
