@@ -190,6 +190,7 @@ EOF
   # GitHub-issues prompt (exercises per-source partial failure).
   cat > "$TEST_HOME/stubs/fake-claude-failgithub" << 'EOF'
 #!/bin/bash
+case "$1" in --print) ;; *) echo "fake-claude-failgithub: bad argv: $*" >&2; exit 99 ;; esac
 printf '%s\n----\n' "$2" >> "${CLAUDE_PROMPT_LOG:-/dev/null}"
 if printf '%s' "$2" | grep -q "GitHub-issues source"; then
   echo "fake-claude-failgithub: simulated github triage failure" >&2; exit 1
@@ -201,6 +202,19 @@ cat <<OUT
 OUT
 EOF
   chmod +x "$TEST_HOME/stubs/fake-claude-failgithub"
+
+  # claude stub: tickets array passes the type/length validation but an element
+  # has a non-scalar field, so the @tsv extraction errors mid-stream.
+  cat > "$TEST_HOME/stubs/fake-claude-badrow" << 'EOF'
+#!/bin/bash
+case "$1" in --print) ;; *) echo "fake-claude-badrow: bad argv: $*" >&2; exit 99 ;; esac
+cat <<OUT
+\`\`\`json
+{"tickets":[{"id":"OM-9","title":"bad","url":{"nested":"object"},"score":0.5,"reason":"r"}]}
+\`\`\`
+OUT
+EOF
+  chmod +x "$TEST_HOME/stubs/fake-claude-badrow"
 
   export CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-empty"
   export CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-ok"
@@ -542,6 +556,54 @@ test_partial_source_failure_holds_cursor() {
   assert_eq "$(state_field last_merge_check)" "2026-01-01T00:00:00+0000" \
     "a failed github spawn must hold the cursor (don't drop the merge window)"
   assert_eq "$(state_field consec_failures)" "1" "partial failure counts as one failure"
+  # Prove it's genuinely PARTIAL, not total: the surviving ZenHub source must
+  # have written its ticket even though the GitHub source failed. Without this,
+  # the test passes identically when both sources fail.
+  assert_eq "$(state_field tickets_written)" "1" "surviving zenhub source still wrote its ticket"
+  if ! grep -qF -- '<!-- triage-autopilot:OM-1 -->' "$CEO_DIR/inbox.md"; then
+    printf '  FAIL [%s] zenhub ticket OM-1 must be in inbox despite github failure\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  # The held-cursor tick must record WHICH failure occurred, not last_error: none.
+  if [ "$(state_field last_error)" = "none" ]; then
+    printf '  FAIL [%s] spawn failure must set last_error, got none\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_spawn_cardinality_one_zenhub_spawn_per_tick() {
+  # Two AM repos in one tick -> exactly ONE ZenHub spawn (unified board), and
+  # two personal repos -> one GitHub spawn each. Prompts are '----'-separated
+  # in the recording stub's log.
+  reset_repo_list_with "awesomemotive/a" "nhangenam/b" "nhangen/p1" "nhangen/p2"
+  export CLAUDE_PROMPT_LOG="$TEST_HOME/prompts.log"; : > "$CLAUDE_PROMPT_LOG"
+  run_autopilot   # baseline
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-record" run_autopilot
+  local zenhub_spawns github_spawns
+  zenhub_spawns=$(grep -c '"inbox" pipeline' "$CLAUDE_PROMPT_LOG")
+  github_spawns=$(grep -c 'GitHub-issues source' "$CLAUDE_PROMPT_LOG")
+  assert_eq "$zenhub_spawns" "1" "two AM repos collapse to one ZenHub spawn"
+  assert_eq "$github_spawns" "2" "two personal repos get one GitHub spawn each"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_validated_tickets_with_bad_row_is_failure_not_silent_advance() {
+  # tickets array passes type/length validation but a row breaks @tsv. This must
+  # be a recorded failure (cursor held), NOT a silent zero-row "success" that
+  # advances the cursor and drops the merge window.
+  reset_repo_list_with "test/sample"
+  run_autopilot   # baseline
+  sed -i.bak 's/^last_merge_check: .*/last_merge_check: 2026-01-01T00:00:00+0000/' \
+    "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md"
+  rm -f "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md.bak"
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-any" \
+    CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-badrow" run_autopilot
+  assert_eq "$(state_field last_merge_check)" "2026-01-01T00:00:00+0000" \
+    "bad ticket row must hold the cursor, not silently advance"
+  assert_eq "$(state_field consec_failures)" "1" "bad ticket row counts as a failure"
+  assert_eq "$(state_field tickets_written)" "0" "no tickets written from a broken row"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

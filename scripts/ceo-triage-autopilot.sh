@@ -201,8 +201,10 @@ PROMPT_EOF
 # to the inbox. Updates TICKETS_WRITTEN; returns 0 on success, 1 on any failure.
 _triage_spawn() {  # $1 = prompt text
   local prompt="$1" claude_out json_block marker line
+  local prompt_tsv
   if ! claude_out=$("$CLAUDE_BIN" --print "$prompt" 2>/dev/null); then
     printf 'WARN: ceo-triage-autopilot: claude invocation failed\n' >&2
+    LAST_ERROR="claude_failed"
     return 1
   fi
   json_block=$(printf '%s\n' "$claude_out" | awk '
@@ -212,6 +214,15 @@ _triage_spawn() {  # $1 = prompt text
   ' | tail -c 65536)
   if [ -z "$json_block" ] || ! printf '%s' "$json_block" | jq -e '.tickets | type == "array" and length <= 3' >/dev/null 2>&1; then
     printf 'WARN: ceo-triage-autopilot: claude output had no valid tickets JSON block\n' >&2
+    LAST_ERROR="bad_tickets_json"
+    return 1
+  fi
+  # Extract rows once, checking jq status — a mid-stream jq failure (e.g. a
+  # ticket element with a non-string field) must be a recorded failure that
+  # holds the cursor, not a silent zero-row "success" that advances it.
+  if ! prompt_tsv=$(printf '%s' "$json_block" | jq -r '.tickets[] | [.id, .title, .url, (.score|tostring), .reason] | @tsv' 2>/dev/null); then
+    printf 'WARN: ceo-triage-autopilot: ticket extraction failed\n' >&2
+    LAST_ERROR="ticket_extract_failed"
     return 1
   fi
   while IFS=$'\t' read -r tid title url score reason; do
@@ -228,7 +239,7 @@ _triage_spawn() {  # $1 = prompt text
       LAST_ERROR="inbox_append_failed"
       return 1
     fi
-  done < <(printf '%s' "$json_block" | jq -r '.tickets[] | [.id, .title, .url, (.score|tostring), .reason] | @tsv')
+  done <<< "$prompt_tsv"
   return 0
 }
 
@@ -254,8 +265,16 @@ if [ "$NEW_MERGE_COUNT" -gt 0 ]; then
     | [.[] | (.repo | split("/")[0]) as $own | select(($o | index($own)) != null)]' 2>/dev/null || printf '[]')
   if [ "$(printf '%s' "$zenhub_merges" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
     SPAWNS_ATTEMPTED=$((SPAWNS_ATTEMPTED + 1))
-    _ml=$(printf '%s' "$zenhub_merges" | _merge_lines)
-    if ! _triage_spawn "$(_zenhub_prompt "$_ml")"; then SPAWNS_FAILED=$((SPAWNS_FAILED + 1)); fi
+    # Guard the assignment: a _merge_lines failure must not abort the whole tick
+    # under `set -e` after SPAWNS_ATTEMPTED was bumped (the tick still owes a
+    # state file + log line). Treat it as a spawn failure that holds the cursor.
+    if ! _ml=$(printf '%s' "$zenhub_merges" | _merge_lines); then
+      printf 'WARN: ceo-triage-autopilot: merge-line render failed (zenhub)\n' >&2
+      LAST_ERROR="merge_lines_failed"
+      SPAWNS_FAILED=$((SPAWNS_FAILED + 1))
+    elif ! _triage_spawn "$(_zenhub_prompt "$_ml")"; then
+      SPAWNS_FAILED=$((SPAWNS_FAILED + 1))
+    fi
   fi
 
   # GitHub: one spawn per distinct personal repo (each needs its own slug).
@@ -263,8 +282,13 @@ if [ "$NEW_MERGE_COUNT" -gt 0 ]; then
     [ "$(_classify_owner "$_slug")" = "github" ] || continue
     SPAWNS_ATTEMPTED=$((SPAWNS_ATTEMPTED + 1))
     _rm=$(printf '%s' "$NEW_MERGES_JSON" | jq -c --arg r "$_slug" '[.[] | select(.repo == $r)]' 2>/dev/null || printf '[]')
-    _ml=$(printf '%s' "$_rm" | _merge_lines)
-    if ! _triage_spawn "$(_github_prompt "$_slug" "$_ml")"; then SPAWNS_FAILED=$((SPAWNS_FAILED + 1)); fi
+    if ! _ml=$(printf '%s' "$_rm" | _merge_lines); then
+      printf 'WARN: ceo-triage-autopilot: merge-line render failed (%s)\n' "$_slug" >&2
+      LAST_ERROR="merge_lines_failed"
+      SPAWNS_FAILED=$((SPAWNS_FAILED + 1))
+    elif ! _triage_spawn "$(_github_prompt "$_slug" "$_ml")"; then
+      SPAWNS_FAILED=$((SPAWNS_FAILED + 1))
+    fi
   done
 
   # Skipped owners: log, no spawn. Their merges still advance the cursor.
