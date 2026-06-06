@@ -941,7 +941,10 @@ done
 mkdir -p "$LOG_DIR"
 
 # --- Create log file header if new ---
-if [ ! -f "$LOG_FILE" ]; then
+# Skipped in dry-run: $LOG_FILE lives in the synced CEO/log/ tree, and a dry-run
+# must not create a synced-vault artifact. The shell never writes run content
+# here anyway (the model emits the LOG_ENTRY); this only seeds an empty header.
+if [ "${CEO_DRY_RUN:-}" != "1" ] && [ ! -f "$LOG_FILE" ]; then
   cat > "$LOG_FILE" << LOGEOF
 ---
 date: $TODAY
