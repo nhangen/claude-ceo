@@ -170,6 +170,10 @@ _record_failure() {
   local reason="$1"
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
     echo "$(date): DRY-RUN — would record failure: $reason" >> "$LOG_DIR/cron-skips.log"
+    # Surface to stderr too: a dry-run exits 0, so without this an operator
+    # smoke-testing a broken gh/registry would see "preview written" and miss
+    # that a real run would have failed and escalated.
+    echo "DRY-RUN: would record FAILURE — $reason" >&2
     _preview "Would record FAILURE: $reason (no fail-count increment / pending alert / notify / .last-run)."
     return 0
   fi

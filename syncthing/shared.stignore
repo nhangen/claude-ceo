@@ -30,3 +30,5 @@ CEO/log/.last-run-*
 CEO/log/.retry-*.json
 CEO/log/.config-hash
 CEO/log/.fail-count
+// --dry-run preview output is host-local scratch (see ceo-cron.sh --dry-run)
+CEO/log/preview/
