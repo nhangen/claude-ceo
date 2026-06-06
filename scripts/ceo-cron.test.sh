@@ -3248,6 +3248,67 @@ STUB
   assert_contains "$(cat "$pf" 2>/dev/null)" "check the status" "preview must list the safe action that would execute"
 }
 
+# runner:skill in dry-run must NOT exec the skill or write its out_pattern;
+# it previews the would-run skill instead.
+test_dry_run_skill_runner_skips_exec_and_previews() {
+  cat > "$CEO_DIR/playbooks/dr-skill.md" << 'PB'
+---
+name: dr-skill
+description: dry-run skill fixture
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: dr-skill-test
+out_pattern: CEO/reports/test/dr-skill-out.md
+---
+PB
+  mkdir -p "$HOME/.claude/skills/dr-skill-test/scripts"
+  cat > "$HOME/.claude/skills/dr-skill-test/scripts/run-report.sh" << EOF
+#!/bin/bash
+echo "ran" > "$TEST_HOME/dr-skill-fired.txt"
+EOF
+  chmod +x "$HOME/.claude/skills/dr-skill-test/scripts/run-report.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  bash "$CRON" dr-skill --dry-run >/dev/null 2>&1 || true
+
+  assert_fails "dry-run must NOT exec the skill" test -f "$TEST_HOME/dr-skill-fired.txt"
+  assert_fails "dry-run must NOT write the skill out_pattern" test -f "$CEO_DIR/reports/test/dr-skill-out.md"
+  assert_contains "$(cat "$(_preview_file dr-skill)" 2>/dev/null)" "dr-skill-test" "preview must name the would-run skill"
+}
+
+# When a dry-run hits a preflight that returns no-work, it must preview the skip
+# WITHOUT stamping .last-run (a real run stamps it; a dry-run must not).
+test_dry_run_preflight_no_work_does_not_stamp_last_run() {
+  cat > "$CEO_DIR/playbooks/dr-pf.md" << 'PB'
+---
+name: dr-pf
+description: dry-run preflight fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_pending_items
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  # has_pending_items is false (no PENDING_ASK_QUESTIONS), so preflight returns no-work.
+  bash "$CRON" dr-pf --dry-run >/dev/null 2>&1 || true
+  assert_fails "dry-run preflight-skip must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dr-pf"
+  assert_contains "$(cat "$(_preview_file dr-pf)" 2>/dev/null)" "no-work" "preview must record the preflight no-work skip"
+}
+
+# The preview dir lives under CEO/log/, which is a SYNCED vault tree (only the
+# dotfiles in shared.stignore are host-local). For the preview to be the
+# host-local scratch the design promises, CEO/log/preview/ must be excluded from
+# sync — otherwise a dry-run on one host propagates its preview to every host.
+test_dry_run_preview_dir_excluded_from_sync() {
+  local stignore="$SCRIPT_DIR/../syncthing/shared.stignore"
+  assert_file_exists "$stignore" "shared.stignore must exist"
+  assert_contains "$(cat "$stignore" 2>/dev/null)" "CEO/log/preview/" "preview dir must be stignored so dry-run output stays host-local"
+}
+
 # Dry-run is allowed under --scheduled (e.g. a daemon smoke-test) but must warn,
 # so a cron stuck in dry-run is observable rather than silently doing nothing.
 test_dry_run_under_scheduled_warns() {
