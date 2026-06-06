@@ -145,22 +145,31 @@ if [ "$FIRST_RUN" -eq 0 ] && [ "${#REPO_PATHS[@]}" -gt 0 ]; then
   fi
 fi
 
-# ---- Spawn triage if new merges seen. -----------------------------------
-TRIAGE_RAN=0
-TRIAGE_OK=0
-TICKETS_WRITTEN=0
-CONSEC_FAILURES="$PRIOR_FAILS"
+# ---- Classify merges by repo owner, triage per source. ------------------
+# ZenHub and the nhangenam account are AM-only; personal nhangen/* repos have
+# no ZenHub board so they triage from GitHub issues (#133). Owners in neither
+# set are skipped (logged) — their merges still advance the cursor so they are
+# not re-evaluated every tick.
+ZENHUB_OWNERS="${CEO_TRIAGE_ZENHUB_OWNERS:-awesomemotive nhangenam}"
+GITHUB_OWNERS="${CEO_TRIAGE_GITHUB_OWNERS:-nhangen}"
 
-if [ "$NEW_MERGE_COUNT" -gt 0 ]; then
-  TRIAGE_RAN=1
-  # Build the merge list outside the heredoc so PR titles can't shell-expand.
-  merge_lines=$(printf '%s' "$NEW_MERGES_JSON" \
-    | jq -r '.[] | "- \(.repo)#\(.number): \(.title)"' 2>/dev/null \
-    | sed 's/`/'\''/g; s/\$/_/g')
-  PROMPT=$(cat <<PROMPT_EOF
+_classify_owner() {  # $1 = owner/repo slug -> zenhub | github | skip
+  local owner="${1%%/*}"
+  case " $ZENHUB_OWNERS " in *" $owner "*) printf 'zenhub'; return 0 ;; esac
+  case " $GITHUB_OWNERS " in *" $owner "*) printf 'github'; return 0 ;; esac
+  printf 'skip'
+}
+
+_merge_lines() {  # stdin = merges JSON array -> shell-safe "- repo#n: title" lines
+  jq -r '.[] | "- \(.repo)#\(.number): \(.title)"' 2>/dev/null \
+    | sed 's/`/'\''/g; s/\$/_/g'
+}
+
+_zenhub_prompt() {  # $1 = merge_lines
+  cat <<PROMPT_EOF
 You are running on behalf of an automated playbook. Newly merged PRs since the last triage:
 
-${merge_lines}
+$1
 
 Invoke the /ticket-triage skill against the "${PIPELINE}" pipeline. Output exactly one fenced JSON block at the end of your response with this schema, and nothing else after it:
 
@@ -170,47 +179,115 @@ Invoke the /ticket-triage skill against the "${PIPELINE}" pipeline. Output exact
 
 At most 3 tickets. If triage cannot run (auth failure, no candidates), emit \`{"tickets":[]}\`. Do not emit any other JSON block.
 PROMPT_EOF
-)
-  if claude_out=$("$CLAUDE_BIN" --print "$PROMPT" 2>/dev/null); then
-    # Extract the last fenced ```json ... ``` block.
-    json_block=$(printf '%s\n' "$claude_out" | awk '
-      /^```json[[:space:]]*$/ { capture=1; buf=""; next }
-      /^```[[:space:]]*$/ && capture { print buf; capture=0; buf=""; next }
-      capture { buf = buf $0 "\n" }
-    ' | tail -c 65536)
-    if [ -n "$json_block" ] && printf '%s' "$json_block" | jq -e '.tickets | type == "array" and length <= 3' >/dev/null 2>&1; then
+}
+
+_github_prompt() {  # $1 = owner/repo slug, $2 = merge_lines
+  cat <<PROMPT_EOF
+You are running on behalf of an automated playbook. Newly merged PRs since the last triage:
+
+$2
+
+Invoke the /ticket-triage skill against the "$1" repo (GitHub-issues source — a personal repo with no ZenHub board). Output exactly one fenced JSON block at the end of your response with this schema, and nothing else after it:
+
+\`\`\`json
+{"tickets":[{"id":"<ticket-id>","title":"<short title>","url":"<url>","score":<0..1>,"reason":"<one-line>"}]}
+\`\`\`
+
+At most 3 tickets. If triage cannot run (no candidates), emit \`{"tickets":[]}\`. Do not emit any other JSON block.
+PROMPT_EOF
+}
+
+# Spawn one triage, parse the fenced tickets JSON, append up to 3 deduped lines
+# to the inbox. Updates TICKETS_WRITTEN; returns 0 on success, 1 on any failure.
+_triage_spawn() {  # $1 = prompt text
+  local prompt="$1" claude_out json_block marker line
+  if ! claude_out=$("$CLAUDE_BIN" --print "$prompt" 2>/dev/null); then
+    printf 'WARN: ceo-triage-autopilot: claude invocation failed\n' >&2
+    return 1
+  fi
+  json_block=$(printf '%s\n' "$claude_out" | awk '
+    /^```json[[:space:]]*$/ { capture=1; buf=""; next }
+    /^```[[:space:]]*$/ && capture { print buf; capture=0; buf=""; next }
+    capture { buf = buf $0 "\n" }
+  ' | tail -c 65536)
+  if [ -z "$json_block" ] || ! printf '%s' "$json_block" | jq -e '.tickets | type == "array" and length <= 3' >/dev/null 2>&1; then
+    printf 'WARN: ceo-triage-autopilot: claude output had no valid tickets JSON block\n' >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r tid title url score reason; do
+    [ -z "$tid" ] && continue
+    marker="<!-- triage-autopilot:$tid -->"
+    if grep -qF -- "$marker" "$INBOX_FILE" 2>/dev/null; then
+      continue
+    fi
+    line="- [ ] Triage: **$tid** — $title (score $score; $reason) [$url] $marker"
+    if printf '%s\n' "$line" >> "$INBOX_FILE"; then
+      TICKETS_WRITTEN=$((TICKETS_WRITTEN + 1))
+    else
+      printf 'ERROR: ceo-triage-autopilot: failed to append to %s\n' "$INBOX_FILE" >&2
+      LAST_ERROR="inbox_append_failed"
+      return 1
+    fi
+  done < <(printf '%s' "$json_block" | jq -r '.tickets[] | [.id, .title, .url, (.score|tostring), .reason] | @tsv')
+  return 0
+}
+
+# ---- Spawn triage if new merges seen. -----------------------------------
+TRIAGE_RAN=0
+TRIAGE_OK=0
+TICKETS_WRITTEN=0
+CONSEC_FAILURES="$PRIOR_FAILS"
+SPAWNS_ATTEMPTED=0
+SPAWNS_FAILED=0
+
+if [ "$NEW_MERGE_COUNT" -gt 0 ]; then
+  # Distinct slugs among this tick's merges.
+  SLUGS=()
+  while IFS= read -r _slug; do
+    [ -n "$_slug" ] && SLUGS+=("$_slug")
+  done < <(printf '%s' "$NEW_MERGES_JSON" | jq -r '[.[].repo] | unique[]' 2>/dev/null)
+
+  # ZenHub: one spawn covering all AM merges — the OM board is unified across
+  # products, so a single pipeline triage serves every AM repo.
+  zenhub_merges=$(printf '%s' "$NEW_MERGES_JSON" | jq -c --arg owners "$ZENHUB_OWNERS" '
+    ($owners | split(" ")) as $o
+    | [.[] | (.repo | split("/")[0]) as $own | select(($o | index($own)) != null)]' 2>/dev/null || printf '[]')
+  if [ "$(printf '%s' "$zenhub_merges" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
+    SPAWNS_ATTEMPTED=$((SPAWNS_ATTEMPTED + 1))
+    _ml=$(printf '%s' "$zenhub_merges" | _merge_lines)
+    if ! _triage_spawn "$(_zenhub_prompt "$_ml")"; then SPAWNS_FAILED=$((SPAWNS_FAILED + 1)); fi
+  fi
+
+  # GitHub: one spawn per distinct personal repo (each needs its own slug).
+  for _slug in "${SLUGS[@]}"; do
+    [ "$(_classify_owner "$_slug")" = "github" ] || continue
+    SPAWNS_ATTEMPTED=$((SPAWNS_ATTEMPTED + 1))
+    _rm=$(printf '%s' "$NEW_MERGES_JSON" | jq -c --arg r "$_slug" '[.[] | select(.repo == $r)]' 2>/dev/null || printf '[]')
+    _ml=$(printf '%s' "$_rm" | _merge_lines)
+    if ! _triage_spawn "$(_github_prompt "$_slug" "$_ml")"; then SPAWNS_FAILED=$((SPAWNS_FAILED + 1)); fi
+  done
+
+  # Skipped owners: log, no spawn. Their merges still advance the cursor.
+  for _slug in "${SLUGS[@]}"; do
+    [ "$(_classify_owner "$_slug")" = "skip" ] || continue
+    printf 'INFO: ceo-triage-autopilot: skipping %s (owner not routed to zenhub or github)\n' "$_slug" >&2
+  done
+
+  if [ "$SPAWNS_ATTEMPTED" -gt 0 ]; then
+    TRIAGE_RAN=1
+    if [ "$SPAWNS_FAILED" -eq 0 ]; then
       TRIAGE_OK=1
       CONSEC_FAILURES=0
-      # Write up to 3 lines, dedup by marker.
-      while IFS=$'\t' read -r tid title url score reason; do
-        [ -z "$tid" ] && continue
-        marker="<!-- triage-autopilot:$tid -->"
-        if grep -qF -- "$marker" "$INBOX_FILE" 2>/dev/null; then
-          continue
-        fi
-        line="- [ ] Triage: **$tid** — $title (score $score; $reason) [$url] $marker"
-        if printf '%s\n' "$line" >> "$INBOX_FILE"; then
-          TICKETS_WRITTEN=$((TICKETS_WRITTEN + 1))
-        else
-          printf 'ERROR: ceo-triage-autopilot: failed to append to %s\n' "$INBOX_FILE" >&2
-          TRIAGE_OK=0
-          CONSEC_FAILURES=$((CONSEC_FAILURES + 1))
-          LAST_ERROR="inbox_append_failed"
-          break
-        fi
-      done < <(printf '%s' "$json_block" | jq -r '.tickets[] | [.id, .title, .url, (.score|tostring), .reason] | @tsv')
     else
-      printf 'WARN: ceo-triage-autopilot: claude output had no valid tickets JSON block\n' >&2
       CONSEC_FAILURES=$((CONSEC_FAILURES + 1))
     fi
-  else
-    printf 'WARN: ceo-triage-autopilot: claude invocation failed\n' >&2
-    CONSEC_FAILURES=$((CONSEC_FAILURES + 1))
   fi
 fi
 
 # ---- Resolve CURRENT_STATUS + last_merge_check advancement. ---------------
-if [ "$NEW_MERGE_COUNT" -gt 0 ]; then
+# Fire only when a triage actually ran; merges that were all skip-routed (no
+# spawn) are a clear tick that still advances the cursor.
+if [ "$SPAWNS_ATTEMPTED" -gt 0 ]; then
   CURRENT_STATUS="firing"
 else
   CURRENT_STATUS="clear"
@@ -228,7 +305,8 @@ elif [ "$TICK_HAD_ERRORS" -eq 1 ]; then
   # otherwise drop the failed repo's merge window permanently. Re-running
   # triage next tick is cheap (marker dedup no-ops already-written tickets).
   NEW_LAST_CHECK="$PRIOR_LAST_CHECK"
-elif [ "$NEW_MERGE_COUNT" -eq 0 ] || [ "$TRIAGE_OK" -eq 1 ]; then
+elif [ "$SPAWNS_ATTEMPTED" -eq 0 ] || [ "$TRIAGE_OK" -eq 1 ]; then
+  # No merges, all-skip merges, or every spawned source succeeded.
   NEW_LAST_CHECK="$NOW"
 elif [ "$CONSEC_FAILURES" -ge "$MAX_RETRIES" ]; then
   NEW_LAST_CHECK="$NOW"

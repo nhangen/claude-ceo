@@ -1,11 +1,11 @@
 ---
 name: ticket-triage-autopilot
-description: Poll for merged PRs every 30 min; on new merges spawn ticket-triage and append top-3 adjacency-scored tickets to inbox.md
+description: Poll for merged PRs every 30 min; on new merges route ticket-triage by repo owner (ZenHub for AM, GitHub issues for personal) and append top-3 adjacency-scored tickets to inbox.md
 trigger: cron
 schedule: "*/30 * * * *"
 preflight: none
 tier: low-stakes write
-status: disabled
+status: active
 runner: script
 script: ceo-triage-autopilot.sh
 ---
@@ -15,6 +15,18 @@ script: ceo-triage-autopilot.sh
 Shell-only playbook. Every 30 minutes it checks for newly merged PRs by the configured author across the repos in `~/.config/branch-cleanup/repos.md`. If any new merges are seen since the last check, it spawns `claude --print` to invoke the `/ticket-triage` skill, parses a strict JSON contract from the output, and appends the top-3 tickets to `$CEO_VAULT/CEO/inbox.md`.
 
 State machine, not signal generator. A cron tick with no new merges writes the state file and a log line and does nothing else.
+
+## Owner routing (#146)
+
+ZenHub and the `nhangenam` account are AM-only; personal `nhangen/*` repos have no ZenHub board, so their tickets come from GitHub issues (the `ticket-triage` skill's GitHub source, #133). On a tick with new merges, each merge's repo is classified by owner:
+
+| Owner class (default) | Source | Spawn |
+|---|---|---|
+| `awesomemotive`, `nhangenam` | ZenHub pipeline (`CEO_TRIAGE_PIPELINE`) | One spawn covering all AM merges — the OM ZenHub workspace is "All Products", unified across optinmonster/trustpulse/beacon/comment-converter, so a single pipeline triage serves every AM repo. |
+| `nhangen` | GitHub issues for that repo | One spawn per distinct personal repo (the skill takes a single `owner/repo` slug). |
+| anything else (e.g. `altamira2`) | — | Skipped with a logged reason. The merge still advances the cursor so it is not re-evaluated every tick. |
+
+A tick is `firing` only if at least one triage spawn ran. Skip-only ticks are `clear` and advance the cursor. If **any** spawned source fails, the cursor is held (the existing retry-cap give-up still applies on the aggregate failure count) so a failed source's merge window is not dropped — re-running next tick is cheap because inbox markers dedup already-written tickets.
 
 ## Origin
 
@@ -45,7 +57,9 @@ Issue #125. Initial design used a Stop hook on `pr-review-panel` — that doesn'
 - `CEO_GH_BIN` — substitute `gh` binary. Tests inject a stub.
 - `CEO_TRIAGE_CLAUDE_BIN` — substitute `claude` binary. Tests inject a stub emitting canned JSON.
 - `CEO_TRIAGE_REPO_LIST` — substitute repo-list markdown file (default `~/.config/branch-cleanup/repos.md`).
-- `CEO_TRIAGE_PIPELINE` — pipeline alias to pass to `/ticket-triage` (default `inbox`).
+- `CEO_TRIAGE_PIPELINE` — ZenHub pipeline alias to pass to `/ticket-triage` for AM repos (default `inbox`).
+- `CEO_TRIAGE_ZENHUB_OWNERS` — space-separated repo owners routed to the ZenHub source (default `awesomemotive nhangenam`).
+- `CEO_TRIAGE_GITHUB_OWNERS` — space-separated repo owners routed to the GitHub-issues source (default `nhangen`).
 
 ## The JSON contract with claude
 
@@ -63,4 +77,4 @@ Up to 3 entries. The wrapper extracts the first JSON block, validates `tickets` 
 
 ## Disable
 
-Set `status: inactive` in this file (or in a vault override at `$CEO_VAULT/CEO/playbooks/ticket-triage-autopilot.md`) and re-scan.
+Set `status: disabled` in this file (or in a vault override at `$CEO_VAULT/CEO/playbooks/ticket-triage-autopilot.md`) and re-scan **on ML-1** (`ceo playbook scan` installs host-local schedulers + rewrites the synced `registry.json`, so it runs only on ML-1 — see the `ceo-scan-only-on-ml1` rule). Editing this file activates nothing on its own; the next ML-1 scan picks up the status change.
