@@ -48,6 +48,12 @@ The default is **manual**, so a bare `ceo-cron.sh <name>` is the on-demand path 
 
 `--scheduled` and `--manual` are mutually exclusive. `--force` (manual-only) bypasses the per-trigger cooldown for iterative smoke-testing; it is rejected with `--scheduled`.
 
+`--dry-run` is a preview mode, orthogonal to run-mode. It runs every **read-only** phase (gather, the PLAN call, a read-tier model call) but mutates **no CEO state**: the EXECUTE phase is skipped, `runner: script` / `runner: skill` are not executed, and nothing is written to the approvals queue, Discord, the report intake, the host inbox, the synced daily log (`CEO/log/<TODAY>.md`), `.last-run`, `.last-scan`, the fail-counter, or `cron-runs.log`. What *would* happen is written to a preview file at `CEO/log/preview/<trigger>-<TODAY>.md`.
+
+That preview is **host-local**: `CEO/log/preview/` is excluded from Syncthing in `syncthing/shared.stignore`, so a dry-run on one host never propagates to the others. The rest of `CEO/log/` *is* synced — the daily log and the operational diagnostic journals (`cron-skips.log`, `cron-stderr.log`) — which is why the daily-log header write is also skipped in dry-run. A dry-run still appends clearly-labelled diagnostic lines to `cron-skips.log` (e.g. the `--scheduled` WARN below); that journal is the dispatcher's operational debug channel, not CEO decision-state.
+
+`--dry-run` bypasses the cooldown so it can be run iteratively, and is allowed under `--scheduled` (with a WARN to `cron-skips.log`) so a daemon can smoke-test without acting. Non-guarantee: read-only external calls still run and still cost tokens — `--dry-run` skips effects, not reads.
+
 ### Use draft for WIP playbooks
 
 `draft` exists for "exists, runnable on demand, not ready for cron." Author iteratively via `bash scripts/ceo-cron.sh <name>` (optionally `--force` to bypass the cooldown between runs) until happy with the behavior, then flip frontmatter to `status: active` and re-run `ceo playbook scan` to install.
