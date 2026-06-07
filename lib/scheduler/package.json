@@ -2,10 +2,11 @@
   "name": "ceo-scheduler",
   "version": "0.1.0",
   "private": true,
-  "description": "Internal CEO lib — cron next-fire matcher for the ceo-schedulerd daemon (#136 Phase 1.5). Computes next-fire and does-now-match for 5-field cron expressions (croner-backed, swappable behind the CronMatcher interface).",
+  "description": "Internal CEO lib — the ceo-schedulerd daemon (#136 Phase 1.5): reads registry.json, sleeps until next-fire, dispatches ceo-cron.sh <name> --scheduled, enforces hosts:, and heartbeats for liveness. Cron matching is croner-backed behind the swappable CronMatcher interface.",
   "scripts": {
     "typecheck": "bun tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "start": "bun run src/main.ts"
   },
   "dependencies": {
     "croner": "9.1.0"

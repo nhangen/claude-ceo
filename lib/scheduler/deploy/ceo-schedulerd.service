@@ -1,0 +1,41 @@
+# ceo-schedulerd — systemd USER unit template (Linux/WSL keep-alive, #142).
+#
+# This is a TEMPLATE: edit the three paths below, then install as a user unit.
+# It has NOT been smoke-tested on a live always-on Linux host (ML-1 is GPU-down
+# as of 2026-06-07); the Restart=always semantics are unverified on hardware.
+#
+# Install (user scope, no root):
+#   mkdir -p ~/.config/systemd/user
+#   cp ceo-schedulerd.service ~/.config/systemd/user/
+#   # edit the paths in the copy
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ceo-schedulerd.service
+#   loginctl enable-linger "$USER"   # keep it running when you're logged out
+#   systemctl --user status ceo-schedulerd
+#   journalctl --user -u ceo-schedulerd -f
+#
+# Verify liveness independently of systemd:  ceo doctor   (reads the heartbeat).
+
+[Unit]
+Description=CEO playbook scheduler daemon (ceo-schedulerd)
+After=network-online.target
+Wants=network-online.target
+# Cap respawn storms: at most 10 restarts per 5 min, then stop and surface it.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+# EDIT: absolute path to bun and to this repo's lib/scheduler/src/main.ts.
+ExecStart=%h/.bun/bin/bun run %h/code/claude-ceo/lib/scheduler/src/main.ts
+# EDIT: the synced Obsidian vault root that contains CEO/registry.json.
+Environment=CEO_VAULT=%h/Documents/Obsidian
+# EDIT (optional): pin the dispatch binary if ceo-cron.sh is not on PATH.
+# Environment=CEO_CRON_BIN=%h/code/claude-ceo/scripts/ceo-cron.sh
+Restart=always
+RestartSec=10
+# Give SIGTERM time for the loop to finish its current tick and exit cleanly.
+TimeoutStopSec=70
+
+[Install]
+WantedBy=default.target

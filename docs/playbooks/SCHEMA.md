@@ -93,7 +93,7 @@ The `hosts` field declares which machines a playbook may run on:
 
 `ceo playbook scan` validates the shape at parse time and never silently scopes a playbook to nowhere or to a typo'd host: any malformed value defaults to `["*"]` with a `WARN` (per [`enum-config-typo-fallback`](../../../.claude/rules/enum-config-typo-fallback.md)). To stop a playbook entirely, use `status: disabled`, not an empty `hosts` list.
 
-**Phase 1 records `hosts` but does not enforce it** — every host still runs every playbook regardless of scope. Enforcement arrives with the Phase-1.5 daemon, which will bump the registry `schema_version` so a non-enforcing peer binary can't run a host-scoped playbook everywhere.
+**Enforcement depends on the scheduler backend.** The Phase-1.5 daemon (`ceo-schedulerd`, `lib/scheduler/`) enforces `hosts` — it only dispatches playbooks whose `hosts` includes `"*"` or this host's short hostname (`selectRunnable`). The Phase-1 **native-cron** install path (`_playbook_update_crontab`) still records `hosts` without enforcing it, so a host running via crontab rather than the daemon runs every playbook regardless of scope. The deferred registry `schema_version` bump (which would stop a non-enforcing peer binary from running a host-scoped playbook everywhere) is tracked separately and is **not** part of the daemon change.
 
 ### Use draft for WIP playbooks
 
