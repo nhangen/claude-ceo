@@ -12,6 +12,7 @@
  * double-fire guard is persisted in the heartbeat and restored at startup so a
  * `Restart=always` crash inside a fire-minute does not re-run a playbook.
  */
+import { catchUpFires } from "@/catchup";
 import type { CronMatcher } from "@/cron";
 import { dueAt, nextWake, selectRunnable } from "@/select";
 import type { Playbook } from "@/registry";
@@ -33,6 +34,8 @@ export interface Heartbeat {
   last_dispatch: DispatchRecord[];
   /** playbook name → epoch-minute it was last dispatched (the durable double-fire guard). */
   dispatched_minute: Record<string, number>;
+  /** playbook name → epoch-ms of the newest slot fired (drives missed-slot catch-up, #143). */
+  last_fired: Record<string, number>;
 }
 
 export interface DaemonDeps {
@@ -48,6 +51,8 @@ export interface DaemonDeps {
   host: string;
   matcher: CronMatcher;
   maxSleepMs: number;
+  /** Look-back window for missed-slot catch-up; a missed slot older than this is too stale to replay. */
+  catchupLookbackMs: number;
   shouldContinue(): boolean;
 }
 
@@ -59,6 +64,7 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
   const prior = deps.readHeartbeat();
   const guard = new Map<string, number>(prior ? Object.entries(prior.dispatched_minute) : []);
   const recent: DispatchRecord[] = prior ? [...prior.last_dispatch] : [];
+  let lastFired: Record<string, number> = prior ? { ...prior.last_fired } : {};
   let lastGood: Playbook[] = [];
 
   while (deps.shouldContinue()) {
@@ -76,11 +82,31 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
     }
 
     const runnable = selectRunnable(playbooks, deps.host);
-    const toDispatch = dueAt(runnable, now, deps.matcher).filter((p) => guard.get(p.name) !== minute);
-    for (const p of toDispatch) {
+    const minuteStart = minute * MINUTE_MS;
+
+    // Current-minute fires (live path), then catch-up fires for slots missed
+    // while the daemon was down — excluding any playbook already firing now, so
+    // a single tick never dispatches a playbook twice.
+    const due = dueAt(runnable, now, deps.matcher).filter((p) => guard.get(p.name) !== minute);
+    const dueNames = new Set(due.map((p) => p.name));
+    const catches = catchUpFires(runnable, lastFired, now, deps.matcher, deps.catchupLookbackMs).filter(
+      (f) => !dueNames.has(f.playbook.name),
+    );
+
+    // Rebuild last_fired keyed by current runnable set (prunes removed playbooks).
+    // A first-seen playbook with no baseline initializes to now — never a replay.
+    const nextLastFired: Record<string, number> = {};
+    for (const p of runnable) nextLastFired[p.name] = lastFired[p.name] ?? now.getTime();
+    for (const p of due) {
       guard.set(p.name, minute);
+      nextLastFired[p.name] = minuteStart;
       recent.push({ name: p.name, ts: now.getTime() });
     }
+    for (const f of catches) {
+      nextLastFired[f.playbook.name] = Math.max(nextLastFired[f.playbook.name] ?? 0, f.slot.getTime());
+      recent.push({ name: f.playbook.name, ts: now.getTime() });
+    }
+    lastFired = nextLastFired;
     if (recent.length > MAX_RECENT_DISPATCH) recent.splice(0, recent.length - MAX_RECENT_DISPATCH);
 
     // Drop guard entries older than the previous minute — only the current
@@ -88,9 +114,11 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
     for (const [name, mn] of guard) if (mn < minute - 1) guard.delete(name);
 
     const wake = nextWake(runnable, now, deps.matcher, deps.maxSleepMs);
-    // Persist the guard BEFORE firing. A crash between here and the spawn must
-    // not re-fire on restart, so dispatch is at-most-once: a crash drops a fire
-    // rather than doubling it (the safer direction for write-tier playbooks).
+    // Persist the guard and last_fired BEFORE firing. A crash between here and
+    // the spawn must not re-fire on restart, so dispatch is at-most-once: a
+    // crash drops a fire rather than doubling it (safer for write-tier
+    // playbooks). NB this diverges from #143's "persist after dispatch confirms"
+    // wording in favour of #142's panel-approved at-most-once invariant.
     deps.writeHeartbeat({
       ts: now.getTime(),
       host: deps.host,
@@ -98,8 +126,10 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
       next_wake_ts: now.getTime() + wake,
       last_dispatch: [...recent],
       dispatched_minute: Object.fromEntries(guard),
+      last_fired: lastFired,
     });
-    for (const p of toDispatch) deps.dispatch(p.name);
+    for (const p of due) deps.dispatch(p.name);
+    for (const f of catches) deps.dispatch(f.playbook.name);
 
     await deps.sleep(wake);
   }

@@ -13,6 +13,13 @@ export const MAX_SLEEP_MS = 60_000;
  */
 export const HEARTBEAT_STALE_MS = 600_000; // 10 minutes
 
+/**
+ * Missed-slot catch-up look-back (#143). On wake after a downtime/suspend gap,
+ * a missed slot older than this is too stale to replay. One hour: long enough to
+ * cover a brief outage, short enough that an hours-old slot isn't run late.
+ */
+export const CATCHUP_LOOKBACK_MS = 3_600_000; // 1 hour
+
 export function registryPath(vault: string): string {
   return `${vault}/CEO/registry.json`;
 }

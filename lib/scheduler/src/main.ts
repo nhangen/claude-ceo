@@ -18,7 +18,14 @@ import { createMatcher } from "@/cron";
 import { type DaemonDeps, runForever } from "@/daemon";
 import { readHeartbeatFile, writeHeartbeatFile } from "@/heartbeat-store";
 import { parseRegistry } from "@/registry";
-import { dispatchArgv, heartbeatPath, MAX_SLEEP_MS, registryPath, resolveHost } from "@/runtime";
+import {
+  CATCHUP_LOOKBACK_MS,
+  dispatchArgv,
+  heartbeatPath,
+  MAX_SLEEP_MS,
+  registryPath,
+  resolveHost,
+} from "@/runtime";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -92,6 +99,7 @@ async function main(): Promise<void> {
     host,
     matcher: createMatcher(),
     maxSleepMs: MAX_SLEEP_MS,
+    catchupLookbackMs: CATCHUP_LOOKBACK_MS,
     shouldContinue: () => running,
   };
 
