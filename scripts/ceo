@@ -208,50 +208,47 @@ cmd_doctor() {
     warn=$((warn + 1))
   fi
 
-  # cron
-  local _sched_state
-  _sched_state="$(ceo_scheduler_list 2>/dev/null || true)"
-  if printf '%s\n' "$_sched_state" | grep -q "ceo-cron.sh"; then
-    local count
-    count=$(printf '%s\n' "$_sched_state" | grep -c "ceo-cron.sh")
-    echo "  ✓ Cron entries installed ($count triggers)"
-    ok=$((ok + 1))
-
-    # Launchd-only: compare on-disk plist count to what launchd has actually
-    # loaded. Drift (orphan plist on disk, or loaded job whose plist was
-    # rm'd) is the failure mode this check exists to catch.
-    if [ "$(ceo_scheduler_backend 2>/dev/null)" = "launchd" ]; then
-      local loaded
-      loaded="$(ceo_scheduler_loaded_count 2>/dev/null || echo unknown)"
-      case "$loaded" in
-        unknown)
-          echo "  ! Launchd state unreadable — could not query launchctl"
-          warn=$((warn + 1))
-          ;;
-        "$count")
-          echo "  ✓ Launchd jobs loaded ($loaded matches plist count)"
-          ok=$((ok + 1))
-          ;;
-        *)
-          echo "  ✗ Launchd job count drift: $loaded loaded vs $count plist(s) on disk — run: ceo playbook scan"
-          fail=$((fail + 1))
-          ;;
-      esac
+  # scheduler
+  local _backend
+  _backend="$(ceo_scheduler_backend 2>/dev/null || echo unknown)"
+  if [ "$_backend" = "crontab" ]; then
+    local _sched_state
+    _sched_state="$(ceo_scheduler_list 2>/dev/null || true)"
+    if printf '%s\n' "$_sched_state" | grep -q "ceo-cron.sh"; then
+      local count
+      count=$(printf '%s\n' "$_sched_state" | grep -c "ceo-cron.sh")
+      echo "  ✓ Cron entries installed ($count triggers)"
+      ok=$((ok + 1))
+    else
+      echo "  ! No ceo-cron entries in crontab — run: ceo setup"
+      warn=$((warn + 1))
     fi
-  else
-    echo "  ! No ceo-cron entries in crontab — run: ceo setup"
-    warn=$((warn + 1))
+    # duplicate cron triggers
+    local dup_count
+    dup_count=$(printf '%s\n' "$_sched_state" | grep "ceo-cron\.sh" | sed 's/.*ceo-cron\.sh //' | sort | uniq -d | wc -l | xargs || true)
+    if [ "${dup_count:-0}" -gt 0 ]; then
+      echo "  ✗ Duplicate cron triggers detected — run: ceo playbook scan"
+      fail=$((fail + 1))
+    else
+      echo "  ✓ No duplicate cron triggers"
+      ok=$((ok + 1))
+    fi
+  elif [ "$_backend" = "daemon" ]; then
+    # macOS: scheduling is owned by ceo-schedulerd; the OS holds no per-playbook
+    # entries. Liveness is the heartbeat check below (added in #142).
+    echo "  ✓ Scheduling via ceo-schedulerd daemon (no per-playbook OS entries)"
+    ok=$((ok + 1))
   fi
 
-  # duplicate cron triggers
-  local dup_count
-  dup_count=$(printf '%s\n' "$_sched_state" | grep "ceo-cron\.sh" | sed 's/.*ceo-cron\.sh //' | sort | uniq -d | wc -l | xargs || true)
-  if [ "${dup_count:-0}" -gt 0 ]; then
-    echo "  ✗ Duplicate cron triggers detected — run: ceo playbook scan"
+  # Legacy per-playbook launchd agents (retired #98 backend). If any are still
+  # on disk / loaded they dispatch in parallel with the daemon — a double-fire.
+  local _legacy _legacy_n
+  _legacy="$(ceo_scheduler_legacy_launchd_plists 2>/dev/null || true)"
+  if [ -n "$_legacy" ]; then
+    _legacy_n=$(printf '%s\n' "$_legacy" | grep -c .)
+    echo "  ✗ $_legacy_n legacy per-playbook launchd agent(s) found (retired #98 backend) — they double-fire with the daemon"
+    echo "    Remove: for p in ~/Library/LaunchAgents/com.ceo.*.plist; do [ \"\$(basename \"\$p\" .plist)\" = com.ceo.schedulerd ] && continue; launchctl bootout gui/\$(id -u) \"\$p\" 2>/dev/null; rm -f \"\$p\"; done"
     fail=$((fail + 1))
-  else
-    echo "  ✓ No duplicate cron triggers"
-    ok=$((ok + 1))
   fi
 
   # plugin

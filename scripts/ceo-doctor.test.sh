@@ -95,6 +95,7 @@ teardown() {
   export PATH="$PATH_BACKUP"
   export HOME="$HOME_BACKUP"
   unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_HOSTNAME CEO_PLUTIL_BIN
+  unset CEO_SCHEDULER CEO_LAUNCHD_DIR
 }
 
 _log_completed_today() {
@@ -215,124 +216,6 @@ EOF
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_doctor_flags_launchd_loaded_vs_plist_drift() {
-  # #107: when on the launchd backend, doctor must surface drift between
-  # plist files on disk and com.ceo.* services actually loaded by launchd.
-  export CEO_SCHEDULER=launchd
-  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
-  export CEO_LAUNCHCTL_BIN="$TEST_HOME/stubs/launchctl"
-  mkdir -p "$CEO_LAUNCHD_DIR"
-
-  # Two plist files on disk but stub launchctl reports only one loaded.
-  for label in foo-0 bar-0; do
-    cat > "$CEO_LAUNCHD_DIR/com.ceo.$label.plist" <<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.ceo.$label</string>
-  <key>ProgramArguments</key><array>
-    <string>/bin/bash</string><string>-lc</string>
-    <string>/tmp/ceo-cron.sh $label</string>
-  </array>
-  <key>StartCalendarInterval</key><dict>
-    <key>Minute</key><integer>0</integer>
-    <key>Hour</key><integer>9</integer>
-  </dict>
-</dict></plist>
-XML
-  done
-
-  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
-#!/bin/bash
-if [ "$1" = "print" ]; then
-  echo "services = { 0 com.ceo.foo-0 }"
-fi
-exit 0
-STUB
-  chmod +x "$CEO_LAUNCHCTL_BIN"
-
-  local output rc=0
-  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
-  assert_contains "$output" "Launchd job count drift" "doctor must flag plist-vs-loaded drift on launchd"
-  assert_contains "$output" "1 loaded vs 2 plist" "drift message must name both counts"
-}
-
-test_doctor_passes_when_launchd_loaded_matches_plist_count() {
-  export CEO_SCHEDULER=launchd
-  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
-  export CEO_LAUNCHCTL_BIN="$TEST_HOME/stubs/launchctl"
-  mkdir -p "$CEO_LAUNCHD_DIR"
-  cat > "$CEO_LAUNCHD_DIR/com.ceo.solo-0.plist" <<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.ceo.solo-0</string>
-  <key>ProgramArguments</key><array>
-    <string>/bin/bash</string><string>-lc</string>
-    <string>/tmp/ceo-cron.sh solo</string>
-  </array>
-  <key>StartCalendarInterval</key><dict>
-    <key>Minute</key><integer>0</integer>
-    <key>Hour</key><integer>9</integer>
-  </dict>
-</dict></plist>
-XML
-  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
-#!/bin/bash
-if [ "$1" = "print" ]; then
-  echo "services = { 0 com.ceo.solo-0 }"
-fi
-exit 0
-STUB
-  chmod +x "$CEO_LAUNCHCTL_BIN"
-
-  local output
-  output=$("$CEO_BIN" doctor 2>&1 || true)
-  assert_contains "$output" "Launchd jobs loaded (1 matches plist count)" "doctor must report match on launchd"
-  if echo "$output" | grep -qF "Launchd job count drift"; then
-    printf '  FAIL [%s] doctor must NOT flag drift when counts match\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-}
-
-test_doctor_warns_when_launchctl_unreadable() {
-  # When launchctl can't be queried (headless ssh, missing binary, no GUI
-  # session), the helper now returns 'unknown' instead of silently 0. Doctor
-  # must surface this as a WARN, not a false drift report.
-  export CEO_SCHEDULER=launchd
-  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
-  export CEO_LAUNCHCTL_BIN="$TEST_HOME/stubs/launchctl"
-  mkdir -p "$CEO_LAUNCHD_DIR"
-  cat > "$CEO_LAUNCHD_DIR/com.ceo.solo-0.plist" <<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.ceo.solo-0</string>
-  <key>ProgramArguments</key><array>
-    <string>/bin/bash</string><string>-lc</string>
-    <string>/tmp/ceo-cron.sh solo</string>
-  </array>
-  <key>StartCalendarInterval</key><dict>
-    <key>Minute</key><integer>0</integer>
-    <key>Hour</key><integer>9</integer>
-  </dict>
-</dict></plist>
-XML
-  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
-#!/bin/bash
-echo "launchctl: domain not found" >&2
-exit 3
-STUB
-  chmod +x "$CEO_LAUNCHCTL_BIN"
-
-  local output
-  output=$("$CEO_BIN" doctor 2>&1 || true)
-  assert_contains "$output" "Launchd state unreadable" "doctor must surface unknown launchctl state as a warn"
-  if echo "$output" | grep -qF "Launchd job count drift"; then
-    printf '  FAIL [%s] doctor must NOT report drift when launchctl is unreadable\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-}
-
 test_doctor_reports_platform() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
@@ -344,50 +227,47 @@ test_doctor_reports_platform() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-# #110: AC #3 of #98 was "doctor reports loaded agent count parity with
-# crontab". Existing tests pin the drift sub-check line but not the outer
-# "Cron entries installed (N triggers)" line. This test installs N plists
-# via the launchd backend, runs ceo doctor end-to-end, and asserts that
-# line for N=3.
-test_doctor_reports_cron_entries_installed_count_under_launchd() {
-  export CEO_SCHEDULER=launchd
-  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
-  export CEO_LAUNCHCTL_BIN="$TEST_HOME/stubs/launchctl"
-  mkdir -p "$CEO_LAUNCHD_DIR"
-
-  local label
-  for label in alpha-0 beta-0 gamma-0; do
-    cat > "$CEO_LAUNCHD_DIR/com.ceo.$label.plist" <<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.ceo.$label</string>
-  <key>ProgramArguments</key><array>
-    <string>/bin/bash</string><string>-lc</string>
-    <string>/tmp/ceo-cron.sh $label</string>
-  </array>
-  <key>StartCalendarInterval</key><dict>
-    <key>Minute</key><integer>0</integer>
-    <key>Hour</key><integer>9</integer>
-  </dict>
-</dict></plist>
-XML
-  done
-
-  cat > "$CEO_LAUNCHCTL_BIN" <<'STUB'
-#!/bin/bash
-if [ "$1" = "print" ]; then
-  echo "services = { 0 com.ceo.alpha-0 1 com.ceo.beta-0 2 com.ceo.gamma-0 }"
-fi
-exit 0
-STUB
-  chmod +x "$CEO_LAUNCHCTL_BIN"
-
+# #144: on the daemon backend (macOS) doctor reports scheduling-via-daemon and
+# does NOT print the crontab "Cron entries installed" line (there are none).
+test_doctor_reports_daemon_scheduling_on_daemon_backend() {
+  export CEO_SCHEDULER=daemon
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  assert_contains "$output" "Cron entries installed (3 triggers)" \
-    "doctor must print the outer count line with N=3 under launchd"
-  assert_contains "$output" "Launchd jobs loaded (3 matches plist count)" \
-    "doctor must confirm loaded-vs-plist parity at N=3"
+  assert_contains "$output" "Scheduling via ceo-schedulerd daemon" \
+    "doctor must report daemon-managed scheduling on the daemon backend"
+  assert_not_contains "$output" "Cron entries installed" \
+    "the crontab cron-entries line must be skipped on the daemon backend"
+}
+
+# #144 migration: doctor must flag retired per-playbook launchd agents (which
+# would double-fire with the daemon) and not flag the daemon's own agent.
+test_doctor_flags_legacy_per_playbook_launchd_agents() {
+  export CEO_SCHEDULER=daemon
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  : > "$CEO_LAUNCHD_DIR/com.ceo.morning-0.plist"
+  : > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist"
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "legacy per-playbook launchd agent" \
+    "doctor must warn about retired per-playbook agents"
+  assert_contains "$output" "double-fire" "warning must explain the risk"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero when legacy agents are present\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_no_legacy_warning_when_only_daemon_agent() {
+  export CEO_SCHEDULER=daemon
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  : > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_not_contains "$output" "legacy per-playbook launchd agent" \
+    "the daemon's own keep-alive agent must not be flagged as legacy"
 }
 
 # --- ceo-schedulerd liveness (#142) ---
