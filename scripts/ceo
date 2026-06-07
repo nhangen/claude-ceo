@@ -432,8 +432,11 @@ cmd_doctor() {
   else
     local _hb_ts
     _hb_ts=$(jq -r '.ts // empty' "$_hb_file" 2>/dev/null)
+    case "$_hb_ts" in
+      ''|*[!0-9]*) _hb_ts="" ;;
+    esac
     if [ -z "$_hb_ts" ]; then
-      echo "  ✗ ceo-schedulerd heartbeat malformed (no ts) — check the daemon"
+      echo "  ✗ ceo-schedulerd heartbeat malformed (no numeric ts) — check the daemon"
       fail=$((fail + 1))
     else
       local _hb_age_s=$(( $(date +%s) - _hb_ts / 1000 ))

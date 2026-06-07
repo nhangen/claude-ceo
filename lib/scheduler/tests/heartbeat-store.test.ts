@@ -39,4 +39,13 @@ describe("heartbeat round-trip", () => {
     writeFileSync(path, JSON.stringify({ ts: 1, host: "x" }));
     expect(readHeartbeatFile(path)).toBeNull();
   });
+
+  test("non-numeric dispatched_minute values are dropped so the guard never holds a string", () => {
+    const path = join(dir, "badguard.json");
+    writeFileSync(
+      path,
+      JSON.stringify({ ts: 1, host: "x", dispatched_minute: { good: 5, bad: "abc", alsobad: null } }),
+    );
+    expect(readHeartbeatFile(path)!.dispatched_minute).toEqual({ good: 5 });
+  });
 });

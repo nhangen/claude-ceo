@@ -442,4 +442,17 @@ test_doctor_flags_malformed_schedulerd_heartbeat() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_doctor_flags_nonnumeric_schedulerd_ts() {
+  mkdir -p "$HOME/.ceo/schedulerd"
+  printf '{"ts":"abc","host":"testhost","dispatched_minute":{}}\n' > "$HOME/.ceo/schedulerd/heartbeat.json"
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "heartbeat malformed" "doctor must flag a non-numeric ts as malformed, not error on arithmetic"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero on non-numeric ts (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests

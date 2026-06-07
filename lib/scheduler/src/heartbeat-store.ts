@@ -22,13 +22,20 @@ export function readHeartbeatFile(path: string): Heartbeat | null {
   if (typeof r.ts !== "number") return null;
   if (typeof r.dispatched_minute !== "object" || r.dispatched_minute === null) return null;
   const lastDispatch = Array.isArray(r.last_dispatch) ? (r.last_dispatch as DispatchRecord[]) : [];
+  // Drop any non-numeric guard value: a string slipping in would never `===`
+  // the current epoch-minute, silently disabling the double-fire guard for that
+  // playbook. Keep parity with the registry path's strictness.
+  const dispatchedMinute: Record<string, number> = {};
+  for (const [name, mn] of Object.entries(r.dispatched_minute as Record<string, unknown>)) {
+    if (typeof mn === "number") dispatchedMinute[name] = mn;
+  }
   return {
     ts: r.ts,
     host: typeof r.host === "string" ? r.host : "",
     runnable_count: typeof r.runnable_count === "number" ? r.runnable_count : 0,
     next_wake_ts: typeof r.next_wake_ts === "number" ? r.next_wake_ts : 0,
     last_dispatch: lastDispatch,
-    dispatched_minute: r.dispatched_minute as Record<string, number>,
+    dispatched_minute: dispatchedMinute,
   };
 }
 
