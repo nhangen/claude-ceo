@@ -47,6 +47,7 @@ PRIOR_STATUS=""
 PRIOR_SINCE=""
 PRIOR_LAST_CHECK=""
 PRIOR_FAILS=0
+PRIOR_GH_FAILS=0
 
 _status_rc=0
 PRIOR_STATUS=$(ceo_read_alert_field "$STATE_FILE" status) || _status_rc=$?
@@ -73,6 +74,12 @@ if [[ "$_pf" =~ ^[0-9]+$ ]]; then
   PRIOR_FAILS="$_pf"
 elif [ -n "$_pf" ]; then
   printf 'WARN: ceo-triage-autopilot: corrupted consec_failures field %q; resetting to 0\n' "$_pf" >&2
+fi
+_pg=$(ceo_read_alert_field "$STATE_FILE" consec_gh_errors) || _pg=""
+if [[ "$_pg" =~ ^[0-9]+$ ]]; then
+  PRIOR_GH_FAILS="$_pg"
+elif [ -n "$_pg" ]; then
+  printf 'WARN: ceo-triage-autopilot: corrupted consec_gh_errors field %q; resetting to 0\n' "$_pg" >&2
 fi
 
 FIRST_RUN=0
@@ -248,6 +255,10 @@ TRIAGE_RAN=0
 TRIAGE_OK=0
 TICKETS_WRITTEN=0
 CONSEC_FAILURES="$PRIOR_FAILS"
+# Streak of consecutive ticks with a per-repo gh/jq fetch error. Stays 0 on any
+# clean-fetch tick (set in the cursor block); only the gh-error branch carries
+# it forward from PRIOR_GH_FAILS, so a clean fetch breaks the streak.
+CONSEC_GH_ERRORS=0
 SPAWNS_ATTEMPTED=0
 SPAWNS_FAILED=0
 
@@ -325,10 +336,24 @@ fi
 if [ "$FIRST_RUN" -eq 1 ]; then
   NEW_LAST_CHECK="$NOW"
 elif [ "$TICK_HAD_ERRORS" -eq 1 ]; then
-  # ANY per-repo gh/jq error holds the cursor. A partial success would
-  # otherwise drop the failed repo's merge window permanently. Re-running
-  # triage next tick is cheap (marker dedup no-ops already-written tickets).
-  NEW_LAST_CHECK="$PRIOR_LAST_CHECK"
+  # ANY per-repo gh/jq error holds the cursor so the failed repo's merge window
+  # isn't dropped. But a *permanently* failing repo (deleted/renamed remote,
+  # permanent 401, unparseable remote.origin.url) would otherwise wedge the
+  # cursor forever, re-spawning triage every tick. Bound it: after MAX_RETRIES
+  # consecutive gh-error ticks, give up — advance the cursor and surface it.
+  CONSEC_GH_ERRORS=$((PRIOR_GH_FAILS + 1))
+  if [ "$CONSEC_GH_ERRORS" -ge "$MAX_RETRIES" ]; then
+    NEW_LAST_CHECK="$NOW"
+    giveup_marker="<!-- triage-autopilot:giveup-gh:$(date +%Y-%m-%d) -->"
+    if ! grep -qF -- "$giveup_marker" "$INBOX_FILE" 2>/dev/null; then
+      printf -- '- [ ] Triage autopilot: persistent fetch error (%s) for %d ticks — manual check needed for merges since %s %s\n' \
+        "${LAST_ERROR:-gh_error}" "$CONSEC_GH_ERRORS" "$PRIOR_LAST_CHECK" "$giveup_marker" >> "$INBOX_FILE"
+    fi
+    printf 'WARN: ceo-triage-autopilot: %d consecutive gh/jq errors; advancing cursor anyway\n' "$CONSEC_GH_ERRORS" >&2
+    CONSEC_GH_ERRORS=0
+  else
+    NEW_LAST_CHECK="$PRIOR_LAST_CHECK"
+  fi
 elif [ "$SPAWNS_ATTEMPTED" -eq 0 ] || [ "$TRIAGE_OK" -eq 1 ]; then
   # No merges, all-skip merges, or every spawned source succeeded.
   NEW_LAST_CHECK="$NOW"
@@ -370,6 +395,7 @@ if ! {
     --field triage_ran="$TRIAGE_RAN" \
     --field tickets_written="$TICKETS_WRITTEN" \
     --field consec_failures="$CONSEC_FAILURES" \
+    --field consec_gh_errors="$CONSEC_GH_ERRORS" \
     --field last_error="${LAST_ERROR:-none}"
   printf '\n# Triage Autopilot — %s\n\n' "$HOST"
   if [ "$FIRST_RUN" -eq 1 ]; then
