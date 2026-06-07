@@ -20,6 +20,20 @@ export const HEARTBEAT_STALE_MS = 600_000; // 10 minutes
  */
 export const CATCHUP_LOOKBACK_MS = 3_600_000; // 1 hour
 
+/**
+ * Resolve the catch-up look-back from an optional env override
+ * (`CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS`), defaulting to {@link CATCHUP_LOOKBACK_MS}.
+ * A non-numeric / zero / negative value falls back to the default rather than
+ * silently installing a wrong window — a host with daily playbooks can raise it
+ * (e.g. to several hours) without a registry/schema change. Per-playbook
+ * look-back is the fuller fix, tracked separately.
+ */
+export function resolveCatchupLookbackMs(raw: string | undefined): number {
+  if (raw === undefined) return CATCHUP_LOOKBACK_MS;
+  const n = Number(raw.trim());
+  return Number.isInteger(n) && n > 0 ? n : CATCHUP_LOOKBACK_MS;
+}
+
 export function registryPath(vault: string): string {
   return `${vault}/CEO/registry.json`;
 }

@@ -19,11 +19,11 @@ import { type DaemonDeps, runForever } from "@/daemon";
 import { readHeartbeatFile, writeHeartbeatFile } from "@/heartbeat-store";
 import { parseRegistry } from "@/registry";
 import {
-  CATCHUP_LOOKBACK_MS,
   dispatchArgv,
   heartbeatPath,
   MAX_SLEEP_MS,
   registryPath,
+  resolveCatchupLookbackMs,
   resolveHost,
 } from "@/runtime";
 
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     host,
     matcher: createMatcher(),
     maxSleepMs: MAX_SLEEP_MS,
-    catchupLookbackMs: CATCHUP_LOOKBACK_MS,
+    catchupLookbackMs: resolveCatchupLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS),
     shouldContinue: () => running,
   };
 

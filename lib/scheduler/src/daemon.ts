@@ -85,16 +85,20 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
     const minuteStart = minute * MINUTE_MS;
 
     // Current-minute fires (live path), then catch-up fires for slots missed
-    // while the daemon was down — excluding any playbook already firing now, so
-    // a single tick never dispatches a playbook twice.
+    // while the daemon was down. The dueNames filter is defensive: catch-up only
+    // returns slots strictly before the current minute, so it can't already
+    // overlap `due` today — but it keeps a single tick from double-dispatching a
+    // playbook if that exclusion ever changes.
     const due = dueAt(runnable, now, deps.matcher).filter((p) => guard.get(p.name) !== minute);
     const dueNames = new Set(due.map((p) => p.name));
     const catches = catchUpFires(runnable, lastFired, now, deps.matcher, deps.catchupLookbackMs).filter(
       (f) => !dueNames.has(f.playbook.name),
     );
 
-    // Rebuild last_fired keyed by current runnable set (prunes removed playbooks).
-    // A first-seen playbook with no baseline initializes to now — never a replay.
+    // Rebuild last_fired keyed by the current runnable set, which prunes removed
+    // playbooks. A first-seen playbook (or one that briefly left the runnable set
+    // — draft/host-scope flip) has no baseline and initializes to now, so it is
+    // treated as first-seen and never replayed: at-most-once over double-fire.
     const nextLastFired: Record<string, number> = {};
     for (const p of runnable) nextLastFired[p.name] = lastFired[p.name] ?? now.getTime();
     for (const p of due) {

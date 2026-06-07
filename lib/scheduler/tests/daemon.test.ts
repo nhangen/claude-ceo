@@ -35,6 +35,10 @@ function harness(opts: HarnessOpts) {
   // the moment dispatch is called. undefined ⇒ the guard was NOT yet durable
   // (ordering bug: a crash here would re-fire on restart).
   const guardAtDispatch: Record<string, number | undefined> = {};
+  // Same idea for last_fired: the value already persisted to the heartbeat when
+  // dispatch is called. Proves catch-up keeps at-most-once even if the two
+  // fields are ever split into separate heartbeat writes.
+  const lastFiredAtDispatch: Record<string, number | undefined> = {};
   const loader =
     typeof opts.playbooks === "function"
       ? opts.playbooks
@@ -48,6 +52,7 @@ function harness(opts: HarnessOpts) {
     loadRegistry: loader,
     dispatch: (name) => {
       guardAtDispatch[name] = lastHb?.dispatched_minute[name];
+      lastFiredAtDispatch[name] = lastHb?.last_fired[name];
       dispatched.push(name);
     },
     readHeartbeat: () => opts.startHeartbeat ?? null,
@@ -64,7 +69,15 @@ function harness(opts: HarnessOpts) {
     catchupLookbackMs: opts.lookback ?? 3_600_000,
     shouldContinue: () => i < opts.nows.length,
   };
-  return { deps, dispatched, sleeps, heartbeats, logs, guardAtDispatch: () => guardAtDispatch };
+  return {
+    deps,
+    dispatched,
+    sleeps,
+    heartbeats,
+    logs,
+    guardAtDispatch: () => guardAtDispatch,
+    lastFiredAtDispatch: () => lastFiredAtDispatch,
+  };
 }
 
 describe("runForever — dispatch + sleep", () => {
@@ -242,17 +255,18 @@ describe("missed-slot catch-up (#143)", () => {
     expect(h.dispatched).toEqual([]);
   });
 
-  test("the catch-up fire is persisted to last_fired BEFORE dispatch (at-most-once)", async () => {
+  test("advances last_fired to the missed slot and persists it BEFORE dispatch (at-most-once)", async () => {
     const h = harness({
       nows: [d("2026-06-01T09:17:30Z")],
       playbooks: [pb({ name: "ev", schedule: "*/5 * * * *" })],
       startHeartbeat: hbWith({ ev: d("2026-06-01T09:00:00Z").getTime() }),
     });
     await runForever(h.deps);
-    // Heartbeat carrying the advanced last_fired was written before the dispatch fired.
-    expect(h.heartbeats).toHaveLength(1);
-    expect(h.heartbeats[0]!.last_fired.ev).toBe(d("2026-06-01T09:15:00Z").getTime());
     expect(h.dispatched).toEqual(["ev"]);
+    // Real ordering assertion: at the moment dispatch was called, the advanced
+    // last_fired was ALREADY in the persisted heartbeat. Fails if writeHeartbeat
+    // moves after dispatch (even if last_fired ends up correct).
+    expect(h.lastFiredAtDispatch().ev).toBe(d("2026-06-01T09:15:00Z").getTime());
   });
 
   test("prunes last_fired for playbooks no longer runnable", async () => {

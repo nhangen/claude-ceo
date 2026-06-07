@@ -95,6 +95,15 @@ drops a fire rather than doubling it. (This is a deliberate divergence from #143
 for write-tier playbooks, and dispatch is a fire-and-forget spawn whose completion
 the daemon can't observe anyway.)
 
+The look-back is **one global value** (`CATCHUP_LOOKBACK_MS`, default 1h),
+overridable per host via the `CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS` env var (a
+non-numeric/zero/negative value falls back to the default). A single global value
+is a known limitation: it suits sub-hourly playbooks but is wrong for the
+daily-report playbooks that dominate the registry — a daily slot missed by more
+than the look-back is **not** replayed (by design, so a morning job doesn't run
+late at night). A daily-heavy host should raise the env var; per-playbook (or
+per-cadence) look-back is the fuller fix, tracked as a follow-up.
+
 ### Run / keep-alive (Linux/WSL)
 
 ```bash

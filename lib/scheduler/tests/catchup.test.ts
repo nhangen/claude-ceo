@@ -66,6 +66,15 @@ describe("newestMissedSlot", () => {
     // Newest fire strictly before the 07:00Z minute, after the look-back floor (06:30Z) → 07:00Z.
     expect(slot).toEqual(d("2026-11-01T07:00:00Z"));
   });
+
+  test("forward-DST (spring-forward) replays the correct prior slot across the gap", () => {
+    const ny = createMatcher({ timezone: "America/New_York" });
+    // 2026-03-08 spring-forward (02:00→03:00 local; the 02:00 wall-clock hour does
+    // not exist). Hourly, 2h look-back. Down since 05:00Z (00:00 EST), back at
+    // 08:30Z (04:30 EDT) — newest fire before the 08:30Z minute is 08:00Z (04:00 EDT).
+    const slot = newestMissedSlot("0 * * * *", ms("2026-03-08T05:00:00Z"), d("2026-03-08T08:30:00Z"), ny, 2 * HOUR);
+    expect(slot).toEqual(d("2026-03-08T08:00:00Z"));
+  });
 });
 
 describe("catchUpFires", () => {
