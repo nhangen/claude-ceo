@@ -15,6 +15,7 @@ const hb: Heartbeat = {
   next_wake_ts: 1_780_000_060_000,
   last_dispatch: [{ name: "morning-scan", ts: 1_780_000_000_000 }],
   dispatched_minute: { "morning-scan": 29_666_666 },
+  last_fired: { "morning-scan": 1_780_000_000_000 },
 };
 
 describe("heartbeat round-trip", () => {
@@ -47,5 +48,20 @@ describe("heartbeat round-trip", () => {
       JSON.stringify({ ts: 1, host: "x", dispatched_minute: { good: 5, bad: "abc", alsobad: null } }),
     );
     expect(readHeartbeatFile(path)!.dispatched_minute).toEqual({ good: 5 });
+  });
+
+  test("a pre-#143 heartbeat with no last_fired reads as empty (re-baselines, no crash)", () => {
+    const path = join(dir, "prev143.json");
+    writeFileSync(path, JSON.stringify({ ts: 1, host: "x", dispatched_minute: { a: 5 } }));
+    expect(readHeartbeatFile(path)!.last_fired).toEqual({});
+  });
+
+  test("non-numeric last_fired values are dropped", () => {
+    const path = join(dir, "badlastfired.json");
+    writeFileSync(
+      path,
+      JSON.stringify({ ts: 1, host: "x", dispatched_minute: {}, last_fired: { good: 99, bad: "x" } }),
+    );
+    expect(readHeartbeatFile(path)!.last_fired).toEqual({ good: 99 });
   });
 });

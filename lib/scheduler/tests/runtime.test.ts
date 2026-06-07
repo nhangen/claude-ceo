@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CATCHUP_LOOKBACK_MS,
   dispatchArgv,
   HEARTBEAT_STALE_MS,
   heartbeatPath,
   MAX_SLEEP_MS,
   registryPath,
+  resolveCatchupLookbackMs,
   resolveHost,
 } from "@/runtime";
 
@@ -37,5 +39,20 @@ describe("dispatchArgv", () => {
 describe("staleness threshold is comfortably larger than the wake cap", () => {
   test("a single missed wake cannot trip a stale alert", () => {
     expect(HEARTBEAT_STALE_MS).toBeGreaterThanOrEqual(5 * MAX_SLEEP_MS);
+  });
+});
+
+describe("resolveCatchupLookbackMs", () => {
+  test("absent env → the default", () => {
+    expect(resolveCatchupLookbackMs(undefined)).toBe(CATCHUP_LOOKBACK_MS);
+  });
+  test("a positive integer override is honored", () => {
+    expect(resolveCatchupLookbackMs("21600000")).toBe(21_600_000);
+  });
+  test("non-numeric / zero / negative falls back to the default (never a wrong window)", () => {
+    expect(resolveCatchupLookbackMs("abc")).toBe(CATCHUP_LOOKBACK_MS);
+    expect(resolveCatchupLookbackMs("0")).toBe(CATCHUP_LOOKBACK_MS);
+    expect(resolveCatchupLookbackMs("-5")).toBe(CATCHUP_LOOKBACK_MS);
+    expect(resolveCatchupLookbackMs("  ")).toBe(CATCHUP_LOOKBACK_MS);
   });
 });

@@ -21,6 +21,7 @@ interface HarnessOpts {
   startHeartbeat?: Heartbeat | null;
   host?: string;
   cap?: number;
+  lookback?: number;
 }
 
 function harness(opts: HarnessOpts) {
@@ -34,6 +35,10 @@ function harness(opts: HarnessOpts) {
   // the moment dispatch is called. undefined ⇒ the guard was NOT yet durable
   // (ordering bug: a crash here would re-fire on restart).
   const guardAtDispatch: Record<string, number | undefined> = {};
+  // Same idea for last_fired: the value already persisted to the heartbeat when
+  // dispatch is called. Proves catch-up keeps at-most-once even if the two
+  // fields are ever split into separate heartbeat writes.
+  const lastFiredAtDispatch: Record<string, number | undefined> = {};
   const loader =
     typeof opts.playbooks === "function"
       ? opts.playbooks
@@ -47,6 +52,7 @@ function harness(opts: HarnessOpts) {
     loadRegistry: loader,
     dispatch: (name) => {
       guardAtDispatch[name] = lastHb?.dispatched_minute[name];
+      lastFiredAtDispatch[name] = lastHb?.last_fired[name];
       dispatched.push(name);
     },
     readHeartbeat: () => opts.startHeartbeat ?? null,
@@ -60,9 +66,18 @@ function harness(opts: HarnessOpts) {
     host: opts.host ?? "ml-1",
     matcher: m,
     maxSleepMs: opts.cap ?? 60_000,
+    catchupLookbackMs: opts.lookback ?? 3_600_000,
     shouldContinue: () => i < opts.nows.length,
   };
-  return { deps, dispatched, sleeps, heartbeats, logs, guardAtDispatch: () => guardAtDispatch };
+  return {
+    deps,
+    dispatched,
+    sleeps,
+    heartbeats,
+    logs,
+    guardAtDispatch: () => guardAtDispatch,
+    lastFiredAtDispatch: () => lastFiredAtDispatch,
+  };
 }
 
 describe("runForever — dispatch + sleep", () => {
@@ -126,6 +141,7 @@ describe("double-fire guard", () => {
         next_wake_ts: 0,
         last_dispatch: [{ name: "ev", ts: d("2026-06-01T09:00:02Z").getTime() }],
         dispatched_minute: { ev: minute },
+        last_fired: {},
       },
     });
     await runForever(h.deps);
@@ -164,5 +180,102 @@ describe("registry resilience", () => {
     // Tick 1 loads ev and dispatches; tick 2's load throws → reuse ev → dispatch again (new minute).
     expect(h.dispatched).toEqual(["ev", "ev"]);
     expect(h.logs.some((l) => l.includes("boom"))).toBe(true);
+  });
+});
+
+describe("missed-slot catch-up (#143)", () => {
+  const hbWith = (lastFired: Record<string, number>): Heartbeat => ({
+    ts: 0,
+    host: "ml-1",
+    runnable_count: 0,
+    next_wake_ts: 0,
+    last_dispatch: [],
+    dispatched_minute: {},
+    last_fired: lastFired,
+  });
+
+  test("fires once for the newest missed slot after a downtime gap and advances last_fired", async () => {
+    // Restored last_fired = 09:00; back at 09:17:30; */5 → 09:05/09:10/09:15 missed; fire 09:15 once.
+    const h = harness({
+      nows: [d("2026-06-01T09:17:30Z")],
+      playbooks: [pb({ name: "ev", schedule: "*/5 * * * *" })],
+      startHeartbeat: hbWith({ ev: d("2026-06-01T09:00:00Z").getTime() }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ev"]);
+    expect(h.heartbeats[0]!.last_fired.ev).toBe(d("2026-06-01T09:15:00Z").getTime());
+  });
+
+  test("a playbook due now AND owing a missed slot fires once (not twice)", async () => {
+    // every minute, last_fired 09:00, now exactly on the 09:05 fire.
+    const minuteStart = Math.floor(d("2026-06-01T09:05:00Z").getTime() / 60_000) * 60_000;
+    const h = harness({
+      nows: [d("2026-06-01T09:05:00Z")],
+      playbooks: [pb({ name: "ev", schedule: "* * * * *" })],
+      startHeartbeat: hbWith({ ev: d("2026-06-01T09:00:00Z").getTime() }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ev"]);
+    expect(h.heartbeats[0]!.last_fired.ev).toBe(minuteStart);
+  });
+
+  test("a first-seen playbook (no baseline) gets no catch-up; last_fired initializes to now", async () => {
+    const now = d("2026-06-01T09:30:00Z");
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "ev", schedule: "*/5 * * * *" })], // 09:30 is a fire, but no prior baseline
+      startHeartbeat: null,
+    });
+    await runForever(h.deps);
+    // It IS due at 09:30 (live path), so it fires once for the current minute — but NOT a catch-up replay.
+    expect(h.dispatched).toEqual(["ev"]);
+    expect(h.heartbeats[0]!.last_fired.ev).toBe(now.getTime());
+  });
+
+  test("no catch-up replay for a brand-new, not-currently-due playbook", async () => {
+    const now = d("2026-06-01T09:32:00Z"); // not a */5 fire
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "ev", schedule: "*/5 * * * *" })],
+      startHeartbeat: null,
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.heartbeats[0]!.last_fired.ev).toBe(now.getTime());
+  });
+
+  test("a slot too stale for the look-back window is not replayed", async () => {
+    // daily 09:00, down since yesterday, back at 11:00 with default 1h look-back → no replay.
+    const h = harness({
+      nows: [d("2026-06-01T11:00:00Z")],
+      playbooks: [pb({ name: "daily", schedule: "0 9 * * *" })],
+      startHeartbeat: hbWith({ daily: d("2026-05-31T09:00:00Z").getTime() }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+  });
+
+  test("advances last_fired to the missed slot and persists it BEFORE dispatch (at-most-once)", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:17:30Z")],
+      playbooks: [pb({ name: "ev", schedule: "*/5 * * * *" })],
+      startHeartbeat: hbWith({ ev: d("2026-06-01T09:00:00Z").getTime() }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ev"]);
+    // Real ordering assertion: at the moment dispatch was called, the advanced
+    // last_fired was ALREADY in the persisted heartbeat. Fails if writeHeartbeat
+    // moves after dispatch (even if last_fired ends up correct).
+    expect(h.lastFiredAtDispatch().ev).toBe(d("2026-06-01T09:15:00Z").getTime());
+  });
+
+  test("prunes last_fired for playbooks no longer runnable", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:30:00Z")],
+      playbooks: [pb({ name: "stillhere", schedule: "0 9 * * *" })],
+      startHeartbeat: hbWith({ stillhere: d("2026-06-01T09:00:00Z").getTime(), gone: 123 }),
+    });
+    await runForever(h.deps);
+    expect(Object.keys(h.heartbeats[0]!.last_fired)).toEqual(["stillhere"]);
   });
 });
