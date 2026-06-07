@@ -607,4 +607,51 @@ test_validated_tickets_with_bad_row_is_failure_not_silent_advance() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_persistent_gh_error_gives_up_after_cap() {
+  # A repo whose gh fetch fails every tick must NOT wedge the cursor forever.
+  # After MAX_RETRIES consecutive gh-error ticks the cursor advances and a
+  # give-up line is appended; before the cap the cursor is held.
+  reset_repo_list_with "test/sample"
+  run_autopilot   # baseline cursor (fake-gh-empty)
+  sed -i.bak 's/^last_merge_check: .*/last_merge_check: 2026-01-01T00:00:00+0000/' \
+    "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md"
+  rm -f "$CEO_DIR/alerts/triage-autopilot-$CEO_HOSTNAME.md.bak"
+
+  # Tick 1 + 2: streak builds, cursor still held (below MAX_RETRIES=3).
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-fail" run_autopilot
+  assert_eq "$(state_field consec_gh_errors)" "1" "first gh error -> streak 1"
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-fail" run_autopilot
+  assert_eq "$(state_field consec_gh_errors)" "2" "second gh error -> streak 2"
+  assert_eq "$(state_field last_merge_check)" "2026-01-01T00:00:00+0000" \
+    "cursor still held before the cap"
+  if grep -q "triage-autopilot:giveup-gh:" "$CEO_DIR/inbox.md"; then
+    printf '  FAIL [%s] must NOT give up before the cap\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+
+  # Tick 3: hits MAX_RETRIES -> give up, advance cursor, reset streak.
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-fail" run_autopilot
+  if [ "$(state_field last_merge_check)" = "2026-01-01T00:00:00+0000" ]; then
+    printf '  FAIL [%s] cursor must advance after MAX_RETRIES gh errors\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  assert_eq "$(state_field consec_gh_errors)" "0" "streak resets after give-up"
+  if ! grep -q "triage-autopilot:giveup-gh:" "$CEO_DIR/inbox.md"; then
+    printf '  FAIL [%s] give-up must append a giveup-gh inbox line\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_transient_gh_error_resets_streak() {
+  # A clean fetch breaks the streak so flaky errors never accumulate to give-up.
+  reset_repo_list_with "test/sample"
+  run_autopilot   # baseline
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-fail" run_autopilot
+  assert_eq "$(state_field consec_gh_errors)" "1" "gh error -> streak 1"
+  CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-empty" run_autopilot
+  assert_eq "$(state_field consec_gh_errors)" "0" "clean fetch resets the streak"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
