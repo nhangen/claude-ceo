@@ -33,3 +33,20 @@ jobs:
           done
           [ "$count" -ge 1 ] || { echo "no tests ran"; exit 1; }
           exit "$fail"
+  scheduler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Install bun via the official versioned script rather than a third-party
+      # action, matching the repo's minimal-action posture.
+      - name: Install bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.5"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: scheduler lib — install, typecheck, test
+        working-directory: lib/scheduler
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun test
