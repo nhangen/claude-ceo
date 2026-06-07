@@ -95,6 +95,7 @@ teardown() {
   export PATH="$PATH_BACKUP"
   export HOME="$HOME_BACKUP"
   unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_HOSTNAME CEO_PLUTIL_BIN
+  unset CEO_SCHEDULER CEO_LAUNCHD_DIR
 }
 
 _log_completed_today() {
