@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ceo-schedulerd — macOS launchd USER agent template (#144, Phase 2 of #136).
+
+  ONE keep-alive agent runs the Bun daemon, which owns cron matching and reads
+  CEO/registry.json directly — replacing the retired per-playbook plist backend.
+
+  This is a TEMPLATE: edit the three absolute paths below, then install as a
+  user agent (no root). It has NOT been smoke-tested on a long-running host;
+  the loop/guard/heartbeat are covered by lib/scheduler tests and a throwaway
+  bootstrap smoke.
+
+  Install (user scope, logged-in GUI session required — this is a LaunchAgent,
+  not a headless LaunchDaemon, because it must read the user's synced vault):
+
+    cp com.ceo.schedulerd.plist ~/Library/LaunchAgents/
+    # edit the absolute paths in the copy
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist
+    launchctl kickstart -p gui/$(id -u)/com.ceo.schedulerd   # verify it starts
+    launchctl print gui/$(id -u)/com.ceo.schedulerd          # inspect state
+
+  Stop / uninstall:
+    launchctl bootout gui/$(id -u)/com.ceo.schedulerd
+    rm ~/Library/LaunchAgents/com.ceo.schedulerd.plist
+
+  Verify liveness independently of launchd:  ceo doctor   (reads the heartbeat).
+
+  MIGRATION from the old per-playbook backend: if `ceo doctor` reports legacy
+  `com.ceo.<name>-N` agents, bootout + rm each before relying on the daemon, or
+  they will double-fire. See lib/scheduler/README.md.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ceo.schedulerd</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- EDIT: absolute path to bun and to this repo's lib/scheduler/src/main.ts. -->
+    <string>/Users/CHANGEME/.bun/bin/bun</string>
+    <string>run</string>
+    <string>/Users/CHANGEME/code/claude-ceo/lib/scheduler/src/main.ts</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- EDIT: the synced Obsidian vault root that contains CEO/registry.json. -->
+    <key>CEO_VAULT</key>
+    <string>/Users/CHANGEME/Documents/Obsidian</string>
+  </dict>
+
+  <!-- Start at load and keep alive, but only respawn on a non-zero (crash) exit
+       so a clean SIGTERM shutdown (exit 0, e.g. from `launchctl bootout`) does
+       not tight-loop. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Floor between respawns (launchd's implicit minimum is ~10s; set it
+       explicitly to honor the back-off requirement). -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/ceo-schedulerd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/ceo-schedulerd.err.log</string>
+</dict>
+</plist>

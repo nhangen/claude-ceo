@@ -104,18 +104,37 @@ than the look-back is **not** replayed (by design, so a morning job doesn't run
 late at night). A daily-heavy host should raise the env var; per-playbook (or
 per-cadence) look-back is the fuller fix, tracked as a follow-up.
 
-### Run / keep-alive (Linux/WSL)
+### Run / keep-alive
 
 ```bash
-CEO_VAULT=~/Documents/Obsidian bun run src/main.ts   # foreground
+CEO_VAULT=~/Documents/Obsidian bun run src/main.ts   # foreground (either OS)
 ```
 
-For keep-alive, install the systemd **user** unit template at
-`deploy/ceo-schedulerd.service` (see the header comments in that file). macOS
-keep-alive is Phase 2 (#144). **Not yet smoke-tested on a live always-on Linux
-host** (ML-1 GPU-down) — the loop, guard, and heartbeat are verified via
-fake-clock tests and a local start/SIGTERM smoke; only `Restart=always` is
-hardware-unverified.
+One OS-level agent keeps the daemon alive; the daemon does all scheduling.
+
+- **Linux/WSL:** install the systemd **user** unit template at
+  `deploy/ceo-schedulerd.service` (see its header comments). **Not smoke-tested on
+  a live always-on host** (ML-1 GPU-down) — only `Restart=always` is
+  hardware-unverified; the loop/guard/heartbeat are covered by fake-clock tests.
+- **macOS (#144):** install the launchd **LaunchAgent** template at
+  `deploy/com.ceo.schedulerd.plist` (see its header). It needs a logged-in GUI
+  session (it's a LaunchAgent, not a headless LaunchDaemon, because it reads the
+  user's synced vault). `ceo playbook scan` on macOS no longer installs
+  per-playbook plists — the daemon reads the registry directly.
+
+#### Migrating off the retired per-playbook launchd backend (#98 → #144)
+
+Before #144, macOS installed one `com.ceo.<name>-N` plist per fire-time. Those
+are retired. If any remain loaded they **double-fire** alongside the daemon, so
+`ceo doctor` flags them. Remove them:
+
+```bash
+for p in ~/Library/LaunchAgents/com.ceo.*.plist; do
+  [ "$(basename "$p" .plist)" = com.ceo.schedulerd ] && continue
+  launchctl bootout "gui/$(id -u)" "$p" 2>/dev/null
+  rm -f "$p"
+done
+```
 
 ### Liveness
 
