@@ -419,6 +419,40 @@ cmd_doctor() {
     fi
   fi
 
+  # ceo-schedulerd liveness — host-local heartbeat at ~/.ceo/schedulerd/heartbeat.json
+  # (never the synced vault). Threshold mirrors HEARTBEAT_STALE_MS in
+  # lib/scheduler/src/runtime.ts (600s); keep the two in sync.
+  local _hb_file="${HOME:?HOME must be set for the schedulerd heartbeat check}/.ceo/schedulerd/heartbeat.json"
+  local _hb_stale_s=600
+  if [ ! -f "$_hb_file" ]; then
+    echo "  ? ceo-schedulerd not running on this host (no heartbeat) — optional Phase-1.5 daemon"
+  elif ! command -v jq &>/dev/null; then
+    echo "  ⚠ schedulerd heartbeat check skipped: jq not on PATH"
+    warn=$((warn + 1))
+  else
+    local _hb_ts
+    _hb_ts=$(jq -r '.ts // empty' "$_hb_file" 2>/dev/null)
+    case "$_hb_ts" in
+      ''|*[!0-9]*) _hb_ts="" ;;
+    esac
+    if [ -z "$_hb_ts" ]; then
+      echo "  ✗ ceo-schedulerd heartbeat malformed (no numeric ts) — check the daemon"
+      fail=$((fail + 1))
+    else
+      local _hb_age_s=$(( $(date +%s) - (_hb_ts / 1000) ))
+      # Clock skew between hosts can put the daemon's ts ahead of this host;
+      # clamp a negative age to 0 rather than print "alive (-Ns ago)".
+      [ "$_hb_age_s" -lt 0 ] && _hb_age_s=0
+      if [ "$_hb_age_s" -gt "$_hb_stale_s" ]; then
+        echo "  ✗ ceo-schedulerd heartbeat stale (${_hb_age_s}s old, > ${_hb_stale_s}s) — daemon may be down"
+        fail=$((fail + 1))
+      else
+        echo "  ✓ ceo-schedulerd alive (heartbeat ${_hb_age_s}s ago)"
+        ok=$((ok + 1))
+      fi
+    fi
+  fi
+
   echo ""
   echo "Result: $ok ok, $warn warnings, $fail failures"
   [ "$fail" -gt 0 ] && return 1

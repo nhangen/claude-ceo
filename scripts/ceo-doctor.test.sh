@@ -390,4 +390,78 @@ STUB
     "doctor must confirm loaded-vs-plist parity at N=3"
 }
 
+# --- ceo-schedulerd liveness (#142) ---
+
+test_doctor_reports_schedulerd_alive_on_fresh_heartbeat() {
+  mkdir -p "$HOME/.ceo/schedulerd"
+  local now_ms=$(( $(date +%s) * 1000 ))
+  printf '{"ts": %s, "host":"testhost","dispatched_minute":{}}\n' "$now_ms" \
+    > "$HOME/.ceo/schedulerd/heartbeat.json"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd alive" "doctor must report a fresh heartbeat as alive"
+}
+
+test_doctor_flags_stale_schedulerd_heartbeat() {
+  mkdir -p "$HOME/.ceo/schedulerd"
+  local old_ms=$(( ($(date +%s) - 700) * 1000 ))
+  printf '{"ts": %s, "host":"testhost","dispatched_minute":{}}\n' "$old_ms" \
+    > "$HOME/.ceo/schedulerd/heartbeat.json"
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "heartbeat stale" "doctor must flag a stale heartbeat"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero on stale heartbeat (got rc=0)\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_notes_schedulerd_absent_without_failing() {
+  rm -rf "$HOME/.ceo/schedulerd"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd not running" "doctor must note an absent daemon"
+  assert_not_contains "$output" "heartbeat stale" "absent daemon must not be reported stale"
+}
+
+test_doctor_flags_malformed_schedulerd_heartbeat() {
+  mkdir -p "$HOME/.ceo/schedulerd"
+  printf '{"host":"testhost","dispatched_minute":{}}\n' > "$HOME/.ceo/schedulerd/heartbeat.json"
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "heartbeat malformed" "doctor must flag a heartbeat with no ts"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero on malformed heartbeat (got rc=0)\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_flags_nonnumeric_schedulerd_ts() {
+  mkdir -p "$HOME/.ceo/schedulerd"
+  printf '{"ts":"abc","host":"testhost","dispatched_minute":{}}\n' > "$HOME/.ceo/schedulerd/heartbeat.json"
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "heartbeat malformed" "doctor must flag a non-numeric ts as malformed, not error on arithmetic"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero on non-numeric ts (got rc=0)\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_clamps_future_schedulerd_heartbeat_to_alive() {
+  mkdir -p "$HOME/.ceo/schedulerd"
+  # ts in the future (clock skew between hosts) must not read as a negative age
+  # nor as stale — clamp to 0 and report alive.
+  local future_ms=$(( ($(date +%s) + 700) * 1000 ))
+  printf '{"ts": %s, "host":"testhost","dispatched_minute":{}}\n' "$future_ms" \
+    > "$HOME/.ceo/schedulerd/heartbeat.json"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd alive" "future-dated heartbeat must clamp to alive, not stale"
+  assert_not_contains "$output" "(heartbeat -" "future-dated heartbeat age must not be negative"
+}
+
 run_tests
