@@ -55,6 +55,30 @@ That preview is **host-local**: `CEO/log/preview/` is excluded from Syncthing in
 
 `--dry-run` bypasses the cooldown so it can be run iteratively, and is allowed under `--scheduled` (with a WARN to `cron-skips.log`) so a daemon can smoke-test without acting. Non-guarantee: read-only external calls still run and still cost tokens — `--dry-run` skips effects, not reads.
 
+### Fleet sweep — `--test-all`
+
+`ceo-cron.sh --test-all` dry-runs **every registered playbook** in one pass and writes a single aggregate report. It takes no positional trigger and always implies `--dry-run` (it never performs a side effect). Each playbook is swept by re-invoking `ceo-cron.sh <name> --dry-run --depth <depth>`, so it reuses the same preview/no-side-effect machinery as a single dry-run.
+
+```bash
+ceo-cron.sh --test-all                       # cheap fleet health check (preflight depth)
+ceo-cron.sh --test-all --depth deep          # exercise every model call
+ceo-cron.sh --test-all --depth deep --model haiku   # …against an override model
+```
+
+| Flag | Meaning |
+|---|---|
+| `--depth preflight` | **Default.** Stop after each playbook's preflight passes — answers "would this fire right now?" with **no model call, no tokens spent**. |
+| `--depth plan` | Run the planning phase where one exists: tier:write playbooks make their PLAN call; read-tier playbooks preview the call they *would* make without spending tokens. |
+| `--depth deep` | Full dry-run: read-tier playbooks make their read-only call; write-tier playbooks run PLAN+FILTER. EXECUTE is still skipped (it's a dry-run). |
+| `--model <tag>` | Override the model for any playbook that makes a model call (plan/deep depth). The override is applied uniformly; passing a model incompatible with a playbook's runner (e.g. an Ollama tag to a claude-runner playbook) surfaces as a `FAILED` row — which is the intended smoke-test signal ("this config wouldn't run"), not a dispatcher bug. Unset = each playbook's configured `model:`. |
+| `--all-hosts` | **Phase-1.5 stub.** Warns it is not yet implemented and sweeps the local host only. (Cross-host fan-out arrives with the daemon.) |
+
+Unknown `--depth` values are rejected at parse (no silent default). `--depth` / `--model` / `--all-hosts` are preview-only and require `--dry-run` or `--test-all`.
+
+**Output:** `CEO/log/preview/test-all/<TODAY>.md` — host-local (under the stignored `CEO/log/preview/` tree, like a single dry-run's preview), so a fleet smoke-test stays on the host that ran it. The report has a per-playbook result table (`would run` / `skip: no work` / `FAILED`) plus each playbook's individual preview inline.
+
+> **Note on `--model` vs the original design.** The issue proposed "unset → local Ollama default." Forcing Ollama globally would break tier:write playbooks (the three-phase pipeline requires Claude; Ollama is rejected for non-read tiers), so unset keeps each playbook's configured model. The cheap-sweep goal is met by the `preflight` default, which makes no model call at all.
+
 ### Host scoping
 
 The `hosts` field declares which machines a playbook may run on:
