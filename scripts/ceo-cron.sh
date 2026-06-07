@@ -25,6 +25,10 @@ RUN_MODE="manual"
 _mode_set=""
 FORCE_REQUESTED=0
 DRY_RUN=0
+TEST_ALL=0
+ALL_HOSTS=0
+DEPTH=""
+MODEL_OVERRIDE=""
 TRIGGER=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,8 +42,20 @@ while [ $# -gt 0 ]; do
       ;;
     --force) FORCE_REQUESTED=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --test-all) TEST_ALL=1 ;;
+    --all-hosts) ALL_HOSTS=1 ;;
+    --depth)
+      shift
+      [ $# -gt 0 ] || { echo "ERROR: --depth requires a value (preflight|plan|deep)" >&2; exit 1; }
+      DEPTH="$1"
+      ;;
+    --model)
+      shift
+      [ $# -gt 0 ] || { echo "ERROR: --model requires a value" >&2; exit 1; }
+      MODEL_OVERRIDE="$1"
+      ;;
     -*)
-      echo "ERROR: unknown flag '$1' (expected: --scheduled, --manual, --force, --dry-run)" >&2
+      echo "ERROR: unknown flag '$1' (expected: --scheduled, --manual, --force, --dry-run, --test-all, --depth, --model, --all-hosts)" >&2
       exit 1
       ;;
     *)
@@ -53,9 +69,47 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-if [ -z "$TRIGGER" ]; then
+# --test-all is a fleet sweep (#140): it sweeps every registered playbook, takes
+# no positional trigger, and implies --dry-run (it never performs a side effect).
+if [ "$TEST_ALL" = "1" ]; then
+  if [ -n "$TRIGGER" ]; then
+    echo "ERROR: --test-all sweeps all playbooks and takes no trigger argument (got '$TRIGGER')" >&2
+    exit 1
+  fi
+  DRY_RUN=1
+fi
+
+if [ "$TEST_ALL" != "1" ] && [ -z "$TRIGGER" ]; then
   echo "Usage: ceo-cron.sh <trigger> [--scheduled|--manual] [--force] [--dry-run]" >&2
+  echo "       ceo-cron.sh --test-all [--depth preflight|plan|deep] [--model <tag>] [--all-hosts]" >&2
   exit 1
+fi
+
+# --depth selects how far a dry-run sweep goes (enum, no silent default per
+# enum-config-typo-fallback). It is meaningful only in a preview context, so
+# requiring it without --dry-run/--test-all would be a silent no-op — reject.
+case "$DEPTH" in
+  preflight|plan|deep|"") ;;
+  *) echo "ERROR: --depth must be one of: preflight, plan, deep (got '$DEPTH')" >&2; exit 1 ;;
+esac
+if [ -n "$DEPTH" ] && [ "$DRY_RUN" != "1" ] && [ "$TEST_ALL" != "1" ]; then
+  echo "ERROR: --depth requires --dry-run or --test-all (it controls how far a preview goes)" >&2
+  exit 1
+fi
+if [ -n "$MODEL_OVERRIDE" ] && [ "$DRY_RUN" != "1" ] && [ "$TEST_ALL" != "1" ]; then
+  echo "ERROR: --model requires --dry-run or --test-all (it overrides the model for a preview sweep)" >&2
+  exit 1
+fi
+if [ "$ALL_HOSTS" = "1" ] && [ "$TEST_ALL" != "1" ]; then
+  echo "ERROR: --all-hosts requires --test-all" >&2
+  exit 1
+fi
+
+# Resolve the effective sweep depth: --test-all defaults to the cheap preflight
+# health check (no model calls); a plain --dry-run defaults to deep (the full
+# #138 preview that makes read-only calls).
+if [ -z "$DEPTH" ]; then
+  if [ "$TEST_ALL" = "1" ]; then DEPTH="preflight"; else DEPTH="deep"; fi
 fi
 
 # --force is a manual-only smoke-test escape hatch from the per-trigger cooldown.
@@ -80,11 +134,14 @@ fi
 # run and still cost tokens — dry-run skips effects, not reads.
 if [ "$DRY_RUN" = "1" ]; then
   export CEO_DRY_RUN=1
+  export CEO_DRY_RUN_DEPTH="$DEPTH"
+  [ -n "$MODEL_OVERRIDE" ] && export CEO_MODEL_OVERRIDE="$MODEL_OVERRIDE"
 fi
 
 # Gates filesystem path (.last-run-${TRIGGER}), env export (CEO_PLAYBOOK_ID),
 # and LLM prompt JSON interpolation against quote/escape/traversal injection.
-if [[ ! "$TRIGGER" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+# --test-all has no positional trigger, so the gate only applies to a real one.
+if [ "$TEST_ALL" != "1" ] && [[ ! "$TRIGGER" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
   echo "ERROR: invalid trigger '$TRIGGER' (must start with [A-Za-z0-9_]; allowed thereafter: A-Z a-z 0-9 . _ -)" >&2
   exit 1
 fi
@@ -491,6 +548,127 @@ mkdir -p "$LOG_DIR"
 REPORT_DIR="$CEO_DIR/reports"
 mkdir -p "$REPORT_DIR"
 
+# _run_test_all — fleet dry-run sweep (#140). Re-execs `ceo-cron.sh <name>
+# --dry-run --depth <DEPTH>` for every registered playbook, reusing #138's
+# preview/no-side-effect machinery rather than duplicating it, and aggregates
+# each outcome into one host-local report. Runs BEFORE the lock so children
+# acquire it sequentially (no parent-vs-child contention). Model override and
+# CEO_DRY_RUN_DEPTH already exported above are inherited by the children.
+_run_test_all() {
+  local registry="$CEO_DIR/registry.json"
+  local rc=0
+  ceo_registry_validate "$registry" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "ERROR: registry.json not usable (ceo_registry_validate rc=$rc). Run: ceo playbook scan" >&2
+    return 1
+  fi
+
+  if [ "$ALL_HOSTS" = "1" ]; then
+    echo "WARN: --all-hosts is not yet implemented (arrives with the Phase-1.5 daemon). Sweeping the local host only." >&2
+  fi
+
+  local host
+  host="${CEO_HOSTNAME:-$(hostname -s)}"
+  : "${host:?HOST resolution failed; set CEO_HOSTNAME or fix hostname}"
+
+  local out_dir="$LOG_DIR/preview/test-all"
+  local out="$out_dir/${TODAY}.md"
+  mkdir -p "$out_dir"
+  # Truncate the per-day child stdout journal so repeated same-day sweeps don't
+  # stack onto each other (per-child stderr is captured + cleaned per child).
+  : > "$out_dir/.${TODAY}.stdout"
+
+  {
+    echo "# Fleet dry-run sweep — $host ($TODAY $NOW)"
+    echo ""
+    echo "- depth: \`$DEPTH\`"
+    echo "- model override: \`${MODEL_OVERRIDE:-per-playbook configured}\`"
+    echo "- all-hosts: \`$ALL_HOSTS\` (not enforced in Phase 1 — local host only)"
+    echo ""
+    echo "| playbook | result | exit |"
+    echo "|---|---|---|"
+  } > "$out"
+
+  local names
+  names=$(jq -r '.playbooks[].name' "$registry" 2>/dev/null)
+  if [ -z "$names" ]; then
+    echo "| _(no playbooks registered)_ | — | — |" >> "$out"
+    echo "Wrote fleet sweep report: $out" >&2
+    return 0
+  fi
+
+  local details="" name child_exit child_err preview result
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    preview="$LOG_DIR/preview/${name}-${TODAY}.md"
+    # Clear any stale same-day single-dry-run preview so the classifier reads
+    # only THIS sweep's output. A child that exits 0 without writing a preview
+    # (e.g. a chat-only playbook) would otherwise inherit a stale "would run".
+    rm -f "$preview"
+    child_err="$out_dir/.${name//\//_}.stderr"
+    child_exit=0
+    bash "$0" "$name" --dry-run --depth "$DEPTH" \
+      >>"$out_dir/.${TODAY}.stdout" 2>"$child_err" || child_exit=$?
+    # Classify. A dry-run preflight that hits a dependency failure (e.g. gh
+    # down) returns 0 but leaves a "Would record FAILURE" marker in the preview
+    # AND a "returned no-work" line — it must read as FAILED, not a benign skip,
+    # or the fleet sweep gives a false all-clear (the whole point of --test-all).
+    # Anchored greps so report/PLAN body text can't trip the classifier.
+    if [ "$child_exit" -ne 0 ]; then
+      result="FAILED"
+    elif [ -f "$preview" ] && grep -q "^- Would record FAILURE" "$preview"; then
+      result="FAILED: preflight/dep"
+    elif [ -f "$preview" ] && grep -q "^- Preflight .* returned no-work" "$preview"; then
+      result="skip: no work"
+    elif [ -f "$preview" ]; then
+      result="would run"
+    else
+      result="no preview"
+    fi
+    printf '| %s | %s | %s |\n' "$name" "$result" "$child_exit" >> "$out"
+    details+="
+## $name — $result (exit $child_exit)
+
+"
+    if [ -f "$preview" ]; then
+      details+=$(cat "$preview")
+      details+="
+"
+    else
+      details+="_(no preview file produced)_
+"
+    fi
+    # Surface the child's stderr for non-clean rows — for a smoke-test, "why"
+    # matters and the per-day journal is truncated next sweep.
+    case "$result" in
+      FAILED*|"no preview")
+        if [ -s "$child_err" ]; then
+          details+="
+\`\`\`
+$(tail -n 8 "$child_err")
+\`\`\`
+"
+        fi
+        ;;
+    esac
+    rm -f "$child_err"
+  done <<< "$names"
+
+  {
+    echo ""
+    echo "---"
+    printf '%s' "$details"
+  } >> "$out"
+
+  echo "Wrote fleet sweep report: $out" >&2
+  return 0
+}
+
+if [ "$TEST_ALL" = "1" ]; then
+  _run_test_all
+  exit $?
+fi
+
 # --- Exclusive lock (prevents overlapping cron runs) ---
 if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
   exec 200>"$LOCK_FILE"
@@ -766,6 +944,14 @@ if type "$PREFLIGHT_FN" &>/dev/null; then
   _v "Preflight '$PREFLIGHT' passed"
 else
   _v "WARNING: Unknown preflight '$PREFLIGHT' — running anyway"
+fi
+
+# Depth gate (#140): at preflight depth a dry-run stops here — preflight passed,
+# so the playbook WOULD fire, but we make no runner/model call (the cheap fleet
+# health check). This fires uniformly for every runner type.
+if [ "${CEO_DRY_RUN:-}" = "1" ] && [ "${CEO_DRY_RUN_DEPTH:-deep}" = "preflight" ]; then
+  _preview "Depth=preflight: preflight '$PREFLIGHT' passed — playbook would run. Stopping before any runner/model call (no script/skill exec, no tokens spent)."
+  exit 0
 fi
 
 # --- Shared file-read helper (used by ollama branch and claude tier blocks below) ---
@@ -1113,6 +1299,14 @@ LOG_ENTRY:
 - {any errors, or 'none'}
 END_LOG_ENTRY"
 
+  # Depth gate (#140): at plan depth a read-tier playbook has no planning phase
+  # to run, so it previews the call it WOULD make without spending tokens. deep
+  # depth makes the real read-only call (#138 behavior).
+  if [ "${CEO_DRY_RUN:-}" = "1" ] && [ "${CEO_DRY_RUN_DEPTH:-deep}" = "plan" ]; then
+    _preview "Depth=plan: read-tier — would call model '${CEO_MODEL_OVERRIDE:-${MODEL:-sonnet}}' once with the single-call prompt (no call made: plan depth skips read-tier model calls)."
+    exit 0
+  fi
+
   if [ "$RUNNER" = "ollama" ] || [ "$RUNNER" = "ollama-think" ]; then
     if ! command -v ollama >/dev/null 2>&1; then
       _record_failure "ollama binary not found on PATH (playbook: $TRIGGER)"
@@ -1145,6 +1339,8 @@ END_LOG_ENTRY"
     else
       OLLAMA_MODEL="$MODEL_FROM_FRONTMATTER"
     fi
+    # --model override (#140) wins over frontmatter for a preview sweep.
+    [ -n "${CEO_MODEL_OVERRIDE:-}" ] && OLLAMA_MODEL="$CEO_MODEL_OVERRIDE"
     _v "Runner: $RUNNER — model: $OLLAMA_MODEL"
     export CEO_MODEL="$OLLAMA_MODEL"
 
@@ -1195,6 +1391,7 @@ END_LOG_ENTRY"
   fi
 
   MODEL="${MODEL:-sonnet}"
+  [ -n "${CEO_MODEL_OVERRIDE:-}" ] && MODEL="$CEO_MODEL_OVERRIDE"
   export CEO_MODEL="$MODEL"
   SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
 
@@ -1221,6 +1418,7 @@ fi
 
 # --- Three-phase pipeline (low-stakes write and above) ---
 MODEL="${MODEL:-sonnet}"
+[ -n "${CEO_MODEL_OVERRIDE:-}" ] && MODEL="$CEO_MODEL_OVERRIDE"
 export CEO_MODEL="$MODEL"
 
 # --- Phase 1: PLAN (read-only, no tool execution) ---
