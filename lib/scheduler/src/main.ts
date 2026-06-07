@@ -69,14 +69,22 @@ async function main(): Promise<void> {
       }),
     loadRegistry: () => parseRegistry(readFileSync(regPath, "utf8")),
     dispatch: (name) => {
-      const proc = Bun.spawn(dispatchArgv(cronBin, name), {
-        env: { ...process.env, CEO_VAULT: vault },
-        stdout: "ignore",
-        stderr: "ignore",
-        stdin: "ignore",
-      });
-      proc.unref();
-      log(`dispatched ${name}`);
+      // Bun.spawn throws synchronously on e.g. ENOENT (cronBin not on PATH).
+      // Swallow + log so one bad dispatch can't crash-loop the daemon; the
+      // guard is already persisted, so this playbook is simply skipped this
+      // minute and fires again at its next slot.
+      try {
+        const proc = Bun.spawn(dispatchArgv(cronBin, name), {
+          env: { ...process.env, CEO_VAULT: vault },
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
+        proc.unref();
+        log(`dispatched ${name}`);
+      } catch (err) {
+        log(`dispatch failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
     writeHeartbeat: (hb) => writeHeartbeatFile(hbPath, hb),

@@ -29,6 +29,11 @@ function harness(opts: HarnessOpts) {
   const sleeps: number[] = [];
   const heartbeats: Heartbeat[] = [];
   const logs: string[] = [];
+  let lastHb: Heartbeat | null = null;
+  // For each dispatch, the guard minute already persisted to the heartbeat at
+  // the moment dispatch is called. undefined ⇒ the guard was NOT yet durable
+  // (ordering bug: a crash here would re-fire on restart).
+  const guardAtDispatch: Record<string, number | undefined> = {};
   const loader =
     typeof opts.playbooks === "function"
       ? opts.playbooks
@@ -41,11 +46,13 @@ function harness(opts: HarnessOpts) {
     },
     loadRegistry: loader,
     dispatch: (name) => {
+      guardAtDispatch[name] = lastHb?.dispatched_minute[name];
       dispatched.push(name);
     },
     readHeartbeat: () => opts.startHeartbeat ?? null,
     writeHeartbeat: (hb) => {
       heartbeats.push(hb);
+      lastHb = hb;
     },
     log: (msg) => {
       logs.push(msg);
@@ -55,7 +62,7 @@ function harness(opts: HarnessOpts) {
     maxSleepMs: opts.cap ?? 60_000,
     shouldContinue: () => i < opts.nows.length,
   };
-  return { deps, dispatched, sleeps, heartbeats, logs };
+  return { deps, dispatched, sleeps, heartbeats, logs, guardAtDispatch: () => guardAtDispatch };
 }
 
 describe("runForever — dispatch + sleep", () => {
@@ -123,6 +130,14 @@ describe("double-fire guard", () => {
     });
     await runForever(h.deps);
     expect(h.dispatched).toEqual([]);
+  });
+
+  test("persists the guard to the heartbeat BEFORE dispatching (no crash-window double-fire)", async () => {
+    const minute = Math.floor(d("2026-06-01T09:00:00Z").getTime() / 60_000);
+    const h = harness({ nows: [d("2026-06-01T09:00:05Z")], playbooks: [pb({ name: "ev", schedule: "* * * * *" })] });
+    await runForever(h.deps);
+    // If the heartbeat were written after dispatch, this would be undefined.
+    expect(h.guardAtDispatch().ev).toBe(minute);
   });
 
   test("the heartbeat carries the dispatched-minute guard forward", async () => {

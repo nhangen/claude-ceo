@@ -76,9 +76,8 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
     }
 
     const runnable = selectRunnable(playbooks, deps.host);
-    for (const p of dueAt(runnable, now, deps.matcher)) {
-      if (guard.get(p.name) === minute) continue;
-      deps.dispatch(p.name);
+    const toDispatch = dueAt(runnable, now, deps.matcher).filter((p) => guard.get(p.name) !== minute);
+    for (const p of toDispatch) {
       guard.set(p.name, minute);
       recent.push({ name: p.name, ts: now.getTime() });
     }
@@ -89,6 +88,9 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
     for (const [name, mn] of guard) if (mn < minute - 1) guard.delete(name);
 
     const wake = nextWake(runnable, now, deps.matcher, deps.maxSleepMs);
+    // Persist the guard BEFORE firing. A crash between here and the spawn must
+    // not re-fire on restart, so dispatch is at-most-once: a crash drops a fire
+    // rather than doubling it (the safer direction for write-tier playbooks).
     deps.writeHeartbeat({
       ts: now.getTime(),
       host: deps.host,
@@ -97,6 +99,7 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
       last_dispatch: [...recent],
       dispatched_minute: Object.fromEntries(guard),
     });
+    for (const p of toDispatch) deps.dispatch(p.name);
 
     await deps.sleep(wake);
   }

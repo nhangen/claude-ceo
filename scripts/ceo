@@ -439,7 +439,10 @@ cmd_doctor() {
       echo "  ✗ ceo-schedulerd heartbeat malformed (no numeric ts) — check the daemon"
       fail=$((fail + 1))
     else
-      local _hb_age_s=$(( $(date +%s) - _hb_ts / 1000 ))
+      local _hb_age_s=$(( $(date +%s) - (_hb_ts / 1000) ))
+      # Clock skew between hosts can put the daemon's ts ahead of this host;
+      # clamp a negative age to 0 rather than print "alive (-Ns ago)".
+      [ "$_hb_age_s" -lt 0 ] && _hb_age_s=0
       if [ "$_hb_age_s" -gt "$_hb_stale_s" ]; then
         echo "  ✗ ceo-schedulerd heartbeat stale (${_hb_age_s}s old, > ${_hb_stale_s}s) — daemon may be down"
         fail=$((fail + 1))
