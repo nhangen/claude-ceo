@@ -1736,13 +1736,17 @@ PB
   jq 'del(.schema_version)' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
   mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
 
+  # RETRY_SLEEP=0: a missing schema_version is code 3 (malformed/transient), so
+  # the preflight re-reads once before failing. A persistently-missing field
+  # survives the retry and still trips the gate.
   local rc=0
-  bash "$CRON" example >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "1" "cron must exit 1 when registry has no schema_version"
+  CEO_REGISTRY_RETRY_SLEEP=0 bash "$CRON" example >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "cron must exit 1 when registry has no schema_version (after retry)"
 
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips_log" "schema_version" "cron-skips.log must record schema_version reason"
+  assert_contains "$skips_log" "jq parse:" "code-3 path must capture a registry diagnostic for the next occurrence"
 
   local fails
   fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")

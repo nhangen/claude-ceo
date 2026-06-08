@@ -812,8 +812,28 @@ preflight_has_auto_review_prs() {
 
 # --- Look up trigger in registry ---
 REGISTRY_FILE="$CEO_DIR/registry.json"
+# Append the offending registry head + jq parse status to the skip log so a
+# recurrence is diagnosable from evidence instead of re-guessed.
+_registry_diag() {
+  {
+    echo "$(date): registry diagnostic — $1"
+    echo "  head -c 256 of $REGISTRY_FILE:"
+    head -c 256 "$REGISTRY_FILE" 2>&1 | sed 's/^/    /'
+    echo "  jq parse: $(jq -e . "$REGISTRY_FILE" >/dev/null 2>&1 && echo ok || echo FAILED)"
+  } >> "$LOG_DIR/cron-skips.log"
+}
+
 REGISTRY_RC=0
 ceo_registry_validate "$REGISTRY_FILE" || REGISTRY_RC=$?
+if [ "$REGISTRY_RC" -eq 3 ]; then
+  # No parseable integer schema_version. On a syncthing-synced vault this is
+  # usually a file caught mid-replace, not a real problem — settle and re-read
+  # once before treating it as fatal. A genuine downgrade is code 2, never 3,
+  # so this retry can only ever resolve to a valid current registry.
+  sleep "${CEO_REGISTRY_RETRY_SLEEP:-1}"
+  REGISTRY_RC=0
+  ceo_registry_validate "$REGISTRY_FILE" || REGISTRY_RC=$?
+fi
 case "$REGISTRY_RC" in
   0) ;;
   1)
@@ -821,9 +841,15 @@ case "$REGISTRY_RC" in
     _v "FATAL: registry.json not found. Run: ceo playbook scan"
     exit 1 ;;
   2)
-    echo "$(date): FATAL — registry.json schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
-    _record_failure "registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary?)"
+    echo "$(date): FATAL — registry.json schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary)"
     _v "FATAL: registry.json schema_version too old. Run: ceo playbook scan"
+    exit 1 ;;
+  3)
+    _registry_diag "schema_version unreadable/malformed after retry"
+    echo "$(date): FATAL — registry.json schema_version unreadable/malformed after retry (corrupt registry or persistent sync issue). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    _record_failure "registry.json schema_version unreadable/malformed after retry"
+    _v "FATAL: registry.json unreadable. Run: ceo playbook scan"
     exit 1 ;;
 esac
 
