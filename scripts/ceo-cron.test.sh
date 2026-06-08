@@ -2364,6 +2364,7 @@ PB
   prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
   assert_contains "$prompt" "Pending approvals:" "default-all: pending_count line present"
   assert_contains "$prompt" "PRs requesting review:" "default-all: pr_data line present"
+  assert_contains "$prompt" "PR data (recently merged):" "default-all: merged-PR line present (#163)"
   assert_contains "$prompt" "Briefing-specific training" "default-all: briefings_training block present"
   assert_contains "$prompt" "Active Domains priority order" "default-all: active_domains block present"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -2402,6 +2403,35 @@ PB
     printf '  FAIL [%s] inputs:[] should suppress pr_data lines\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  if [[ "$prompt" == *"PR data (recently merged):"* ]]; then
+    printf '  FAIL [%s] inputs:[] should suppress the merged-PR line (#163)\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_plan_prompt_carries_merged_pr_data() {
+  cat > "$CEO_DIR/playbooks/plan-merged.md" << 'PB'
+---
+name: plan-merged
+description: high-stakes playbook — PLAN prompt must carry the merged-PR data (#163)
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+
+  _stub_claude_capture_stdin
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" plan-merged --dry-run --depth plan >/dev/null 2>&1 || true
+
+  assert_file_exists "$HOME/claude-stdin.txt" "PLAN phase must invoke the model"
+  local prompt
+  prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
+  assert_contains "$prompt" "PR data (recently merged):" "PLAN prompt must carry merged-PR data — reconcile classifies in PLAN (#163)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

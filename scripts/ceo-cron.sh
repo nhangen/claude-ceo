@@ -1216,6 +1216,8 @@ if [ "$TIER" = "read" ]; then
     PRE_GATHERED+="- PRs authored: $PR_AUTHORED_COUNT"$'\n'
     PRE_GATHERED+="- PR data (review requested): $PR_REVIEW_REQUESTED"$'\n'
     PRE_GATHERED+="- PR data (authored): $PR_AUTHORED"$'\n'
+    PRE_GATHERED+="- PRs merged (recent): $PR_MERGED_COUNT"$'\n'
+    PRE_GATHERED+="- PR data (recently merged): $PR_MERGED"$'\n'
   fi
   _inputs_includes today_log     && PRE_GATHERED+="- Today's report: $TODAY_LOG_SUMMARY"$'\n'
   _inputs_includes yesterday_log && PRE_GATHERED+="- Yesterday's log summary: $YESTERDAY_LOG_SUMMARY"$'\n'
@@ -1450,6 +1452,8 @@ PRE-GATHERED DATA (from shell — do not re-fetch this data):
 - Pending approvals: $PENDING_COUNT pending, $APPROVED_COUNT approved
 - PRs requesting review: $PR_REVIEW_COUNT
 - PRs authored: $PR_AUTHORED_COUNT
+- PRs merged (recent): $PR_MERGED_COUNT
+- PR data (recently merged): $PR_MERGED
 - Today's log: $TODAY_LOG_SUMMARY
 - Delegations (7d): $DELEGATION_COMPLETED completed, $DELEGATION_IN_PROGRESS in-progress, $DELEGATION_FAILED failed
 - Sync conflicts: $SYNC_CONFLICT_COUNT
@@ -1551,6 +1555,7 @@ PRE-GATHERED DATA (from shell — do not re-run gh commands):
 - Pending approvals: $PENDING_COUNT pending, $APPROVED_COUNT approved
 - PR data (review requested): $PR_REVIEW_REQUESTED
 - PR data (authored): $PR_AUTHORED
+- PR data (recently merged): $PR_MERGED
 - Today's log summary: $TODAY_LOG_SUMMARY
 - Delegations: $DELEGATION_COMPLETED completed, $DELEGATION_IN_PROGRESS in-progress
 
