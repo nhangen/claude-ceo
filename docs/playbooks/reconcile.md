@@ -25,9 +25,11 @@ checks an item off; this playbook never does.
 2. The 3 most recent daily notes under `Daily/` (by dated filename, newest first,
    on or before today). Read them in full. Also collect any unchecked `- [ ]` lines
    under a `## Tasks` heading in those notes — those are open to-dos too.
-3. PR/issue evidence comes ONLY from the pre-gathered `PR data` lines. Do NOT run
-   `gh` or any git command. If an item names a PR/issue that is not in the
-   pre-gathered sets, treat its PR state as unknown.
+3. PR/issue evidence comes ONLY from the pre-gathered `PR data` lines. Your
+   close-evidence is the **`PR data (recently merged)`** set — a to-do is only
+   `close`-able if its repo-qualified `org/repo#N` appears there. Do NOT run `gh`
+   or any git command. If an item names a PR/issue that is not in the pre-gathered
+   sets, treat its PR state as unknown.
 
 ## How to classify each open to-do
 

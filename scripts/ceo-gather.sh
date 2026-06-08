@@ -59,6 +59,11 @@ fi
 # See nhangen/claude-ceo#61.
 _REVIEW_PARTS="[]"
 _AUTHORED_PARTS="[]"
+# Recently-merged authored PRs (#163) — reconcile's close-evidence. Bounded to a
+# ~30-day window so the search stays small; reconcile still matches by explicit
+# org/repo#N, so the window only caps how stale a closeable to-do can be.
+_MERGED_PARTS="[]"
+_MERGED_SINCE=$(date -v-30d +%Y-%m-%d 2>/dev/null || date -d '30 days ago' +%Y-%m-%d 2>/dev/null || echo "")
 # Track gh failures so the morning brief can render a "PR counts may be incomplete"
 # marker instead of silently reporting 0 on rate limits / 5xx / token expiry.
 export PR_GATHER_DEGRADED=0
@@ -100,6 +105,17 @@ if command -v gh &>/dev/null; then
     fi
     rm -f "$_err"
     _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_A" | jq -s 'add' 2>/dev/null || echo "$_AUTHORED_PARTS")
+
+    _err=$(mktemp)
+    _MQ=(--author "@me" --merged --json "number,title,closedAt,repository,url" --limit 50)
+    [ -n "$_MERGED_SINCE" ] && _MQ+=(--merged-at ">=$_MERGED_SINCE")
+    if ! _M=$(GH_TOKEN="$TOKEN" _CEO_TIMEOUT 30 gh search prs "${_MQ[@]}" 2>"$_err"); then
+      echo "WARN: gh search prs (merged) for '$ACCT' failed: $(head -c 200 "$_err")" >&2
+      _pr_gather_mark_degraded "gh-merged-failed:$ACCT"
+      _M="[]"
+    fi
+    rm -f "$_err"
+    _MERGED_PARTS=$(printf '%s\n%s' "$_MERGED_PARTS" "$_M" | jq -s 'add' 2>/dev/null || echo "$_MERGED_PARTS")
   done < <(ceo_pr_sources_github_accounts)
 
   # Drop excluded orgs (case-insensitive match on the owner segment).
@@ -116,6 +132,8 @@ if command -v gh &>/dev/null; then
       '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_REVIEW_PARTS")
     _AUTHORED_PARTS=$(echo "$_AUTHORED_PARTS" | jq --argjson ex "$EXCLUDE_ORGS" \
       '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_AUTHORED_PARTS")
+    _MERGED_PARTS=$(echo "$_MERGED_PARTS" | jq --argjson ex "$EXCLUDE_ORGS" \
+      '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_MERGED_PARTS")
   fi
 
   # Dedupe by repo+number — same PR can appear under both accounts when one
@@ -125,6 +143,7 @@ if command -v gh &>/dev/null; then
   if ceo_pr_sources_dedupe; then
     _REVIEW_PARTS=$(echo "$_REVIEW_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_REVIEW_PARTS")
     _AUTHORED_PARTS=$(echo "$_AUTHORED_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_AUTHORED_PARTS")
+    _MERGED_PARTS=$(echo "$_MERGED_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_MERGED_PARTS")
   fi
 fi
 
@@ -166,6 +185,9 @@ export PR_REVIEW_COUNT
 PR_REVIEW_COUNT=$(echo "$PR_REVIEW_REQUESTED" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
 export PR_AUTHORED_COUNT
 PR_AUTHORED_COUNT=$(echo "$PR_AUTHORED" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
+export PR_MERGED="$_MERGED_PARTS"
+export PR_MERGED_COUNT
+PR_MERGED_COUNT=$(echo "$PR_MERGED" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
 
 # --- Today's log ---
 TODAY_LOG="$LOG_DIR/$TODAY.md"
