@@ -51,8 +51,13 @@ export interface DaemonDeps {
   host: string;
   matcher: CronMatcher;
   maxSleepMs: number;
-  /** Look-back window for missed-slot catch-up; a missed slot older than this is too stale to replay. */
-  catchupLookbackMs: number;
+  /**
+   * Catch-up look-back resolver (#157): given a playbook's schedule and the
+   * current `now`, returns how far back a missed slot may be and still replay.
+   * Production passes a per-schedule derived resolver (or a fixed window when
+   * the host pins `CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS`).
+   */
+  resolveLookback(schedule: string, now: Date): number;
   shouldContinue(): boolean;
 }
 
@@ -91,7 +96,7 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
     // playbook if that exclusion ever changes.
     const due = dueAt(runnable, now, deps.matcher).filter((p) => guard.get(p.name) !== minute);
     const dueNames = new Set(due.map((p) => p.name));
-    const catches = catchUpFires(runnable, lastFired, now, deps.matcher, deps.catchupLookbackMs).filter(
+    const catches = catchUpFires(runnable, lastFired, now, deps.matcher, (s) => deps.resolveLookback(s, now)).filter(
       (f) => !dueNames.has(f.playbook.name),
     );
 

@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
-  CATCHUP_LOOKBACK_MS,
+  CATCHUP_LOOKBACK_CAP_MS,
+  CATCHUP_LOOKBACK_FLOOR_MS,
   dispatchArgv,
   HEARTBEAT_STALE_MS,
   heartbeatPath,
   MAX_SLEEP_MS,
   registryPath,
-  resolveCatchupLookbackMs,
+  resolveFixedLookbackMs,
   resolveHost,
 } from "@/runtime";
 
@@ -42,17 +43,25 @@ describe("staleness threshold is comfortably larger than the wake cap", () => {
   });
 });
 
-describe("resolveCatchupLookbackMs", () => {
-  test("absent env → the default", () => {
-    expect(resolveCatchupLookbackMs(undefined)).toBe(CATCHUP_LOOKBACK_MS);
+describe("catch-up look-back bounds (#157)", () => {
+  test("the floor is sane and strictly below the cap", () => {
+    expect(CATCHUP_LOOKBACK_FLOOR_MS).toBe(3_600_000); // 1h
+    expect(CATCHUP_LOOKBACK_CAP_MS).toBe(21_600_000); // 6h
+    expect(CATCHUP_LOOKBACK_FLOOR_MS).toBeLessThan(CATCHUP_LOOKBACK_CAP_MS);
   });
-  test("a positive integer override is honored", () => {
-    expect(resolveCatchupLookbackMs("21600000")).toBe(21_600_000);
+});
+
+describe("resolveFixedLookbackMs (env override → fixed window, else derived)", () => {
+  test("absent env → null (use the per-schedule derived look-back)", () => {
+    expect(resolveFixedLookbackMs(undefined)).toBeNull();
   });
-  test("non-numeric / zero / negative falls back to the default (never a wrong window)", () => {
-    expect(resolveCatchupLookbackMs("abc")).toBe(CATCHUP_LOOKBACK_MS);
-    expect(resolveCatchupLookbackMs("0")).toBe(CATCHUP_LOOKBACK_MS);
-    expect(resolveCatchupLookbackMs("-5")).toBe(CATCHUP_LOOKBACK_MS);
-    expect(resolveCatchupLookbackMs("  ")).toBe(CATCHUP_LOOKBACK_MS);
+  test("a positive integer override pins a fixed window for all playbooks", () => {
+    expect(resolveFixedLookbackMs("21600000")).toBe(21_600_000);
+  });
+  test("non-numeric / zero / negative / blank → null (fall through to derived, never a wrong window)", () => {
+    expect(resolveFixedLookbackMs("abc")).toBeNull();
+    expect(resolveFixedLookbackMs("0")).toBeNull();
+    expect(resolveFixedLookbackMs("-5")).toBeNull();
+    expect(resolveFixedLookbackMs("  ")).toBeNull();
   });
 });
