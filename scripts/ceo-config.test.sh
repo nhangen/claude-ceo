@@ -127,31 +127,54 @@ test_registry_validate_accepts_integer_current_schema() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_registry_validate_rejects_non_integer_schema() {
-  local registry="$TEST_HOME/registry.json"
-  printf '{"schema_version":1.5,"playbooks":[]}\n' > "$registry"
-
+_validate_rc() {
+  local registry="$1"
   local rc=0
   env -i PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_registry_validate '$registry'
   " >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "2" "float schema_version must reject instead of falling through"
+  echo "$rc"
+}
+
+test_registry_validate_non_integer_schema_is_malformed() {
+  local registry="$TEST_HOME/registry.json"
+  printf '{"schema_version":1.5,"playbooks":[]}\n' > "$registry"
+  assert_eq "$(_validate_rc "$registry")" "3" "float schema_version has no parseable integer -> malformed (3), not downgrade"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_registry_validate_rejects_string_schema() {
+test_registry_validate_string_schema_is_malformed() {
   local registry="$TEST_HOME/registry.json"
   printf '{"schema_version":"2","playbooks":[]}\n' > "$registry"
+  assert_eq "$(_validate_rc "$registry")" "3" "string schema_version must not coerce -> malformed (3)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
 
-  local rc=0
-  env -i PATH="$PATH" bash -c "
-    set -uo pipefail
-    source '$LIB'
-    ceo_registry_validate '$registry'
-  " >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "2" "string schema_version must reject instead of coercing"
+test_registry_validate_missing_field_is_malformed() {
+  local registry="$TEST_HOME/registry.json"
+  printf '{"playbooks":[]}\n' > "$registry"
+  assert_eq "$(_validate_rc "$registry")" "3" "absent schema_version -> malformed (3), retryable"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_registry_validate_torn_json_is_malformed() {
+  local registry="$TEST_HOME/registry.json"
+  printf '{"schema_version":3,"playbo' > "$registry"
+  assert_eq "$(_validate_rc "$registry")" "3" "truncated JSON (mid-sync read) -> malformed (3), retryable"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_registry_validate_genuine_downgrade_is_code_2() {
+  local registry="$TEST_HOME/registry.json"
+  printf '{"schema_version":2,"playbooks":[]}\n' > "$registry"
+  assert_eq "$(_validate_rc "$registry")" "2" "parseable integer below current -> downgrade (2), fail fast"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_registry_validate_missing_file_is_code_1() {
+  assert_eq "$(_validate_rc "$TEST_HOME/does-not-exist.json")" "1" "absent registry file -> not-found (1)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

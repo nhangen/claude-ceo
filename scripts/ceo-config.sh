@@ -354,7 +354,13 @@ ceo_registry_version() {
 # ceo_registry_validate <registry_file>
 #   0 — schema_version is an integer >= CEO_REGISTRY_SCHEMA_VERSION
 #   1 — registry file does not exist
-#   2 — schema_version missing, malformed, or below current
+#   2 — schema_version is a parseable integer below current (genuine downgrade
+#       by a peer on an older binary; fail fast — retrying cannot fix it)
+#   3 — registry exists but has no parseable integer schema_version (missing
+#       field, malformed JSON, non-integer). On a synced vault this also covers
+#       a file caught mid-replace, so callers should retry once before failing.
+# Codes 2 and 3 are kept distinct so a real downgrade is never retried into
+# acceptance and a transient unreadable read is never misreported as a downgrade.
 ceo_registry_validate() {
   local registry_file="${1:-${CEO_DIR:-}/registry.json}"
   if [ ! -f "$registry_file" ]; then
@@ -362,7 +368,10 @@ ceo_registry_validate() {
   fi
   local v
   v=$(ceo_registry_version "$registry_file")
-  if ! [ "$v" -ge "$CEO_REGISTRY_SCHEMA_VERSION" ] 2>/dev/null; then
+  if [ -z "$v" ]; then
+    return 3
+  fi
+  if [ "$v" -lt "$CEO_REGISTRY_SCHEMA_VERSION" ]; then
     return 2
   fi
   return 0
