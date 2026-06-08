@@ -74,6 +74,30 @@ _pr_gather_mark_degraded() {
 $1"
 }
 
+# Durable channel for jq-failure reasons. The post-processing helpers below run
+# inside `$(...)` command substitution, so a `_pr_gather_mark_degraded` call from
+# there would set PR_GATHER_DEGRADED in a discarded subshell. Failures are
+# appended to this file instead and drained into PR_GATHER_DEGRADED in the parent
+# scope after gather completes (same pattern as the test harness's TEST_FAILS_TMP).
+_PR_GATHER_JQ_FAILS=$(mktemp 2>/dev/null || echo "")
+
+# _pr_gather_jq <reason> <fallback> <jq-args...> — apply a jq transform to JSON
+# read from stdin. On jq failure (malformed input, jq absent, transform error)
+# record <reason> as a degradation and emit <fallback> unchanged. Without this,
+# the bare `jq ... || echo "$prior"` idiom silently preserves the prior value (or
+# empties the set) on a transform error, so a shrunk PR set reads as a clean
+# all-clear instead of surfacing the "counts may be incomplete" marker.
+_pr_gather_jq() {
+  local _reason="$1" _fallback="$2"; shift 2
+  local _out
+  if _out=$(jq "$@" 2>/dev/null); then
+    printf '%s' "$_out"
+  else
+    [ -n "$_PR_GATHER_JQ_FAILS" ] && echo "jq-failed:$_reason" >> "$_PR_GATHER_JQ_FAILS"
+    printf '%s' "$_fallback"
+  fi
+}
+
 if command -v gh &>/dev/null; then
   while IFS= read -r ACCT; do
     [ -z "$ACCT" ] && continue
@@ -93,7 +117,7 @@ if command -v gh &>/dev/null; then
       _R="[]"
     fi
     rm -f "$_err"
-    _REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_R" | jq -s 'add' 2>/dev/null || echo "$_REVIEW_PARTS")
+    _REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_R" | _pr_gather_jq "merge-review:$ACCT" "$_REVIEW_PARTS" -s 'add')
 
     _err=$(mktemp)
     if ! _A=$(GH_TOKEN="$TOKEN" _CEO_TIMEOUT 30 gh search prs \
@@ -104,7 +128,7 @@ if command -v gh &>/dev/null; then
       _A="[]"
     fi
     rm -f "$_err"
-    _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_A" | jq -s 'add' 2>/dev/null || echo "$_AUTHORED_PARTS")
+    _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_A" | _pr_gather_jq "merge-authored:$ACCT" "$_AUTHORED_PARTS" -s 'add')
 
     _err=$(mktemp)
     _MQ=(--author "@me" --merged --json "number,title,closedAt,repository,url" --limit 50)
@@ -115,7 +139,7 @@ if command -v gh &>/dev/null; then
       _M="[]"
     fi
     rm -f "$_err"
-    _MERGED_PARTS=$(printf '%s\n%s' "$_MERGED_PARTS" "$_M" | jq -s 'add' 2>/dev/null || echo "$_MERGED_PARTS")
+    _MERGED_PARTS=$(printf '%s\n%s' "$_MERGED_PARTS" "$_M" | _pr_gather_jq "merge-merged:$ACCT" "$_MERGED_PARTS" -s 'add')
   done < <(ceo_pr_sources_github_accounts)
 
   # Drop excluded orgs (case-insensitive match on the owner segment).
@@ -128,12 +152,10 @@ if command -v gh &>/dev/null; then
     echo "WARN: exclude_orgs configured but parsed to empty list — check $(ceo_pr_sources_path)" >&2
   fi
   if [ "$EXCLUDE_ORGS" != "[]" ]; then
-    _REVIEW_PARTS=$(echo "$_REVIEW_PARTS" | jq --argjson ex "$EXCLUDE_ORGS" \
-      '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_REVIEW_PARTS")
-    _AUTHORED_PARTS=$(echo "$_AUTHORED_PARTS" | jq --argjson ex "$EXCLUDE_ORGS" \
-      '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_AUTHORED_PARTS")
-    _MERGED_PARTS=$(echo "$_MERGED_PARTS" | jq --argjson ex "$EXCLUDE_ORGS" \
-      '[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]' 2>/dev/null || echo "$_MERGED_PARTS")
+    _exclude_jq='[.[] | select(.repository.nameWithOwner != null) | select((.repository.nameWithOwner | split("/")[0] | ascii_downcase) as $o | ($ex | map(ascii_downcase) | index($o)) | not)]'
+    _REVIEW_PARTS=$(printf '%s' "$_REVIEW_PARTS" | _pr_gather_jq "exclude-review" "$_REVIEW_PARTS" --argjson ex "$EXCLUDE_ORGS" "$_exclude_jq")
+    _AUTHORED_PARTS=$(printf '%s' "$_AUTHORED_PARTS" | _pr_gather_jq "exclude-authored" "$_AUTHORED_PARTS" --argjson ex "$EXCLUDE_ORGS" "$_exclude_jq")
+    _MERGED_PARTS=$(printf '%s' "$_MERGED_PARTS" | _pr_gather_jq "exclude-merged" "$_MERGED_PARTS" --argjson ex "$EXCLUDE_ORGS" "$_exclude_jq")
   fi
 
   # Dedupe by repo+number — same PR can appear under both accounts when one
@@ -141,9 +163,10 @@ if command -v gh &>/dev/null; then
   # `select(.repository.nameWithOwner and .number)` prevents jq's null-as-"null"
   # interpolation from collapsing distinct null-key entries into a single row.
   if ceo_pr_sources_dedupe; then
-    _REVIEW_PARTS=$(echo "$_REVIEW_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_REVIEW_PARTS")
-    _AUTHORED_PARTS=$(echo "$_AUTHORED_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_AUTHORED_PARTS")
-    _MERGED_PARTS=$(echo "$_MERGED_PARTS" | jq '[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")' 2>/dev/null || echo "$_MERGED_PARTS")
+    _dedupe_jq='[.[] | select(.repository.nameWithOwner and .number)] | unique_by("\(.repository.nameWithOwner)#\(.number)")'
+    _REVIEW_PARTS=$(printf '%s' "$_REVIEW_PARTS" | _pr_gather_jq "dedupe-review" "$_REVIEW_PARTS" "$_dedupe_jq")
+    _AUTHORED_PARTS=$(printf '%s' "$_AUTHORED_PARTS" | _pr_gather_jq "dedupe-authored" "$_AUTHORED_PARTS" "$_dedupe_jq")
+    _MERGED_PARTS=$(printf '%s' "$_MERGED_PARTS" | _pr_gather_jq "dedupe-merged" "$_MERGED_PARTS" "$_dedupe_jq")
   fi
 fi
 
@@ -169,15 +192,25 @@ if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
     rm -f "$_err"
     # Guard `references.full` — null on rare MR shapes would throw inside sub()
     # and the outer `|| echo "[]"` would empty the entire batch.
-    _R=$(echo "$_GLR" | jq '[.[] | select(.references.full != null) | {number: .iid, title, createdAt: .created_at, repository: {nameWithOwner: (.references.full | sub("![^!]*$"; ""))}, url: .web_url}]' 2>/dev/null || echo "[]")
-    _A=$(echo "$_GLA" | jq '[.[] | select(.references.full != null) | {number: .iid, title, createdAt: .created_at, repository: {nameWithOwner: (.references.full | sub("![^!]*$"; ""))}, url: .web_url}]' 2>/dev/null || echo "[]")
-    _GL_REVIEW_PARTS=$(printf '%s\n%s' "$_GL_REVIEW_PARTS" "$_R" | jq -s 'add' 2>/dev/null || echo "$_GL_REVIEW_PARTS")
-    _GL_AUTHORED_PARTS=$(printf '%s\n%s' "$_GL_AUTHORED_PARTS" "$_A" | jq -s 'add' 2>/dev/null || echo "$_GL_AUTHORED_PARTS")
+    _gl_shape_jq='[.[] | select(.references.full != null) | {number: .iid, title, createdAt: .created_at, repository: {nameWithOwner: (.references.full | sub("![^!]*$"; ""))}, url: .web_url}]'
+    _R=$(printf '%s' "$_GLR" | _pr_gather_jq "shape-gl-review:$GL_USER" "[]" "$_gl_shape_jq")
+    _A=$(printf '%s' "$_GLA" | _pr_gather_jq "shape-gl-authored:$GL_USER" "[]" "$_gl_shape_jq")
+    _GL_REVIEW_PARTS=$(printf '%s\n%s' "$_GL_REVIEW_PARTS" "$_R" | _pr_gather_jq "merge-gl-review:$GL_USER" "$_GL_REVIEW_PARTS" -s 'add')
+    _GL_AUTHORED_PARTS=$(printf '%s\n%s' "$_GL_AUTHORED_PARTS" "$_A" | _pr_gather_jq "merge-gl-authored:$GL_USER" "$_GL_AUTHORED_PARTS" -s 'add')
   done < <(ceo_pr_sources_gitlab_usernames)
 fi
 
-_REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_GL_REVIEW_PARTS" | jq -s 'add' 2>/dev/null || echo "$_REVIEW_PARTS")
-_AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_GL_AUTHORED_PARTS" | jq -s 'add' 2>/dev/null || echo "$_AUTHORED_PARTS")
+_REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_GL_REVIEW_PARTS" | _pr_gather_jq "merge-review-final" "$_REVIEW_PARTS" -s 'add')
+_AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_GL_AUTHORED_PARTS" | _pr_gather_jq "merge-authored-final" "$_AUTHORED_PARTS" -s 'add')
+
+# Drain jq-failure reasons recorded inside the post-processing subshells into the
+# degradation state in this (parent) scope.
+if [ -n "$_PR_GATHER_JQ_FAILS" ] && [ -s "$_PR_GATHER_JQ_FAILS" ]; then
+  while IFS= read -r _r; do
+    [ -n "$_r" ] && _pr_gather_mark_degraded "$_r"
+  done < "$_PR_GATHER_JQ_FAILS"
+fi
+[ -n "$_PR_GATHER_JQ_FAILS" ] && rm -f "$_PR_GATHER_JQ_FAILS"
 
 export PR_REVIEW_REQUESTED="$_REVIEW_PARTS"
 export PR_AUTHORED="$_AUTHORED_PARTS"
