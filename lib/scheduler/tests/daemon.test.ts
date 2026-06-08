@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { lookbackForSchedule } from "@/catchup";
 import { createMatcher } from "@/cron";
 import type { Playbook } from "@/registry";
 import { type DaemonDeps, type Heartbeat, runForever } from "@/daemon";
+import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "@/runtime";
 
 const m = createMatcher({ timezone: "UTC" });
 const d = (iso: string) => new Date(iso);
@@ -21,6 +23,7 @@ interface HarnessOpts {
   startHeartbeat?: Heartbeat | null;
   host?: string;
   cap?: number;
+  /** Pin a fixed look-back for all schedules (the env-override path). Omit to use the production-default derived resolver. */
   lookback?: number;
 }
 
@@ -66,7 +69,10 @@ function harness(opts: HarnessOpts) {
     host: opts.host ?? "ml-1",
     matcher: m,
     maxSleepMs: opts.cap ?? 60_000,
-    catchupLookbackMs: opts.lookback ?? 3_600_000,
+    resolveLookback:
+      opts.lookback !== undefined
+        ? () => opts.lookback as number
+        : (schedule, now) => lookbackForSchedule(schedule, now, m, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
     shouldContinue: () => i < opts.nows.length,
   };
   return {
@@ -244,15 +250,38 @@ describe("missed-slot catch-up (#143)", () => {
     expect(h.heartbeats[0]!.last_fired.ev).toBe(now.getTime());
   });
 
-  test("a slot too stale for the look-back window is not replayed", async () => {
-    // daily 09:00, down since yesterday, back at 11:00 with default 1h look-back → no replay.
+  test("a slot too stale for the derived look-back window is not replayed", async () => {
+    // daily 09:00 derives a 6h look-back; back at 16:00 (7h after 09:00) → too stale → no replay.
     const h = harness({
-      nows: [d("2026-06-01T11:00:00Z")],
+      nows: [d("2026-06-01T16:00:00Z")],
       playbooks: [pb({ name: "daily", schedule: "0 9 * * *" })],
       startHeartbeat: hbWith({ daily: d("2026-05-31T09:00:00Z").getTime() }),
     });
     await runForever(h.deps);
     expect(h.dispatched).toEqual([]);
+  });
+
+  test("derived look-back (#157): a daily slot 3h stale catches up where the old global 1h would have skipped it", async () => {
+    // daily 09:00, down since yesterday, back at 12:00 (3h after the 09:00 slot).
+    // The derived daily look-back is 6h, so 09:00 today is within window → replay once.
+    const h = harness({
+      nows: [d("2026-06-01T12:00:00Z")],
+      playbooks: [pb({ name: "daily", schedule: "0 9 * * *" })],
+      startHeartbeat: hbWith({ daily: d("2026-05-31T09:00:00Z").getTime() }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["daily"]);
+    expect(h.heartbeats[0]!.last_fired.daily).toBe(d("2026-06-01T09:00:00Z").getTime());
+
+    // Same scenario, but the host pins a fixed 1h window (env override) → too stale → skipped.
+    const fixed = harness({
+      nows: [d("2026-06-01T12:00:00Z")],
+      playbooks: [pb({ name: "daily", schedule: "0 9 * * *" })],
+      startHeartbeat: hbWith({ daily: d("2026-05-31T09:00:00Z").getTime() }),
+      lookback: 3_600_000,
+    });
+    await runForever(fixed.deps);
+    expect(fixed.dispatched).toEqual([]);
   });
 
   test("advances last_fired to the missed slot and persists it BEFORE dispatch (at-most-once)", async () => {

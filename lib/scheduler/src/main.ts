@@ -18,12 +18,15 @@ import { createMatcher } from "@/cron";
 import { type DaemonDeps, runForever } from "@/daemon";
 import { readHeartbeatFile, writeHeartbeatFile } from "@/heartbeat-store";
 import { parseRegistry } from "@/registry";
+import { lookbackForSchedule } from "@/catchup";
 import {
+  CATCHUP_LOOKBACK_CAP_MS,
+  CATCHUP_LOOKBACK_FLOOR_MS,
   dispatchArgv,
   heartbeatPath,
   MAX_SLEEP_MS,
   registryPath,
-  resolveCatchupLookbackMs,
+  resolveFixedLookbackMs,
   resolveHost,
 } from "@/runtime";
 
@@ -58,6 +61,12 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => stop("SIGINT"));
 
   const log = (msg: string) => process.stderr.write(`[${nowStamp()}] ceo-schedulerd: ${msg}\n`);
+
+  // Per-schedule derived look-back (#157), unless the host pins a fixed window.
+  const matcher = createMatcher();
+  const fixedLookback = resolveFixedLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS);
+  const resolveLookback = (schedule: string, now: Date): number =>
+    fixedLookback ?? lookbackForSchedule(schedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
 
   const deps: DaemonDeps = {
     now: () => new Date(),
@@ -97,9 +106,9 @@ async function main(): Promise<void> {
     writeHeartbeat: (hb) => writeHeartbeatFile(hbPath, hb),
     log,
     host,
-    matcher: createMatcher(),
+    matcher,
     maxSleepMs: MAX_SLEEP_MS,
-    catchupLookbackMs: resolveCatchupLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS),
+    resolveLookback,
     shouldContinue: () => running,
   };
 

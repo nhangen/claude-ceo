@@ -14,24 +14,28 @@ export const MAX_SLEEP_MS = 60_000;
 export const HEARTBEAT_STALE_MS = 600_000; // 10 minutes
 
 /**
- * Missed-slot catch-up look-back (#143). On wake after a downtime/suspend gap,
- * a missed slot older than this is too stale to replay. One hour: long enough to
- * cover a brief outage, short enough that an hours-old slot isn't run late.
+ * Bounds for the per-schedule missed-slot catch-up look-back (#157). The daemon
+ * derives each playbook's look-back from its own cadence and clamps it here: a
+ * sub-floor cadence (e.g. 5-minutely) clamps up to the floor, a long cadence
+ * (daily, weekly) clamps down to the cap. The floor covers a brief outage; the
+ * cap keeps an hours-stale slot from running late at night. See
+ * `lookbackForSchedule` in catchup.ts.
  */
-export const CATCHUP_LOOKBACK_MS = 3_600_000; // 1 hour
+export const CATCHUP_LOOKBACK_FLOOR_MS = 3_600_000; // 1 hour
+export const CATCHUP_LOOKBACK_CAP_MS = 21_600_000; // 6 hours
 
 /**
- * Resolve the catch-up look-back from an optional env override
- * (`CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS`), defaulting to {@link CATCHUP_LOOKBACK_MS}.
- * A non-numeric / zero / negative value falls back to the default rather than
- * silently installing a wrong window — a host with daily playbooks can raise it
- * (e.g. to several hours) without a registry/schema change. Per-playbook
- * look-back is the fuller fix, tracked separately.
+ * Optional per-host override (`CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS`) that pins a
+ * single fixed look-back for every playbook, bypassing the per-schedule derived
+ * default. Returns the parsed value when set to a positive integer, else `null`
+ * — absent, non-numeric, zero, and negative all fall through to the derived
+ * look-back rather than silently installing a wrong window. The env override
+ * survives from #143 as an escape hatch; the derived default is the #157 fix.
  */
-export function resolveCatchupLookbackMs(raw: string | undefined): number {
-  if (raw === undefined) return CATCHUP_LOOKBACK_MS;
+export function resolveFixedLookbackMs(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
   const n = Number(raw.trim());
-  return Number.isInteger(n) && n > 0 ? n : CATCHUP_LOOKBACK_MS;
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 export function registryPath(vault: string): string {

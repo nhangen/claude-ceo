@@ -66,13 +66,15 @@ Pipeline, all of it unit-tested behind injected side effects:
 - `heartbeat-store.ts` — durable read/write of the heartbeat
   (`~/.ceo/schedulerd/heartbeat.json`, host-local, **not** the synced vault).
   Corrupt/missing → guard starts empty, no crash.
-- `catchup.ts` — `newestMissedSlot` / `catchUpFires`: when a downtime or suspend
-  gap means slots were skipped, fire **once** for the newest missed slot per
-  playbook and skip the rest (no replay storm), bounded by `CATCHUP_LOOKBACK_MS`
-  so a stale slot isn't run late. Driven by `last_fired` in the heartbeat (#143).
+- `catchup.ts` — `newestMissedSlot` / `catchUpFires` / `lookbackForSchedule`: when
+  a downtime or suspend gap means slots were skipped, fire **once** for the newest
+  missed slot per playbook and skip the rest (no replay storm), bounded by a
+  per-schedule look-back derived from each playbook's own cadence (#157) so a stale
+  slot isn't run late. Driven by `last_fired` in the heartbeat (#143).
 - `runtime.ts` — path/host/argv helpers and the `MAX_SLEEP_MS` / `HEARTBEAT_STALE_MS`
-  / `CATCHUP_LOOKBACK_MS` constants. Dispatch spawns `ceo-cron.sh <name> --scheduled`
-  directly (no shell), with `CEO_VAULT` passed via the spawn environment.
+  / `CATCHUP_LOOKBACK_FLOOR_MS` / `CATCHUP_LOOKBACK_CAP_MS` constants. Dispatch spawns
+  `ceo-cron.sh <name> --scheduled` directly (no shell), with `CEO_VAULT` passed via
+  the spawn environment.
 
 Schedules evaluate in the **host's local timezone** (the matcher is created with no
 timezone; registry schedules carry no per-entry tz). A second host in a different
@@ -86,7 +88,8 @@ tick the daemon also computes catch-up fires: for a playbook that owes fires sin
 its `last_fired`, it dispatches **once** for the newest missed slot within the
 look-back window (default 1h) and skips the rest. A playbook already firing this
 minute is not also caught up, and a first-seen playbook (no `last_fired` baseline)
-is initialized to "now" rather than replayed.
+is initialized to "now" rather than replayed. The look-back window is per-schedule
+(see below).
 
 `last_fired` is persisted in the same pre-dispatch heartbeat write as the
 double-fire guard, so catch-up keeps #142's **at-most-once** invariant: a crash
@@ -95,14 +98,20 @@ drops a fire rather than doubling it. (This is a deliberate divergence from #143
 for write-tier playbooks, and dispatch is a fire-and-forget spawn whose completion
 the daemon can't observe anyway.)
 
-The look-back is **one global value** (`CATCHUP_LOOKBACK_MS`, default 1h),
-overridable per host via the `CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS` env var (a
-non-numeric/zero/negative value falls back to the default). A single global value
-is a known limitation: it suits sub-hourly playbooks but is wrong for the
-daily-report playbooks that dominate the registry — a daily slot missed by more
-than the look-back is **not** replayed (by design, so a morning job doesn't run
-late at night). A daily-heavy host should raise the env var; per-playbook (or
-per-cadence) look-back is the fuller fix, tracked as a follow-up.
+The look-back is **per-schedule, derived from each playbook's own cadence** (#157,
+`lookbackForSchedule`): the cadence proxy is the **min gap** between the next few
+fires (cadence-intrinsic — invariant to wake time even for irregular schedules like
+`0 9,12`), clamped to `[CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS]` (1h–6h).
+So a sub-hourly playbook gets ~1h (a slot hours stale isn't replayed) while a daily
+report gets the 6h cap (an overnight-suspend miss still catches up in the morning).
+A long-cadence slot missed by more than the cap is **not** replayed — by design, so
+a morning job doesn't run late at night (a weekly slot missed >6h is likewise
+dropped).
+
+A host may still pin **one fixed window for every playbook** via the
+`CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS` env var (the #143 escape hatch); a
+non-numeric/zero/negative value is ignored and the derived per-schedule default is
+used instead.
 
 ### Run / keep-alive
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { catchUpFires, newestMissedSlot } from "@/catchup";
+import { catchUpFires, lookbackForSchedule, newestMissedSlot } from "@/catchup";
 import { createMatcher } from "@/cron";
 import type { Playbook } from "@/registry";
 
@@ -7,6 +7,8 @@ const m = createMatcher({ timezone: "UTC" });
 const d = (iso: string) => new Date(iso);
 const ms = (iso: string) => d(iso).getTime();
 const HOUR = 3_600_000;
+const FLOOR = HOUR; // 1h
+const CAP = 6 * HOUR; // 6h
 
 const pb = (over: Partial<Playbook>): Playbook => ({
   name: "p",
@@ -77,11 +79,52 @@ describe("newestMissedSlot", () => {
   });
 });
 
+describe("lookbackForSchedule", () => {
+  const now = d("2026-06-01T10:00:00Z");
+
+  test("sub-floor cadence (*/5) clamps UP to the floor", () => {
+    // 5-minute period < 1h floor → floor. (Newest-slot-only fires once anyway.)
+    expect(lookbackForSchedule("*/5 * * * *", now, m, FLOOR, CAP)).toBe(FLOOR);
+  });
+
+  test("hourly period passes through unclamped", () => {
+    expect(lookbackForSchedule("0 * * * *", now, m, FLOOR, CAP)).toBe(HOUR);
+  });
+
+  test("an in-range period (every 2h) is used as-is", () => {
+    expect(lookbackForSchedule("0 */2 * * *", now, m, FLOOR, CAP)).toBe(2 * HOUR);
+  });
+
+  test("daily period clamps DOWN to the cap", () => {
+    expect(lookbackForSchedule("0 9 * * *", now, m, FLOOR, CAP)).toBe(CAP);
+  });
+
+  test("weekly period clamps down to the cap (a >cap-stale weekly slot is not replayed)", () => {
+    expect(lookbackForSchedule("0 9 * * 1", now, m, FLOOR, CAP)).toBe(CAP);
+  });
+
+  test("irregular schedule uses the MIN gap and is invariant to `now` (the tightest cadence)", () => {
+    // 0 9,12 → gaps of 3h (09→12) and 21h (12→09 next day). The min gap is 3h,
+    // in range → 3h. A single-forward-gap proxy anchored at `now` would yield
+    // 21h→cap(6h) at 10:00 but 3h at 13:00; min-of-gaps is the same either way.
+    const at10 = lookbackForSchedule("0 9,12 * * *", d("2026-06-01T10:00:00Z"), m, FLOOR, CAP);
+    const at13 = lookbackForSchedule("0 9,12 * * *", d("2026-06-01T13:00:00Z"), m, FLOOR, CAP);
+    expect(at10).toBe(3 * HOUR);
+    expect(at13).toBe(3 * HOUR);
+  });
+
+  test("unparseable schedule falls back to the floor (never throws)", () => {
+    expect(lookbackForSchedule("not a cron", now, m, FLOOR, CAP)).toBe(FLOOR);
+  });
+});
+
 describe("catchUpFires", () => {
+  const fixedHour = () => HOUR;
+
   test("includes playbooks with a missed slot, excludes those without a last_fired baseline", () => {
     const pbs = [pb({ name: "seen" }), pb({ name: "fresh" })];
     const lastFired = { seen: ms("2026-06-01T09:00:00Z") }; // 'fresh' has no baseline yet
-    const fires = catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), m, HOUR);
+    const fires = catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), m, fixedHour);
     expect(fires.map((f) => f.playbook.name)).toEqual(["seen"]);
     expect(fires[0]!.slot).toEqual(d("2026-06-01T09:15:00Z"));
   });
@@ -89,6 +132,18 @@ describe("catchUpFires", () => {
   test("excludes a playbook with no gap", () => {
     const pbs = [pb({ name: "current" })];
     const lastFired = { current: ms("2026-06-01T09:15:00Z") };
-    expect(catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), m, HOUR)).toEqual([]);
+    expect(catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), m, fixedHour)).toEqual([]);
+  });
+
+  test("resolver is applied per schedule: a 3h-stale daily slot catches up (derived ~6h) where a fixed 1h would skip", () => {
+    const daily = pb({ name: "daily", schedule: "0 9 * * *" });
+    const lastFired = { daily: ms("2026-05-31T09:00:00Z") }; // yesterday 09:00
+    const now = d("2026-06-01T12:00:00Z"); // 3h after today's 09:00 slot
+    const derived = (s: string) => lookbackForSchedule(s, now, m, FLOOR, CAP);
+    expect(catchUpFires([daily], lastFired, now, m, derived).map((f) => f.slot)).toEqual([
+      d("2026-06-01T09:00:00Z"),
+    ]);
+    // The same slot is 3h stale → a fixed 1h look-back drops it.
+    expect(catchUpFires([daily], lastFired, now, m, fixedHour)).toEqual([]);
   });
 });
