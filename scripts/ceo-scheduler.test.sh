@@ -41,7 +41,7 @@ setup() {
 teardown() {
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_SCHEDULER CEO_CRONTAB_BIN CEO_VAULT CEO_DIR CEO_LAUNCHD_DIR
+  unset CEO_SCHEDULER CEO_CRONTAB_BIN CEO_VAULT CEO_DIR CEO_LAUNCHD_DIR CEO_SYSTEMCTL_BIN
   rm -rf "$TEST_HOME"
 }
 
@@ -181,6 +181,82 @@ test_legacy_launchd_plists_empty_when_dir_absent() {
   out=$(ceo_scheduler_legacy_launchd_plists) || rc=$?
   assert_eq "$rc" "0" "missing LaunchAgents dir is not an error"
   assert_eq "$out" "" "missing LaunchAgents dir yields no orphans"
+}
+
+# === Linux crontab + systemd daemon double-fire detection (#159) ===
+
+# Stub systemctl to answer `--user is-active ceo-schedulerd` with $1 and the
+# matching exit code; any other argv exits 99 (per stub-cli-argv-validation).
+_stub_systemctl() {
+  local state="$1" rc
+  [ "$state" = "active" ] && rc=0 || rc=3
+  export CEO_SYSTEMCTL_BIN="$TEST_HOME/systemctl-stub"
+  cat > "$CEO_SYSTEMCTL_BIN" <<STUB
+#!/bin/bash
+case "\$*" in
+  "--user is-active ceo-schedulerd") echo "$state"; exit $rc ;;
+  *) echo "stub-systemctl: unexpected argv: \$*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_SYSTEMCTL_BIN"
+}
+
+# Stub crontab -l to print a CEO block; exits 99 on unexpected argv.
+_stub_crontab_with_ceo_block() {
+  export CEO_CRONTAB_BIN="$TEST_HOME/crontab-stub"
+  cat > "$CEO_CRONTAB_BIN" <<'STUB'
+#!/bin/bash
+case "$1" in
+  -l) printf '%s\n' "# CEO Agent START" "*/5 * * * * /p/ceo-cron.sh morning  # ceo:morning" "# CEO Agent END" ;;
+  *) echo "stub-crontab: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_CRONTAB_BIN"
+}
+
+test_crontab_daemon_conflict_when_block_and_daemon_active() {
+  export CEO_SCHEDULER=crontab
+  _stub_crontab_with_ceo_block
+  _stub_systemctl active
+  local out
+  out=$(ceo_scheduler_crontab_daemon_conflict)
+  assert_eq "$out" "1" "must report the conflicting cron-trigger count when both schedulers run"
+}
+
+test_no_conflict_when_daemon_inactive() {
+  export CEO_SCHEDULER=crontab
+  _stub_crontab_with_ceo_block
+  _stub_systemctl inactive
+  local out
+  out=$(ceo_scheduler_crontab_daemon_conflict)
+  assert_eq "$out" "" "crontab block alone (daemon inactive) is not a conflict"
+}
+
+test_no_conflict_when_no_ceo_crontab_block() {
+  export CEO_SCHEDULER=crontab
+  export CEO_CRONTAB_BIN="$TEST_HOME/crontab-empty"
+  cat > "$CEO_CRONTAB_BIN" <<'STUB'
+#!/bin/bash
+case "$1" in
+  -l) printf '%s\n' "0 0 * * * /usr/bin/true" ;;
+  *) echo "stub-crontab: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_CRONTAB_BIN"
+  _stub_systemctl active
+  local out
+  out=$(ceo_scheduler_crontab_daemon_conflict)
+  assert_eq "$out" "" "active daemon with no CEO crontab entries is not a conflict"
+}
+
+test_no_conflict_when_systemctl_absent() {
+  export CEO_SCHEDULER=crontab
+  _stub_crontab_with_ceo_block
+  export CEO_SYSTEMCTL_BIN="$TEST_HOME/nonexistent-systemctl"
+  local out rc=0
+  out=$(ceo_scheduler_crontab_daemon_conflict) || rc=$?
+  assert_eq "$rc" "0" "absent systemctl (e.g. macOS) is not an error"
+  assert_eq "$out" "" "absent systemctl yields no conflict"
 }
 
 # === Integration: ceo playbook scan end-to-end on the daemon backend ===
