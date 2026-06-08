@@ -251,6 +251,16 @@ cmd_doctor() {
     fail=$((fail + 1))
   fi
 
+  # Linux double-fire (#159): the Phase-1 per-playbook crontab block AND the
+  # ceo-schedulerd systemd daemon both active dispatch every playbook twice.
+  local _cron_daemon_conflict
+  _cron_daemon_conflict="$(ceo_scheduler_crontab_daemon_conflict 2>/dev/null || true)"
+  if [ -n "$_cron_daemon_conflict" ]; then
+    echo "  ✗ CEO crontab block ($_cron_daemon_conflict triggers) active alongside the ceo-schedulerd daemon — every playbook double-fires"
+    echo "    Remove the crontab block (the daemon reads the registry): crontab -l | sed '/# CEO Agent START/,/# CEO Agent END/d' | grep -v '^# CEO Agent\$' | crontab -"
+    fail=$((fail + 1))
+  fi
+
   # plugin
   if claude plugin list 2>/dev/null | grep -q "ceo"; then
     echo "  ✓ CEO plugin installed in Claude Code"

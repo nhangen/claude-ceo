@@ -95,7 +95,7 @@ teardown() {
   export PATH="$PATH_BACKUP"
   export HOME="$HOME_BACKUP"
   unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_HOSTNAME CEO_PLUTIL_BIN
-  unset CEO_SCHEDULER CEO_LAUNCHD_DIR
+  unset CEO_SCHEDULER CEO_LAUNCHD_DIR CEO_CRONTAB_BIN CEO_SYSTEMCTL_BIN
 }
 
 _log_completed_today() {
@@ -268,6 +268,90 @@ test_doctor_no_legacy_warning_when_only_daemon_agent() {
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_not_contains "$output" "legacy per-playbook launchd agent" \
     "the daemon's own keep-alive agent must not be flagged as legacy"
+}
+
+# --- #159: Linux crontab + systemd daemon double-fire migration ---
+#
+# The Linux sibling of the macOS orphan check above. A host carrying the
+# Phase-1 per-playbook CEO crontab block AND running the ceo-schedulerd systemd
+# daemon (#142) fires every playbook twice. doctor must flag it.
+
+# Writes a CEO_CRONTAB_BIN stub whose `-l` prints $1 (a crontab body) and
+# exits non-zero on any other argv (per stub-cli-argv-validation).
+_write_crontab_list_stub() {
+  local body="$1"
+  export CEO_CRONTAB_BIN="$TEST_HOME/stubs/crontab-159"
+  cat > "$CEO_CRONTAB_BIN" <<STUB
+#!/bin/bash
+case "\$1" in
+  -l) cat <<'CRON'
+$body
+CRON
+  ;;
+  *) echo "stub-crontab: unexpected argv: \$*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_CRONTAB_BIN"
+}
+
+# Writes a CEO_SYSTEMCTL_BIN stub answering `--user is-active ceo-schedulerd`
+# with $1 ("active"/"inactive") and the matching exit code; any other argv
+# exits 99 (per stub-cli-argv-validation).
+_write_systemctl_stub() {
+  local state="$1" rc
+  [ "$state" = "active" ] && rc=0 || rc=3
+  export CEO_SYSTEMCTL_BIN="$TEST_HOME/stubs/systemctl-159"
+  cat > "$CEO_SYSTEMCTL_BIN" <<STUB
+#!/bin/bash
+case "\$*" in
+  "--user is-active ceo-schedulerd") echo "$state"; exit $rc ;;
+  *) echo "stub-systemctl: unexpected argv: \$*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_SYSTEMCTL_BIN"
+}
+
+test_doctor_flags_crontab_daemon_double_fire() {
+  export CEO_SCHEDULER=crontab
+  _write_crontab_list_stub "# CEO Agent START
+*/5 * * * * /p/ceo-cron.sh morning  # ceo:morning
+0 9 * * * /p/ceo-cron.sh standup  # ceo:standup
+# CEO Agent END"
+  _write_systemctl_stub active
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "double-fire" \
+    "doctor must warn when the crontab block and the systemd daemon both run"
+  assert_contains "$output" "crontab block" \
+    "the warning must name the crontab block as the conflicting scheduler"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero on a crontab+daemon double-fire (got rc=0)\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_no_double_fire_warning_when_daemon_inactive() {
+  export CEO_SCHEDULER=crontab
+  _write_crontab_list_stub "# CEO Agent START
+*/5 * * * * /p/ceo-cron.sh morning  # ceo:morning
+# CEO Agent END"
+  _write_systemctl_stub inactive
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_not_contains "$output" "double-fire" \
+    "the crontab block alone (daemon inactive) is not a double-fire"
+}
+
+test_doctor_no_double_fire_warning_when_no_crontab_block() {
+  export CEO_SCHEDULER=crontab
+  _write_crontab_list_stub "# unrelated user cron
+0 0 * * * /usr/bin/true"
+  _write_systemctl_stub active
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_not_contains "$output" "double-fire" \
+    "an active daemon with no CEO crontab entries is not a double-fire"
 }
 
 # --- ceo-schedulerd liveness (#142) ---

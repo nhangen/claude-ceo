@@ -154,3 +154,26 @@ ceo_scheduler_legacy_launchd_plists() {
     printf '%s\n' "$plist"
   done
 }
+
+# Linux sibling of ceo_scheduler_legacy_launchd_plists (#159). The Phase-1
+# per-playbook CEO crontab block and the Phase-1.5 ceo-schedulerd systemd
+# daemon each dispatch every playbook independently; running both fires
+# everything twice. Detect the conflict by combining two signals:
+#   - the CEO crontab block is live  → ceo_scheduler_list emits ceo-cron.sh lines
+#   - the systemd user unit is active → `systemctl --user is-active ceo-schedulerd`
+# Prints the conflicting cron-trigger count (a non-empty marker for the caller)
+# when BOTH hold; prints nothing (clean) otherwise — including when systemctl is
+# absent (macOS) or the unit is inactive. `ceo doctor` warns on a non-empty
+# result so the operator removes the crontab block once the daemon is adopted.
+#   CEO_SYSTEMCTL_BIN — systemctl binary (default "systemctl"); test override.
+ceo_scheduler_crontab_daemon_conflict() {
+  local systemctl_bin="${CEO_SYSTEMCTL_BIN:-systemctl}"
+  command -v "$systemctl_bin" >/dev/null 2>&1 || return 0
+  local _state
+  _state="$("$systemctl_bin" --user is-active ceo-schedulerd 2>/dev/null || true)"
+  [ "$_state" = "active" ] || return 0
+  local _count
+  _count="$(ceo_scheduler_list 2>/dev/null | grep -c 'ceo-cron\.sh' || true)"
+  [ "${_count:-0}" -gt 0 ] || return 0
+  printf '%s\n' "$_count"
+}
