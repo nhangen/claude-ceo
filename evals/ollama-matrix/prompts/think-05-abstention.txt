@@ -14,4 +14,4 @@ Q1: Which model does PR #169 switch the read-tier to?
 Q2: How much VRAM does the eval host's GPU have?
 Q3: What is gpt-oss:20b's measured tokens/sec on the eval host?
 Q4: Who authored PR #169?
-Q5: Does gemma4:12b-it-qat's on-disk size fit within the eval host's VRAM?
+Q5: Is gemma4:12b-it-qat's on-disk size in GB a smaller number than the eval host's VRAM capacity in GB?

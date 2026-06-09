@@ -48,7 +48,12 @@ bash run.sh
 MODELS="gemma4:12b-it-qat gpt-oss:20b mistral-small3.2:24b" bash run.sh
 python3 grade.py            # score table + summary
 python3 grade.py --verbose  # also list every wrong item
+python3 grade.py --selftest # verify the extractors against known adversarial cases
 ```
+
+A call that fails (daemon down, model not pulled, HTTP/API error) is written as an
+`__EVAL_ERROR__` sentinel and shown as `ERR` in the score table — excluded from the
+summary so an infrastructure failure never reads as a model-quality loss.
 
 On the CEO host this runs in WSL against the WSL ollama daemon (the one cron
 uses), not the Windows ollama — they are separate model stores.

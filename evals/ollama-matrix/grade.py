@@ -28,16 +28,22 @@ def grade_reconcile(text, key):
     items = key["items"]
     wrong = []
     for tid, expect in items.items():
-        m = re.search(rf"^\s*{tid}\b.*$", text, re.MULTILINE | re.IGNORECASE)
-        line = m.group(0) if m else ""
+        # Allow an optional list marker (-, *, 1.) before the ticket id; models
+        # add these even when told not to. Match on the VERDICT field (between
+        # the first two pipes) only — never the free-text reason, which legitimately
+        # contains the word "close" ("no merged PR closes it").
+        m = re.search(rf"^\s*(?:[-*]\s*|\d+[.)]\s*)?{tid}\b(.*)$", text, re.MULTILINE | re.IGNORECASE)
+        rest = m.group(1) if m else ""
+        parts = rest.split("|")
+        verdict = parts[1] if len(parts) >= 2 else rest
         if expect == "KEEP":
-            ok = bool(re.search(r"\bKEEP\b", line, re.IGNORECASE)) and not re.search(r"\bCLOSE\b", line, re.IGNORECASE)
+            ok = bool(re.search(r"\bKEEP\b", verdict, re.IGNORECASE)) and not re.search(r"\bCLOSE\b", verdict, re.IGNORECASE)
         else:
             pr = expect.split(":")[1]
-            cm = re.search(r"\bCLOSE\b\s*#?(\d+)", line, re.IGNORECASE)
+            cm = re.search(r"\bCLOSE\b\s*#?(\d+)", verdict, re.IGNORECASE)
             ok = bool(cm) and cm.group(1) == pr
         if not ok:
-            wrong.append((tid, expect, line.strip()))
+            wrong.append((tid, expect, (m.group(0) if m else "").strip()))
     return len(items) - len(wrong), len(items), wrong
 
 
@@ -50,7 +56,9 @@ def grade_order(text, key):
 
 
 def grade_pair(text, key):
-    m = re.search(r"PAIR:\s*([Ss0-9 ,]+)", text, re.IGNORECASE)
+    # Capture the rest of the line (tolerates "S3 and S4", "S3, S4", etc.);
+    # findall isolates the ids regardless of separator.
+    m = re.search(r"PAIR:\s*(.+)", text, re.IGNORECASE)
     got = set(re.findall(r"[Ss]\s*(\d+)", m.group(1))) if m else set()
     exp = set(re.findall(r"[Ss]\s*(\d+)", key["expect"]))
     ok = got == exp
@@ -111,6 +119,36 @@ GRADERS = {
     "kv": grade_kv, "abstain": grade_abstain, "yesno": grade_yesno,
 }
 
+
+def _selftest():
+    """Lock the extractors against the failure modes a review panel found:
+    KEEP whose reason prose says "close", list-prefixed lines, "S3 and S4"
+    separators, timestamp-format variance, and wrong answers still failing."""
+    cases = [
+        (grade_reconcile, {"items": {"T8": "KEEP"}},
+         "T8 | KEEP | PR #169 would close this but is only proposed", 1),
+        (grade_reconcile, {"items": {"T1": "CLOSE:165"}}, "- T1 | CLOSE #165 | retry", 1),
+        (grade_reconcile, {"items": {"T1": "CLOSE:165"}}, "1. T1 | CLOSE #165 | retry", 1),
+        (grade_reconcile, {"items": {"T1": "CLOSE:165"}}, "T1 | CLOSE #999 | wrong pr", 0),
+        (grade_reconcile, {"items": {"T8": "KEEP"}}, "T8 | CLOSE #169 | proposed", 0),
+        (grade_pair, {"expect": "S3,S4"}, "PAIR: S3 and S4", 1),
+        (grade_pair, {"expect": "S3,S4"}, "PAIR: S1,S2", 0),
+        (grade_kv, {"expect": {"NEXT": "2026-06-09 09:00"}}, "NEXT: 2026-06-09 at 9:00", 1),
+        (grade_yesno, {"expect": "YES"}, "ANSWER: NO", 0),
+    ]
+    fails = 0
+    for fn, key, text, want in cases:
+        got = fn(text, key)[0]
+        if got != want:
+            fails += 1
+            print(f"SELFTEST FAIL: {fn.__name__}({text!r}) -> {got}, want {want}")
+    print("selftest: OK" if not fails else f"selftest: {fails} FAILED")
+    sys.exit(1 if fails else 0)
+
+
+if "--selftest" in sys.argv:
+    _selftest()
+
 models = sorted({p.name.split("--", 1)[1].rsplit(".txt", 1)[0]
                  for p in OUT.glob("*--*.txt")})
 if not models:
@@ -127,7 +165,16 @@ for task, key in KEYS.items():
         if not f.exists():
             row += f"{'--':<22} "
             continue
-        got, total, wrong = grader(f.read_text(), key)
+        raw = f.read_text()
+        # An empty file or a run.sh error sentinel means the call never produced
+        # an answer (daemon down, model not pulled, HTTP/parse error). Score it
+        # ERR, distinct from a wrong answer, and exclude it from the summary —
+        # an infra failure must not read as a model-quality loss.
+        if not raw.strip() or raw.lstrip().startswith("__EVAL_ERROR__"):
+            row += f"{'ERR':<22} "
+            scores[m][task] = None
+            continue
+        got, total, wrong = grader(raw, key)
         scores[m][task] = (got, total)
         row += f"{f'{got}/{total}':<22} "
         if VERBOSE and wrong:
@@ -137,7 +184,10 @@ for task, key in KEYS.items():
 
 print("\n=== summary (items correct / total) ===")
 for m in models:
-    got = sum(s[0] for s in scores[m].values())
-    tot = sum(s[1] for s in scores[m].values())
+    vals = [s for s in scores[m].values() if s is not None]
+    got = sum(s[0] for s in vals)
+    tot = sum(s[1] for s in vals)
     pct = 100 * got / tot if tot else 0
-    print(f"  {m:<24} {got}/{tot}  ({pct:.0f}%)")
+    errs = sum(1 for s in scores[m].values() if s is None)
+    note = f"  [{errs} task(s) ERR, excluded]" if errs else ""
+    print(f"  {m:<24} {got}/{tot}  ({pct:.0f}%){note}")
