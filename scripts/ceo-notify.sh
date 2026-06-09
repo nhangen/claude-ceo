@@ -11,6 +11,12 @@ set -euo pipefail
 #   1. $CEO_DISCORD_WEBHOOK env var (testing convenience)
 #   2. ~/.config/claude-ceo/secrets.json -> .discord_webhook
 #
+# Model field:
+#   $CEO_MODEL (exported by ceo-cron.sh for every runner) is surfaced as a
+#   "Model" embed field. On the rate-limit fallback path this reflects the
+#   local model actually used, not the playbook's configured Claude model.
+#   Omitted when unset (e.g. early failures before the runner is resolved).
+#
 # Event filter (controls when notifications fire):
 #   $CEO_VAULT/CEO/settings.json -> .notify_events
 #     "failures" (default) | "all" | "off"
@@ -102,6 +108,8 @@ esac
 
 HOSTNAME_SHORT="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}"
 NOW="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+MODEL="${CEO_MODEL:-}"
+_dlog "model='${MODEL:-(unset)}'"
 
 if [ "$STATUS" = "success" ]; then
   TITLE="🟢 ${TRIGGER} completed"
@@ -118,6 +126,7 @@ PAYLOAD=$(jq -n \
   --arg desc  "$DESCRIPTION" \
   --arg trig  "$TRIGGER" \
   --arg host  "$HOSTNAME_SHORT" \
+  --arg model "$MODEL" \
   --arg ts    "$NOW" \
   --argjson color "$COLOR" \
   '{
@@ -126,11 +135,12 @@ PAYLOAD=$(jq -n \
        title: $title,
        description: $desc,
        color: $color,
-       fields: [
-         { name: "Trigger", value: $trig, inline: true },
-         { name: "Host",    value: $host, inline: true },
-         { name: "Time",    value: $ts,   inline: false }
-       ]
+       fields: (
+         [ { name: "Trigger", value: $trig, inline: true } ]
+         + (if $model != "" then [ { name: "Model", value: $model, inline: true } ] else [] end)
+         + [ { name: "Host", value: $host, inline: true },
+             { name: "Time", value: $ts,   inline: false } ]
+       )
      }]
    }')
 

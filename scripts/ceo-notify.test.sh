@@ -135,6 +135,63 @@ test_does_not_log_webhook_url() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# Installs a fake `curl` on PATH that records the POSTed -d payload to
+# $CAPTURE and returns a curl-like -w line. Validates argv shape (stub-cli rule):
+# a real ceo-notify invocation always passes -d <json>; bail non-zero otherwise.
+_install_curl_capture() {
+  STUBDIR=$(mktemp -d)
+  CAPTURE="$STUBDIR/payload.json"
+  cat > "$STUBDIR/curl" <<'STUB'
+#!/bin/bash
+payload="" prev=""
+for a in "$@"; do
+  [ "$prev" = "-d" ] && payload="$a"
+  prev="$a"
+done
+[ -n "$payload" ] || { echo "stub curl: no -d payload in argv: $*" >&2; exit 99; }
+printf '%s' "$payload" > "$STUB_CAPTURE"
+echo "200 time=0.001s"
+STUB
+  chmod +x "$STUBDIR/curl"
+  export STUB_CAPTURE="$CAPTURE"
+  _SAVED_PATH="$PATH"
+  export PATH="$STUBDIR:$PATH"
+}
+_remove_curl_capture() {
+  export PATH="$_SAVED_PATH"
+  rm -rf "$STUBDIR"
+  unset STUB_CAPTURE STUBDIR CAPTURE _SAVED_PATH
+}
+
+test_model_field_present_when_ceo_model_set() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_MODEL="gemma4:12b-it-qat"
+  "$NOTIFY" failure morning-brief "model field check" >/dev/null 2>&1
+  model_val=$(jq -r '.embeds[0].fields[] | select(.name=="Model") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_MODEL
+  _remove_curl_capture
+  assert_eq "$model_val" "gemma4:12b-it-qat" "embed Model field must carry the actual model used"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_model_field_omitted_when_ceo_model_unset() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  unset CEO_MODEL
+  "$NOTIFY" failure morning-brief "no model check" >/dev/null 2>&1
+  model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
+  _remove_curl_capture
+  assert_eq "$model_count" "0" "embed must omit the Model field when CEO_MODEL is unset"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_jq_argjson_color_no_injection() {
   setup
   # Reason field with shell-special and JSON-special characters. If the script
@@ -163,6 +220,8 @@ TESTS=(
   test_missing_args_no_op
   test_unknown_events_warns_and_defaults_to_failures
   test_curl_unreachable_does_not_break
+  test_model_field_present_when_ceo_model_set
+  test_model_field_omitted_when_ceo_model_unset
   test_env_var_overrides_secrets_file
   test_does_not_log_webhook_url
   test_jq_argjson_color_no_injection
