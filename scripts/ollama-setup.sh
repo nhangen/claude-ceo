@@ -11,8 +11,8 @@ fi
 
 echo "Pulling default models for CEO agent runners..."
 
-echo "1/2: Pulling mistral-small3.2:24b (default for 'runner: ollama')..."
-ollama pull mistral-small3.2:24b
+echo "1/2: Pulling gemma4:12b-it-qat (default for 'runner: ollama')..."
+ollama pull gemma4:12b-it-qat
 echo "1/2: OK"
 
 echo "2/2: Pulling gpt-oss:20b (default for 'runner: ollama-think')..."

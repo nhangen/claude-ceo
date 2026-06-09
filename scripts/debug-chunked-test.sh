@@ -181,7 +181,7 @@ cat > "$CEO_DIR/registry.json" << 'JSON'
     "description": "chunked scan test",
     "trigger": "cron",
     "schedule": "50 8 * * 1-5",
-    "model": "mistral-small3.2:24b",
+    "model": "gemma4:12b-it-qat",
     "preflight": "none",
     "tier": "read",
     "status": "active",
@@ -204,7 +204,7 @@ description: chunked scan test
 trigger: cron
 schedule: "50 8 * * 1-5"
 runner: ollama
-model: mistral-small3.2:24b
+model: gemma4:12b-it-qat
 preflight: none
 tier: read
 status: active
@@ -246,7 +246,7 @@ echo "direct node test:"
 node "$TEST_HOME/.bun/bin/jq.js" -r "$QUERY" "$CEO_DIR/registry.json"
 
 echo "=== jq self-test ==="
-echo '{"playbooks":[{"name":"morning-scan","file":"playbooks/morning-scan.md","runner":"ollama","tier":"read","model":"mistral-small3.2:24b","status":"active","trigger":"cron","preflight":"none","script":"","inputs":null,"requires":null}]}' \
+echo '{"playbooks":[{"name":"morning-scan","file":"playbooks/morning-scan.md","runner":"ollama","tier":"read","model":"gemma4:12b-it-qat","status":"active","trigger":"cron","preflight":"none","script":"","inputs":null,"requires":null}]}' \
   | jq -r --arg t morning-scan '.playbooks[] | select(.name == $t)'
 
 echo "=== Running ceo-cron.sh morning-scan ==="

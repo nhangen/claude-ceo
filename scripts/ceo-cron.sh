@@ -1361,7 +1361,7 @@ END_LOG_ENTRY"
     # playbooks still honor `model:` for explicit ollama-model overrides.
     if [ -z "$MODEL_FROM_FRONTMATTER" ] || [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ]; then
       case "$RUNNER" in
-        ollama)       OLLAMA_MODEL="mistral-small3.2:24b" ;;
+        ollama)       OLLAMA_MODEL="gemma4:12b-it-qat" ;;
         ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
       esac
     else
@@ -1373,7 +1373,8 @@ END_LOG_ENTRY"
     export CEO_MODEL="$OLLAMA_MODEL"
 
     OLLAMA_PROMPT="$SINGLE_PROMPT_BODY"
-    # mistral-small3.2:24b has a 32K context window. Reserve ~8K for output
+    # gemma4:12b-it-qat fits fully in 12 GB VRAM and holds a 32K+ context
+    # window. Reserve ~8K for output
     # and overhead; the rest is the prompt budget. Override via env when a
     # larger-context model is selected. `wc -c` measures bytes — `${#var}`
     # would return character count under a UTF-8 locale and undercount.

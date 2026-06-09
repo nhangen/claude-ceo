@@ -784,7 +784,7 @@ PB
 
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_eq "$model" "mistral-small3.2:24b" "runner:ollama default must be mistral-small3.2:24b"
+  assert_eq "$model" "gemma4:12b-it-qat" "runner:ollama default must be gemma4:12b-it-qat"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -937,7 +937,7 @@ PB
 
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_eq "$model" "sonnet" "explicit model:sonnet on runner:ollama must pass literally (not silently coerce to mistral default)"
+  assert_eq "$model" "sonnet" "explicit model:sonnet on runner:ollama must pass literally (not silently coerce to gemma4 default)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -1211,7 +1211,7 @@ description: chunked scan test
 trigger: cron
 schedule: "50 8 * * 1-5"
 runner: ollama
-model: mistral-small3.2:24b
+model: gemma4:12b-it-qat
 preflight: none
 tier: read
 status: active
@@ -1228,7 +1228,7 @@ PB
     "description": "chunked scan test",
     "trigger": "cron",
     "schedule": "50 8 * * 1-5",
-    "model": "mistral-small3.2:24b",
+    "model": "gemma4:12b-it-qat",
     "preflight": "none",
     "tier": "read",
     "status": "active",
@@ -1571,7 +1571,7 @@ test_production_morning_brief_registers_with_ollama_runner() {
   model=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .model' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
   assert_eq "$runner" "ollama" "production morning-brief.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-brief.md must declare tier: read"
-  assert_eq "$model" "mistral-small3.2:24b" "production morning-brief.md must declare model: mistral-small3.2:24b"
+  assert_eq "$model" "gemma4:12b-it-qat" "production morning-brief.md must declare model: gemma4:12b-it-qat"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -1593,7 +1593,7 @@ test_production_morning_scan_registers_with_ollama_runner() {
   model=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .model' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
   assert_eq "$runner" "ollama" "production morning-scan.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-scan.md must declare tier: read"
-  assert_eq "$model" "mistral-small3.2:24b" "production morning-scan.md must declare model: mistral-small3.2:24b"
+  assert_eq "$model" "gemma4:12b-it-qat" "production morning-scan.md must declare model: gemma4:12b-it-qat"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -2672,7 +2672,7 @@ STUB
   
   local ollama_invoked
   ollama_invoked=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_contains "$ollama_invoked" "mistral-small" "ollama must be invoked with default model during fallback"
+  assert_contains "$ollama_invoked" "gemma4" "ollama must be invoked with default model during fallback"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -2710,7 +2710,7 @@ STUB
 
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_eq "$model" "mistral-small3.2:24b" "fallback must use the runner-default ollama model, not the Claude-tier frontmatter name"
+  assert_eq "$model" "gemma4:12b-it-qat" "fallback must use the runner-default ollama model, not the Claude-tier frontmatter name"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
