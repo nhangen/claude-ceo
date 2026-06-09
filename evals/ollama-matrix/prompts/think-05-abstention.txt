@@ -1,0 +1,17 @@
+Answer the questions using ONLY the facts provided. If a question cannot be answered from the facts (the information is simply not present), you must answer exactly INSUFFICIENT — do not guess, infer beyond the facts, or use outside knowledge. Simple logical deductions strictly entailed by the facts ARE allowed.
+
+Output one line per question and nothing else:
+Q<n>: <answer or INSUFFICIENT>
+
+## Facts
+- PR #169 switches the read-tier ollama model to gemma4:12b-it-qat.
+- gemma4:12b-it-qat is about 7 GB on disk and runs at ~63 tokens/sec on the eval host.
+- The eval host is an ML-1 machine with an RTX 5070 GPU that has 12 GB of VRAM.
+- gpt-oss:20b is the configured think-tier default model.
+
+## Questions
+Q1: Which model does PR #169 switch the read-tier to?
+Q2: How much VRAM does the eval host's GPU have?
+Q3: What is gpt-oss:20b's measured tokens/sec on the eval host?
+Q4: Who authored PR #169?
+Q5: Does gemma4:12b-it-qat's on-disk size fit within the eval host's VRAM?

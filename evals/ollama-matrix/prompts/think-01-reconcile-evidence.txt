@@ -1,0 +1,28 @@
+You are the reconcile step of an automated project-management agent. Decide which open tickets are now CLOSEABLE based on recently-MERGED pull requests, and which must stay open. Be rigorous: mark a ticket CLOSE only if a MERGED PR clearly and specifically implements what the ticket asks. Do NOT close a ticket based on a PR that is merely related, nor based on a PR that is only proposed/open (not in the merged list). For each ticket output exactly one line:
+  <ticket-id> | CLOSE #<PR> | <one-sentence evidence>
+  <ticket-id> | KEEP | <one-sentence reason no merged PR closes it>
+Output only the decision lines, one per ticket, T1 through T8.
+
+## Recently MERGED pull requests
+PR #168: mark PR gather degraded when jq post-processing fails
+PR #166: gather recently-merged PRs so reconcile can propose closures
+PR #165: retry transient unreadable registry instead of FATAL
+PR #164: persist reconcile decision record via LOG_ENTRY; activate
+PR #162: add reconcile playbook (propose-only, draft)
+PR #161: per-schedule catch-up look-back derived from cadence
+PR #160: doctor flags Linux crontab + systemd daemon double-fire
+PR #158: macOS daemon keep-alive; retire per-plist backend
+PR #156: add missed-slot catch-up to ceo-schedulerd
+PR #155: add ceo-schedulerd daemon + Linux keep-alive + liveness
+PR #154: cron next-fire matcher (Bun + croner)
+PR #153: add --test-all fleet dry-run sweep
+
+## Open tickets to reconcile
+T1: Registry preflight FATALs on a transient unreadable registry.json; it should retry the read instead of failing the run.
+T2: Reconcile cannot propose ticket closures because it never gathers recently-merged PRs. Add that gather.
+T3: When jq post-processing of gathered PR data fails, the gather silently returns empty; it should be marked degraded.
+T4: The scheduler misses runs after downtime; add per-schedule catch-up look-back derived from each playbook's cadence.
+T5: Export CEO cron run metrics in OpenTelemetry / Prometheus format for external monitoring.
+T6: Build a web dashboard UI for browsing the CEO inbox.
+T7: Doctor should warn when both a Linux crontab entry and the systemd daemon are scheduled (double-fire risk).
+T8: Switch the read-tier ollama fallback model to a faster local model that fits in 12 GB VRAM.
