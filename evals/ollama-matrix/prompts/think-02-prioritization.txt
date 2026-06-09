@@ -1,0 +1,14 @@
+You are triaging a backlog. Rank the 6 work items below by priority using these rules, applied in order:
+1. Higher impact first (high > medium > low).
+2. Break impact ties by earliest hard deadline (sooner date first).
+3. Break remaining ties by lower effort (fewer days first).
+There is exactly one correct ordering. Output exactly one line and nothing else:
+ORDER: <id>,<id>,<id>,<id>,<id>,<id>
+
+## Work items
+A: impact=high,   deadline=2026-06-20, effort=3
+B: impact=high,   deadline=2026-06-12, effort=5
+C: impact=high,   deadline=2026-06-12, effort=2
+D: impact=medium, deadline=2026-06-10, effort=1
+E: impact=low,    deadline=2026-06-09, effort=1
+F: impact=medium, deadline=2026-06-25, effort=2

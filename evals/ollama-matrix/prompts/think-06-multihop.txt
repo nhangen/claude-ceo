@@ -1,0 +1,16 @@
+Reason over the facts below to answer one question. Some facts are distractors. Output exactly one line and nothing else:
+ANSWER: YES
+or
+ANSWER: NO
+
+## Facts
+- Feature A is functional only if module B is currently enabled.
+- Module B was disabled by PR #200.
+- PR #200 was fully reverted by PR #205.
+- PR #205 was merged and deployed.
+- No change has touched module B since PR #205.
+- Feature A also reads from module C, and module C is currently enabled.
+- Feature D (unrelated to Feature A) is currently broken.
+
+## Question
+With respect to module B, is Feature A currently functional?

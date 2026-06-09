@@ -1,0 +1,10 @@
+Below are 6 statements describing the current state of a system. Exactly one pair of statements directly contradicts each other; all other statements are mutually consistent. Identify the contradicting pair. Output exactly one line and nothing else, with the two statement IDs in ascending order:
+PAIR: S<n>,S<n>
+
+## Statements
+S1: The ceo-schedulerd daemon is the only scheduling backend on Linux; the per-plist launchd backend was retired.
+S2: morning-scan runs on weekdays at 08:50.
+S3: The read-tier ollama runner has a configured default model available locally.
+S4: No CEO playbook uses a local ollama model; every playbook runs exclusively via the Claude API.
+S5: token-intake reports per-host token usage so each machine accounts for its own spend.
+S6: The reconcile playbook proposes ticket closures but never closes a ticket automatically.

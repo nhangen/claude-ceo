@@ -1,0 +1,15 @@
+A playbook is scheduled with the cron expression `0 9 * * 1-5` — it fires at 09:00 on every weekday (Monday through Friday), in a single fixed timezone with no daylight-saving change in this window. Weekends (Saturday, Sunday) never fire.
+
+Reference dates (given, do not recompute):
+- 2026-06-02 is a Tuesday.
+- 2026-06-08 is a Monday.
+
+Facts:
+- The last SUCCESSFUL run was 2026-06-02 (Tuesday) at 09:00.
+- The current time is 2026-06-08 (Monday) at 14:00.
+
+Count how many scheduled fire times were MISSED strictly after the last successful run and at or before the current time (the last successful run itself does not count; a fire at exactly the current time would count, but here the current time is 14:00 so the 09:00 fires are the relevant ones). Then give the NEXT scheduled fire time strictly after the current time.
+
+Output exactly these two lines and nothing else:
+MISSED: <integer>
+NEXT: <YYYY-MM-DD HH:MM>
