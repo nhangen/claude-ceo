@@ -928,6 +928,86 @@ STUB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_ollama_timeout_kill_propagates_as_failure() {
+  # The whole point of the timeout wrap: when it fires (exit 124), the run must
+  # be recorded as a failure, not silently skipped. Stub `timeout` to simulate a
+  # kill (124) specifically when wrapping ollama; everything else passes through.
+  cat > "$TEST_HOME/.bun/bin/timeout" << 'STUB'
+#!/bin/bash
+case "${1:-}" in ''|*[!0-9]*) echo "timeout stub: bad duration: ${1:-}" >&2; exit 99 ;; esac
+shift
+if [ "${1:-}" = "ollama" ]; then exit 124; fi
+exec "$@"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/timeout"
+
+  cat > "$CEO_DIR/playbooks/ollama-killed.md" << 'PB'
+---
+name: ollama-killed
+description: ollama wrapped call is timeout-killed
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-killed >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "a timeout-killed (exit 124) ollama call must increment the fail count"
+
+  local runs_log
+  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  if [[ "$runs_log" == *"ollama-killed completed"* ]]; then
+    printf '  FAIL [%s] a timeout-killed run must NOT log completed\n    runs_log: %q\n' \
+      "$CURRENT_TEST" "$runs_log"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ollama_timeout_rejects_non_numeric_bound() {
+  # A non-numeric CEO_OLLAMA_TIMEOUT must be rejected (warn + fall back to 300),
+  # not passed verbatim to `timeout` (which would exit 125 without running ollama).
+  cat > "$TEST_HOME/.bun/bin/timeout" << 'STUB'
+#!/bin/bash
+echo "$1" > "$HOME/timeout-duration.txt"
+shift
+exec "$@"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/timeout"
+
+  cat > "$CEO_DIR/playbooks/ollama-badto.md" << 'PB'
+---
+name: ollama-badto
+description: bad timeout value
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_OLLAMA_TIMEOUT=abc bash "$CRON" ollama-badto >/dev/null 2>&1 || true
+
+  local dur
+  dur=$(cat "$HOME/timeout-duration.txt" 2>/dev/null || echo "missing")
+  assert_eq "$dur" "300" "non-numeric CEO_OLLAMA_TIMEOUT must fall back to 300, not reach timeout verbatim"
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "CEO_OLLAMA_TIMEOUT='abc'" "a rejected timeout value must be warned about"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_runner_ollama_think_accepted_at_scan() {
   cat > "$CEO_DIR/playbooks/ollama-think-ok.md" << 'PB'
 ---
