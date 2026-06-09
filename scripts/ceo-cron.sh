@@ -428,6 +428,44 @@ _append_pending_drip_to_inbox() {
   } >> "$inbox_file"
 }
 
+# _ollama_run — invoke `ollama run <model>`, reading the prompt from stdin,
+# bounded by a wall-clock timeout so a degenerate runaway (observed: a 12B model
+# emitting 65k tokens over ~18 min on a single prompt) cannot hang a cron slot.
+# `ollama run` (the CLI) has no num_predict flag, so a timeout — not a token cap
+# — is what bounds the operational risk. Prefer GNU `timeout` (Linux), else
+# `gtimeout` (macOS via Homebrew coreutils). When neither is present the call
+# runs unbounded (re-opening the hang risk), so log that fact rather than
+# degrade silently. Override the bound with CEO_OLLAMA_TIMEOUT (seconds; default
+# 300). On expiry the wrapper exits 124, which callers already treat as failure.
+_ollama_run() {
+  local model="$1" tbin="" to="${CEO_OLLAMA_TIMEOUT:-300}"
+  # Validate the bound: a typo (`300s`, `abc`) makes `timeout` exit 125 without
+  # running ollama, surfacing as a misleading model failure; `0` is a legal GNU
+  # value meaning "no limit", silently re-opening the hang. Reject non-integers,
+  # warn loudly on the cap-disabling 0.
+  case "$to" in
+    ''|*[!0-9]*)
+      echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT='$to' is not a non-negative integer; using 300" \
+        >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+      to=300 ;;
+    0)
+      echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT=0 disables the wall-clock cap (hang risk)" \
+        >> "${LOG_DIR:-/tmp}/cron-stderr.log" ;;
+  esac
+  if command -v timeout >/dev/null 2>&1; then
+    tbin="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    tbin="gtimeout"
+  fi
+  if [ -n "$tbin" ]; then
+    "$tbin" "$to" ollama run "$model"
+  else
+    echo "$(date): WARNING — no timeout/gtimeout on PATH; running ollama unbounded (model: $model)" \
+      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+    ollama run "$model"
+  fi
+}
+
 # _ollama_chunked_scan — run an ollama playbook whose scan data exceeds the
 # context budget by splitting SCAN_BLOCK into per-chunk extraction passes then
 # synthesizing the findings into one final call that produces the LOG_ENTRY.
@@ -478,6 +516,7 @@ END_LOG_ENTRY"
   _v "  Chunked scan: $total_bytes bytes → $n_chunks chunk(s) (~$chunk_budget bytes each)"
 
   local partial_findings="" i offset piece chunk_prompt chunk_out chunk_exit
+  local failed_chunks=0
   for i in $(seq 1 "$n_chunks"); do
     offset=$(( (i - 1) * chunk_budget ))
     piece=$(printf '%s' "$SCAN_BLOCK" | tail -c "+$((offset + 1))" | head -c "$chunk_budget")
@@ -489,12 +528,13 @@ VAULT DATA FRAGMENT $i of $n_chunks:
 $piece"
 
     chunk_exit=0
-    chunk_out=$(printf '%s' "$chunk_prompt" | ollama run "$model" \
+    chunk_out=$(printf '%s' "$chunk_prompt" | _ollama_run "$model" \
       2>>"$LOG_DIR/cron-stderr.log") || chunk_exit=$?
     if [ "$chunk_exit" -ne 0 ] || [ -z "$(printf '%s' "$chunk_out" | tr -d '[:space:]')" ]; then
       _v "  WARNING: chunk $i/$n_chunks failed (exit $chunk_exit) — skipping"
       printf '%s [%s] chunked scan: chunk %s/%s failed (exit %s)\n' \
         "$(date)" "$trigger" "$i" "$n_chunks" "$chunk_exit" >> "$LOG_DIR/cron-raw.log"
+      failed_chunks=$(( failed_chunks + 1 ))
       continue
     fi
     partial_findings="${partial_findings}
@@ -506,6 +546,21 @@ ${chunk_out}"
     printf '%s [%s] chunked scan: all %s chunks failed or empty\n' \
       "$(date)" "$trigger" "$n_chunks" >> "$LOG_DIR/cron-raw.log"
     return 1
+  fi
+
+  # A dropped chunk means the synthesis sees only part of the vault. Don't let a
+  # partial scan report "completed" silently: past a drop budget, fail the run so
+  # the caller records it; below the budget, mark the findings partial so the
+  # synthesized LOG_ENTRY surfaces the gap in its Errors section.
+  if [ "$failed_chunks" -gt 0 ]; then
+    local drop_pct=$(( failed_chunks * 100 / n_chunks ))
+    printf '%s [%s] chunked scan: %s/%s fragments dropped (%s%%)\n' \
+      "$(date)" "$trigger" "$failed_chunks" "$n_chunks" "$drop_pct" >> "$LOG_DIR/cron-raw.log"
+    if [ "$drop_pct" -gt "${CEO_SCAN_MAX_DROP_PCT:-25}" ]; then
+      return 1
+    fi
+    partial_findings="${partial_findings}
+=== SCAN INCOMPLETE: ${failed_chunks} of ${n_chunks} vault fragments were dropped (timeout or error); the findings above are partial. Note this in the Errors section. ==="
   fi
 
   # Synthesis: base prompt + condensed findings → final LOG_ENTRY
@@ -525,7 +580,7 @@ ${partial_findings}"
   fi
 
   synth_exit=0
-  synth_out=$(printf '%s' "$synth_prompt" | ollama run "$model" \
+  synth_out=$(printf '%s' "$synth_prompt" | _ollama_run "$model" \
     2>>"$LOG_DIR/cron-stderr.log") || synth_exit=$?
   if [ "$synth_exit" -ne 0 ] || [ -z "$(printf '%s' "$synth_out" | tr -d '[:space:]')" ]; then
     printf '%s [%s] chunked scan synthesis failed (exit %s)\n' \
@@ -1401,7 +1456,7 @@ END_LOG_ENTRY"
     fi
 
     OLLAMA_EXIT=0
-    OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | ollama run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
+    OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | _ollama_run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
     if [ "$OLLAMA_EXIT" -ne 0 ]; then
       _v "FAILED (exit: $OLLAMA_EXIT)"
       printf '%s [%s] ollama non-zero exit %s (model: %s):\n%s\n---\n' \
