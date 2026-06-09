@@ -428,6 +428,31 @@ _append_pending_drip_to_inbox() {
   } >> "$inbox_file"
 }
 
+# _ollama_run — invoke `ollama run <model>`, reading the prompt from stdin,
+# bounded by a wall-clock timeout so a degenerate runaway (observed: a 12B model
+# emitting 65k tokens over ~18 min on a single prompt) cannot hang a cron slot.
+# `ollama run` (the CLI) has no num_predict flag, so a timeout — not a token cap
+# — is what bounds the operational risk. Prefer GNU `timeout` (Linux), else
+# `gtimeout` (macOS via Homebrew coreutils). When neither is present the call
+# runs unbounded (re-opening the hang risk), so log that fact rather than
+# degrade silently. Override the bound with CEO_OLLAMA_TIMEOUT (seconds; default
+# 300). On expiry the wrapper exits 124, which callers already treat as failure.
+_ollama_run() {
+  local model="$1" tbin=""
+  if command -v timeout >/dev/null 2>&1; then
+    tbin="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    tbin="gtimeout"
+  fi
+  if [ -n "$tbin" ]; then
+    "$tbin" "${CEO_OLLAMA_TIMEOUT:-300}" ollama run "$model"
+  else
+    echo "$(date): WARNING — no timeout/gtimeout on PATH; running ollama unbounded (model: $model)" \
+      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+    ollama run "$model"
+  fi
+}
+
 # _ollama_chunked_scan — run an ollama playbook whose scan data exceeds the
 # context budget by splitting SCAN_BLOCK into per-chunk extraction passes then
 # synthesizing the findings into one final call that produces the LOG_ENTRY.
@@ -489,7 +514,7 @@ VAULT DATA FRAGMENT $i of $n_chunks:
 $piece"
 
     chunk_exit=0
-    chunk_out=$(printf '%s' "$chunk_prompt" | ollama run "$model" \
+    chunk_out=$(printf '%s' "$chunk_prompt" | _ollama_run "$model" \
       2>>"$LOG_DIR/cron-stderr.log") || chunk_exit=$?
     if [ "$chunk_exit" -ne 0 ] || [ -z "$(printf '%s' "$chunk_out" | tr -d '[:space:]')" ]; then
       _v "  WARNING: chunk $i/$n_chunks failed (exit $chunk_exit) — skipping"
@@ -525,7 +550,7 @@ ${partial_findings}"
   fi
 
   synth_exit=0
-  synth_out=$(printf '%s' "$synth_prompt" | ollama run "$model" \
+  synth_out=$(printf '%s' "$synth_prompt" | _ollama_run "$model" \
     2>>"$LOG_DIR/cron-stderr.log") || synth_exit=$?
   if [ "$synth_exit" -ne 0 ] || [ -z "$(printf '%s' "$synth_out" | tr -d '[:space:]')" ]; then
     printf '%s [%s] chunked scan synthesis failed (exit %s)\n' \
@@ -1401,7 +1426,7 @@ END_LOG_ENTRY"
     fi
 
     OLLAMA_EXIT=0
-    OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | ollama run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
+    OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | _ollama_run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
     if [ "$OLLAMA_EXIT" -ne 0 ]; then
       _v "FAILED (exit: $OLLAMA_EXIT)"
       printf '%s [%s] ollama non-zero exit %s (model: %s):\n%s\n---\n' \

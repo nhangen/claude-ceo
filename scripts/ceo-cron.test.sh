@@ -788,6 +788,46 @@ PB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_ollama_run_is_bounded_by_timeout() {
+  # Recording timeout stub: capture argv, enforce the real `timeout` contract
+  # (first arg is a numeric duration), then pass the command through so the
+  # ollama stub still runs. Asserts the dispatcher wraps `ollama run` in a
+  # timeout bound by CEO_OLLAMA_TIMEOUT so a runaway can't hang a cron slot.
+  cat > "$TEST_HOME/.bun/bin/timeout" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$HOME/timeout-invoked.txt"
+case "${1:-}" in ''|*[!0-9]*) echo "timeout stub: non-numeric duration: ${1:-}" >&2; exit 99 ;; esac
+shift
+exec "$@"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/timeout"
+
+  cat > "$CEO_DIR/playbooks/ollama-timeout.md" << 'PB'
+---
+name: ollama-timeout
+description: Routes to ollama
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_OLLAMA_TIMEOUT=123 bash "$CRON" ollama-timeout >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "dispatcher must exit 0 when the timeout wrapper passes through"
+
+  assert_file_exists "$HOME/timeout-invoked.txt" "ollama run must be wrapped in a timeout"
+  local rec
+  rec=$(cat "$HOME/timeout-invoked.txt" 2>/dev/null || echo "")
+  assert_contains "$rec" "123 ollama run gemma4:12b-it-qat" \
+    "ollama run must be bounded by CEO_OLLAMA_TIMEOUT seconds"
+}
+
 test_runner_ollama_think_uses_gpt_oss_default() {
   cat > "$CEO_DIR/playbooks/ollama-think-dispatch.md" << 'PB'
 ---
