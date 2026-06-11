@@ -192,6 +192,40 @@ test_model_field_omitted_when_ceo_model_unset() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_runner_label_for_script_runner() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_MODEL="script"
+  "$NOTIFY" success ticket-triage-autopilot >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
+  unset CEO_MODEL
+  _remove_curl_capture
+  assert_eq "$runner_val" "script" "Runner field must carry 'script' for runner:script playbooks"
+  assert_eq "$model_count" "0" "Model field must be absent when runner is script"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_label_for_skill_runner() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_MODEL="skill"
+  "$NOTIFY" success some-skill-playbook >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
+  unset CEO_MODEL
+  _remove_curl_capture
+  assert_eq "$runner_val" "skill" "Runner field must carry 'skill' for runner:skill playbooks"
+  assert_eq "$model_count" "0" "Model field must be absent when runner is skill"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_jq_argjson_color_no_injection() {
   setup
   # Reason field with shell-special and JSON-special characters. If the script
@@ -224,6 +258,8 @@ TESTS=(
   test_model_field_omitted_when_ceo_model_unset
   test_env_var_overrides_secrets_file
   test_does_not_log_webhook_url
+  test_runner_label_for_script_runner
+  test_runner_label_for_skill_runner
   test_jq_argjson_color_no_injection
 )
 
