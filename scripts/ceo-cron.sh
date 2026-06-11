@@ -1048,7 +1048,7 @@ safe_read() {
 
 # --- Script-runner branch: exec named script, skip claude --print ---
 if [ "$RUNNER" = "script" ]; then
-  export CEO_MODEL="$SCRIPT_PATH"
+  export CEO_MODEL="script"
   if [ -z "$SCRIPT_PATH" ]; then
     echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
     _v "ERROR: runner:script requires a script field"
