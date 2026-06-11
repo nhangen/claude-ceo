@@ -137,7 +137,7 @@ PAYLOAD=$(jq -n \
        color: $color,
        fields: (
          [ { name: "Trigger", value: $trig, inline: true } ]
-         + (if $model != "" then [ { name: "Model", value: $model, inline: true } ] else [] end)
+         + (if $model != "" then [ { name: (if ($model == "script" or $model == "skill") then "Runner" else "Model" end), value: $model, inline: true } ] else [] end)
          + [ { name: "Host", value: $host, inline: true },
              { name: "Time", value: $ts,   inline: false } ]
        )
