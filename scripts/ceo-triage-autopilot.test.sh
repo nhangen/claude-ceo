@@ -311,6 +311,28 @@ test_multi_repo_aggregation() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_model_flag_passed_to_claude_when_ceo_model_set() {
+  cat > "$TEST_HOME/stubs/fake-claude-needs-model" << 'EOF'
+#!/bin/bash
+case "$*" in
+  "--model opus --print "*) ;;
+  *) echo "fake-claude-needs-model: missing/unexpected --model in argv: $*" >&2; exit 99 ;;
+esac
+cat <<OUT
+\`\`\`json
+{"tickets":[{"id":"OM-1","title":"First","url":"https://zenhub/1","score":0.9,"reason":"adjacent"}]}
+\`\`\`
+OUT
+EOF
+  chmod +x "$TEST_HOME/stubs/fake-claude-needs-model"
+  run_autopilot
+  CEO_MODEL="opus" CEO_TRIAGE_CLAUDE_BIN="$TEST_HOME/stubs/fake-claude-needs-model" \
+    CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-multi" run_autopilot
+  assert_eq "$(state_field triage_ran)" "1" "triage should fire on new merges"
+  assert_eq "$(state_field tickets_written)" "1" "tickets are written only if claude received --model opus from CEO_MODEL"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_repeated_run_with_same_tickets_does_not_duplicate() {
   run_autopilot
   CEO_GH_BIN="$TEST_HOME/stubs/fake-gh-multi" run_autopilot

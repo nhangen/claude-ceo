@@ -209,7 +209,9 @@ PROMPT_EOF
 _triage_spawn() {  # $1 = prompt text
   local prompt="$1" claude_out json_block marker line
   local prompt_tsv
-  if ! claude_out=$("$CLAUDE_BIN" --print "$prompt" 2>/dev/null); then
+  local -a model_flag=()
+  [ -n "${CEO_MODEL:-}" ] && model_flag=(--model "$CEO_MODEL")
+  if ! claude_out=$("$CLAUDE_BIN" ${model_flag[@]+"${model_flag[@]}"} --print "$prompt" 2>/dev/null); then
     printf 'WARN: ceo-triage-autopilot: claude invocation failed\n' >&2
     LAST_ERROR="claude_failed"
     return 1

@@ -301,6 +301,57 @@ SH
   rm -f "$SCRIPT_DIR/playbook-id-script.sh"
 }
 
+test_runner_script_exports_frontmatter_model_not_runner_name() {
+  cat > "$CEO_DIR/playbooks/model-script.md" << 'PB'
+---
+name: model-script
+description: Verifies CEO_MODEL carries the frontmatter model for a script runner
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: model-script.sh
+model: sonnet
+---
+PB
+  cat > "$CEO_DIR/playbooks/pureshell-script.md" << 'PB'
+---
+name: pureshell-script
+description: Verifies CEO_MODEL is empty for a script runner with no model
+trigger: cron
+schedule: "30 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: pureshell-script.sh
+---
+PB
+
+  cat > "$SCRIPT_DIR/model-script.sh" << SH
+#!/bin/bash
+printf '%s' "\${CEO_MODEL:-UNSET}" > "$TEST_HOME/model-from-child.txt"
+SH
+  cat > "$SCRIPT_DIR/pureshell-script.sh" << SH
+#!/bin/bash
+printf '[%s]' "\${CEO_MODEL-UNSET}" > "$TEST_HOME/pureshell-model-from-child.txt"
+SH
+  chmod +x "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" model-script >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" pureshell-script >/dev/null 2>&1
+  local got_model got_pure
+  got_model=$(cat "$TEST_HOME/model-from-child.txt" 2>/dev/null || echo "MISSING")
+  got_pure=$(cat "$TEST_HOME/pureshell-model-from-child.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_model" "sonnet" "script-runner must export CEO_MODEL=<frontmatter model>, not the runner name"
+  assert_eq "$got_pure" "[]" "script-runner with no model must export CEO_MODEL empty, not 'script'"
+
+  rm -f "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
+}
+
 test_runner_default_invokes_claude() {
   cat > "$CEO_DIR/playbooks/fake-claude.md" << 'PB'
 ---

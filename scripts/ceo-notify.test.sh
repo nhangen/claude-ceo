@@ -163,65 +163,64 @@ _remove_curl_capture() {
   unset STUB_CAPTURE STUBDIR CAPTURE _SAVED_PATH
 }
 
-test_model_field_present_when_ceo_model_set() {
+test_runner_field_combines_harness_and_model() {
   setup
   echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
   echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
   _install_curl_capture
-  export CEO_MODEL="gemma4:12b-it-qat"
+  export CEO_RUNNER="ollama" CEO_MODEL="gemma4:12b-it-qat"
   "$NOTIFY" failure morning-brief "model field check" >/dev/null 2>&1
-  model_val=$(jq -r '.embeds[0].fields[] | select(.name=="Model") | .value' "$CAPTURE" 2>/dev/null)
-  unset CEO_MODEL
-  _remove_curl_capture
-  assert_eq "$model_val" "gemma4:12b-it-qat" "embed Model field must carry the actual model used"
-  teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-}
-
-test_model_field_omitted_when_ceo_model_unset() {
-  setup
-  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
-  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
-  _install_curl_capture
-  unset CEO_MODEL
-  "$NOTIFY" failure morning-brief "no model check" >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
   model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_MODEL
   _remove_curl_capture
-  assert_eq "$model_count" "0" "embed must omit the Model field when CEO_MODEL is unset"
+  assert_eq "$runner_val" "ollama (gemma4:12b-it-qat)" "Runner field must combine harness and the actual model"
+  assert_eq "$model_count" "0" "no separate Model field — runner and model render in one field"
   teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_runner_label_for_script_runner() {
+test_runner_field_omitted_when_runner_and_model_unset() {
   setup
   echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
   echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
   _install_curl_capture
-  export CEO_MODEL="script"
+  unset CEO_RUNNER CEO_MODEL
+  "$NOTIFY" failure morning-brief "no runner check" >/dev/null 2>&1
+  runner_count=$(jq '[.embeds[0].fields[] | select(.name=="Runner")] | length' "$CAPTURE" 2>/dev/null)
+  _remove_curl_capture
+  assert_eq "$runner_count" "0" "embed must omit the Runner field when both CEO_RUNNER and CEO_MODEL are unset"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_script_runner_with_model_shows_model() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="script" CEO_MODEL="opus"
   "$NOTIFY" success ticket-triage-autopilot >/dev/null 2>&1
   runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
-  model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
-  unset CEO_MODEL
+  unset CEO_RUNNER CEO_MODEL
   _remove_curl_capture
-  assert_eq "$runner_val" "script" "Runner field must carry 'script' for runner:script playbooks"
-  assert_eq "$model_count" "0" "Model field must be absent when runner is script"
+  assert_eq "$runner_val" "script (opus)" "a script runner that drove a model must surface that model, not just 'script'"
   teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_runner_label_for_skill_runner() {
+test_pure_shell_script_runner_shows_runner_only() {
   setup
   echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
   echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
   _install_curl_capture
-  export CEO_MODEL="skill"
-  "$NOTIFY" success some-skill-playbook >/dev/null 2>&1
-  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
-  model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
+  export CEO_RUNNER="script"
   unset CEO_MODEL
+  "$NOTIFY" success disk-monitor >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER
   _remove_curl_capture
-  assert_eq "$runner_val" "skill" "Runner field must carry 'skill' for runner:skill playbooks"
-  assert_eq "$model_count" "0" "Model field must be absent when runner is skill"
+  assert_eq "$runner_val" "script" "a pure-shell script runner with no model must show the harness alone"
   teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -254,12 +253,12 @@ TESTS=(
   test_missing_args_no_op
   test_unknown_events_warns_and_defaults_to_failures
   test_curl_unreachable_does_not_break
-  test_model_field_present_when_ceo_model_set
-  test_model_field_omitted_when_ceo_model_unset
+  test_runner_field_combines_harness_and_model
+  test_runner_field_omitted_when_runner_and_model_unset
   test_env_var_overrides_secrets_file
   test_does_not_log_webhook_url
-  test_runner_label_for_script_runner
-  test_runner_label_for_skill_runner
+  test_script_runner_with_model_shows_model
+  test_pure_shell_script_runner_shows_runner_only
   test_jq_argjson_color_no_injection
 )
 

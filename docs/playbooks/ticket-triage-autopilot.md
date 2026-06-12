@@ -8,6 +8,7 @@ tier: low-stakes write
 status: active
 runner: script
 script: ceo-triage-autopilot.sh
+model: opus
 ---
 
 # Ticket Triage Autopilot

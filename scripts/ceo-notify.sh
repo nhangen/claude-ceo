@@ -11,11 +11,14 @@ set -euo pipefail
 #   1. $CEO_DISCORD_WEBHOOK env var (testing convenience)
 #   2. ~/.config/claude-ceo/secrets.json -> .discord_webhook
 #
-# Model field:
-#   $CEO_MODEL (exported by ceo-cron.sh for every runner) is surfaced as a
-#   "Model" embed field. On the rate-limit fallback path this reflects the
-#   local model actually used, not the playbook's configured Claude model.
-#   Omitted when unset (e.g. early failures before the runner is resolved).
+# Runner field:
+#   Combines the harness ($CEO_RUNNER) and the model it drove ($CEO_MODEL),
+#   both exported by ceo-cron.sh, into one "Runner" embed field rendered as
+#   "<runner> (<model>)" — e.g. "claude (opus-4.8)", "ollama (gemma4:12b-it-qat)",
+#   "script (opus)". A runner with no model (pure-shell script, skill) shows the
+#   harness alone. On the rate-limit fallback path $CEO_MODEL reflects the local
+#   model actually used. The field is omitted only when both are unset (e.g. an
+#   early failure before the runner is resolved).
 #
 # Event filter (controls when notifications fire):
 #   $CEO_VAULT/CEO/settings.json -> .notify_events
@@ -108,8 +111,9 @@ esac
 
 HOSTNAME_SHORT="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}"
 NOW="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+RUNNER="${CEO_RUNNER:-}"
 MODEL="${CEO_MODEL:-}"
-_dlog "model='${MODEL:-(unset)}'"
+_dlog "runner='${RUNNER:-(unset)}' model='${MODEL:-(unset)}'"
 
 if [ "$STATUS" = "success" ]; then
   TITLE="🟢 ${TRIGGER} completed"
@@ -124,10 +128,11 @@ fi
 PAYLOAD=$(jq -n \
   --arg title "$TITLE" \
   --arg desc  "$DESCRIPTION" \
-  --arg trig  "$TRIGGER" \
-  --arg host  "$HOSTNAME_SHORT" \
-  --arg model "$MODEL" \
-  --arg ts    "$NOW" \
+  --arg trig   "$TRIGGER" \
+  --arg host   "$HOSTNAME_SHORT" \
+  --arg runner "$RUNNER" \
+  --arg model  "$MODEL" \
+  --arg ts     "$NOW" \
   --argjson color "$COLOR" \
   '{
      username: "CEO Cron",
@@ -137,7 +142,13 @@ PAYLOAD=$(jq -n \
        color: $color,
        fields: (
          [ { name: "Trigger", value: $trig, inline: true } ]
-         + (if $model != "" then [ { name: (if ($model == "script" or $model == "skill") then "Runner" else "Model" end), value: $model, inline: true } ] else [] end)
+         + (if ($runner != "" or $model != "")
+            then [ { name: "Runner",
+                     value: (if $runner != "" and $model != "" then "\($runner) (\($model))"
+                             elif $runner != "" then $runner
+                             else $model end),
+                     inline: true } ]
+            else [] end)
          + [ { name: "Host", value: $host, inline: true },
              { name: "Time", value: $ts,   inline: false } ]
        )

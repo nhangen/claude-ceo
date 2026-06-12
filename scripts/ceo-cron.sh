@@ -1048,7 +1048,7 @@ safe_read() {
 
 # --- Script-runner branch: exec named script, skip claude --print ---
 if [ "$RUNNER" = "script" ]; then
-  export CEO_MODEL="script"
+  export CEO_MODEL="$MODEL"
   if [ -z "$SCRIPT_PATH" ]; then
     echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
     _v "ERROR: runner:script requires a script field"
@@ -1084,7 +1084,7 @@ fi
 
 # --- Skill-runner branch: exec a skill, validate output, write to out_pattern ---
 if [ "$RUNNER" = "skill" ]; then
-  export CEO_MODEL="skill"
+  export CEO_MODEL="$MODEL"
   SKILL_NAME=$(echo "$ENTRY" | jq -r '.skill // ""')
   OUT_PATTERN=$(echo "$ENTRY" | jq -r '.out_pattern // ""')
   
