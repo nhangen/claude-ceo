@@ -12,13 +12,23 @@ set -euo pipefail
 #   2. ~/.config/claude-ceo/secrets.json -> .discord_webhook
 #
 # Runner field:
-#   Combines the harness ($CEO_RUNNER) and the model it drove ($CEO_MODEL),
-#   both exported by ceo-cron.sh, into one "Runner" embed field rendered as
-#   "<runner> (<model>)" — e.g. "claude (opus-4.8)", "ollama (gemma4:12b-it-qat)",
-#   "script (opus)". A runner with no model (pure-shell script, skill) shows the
-#   harness alone. On the rate-limit fallback path $CEO_MODEL reflects the local
-#   model actually used. The field is omitted only when both are unset (e.g. an
-#   early failure before the runner is resolved).
+#   One "Runner" embed field describing what the harness actually ran, built
+#   from four env vars exported by ceo-cron.sh:
+#     $CEO_RUNNER          harness: claude | ollama | script | skill
+#     $CEO_MODEL           the model
+#     $CEO_MODEL_SOURCE    "invoked" (claude/ollama drove the model) |
+#                          "declared" (script/skill frontmatter claim — the
+#                          harness drives no model itself)
+#     $CEO_RUNNER_ARTIFACT script file / skill name the harness executed
+#   Rendering:
+#     claude/ollama (invoked)  -> "claude (opus-4.8)", "ollama (gemma4:12b-it-qat)"
+#     script/skill (declared)  -> "script: ticket-triage-autopilot.sh (opus, declared)",
+#                                 "skill: weekly-synthesis (opus, declared)"
+#     script/skill, no model   -> "script: disk-monitor.sh", "skill: workload-report"
+#   The "declared" marker keeps a frontmatter model claim from reading as an
+#   observed fact. On the rate-limit fallback path $CEO_MODEL reflects the local
+#   model actually invoked. The field is omitted only when runner, model, and
+#   artifact are all unset (e.g. an early failure before the runner is resolved).
 #
 # Event filter (controls when notifications fire):
 #   $CEO_VAULT/CEO/settings.json -> .notify_events
@@ -113,7 +123,42 @@ HOSTNAME_SHORT="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}"
 NOW="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 RUNNER="${CEO_RUNNER:-}"
 MODEL="${CEO_MODEL:-}"
-_dlog "runner='${RUNNER:-(unset)}' model='${MODEL:-(unset)}'"
+ARTIFACT="${CEO_RUNNER_ARTIFACT:-}"
+MODEL_SOURCE="${CEO_MODEL_SOURCE:-}"
+_dlog "runner='${RUNNER:-(unset)}' model='${MODEL:-(unset)}' source='${MODEL_SOURCE:-(unset)}' artifact='${ARTIFACT:-(unset)}'"
+
+# Harness label, naming the script/skill artifact when the harness drove one.
+RUNNER_LABEL="$RUNNER"
+if [ -n "$ARTIFACT" ]; then
+  if [ -n "$RUNNER" ]; then
+    RUNNER_LABEL="$RUNNER: $ARTIFACT"
+  else
+    RUNNER_LABEL="$ARTIFACT"
+  fi
+fi
+
+# A model the harness actually invoked (claude/ollama) renders bare; a
+# frontmatter-declared model on a script/skill runner is marked "declared" so
+# it reads as a claim, not an observed fact. Unknown/absent source defaults to
+# the bare (invoked-style) form.
+MODEL_SUFFIX=""
+if [ -n "$MODEL" ]; then
+  case "$MODEL_SOURCE" in
+    declared) MODEL_SUFFIX=" ($MODEL, declared)" ;;
+    *)        MODEL_SUFFIX=" ($MODEL)" ;;
+  esac
+fi
+
+if [ -n "$RUNNER_LABEL" ]; then
+  RUNNER_FIELD_VALUE="${RUNNER_LABEL}${MODEL_SUFFIX}"
+else
+  RUNNER_FIELD_VALUE="$MODEL"
+fi
+
+RUNNER_FIELD_PRESENT=0
+if [ -n "$RUNNER" ] || [ -n "$MODEL" ] || [ -n "$ARTIFACT" ]; then
+  RUNNER_FIELD_PRESENT=1
+fi
 
 if [ "$STATUS" = "success" ]; then
   TITLE="🟢 ${TRIGGER} completed"
@@ -130,8 +175,8 @@ PAYLOAD=$(jq -n \
   --arg desc  "$DESCRIPTION" \
   --arg trig   "$TRIGGER" \
   --arg host   "$HOSTNAME_SHORT" \
-  --arg runner "$RUNNER" \
-  --arg model  "$MODEL" \
+  --arg runnerfield "$RUNNER_FIELD_VALUE" \
+  --arg haverunner  "$RUNNER_FIELD_PRESENT" \
   --arg ts     "$NOW" \
   --argjson color "$COLOR" \
   '{
@@ -142,12 +187,8 @@ PAYLOAD=$(jq -n \
        color: $color,
        fields: (
          [ { name: "Trigger", value: $trig, inline: true } ]
-         + (if ($runner != "" or $model != "")
-            then [ { name: "Runner",
-                     value: (if $runner != "" and $model != "" then "\($runner) (\($model))"
-                             elif $runner != "" then $runner
-                             else $model end),
-                     inline: true } ]
+         + (if $haverunner == "1"
+            then [ { name: "Runner", value: $runnerfield, inline: true } ]
             else [] end)
          + [ { name: "Host", value: $host, inline: true },
              { name: "Time", value: $ts,   inline: false } ]

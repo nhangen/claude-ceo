@@ -933,6 +933,14 @@ if [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ] && [ "$TIER" = "read" ]; then
 fi
 
 export CEO_RUNNER="$RUNNER"
+# Model provenance for the Discord embed (ceo-notify.sh):
+#   CEO_MODEL_SOURCE    invoked  — claude/ollama drove the model (observed)
+#                       declared — script/skill frontmatter claim (harness
+#                                  drives no model itself)
+#   CEO_RUNNER_ARTIFACT script file / skill name the harness executed
+# Both default empty and are set per runner branch below.
+export CEO_MODEL_SOURCE=""
+export CEO_RUNNER_ARTIFACT=""
 # Propagates to claude/ollama/script/MCP server children so observation_add
 # can stamp metadata.playbook_id and `ceo trace` can query by it.
 export CEO_PLAYBOOK_ID="$TRIGGER"
@@ -1049,6 +1057,8 @@ safe_read() {
 # --- Script-runner branch: exec named script, skip claude --print ---
 if [ "$RUNNER" = "script" ]; then
   export CEO_MODEL="$MODEL"
+  export CEO_MODEL_SOURCE="declared"
+  export CEO_RUNNER_ARTIFACT="$SCRIPT_PATH"
   if [ -z "$SCRIPT_PATH" ]; then
     echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
     _v "ERROR: runner:script requires a script field"
@@ -1085,8 +1095,10 @@ fi
 # --- Skill-runner branch: exec a skill, validate output, write to out_pattern ---
 if [ "$RUNNER" = "skill" ]; then
   export CEO_MODEL="$MODEL"
+  export CEO_MODEL_SOURCE="declared"
   SKILL_NAME=$(echo "$ENTRY" | jq -r '.skill // ""')
   OUT_PATTERN=$(echo "$ENTRY" | jq -r '.out_pattern // ""')
+  export CEO_RUNNER_ARTIFACT="$SKILL_NAME"
   
   if [ -z "$SKILL_NAME" ]; then
     echo "$(date): ERROR — Playbook '$TRIGGER' has runner:skill but no 'skill' field" >> "$LOG_DIR/cron-skips.log"
@@ -1426,6 +1438,7 @@ END_LOG_ENTRY"
     [ -n "${CEO_MODEL_OVERRIDE:-}" ] && OLLAMA_MODEL="$CEO_MODEL_OVERRIDE"
     _v "Runner: $RUNNER — model: $OLLAMA_MODEL"
     export CEO_MODEL="$OLLAMA_MODEL"
+    export CEO_MODEL_SOURCE="invoked"
 
     OLLAMA_PROMPT="$SINGLE_PROMPT_BODY"
     # gemma4:12b-it-qat fits fully in 12 GB VRAM and holds a 32K+ context
@@ -1477,6 +1490,7 @@ END_LOG_ENTRY"
   MODEL="${MODEL:-sonnet}"
   [ -n "${CEO_MODEL_OVERRIDE:-}" ] && MODEL="$CEO_MODEL_OVERRIDE"
   export CEO_MODEL="$MODEL"
+  export CEO_MODEL_SOURCE="invoked"
   SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
 
   SINGLE_EXIT=0
@@ -1504,6 +1518,7 @@ fi
 MODEL="${MODEL:-sonnet}"
 [ -n "${CEO_MODEL_OVERRIDE:-}" ] && MODEL="$CEO_MODEL_OVERRIDE"
 export CEO_MODEL="$MODEL"
+export CEO_MODEL_SOURCE="invoked"
 
 # --- Phase 1: PLAN (read-only, no tool execution) ---
 PLAN_PROMPT="You are the CEO agent running in PLANNING MODE. You CANNOT execute any actions.
