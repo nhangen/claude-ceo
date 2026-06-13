@@ -390,6 +390,29 @@ PB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_pipeline_claude_exports_invoked_source() {
+  cat > "$CEO_DIR/playbooks/pipeline-claude.md" << 'PB'
+---
+name: pipeline-claude
+description: Low-stakes-write playbook locking the three-phase pipeline CEO_MODEL_SOURCE export
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: low-stakes-write
+status: active
+---
+# Body
+PB
+  rm -f "$HOME/claude-model-source.txt"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" pipeline-claude >/dev/null 2>&1 || true
+  local got_source
+  got_source=$(cat "$HOME/claude-model-source.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_source" "invoked" "three-phase pipeline (low-stakes-write) claude runner must export CEO_MODEL_SOURCE=invoked"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_read_tier_posts_full_report_to_discord_report_webhook() {
   cat > "$CEO_DIR/playbooks/morning-brief.md" << 'PB'
 ---
