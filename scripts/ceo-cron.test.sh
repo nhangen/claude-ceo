@@ -50,6 +50,7 @@ STUB
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 echo "claude-fired" > "$HOME/claude-invoked.txt"
+printf '%s' "${CEO_MODEL_SOURCE:-UNSET}" > "$HOME/claude-model-source.txt"
 echo "ACTION: 1 | read | noop | n/a"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/claude"
@@ -60,6 +61,7 @@ STUB
 #!/bin/bash
 if [ "${1:-}" = "run" ]; then
   echo "$2" > "$HOME/ollama-invoked-model.txt"
+  printf '%s' "${CEO_MODEL_SOURCE:-UNSET}" > "$HOME/ollama-model-source.txt"
   cat > "$HOME/ollama-invoked-prompt.txt"
   echo "ollama-stub-response"
   exit 0
@@ -382,6 +384,9 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" fake-claude >/dev/null 2>&1 || true
   assert_file_exists "$HOME/claude-invoked.txt" "default runner must invoke claude"
+  local got_source
+  got_source=$(cat "$HOME/claude-model-source.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_source" "invoked" "claude runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -845,9 +850,11 @@ PB
     FAILS=$((FAILS + 1))
   fi
 
-  local model
+  local model got_source
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "gemma4:12b-it-qat" "runner:ollama default must be gemma4:12b-it-qat"
+  got_source=$(cat "$HOME/ollama-model-source.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_source" "invoked" "ollama runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
