@@ -139,13 +139,17 @@ fi
 
 # A model the harness actually invoked (claude/ollama) renders bare; a
 # frontmatter-declared model on a script/skill runner is marked "declared" so
-# it reads as a claim, not an observed fact. Unknown/absent source defaults to
-# the bare (invoked-style) form.
+# it reads as a claim, not an observed fact. Empty source (early/unknown path)
+# renders bare; a non-empty value that is neither "invoked" nor "declared" is a
+# caller bug — render bare (the weaker claim, can't falsely upgrade to declared)
+# and log a diagnostic rather than silently coercing (enum-config-typo-fallback).
 MODEL_SUFFIX=""
 if [ -n "$MODEL" ]; then
   case "$MODEL_SOURCE" in
-    declared) MODEL_SUFFIX=" ($MODEL, declared)" ;;
-    *)        MODEL_SUFFIX=" ($MODEL)" ;;
+    declared)   MODEL_SUFFIX=" ($MODEL, declared)" ;;
+    invoked|"") MODEL_SUFFIX=" ($MODEL)" ;;
+    *)          _dlog "unrecognized CEO_MODEL_SOURCE='$MODEL_SOURCE' (expected invoked|declared) — rendering model bare"
+                MODEL_SUFFIX=" ($MODEL)" ;;
   esac
 fi
 

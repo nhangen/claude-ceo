@@ -261,6 +261,40 @@ test_claude_runner_invoked_model_renders_bare() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_skill_runner_no_model_names_artifact() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="skill" CEO_RUNNER_ARTIFACT="workload-report"
+  unset CEO_MODEL CEO_MODEL_SOURCE
+  "$NOTIFY" success workload-report >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_RUNNER_ARTIFACT
+  _remove_curl_capture
+  assert_eq "$runner_val" "skill: workload-report" \
+    "a skill runner with no model must name the skill and show no model"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_unknown_model_source_renders_bare() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="script" CEO_MODEL="opus" CEO_MODEL_SOURCE="garbage" \
+         CEO_RUNNER_ARTIFACT="x.sh"
+  "$NOTIFY" success x >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE CEO_RUNNER_ARTIFACT
+  _remove_curl_capture
+  assert_eq "$runner_val" "script: x.sh (opus)" \
+    "an unrecognized CEO_MODEL_SOURCE must render the model bare (never falsely 'declared')"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_jq_argjson_color_no_injection() {
   setup
   # Reason field with shell-special and JSON-special characters. If the script
@@ -297,6 +331,8 @@ TESTS=(
   test_pure_shell_script_runner_names_artifact_no_model
   test_skill_runner_with_declared_model_names_artifact_and_marks_declared
   test_claude_runner_invoked_model_renders_bare
+  test_skill_runner_no_model_names_artifact
+  test_unknown_model_source_renders_bare
   test_jq_argjson_color_no_injection
 )
 
