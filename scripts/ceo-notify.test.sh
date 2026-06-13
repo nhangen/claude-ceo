@@ -17,7 +17,7 @@ setup() {
   export CEO_DIR="$TMP/vault/CEO"
   export CEO_SECRETS_FILE="$TMP/secrets.json"
   mkdir -p "$CEO_DIR"
-  unset CEO_DISCORD_WEBHOOK
+  unset CEO_DISCORD_WEBHOOK CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE CEO_RUNNER_ARTIFACT
 }
 
 teardown() {
@@ -163,65 +163,134 @@ _remove_curl_capture() {
   unset STUB_CAPTURE STUBDIR CAPTURE _SAVED_PATH
 }
 
-test_model_field_present_when_ceo_model_set() {
+test_runner_field_combines_harness_and_model() {
   setup
   echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
   echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
   _install_curl_capture
-  export CEO_MODEL="gemma4:12b-it-qat"
+  export CEO_RUNNER="ollama" CEO_MODEL="gemma4:12b-it-qat" CEO_MODEL_SOURCE="invoked"
   "$NOTIFY" failure morning-brief "model field check" >/dev/null 2>&1
-  model_val=$(jq -r '.embeds[0].fields[] | select(.name=="Model") | .value' "$CAPTURE" 2>/dev/null)
-  unset CEO_MODEL
-  _remove_curl_capture
-  assert_eq "$model_val" "gemma4:12b-it-qat" "embed Model field must carry the actual model used"
-  teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-}
-
-test_model_field_omitted_when_ceo_model_unset() {
-  setup
-  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
-  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
-  _install_curl_capture
-  unset CEO_MODEL
-  "$NOTIFY" failure morning-brief "no model check" >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
   model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE
   _remove_curl_capture
-  assert_eq "$model_count" "0" "embed must omit the Model field when CEO_MODEL is unset"
+  assert_eq "$runner_val" "ollama (gemma4:12b-it-qat)" "an invoked model renders bare (no 'declared' marker)"
+  assert_eq "$model_count" "0" "no separate Model field — runner and model render in one field"
   teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_runner_label_for_script_runner() {
+test_runner_field_omitted_when_runner_and_model_unset() {
   setup
   echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
   echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
   _install_curl_capture
-  export CEO_MODEL="script"
+  unset CEO_RUNNER CEO_MODEL
+  "$NOTIFY" failure morning-brief "no runner check" >/dev/null 2>&1
+  runner_count=$(jq '[.embeds[0].fields[] | select(.name=="Runner")] | length' "$CAPTURE" 2>/dev/null)
+  _remove_curl_capture
+  assert_eq "$runner_count" "0" "embed must omit the Runner field when both CEO_RUNNER and CEO_MODEL are unset"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_script_runner_with_declared_model_names_artifact_and_marks_declared() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="script" CEO_MODEL="opus" CEO_MODEL_SOURCE="declared" \
+         CEO_RUNNER_ARTIFACT="ticket-triage-autopilot.sh"
   "$NOTIFY" success ticket-triage-autopilot >/dev/null 2>&1
   runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
-  model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
-  unset CEO_MODEL
+  unset CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE CEO_RUNNER_ARTIFACT
   _remove_curl_capture
-  assert_eq "$runner_val" "script" "Runner field must carry 'script' for runner:script playbooks"
-  assert_eq "$model_count" "0" "Model field must be absent when runner is script"
+  assert_eq "$runner_val" "script: ticket-triage-autopilot.sh (opus, declared)" \
+    "a script runner must name the script it ran and mark the frontmatter model 'declared'"
   teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_runner_label_for_skill_runner() {
+test_pure_shell_script_runner_names_artifact_no_model() {
   setup
   echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
   echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
   _install_curl_capture
-  export CEO_MODEL="skill"
-  "$NOTIFY" success some-skill-playbook >/dev/null 2>&1
+  export CEO_RUNNER="script" CEO_RUNNER_ARTIFACT="disk-monitor.sh"
+  unset CEO_MODEL CEO_MODEL_SOURCE
+  "$NOTIFY" success disk-monitor >/dev/null 2>&1
   runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
-  model_count=$(jq '[.embeds[0].fields[] | select(.name=="Model")] | length' "$CAPTURE" 2>/dev/null)
-  unset CEO_MODEL
+  unset CEO_RUNNER CEO_RUNNER_ARTIFACT
   _remove_curl_capture
-  assert_eq "$runner_val" "skill" "Runner field must carry 'skill' for runner:skill playbooks"
-  assert_eq "$model_count" "0" "Model field must be absent when runner is skill"
+  assert_eq "$runner_val" "script: disk-monitor.sh" \
+    "a pure-shell script runner with no model must name the script and show no model"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_skill_runner_with_declared_model_names_artifact_and_marks_declared() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="skill" CEO_MODEL="opus" CEO_MODEL_SOURCE="declared" \
+         CEO_RUNNER_ARTIFACT="weekly-synthesis"
+  "$NOTIFY" success weekly-synthesis >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE CEO_RUNNER_ARTIFACT
+  _remove_curl_capture
+  assert_eq "$runner_val" "skill: weekly-synthesis (opus, declared)" \
+    "a skill runner must name the skill it ran and mark the frontmatter model 'declared'"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_claude_runner_invoked_model_renders_bare() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="claude" CEO_MODEL="opus" CEO_MODEL_SOURCE="invoked"
+  "$NOTIFY" success bug-fix >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE
+  _remove_curl_capture
+  assert_eq "$runner_val" "claude (opus)" \
+    "a claude runner shows no artifact and renders the invoked model bare"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_skill_runner_no_model_names_artifact() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="skill" CEO_RUNNER_ARTIFACT="workload-report"
+  unset CEO_MODEL CEO_MODEL_SOURCE
+  "$NOTIFY" success workload-report >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_RUNNER_ARTIFACT
+  _remove_curl_capture
+  assert_eq "$runner_val" "skill: workload-report" \
+    "a skill runner with no model must name the skill and show no model"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_unknown_model_source_renders_bare() {
+  setup
+  echo '{"discord_webhook":"http://127.0.0.1:1/never"}' > "$CEO_SECRETS_FILE"
+  echo '{"notify_events":"all"}' > "$CEO_DIR/settings.json"
+  _install_curl_capture
+  export CEO_RUNNER="script" CEO_MODEL="opus" CEO_MODEL_SOURCE="garbage" \
+         CEO_RUNNER_ARTIFACT="x.sh"
+  "$NOTIFY" success x >/dev/null 2>&1
+  runner_val=$(jq -r '.embeds[0].fields[] | select(.name=="Runner") | .value' "$CAPTURE" 2>/dev/null)
+  unset CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE CEO_RUNNER_ARTIFACT
+  _remove_curl_capture
+  assert_eq "$runner_val" "script: x.sh (opus)" \
+    "an unrecognized CEO_MODEL_SOURCE must render the model bare (never falsely 'declared')"
   teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -254,12 +323,16 @@ TESTS=(
   test_missing_args_no_op
   test_unknown_events_warns_and_defaults_to_failures
   test_curl_unreachable_does_not_break
-  test_model_field_present_when_ceo_model_set
-  test_model_field_omitted_when_ceo_model_unset
+  test_runner_field_combines_harness_and_model
+  test_runner_field_omitted_when_runner_and_model_unset
   test_env_var_overrides_secrets_file
   test_does_not_log_webhook_url
-  test_runner_label_for_script_runner
-  test_runner_label_for_skill_runner
+  test_script_runner_with_declared_model_names_artifact_and_marks_declared
+  test_pure_shell_script_runner_names_artifact_no_model
+  test_skill_runner_with_declared_model_names_artifact_and_marks_declared
+  test_claude_runner_invoked_model_renders_bare
+  test_skill_runner_no_model_names_artifact
+  test_unknown_model_source_renders_bare
   test_jq_argjson_color_no_injection
 )
 

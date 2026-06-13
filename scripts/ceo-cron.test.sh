@@ -50,6 +50,7 @@ STUB
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 echo "claude-fired" > "$HOME/claude-invoked.txt"
+printf '%s' "${CEO_MODEL_SOURCE:-UNSET}" > "$HOME/claude-model-source.txt"
 echo "ACTION: 1 | read | noop | n/a"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/claude"
@@ -60,6 +61,7 @@ STUB
 #!/bin/bash
 if [ "${1:-}" = "run" ]; then
   echo "$2" > "$HOME/ollama-invoked-model.txt"
+  printf '%s' "${CEO_MODEL_SOURCE:-UNSET}" > "$HOME/ollama-model-source.txt"
   cat > "$HOME/ollama-invoked-prompt.txt"
   echo "ollama-stub-response"
   exit 0
@@ -257,6 +259,8 @@ PB
   cat > "$HOME/.claude/skills/playbook-id-skill/scripts/run-report.sh" << SH
 #!/bin/bash
 printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-skill.txt"
+printf '%s' "\${CEO_MODEL_SOURCE:-UNSET}" > "$TEST_HOME/skill-source-from-child.txt"
+printf '%s' "\${CEO_RUNNER_ARTIFACT:-UNSET}" > "$TEST_HOME/skill-artifact-from-child.txt"
 while [[ "\$#" -gt 0 ]]; do
   case \$1 in --out) out_dir="\$2"; shift ;; esac
   shift
@@ -266,9 +270,13 @@ SH
   chmod +x "$HOME/.claude/skills/playbook-id-skill/scripts/run-report.sh"
 
   PATH=/usr/bin:/bin bash "$CRON" playbook-id-skill >/dev/null 2>&1 || true
-  local got
+  local got got_source got_artifact
   got=$(cat "$TEST_HOME/playbook-id-from-skill.txt" 2>/dev/null || echo "MISSING")
+  got_source=$(cat "$TEST_HOME/skill-source-from-child.txt" 2>/dev/null || echo "MISSING")
+  got_artifact=$(cat "$TEST_HOME/skill-artifact-from-child.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$got" "playbook-id-skill" "skill runner must export CEO_PLAYBOOK_ID=<trigger> to its child"
+  assert_eq "$got_source" "declared" "skill runner must export CEO_MODEL_SOURCE=declared (frontmatter claim, not harness-invoked)"
+  assert_eq "$got_artifact" "playbook-id-skill" "skill runner must export CEO_RUNNER_ARTIFACT=<skill name> for the Discord embed"
 }
 
 test_runner_script_exports_ceo_playbook_id_to_child() {
@@ -301,6 +309,63 @@ SH
   rm -f "$SCRIPT_DIR/playbook-id-script.sh"
 }
 
+test_runner_script_exports_frontmatter_model_not_runner_name() {
+  cat > "$CEO_DIR/playbooks/model-script.md" << 'PB'
+---
+name: model-script
+description: Verifies CEO_MODEL carries the frontmatter model for a script runner
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: model-script.sh
+model: sonnet
+---
+PB
+  cat > "$CEO_DIR/playbooks/pureshell-script.md" << 'PB'
+---
+name: pureshell-script
+description: Verifies CEO_MODEL is empty for a script runner with no model
+trigger: cron
+schedule: "30 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: pureshell-script.sh
+---
+PB
+
+  cat > "$SCRIPT_DIR/model-script.sh" << SH
+#!/bin/bash
+printf '%s' "\${CEO_MODEL:-UNSET}" > "$TEST_HOME/model-from-child.txt"
+printf '%s' "\${CEO_MODEL_SOURCE:-UNSET}" > "$TEST_HOME/source-from-child.txt"
+printf '%s' "\${CEO_RUNNER_ARTIFACT:-UNSET}" > "$TEST_HOME/artifact-from-child.txt"
+SH
+  cat > "$SCRIPT_DIR/pureshell-script.sh" << SH
+#!/bin/bash
+printf '[%s]' "\${CEO_MODEL-UNSET}" > "$TEST_HOME/pureshell-model-from-child.txt"
+SH
+  chmod +x "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" model-script >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" pureshell-script >/dev/null 2>&1
+  local got_model got_pure got_source got_artifact
+  got_model=$(cat "$TEST_HOME/model-from-child.txt" 2>/dev/null || echo "MISSING")
+  got_pure=$(cat "$TEST_HOME/pureshell-model-from-child.txt" 2>/dev/null || echo "MISSING")
+  got_source=$(cat "$TEST_HOME/source-from-child.txt" 2>/dev/null || echo "MISSING")
+  got_artifact=$(cat "$TEST_HOME/artifact-from-child.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_model" "sonnet" "script-runner must export CEO_MODEL=<frontmatter model>, not the runner name"
+  assert_eq "$got_pure" "[]" "script-runner with no model must export CEO_MODEL empty, not 'script'"
+  assert_eq "$got_source" "declared" "script-runner must export CEO_MODEL_SOURCE=declared (frontmatter claim, not harness-invoked)"
+  assert_eq "$got_artifact" "model-script.sh" "script-runner must export CEO_RUNNER_ARTIFACT=<script file> for the Discord embed"
+
+  rm -f "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
+}
+
 test_runner_default_invokes_claude() {
   cat > "$CEO_DIR/playbooks/fake-claude.md" << 'PB'
 ---
@@ -319,6 +384,32 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" fake-claude >/dev/null 2>&1 || true
   assert_file_exists "$HOME/claude-invoked.txt" "default runner must invoke claude"
+  local got_source
+  got_source=$(cat "$HOME/claude-model-source.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_source" "invoked" "claude runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_pipeline_claude_exports_invoked_source() {
+  cat > "$CEO_DIR/playbooks/pipeline-claude.md" << 'PB'
+---
+name: pipeline-claude
+description: Low-stakes-write playbook locking the three-phase pipeline CEO_MODEL_SOURCE export
+trigger: cron
+schedule: "0 9 * * *"
+model: haiku
+preflight: none
+tier: low-stakes-write
+status: active
+---
+# Body
+PB
+  rm -f "$HOME/claude-model-source.txt"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" pipeline-claude >/dev/null 2>&1 || true
+  local got_source
+  got_source=$(cat "$HOME/claude-model-source.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_source" "invoked" "three-phase pipeline (low-stakes-write) claude runner must export CEO_MODEL_SOURCE=invoked"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -782,9 +873,11 @@ PB
     FAILS=$((FAILS + 1))
   fi
 
-  local model
+  local model got_source
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "gemma4:12b-it-qat" "runner:ollama default must be gemma4:12b-it-qat"
+  got_source=$(cat "$HOME/ollama-model-source.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_source" "invoked" "ollama runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
