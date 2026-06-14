@@ -12,22 +12,32 @@
  * Schedules evaluate in the host's local timezone (the matcher is created with
  * no timezone, matching `new Date()`); registry schedules carry no per-entry tz.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { createMatcher } from "@/cron";
 import { type DaemonDeps, runForever } from "@/daemon";
-import { readHeartbeatFile, writeHeartbeatFile } from "@/heartbeat-store";
+import {
+  readHeartbeatFile,
+  writeHeartbeatFile,
+  writeHeartbeatWithSync,
+  writeSyncedHeartbeat,
+} from "@/heartbeat-store";
 import { parseRegistry } from "@/registry";
+import { parseEnabled } from "@/enabled";
+import { parseSwarm } from "@/swarm";
 import { lookbackForSchedule } from "@/catchup";
 import {
   CATCHUP_LOOKBACK_CAP_MS,
   CATCHUP_LOOKBACK_FLOOR_MS,
   dispatchArgv,
+  enabledPath,
   heartbeatPath,
   MAX_SLEEP_MS,
   registryPath,
   resolveFixedLookbackMs,
   resolveHost,
+  swarmPath,
+  syncedHeartbeatPath,
 } from "@/runtime";
 
 function requireEnv(name: string): string {
@@ -42,13 +52,26 @@ function nowStamp(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Read a file, or return "" if it is absent. A missing enabled.json/swarm.json
+ * must be treated as a torn/empty read (the parsers fail safe on "") — never a
+ * crash. The registry uses readFileSync directly because a missing registry is
+ * a fatal misconfiguration the loop's last-good logic surfaces via its catch.
+ */
+function readIfExists(path: string): string {
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
 async function main(): Promise<void> {
   const vault = requireEnv("CEO_VAULT");
   const home = requireEnv("HOME");
   const cronBin = process.env.CEO_CRON_BIN?.trim() || "ceo-cron.sh";
   const host = resolveHost({ CEO_HOSTNAME: process.env.CEO_HOSTNAME }, hostname().split(".")[0] ?? "unknown");
-  const regPath = registryPath(vault);
+  const regPath = registryPath(home);
   const hbPath = heartbeatPath(home);
+  const enPath = enabledPath(home);
+  const swPath = swarmPath(vault);
+  const syncedHbPath = syncedHeartbeatPath(vault, host);
 
   let running = true;
   let wakeEarly: (() => void) | null = null;
@@ -84,6 +107,8 @@ async function main(): Promise<void> {
         };
       }),
     loadRegistry: () => parseRegistry(readFileSync(regPath, "utf8")),
+    loadEnabled: () => parseEnabled(readIfExists(enPath)),
+    loadSwarm: () => parseSwarm(readIfExists(swPath)),
     dispatch: (name) => {
       // Bun.spawn throws synchronously on e.g. ENOENT (cronBin not on PATH).
       // Swallow + log so one bad dispatch can't crash-loop the daemon; the
@@ -103,7 +128,12 @@ async function main(): Promise<void> {
       }
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
-    writeHeartbeat: (hb) => writeHeartbeatFile(hbPath, hb),
+    writeHeartbeat: (hb) =>
+      writeHeartbeatWithSync(hb, {
+        writeLocal: (h) => writeHeartbeatFile(hbPath, h),
+        writeSynced: () => writeSyncedHeartbeat(syncedHbPath, host),
+        log,
+      }),
     log,
     host,
     matcher,

@@ -1,11 +1,15 @@
 #!/bin/bash
-# Tests for the schedule override + collision detection layer added in 0.9.0.
+# Tests for the schedule override layer.
 # Exercises:
 #   - _playbook_apply_schedule_overrides (frontmatter default vs schedules.json override)
-#   - collision detection in _playbook_update_crontab
 #   - _validate_cron_expr
 #   - _schedule_source resolution
 # Does NOT exercise the interactive prompt branch of _schedule_one (read -r).
+#
+# The native crontab install path was retired in D1 (ceo-schedulerd is the sole
+# scheduler), so the former _playbook_update_crontab install/collision tests are
+# gone — that function no longer exists. Collision *detection* now surfaces only
+# in the `ceo schedule` list view (_schedule_list), not at a crontab write.
 
 set -uo pipefail
 
@@ -110,58 +114,6 @@ test_validate_cron_expr_rejects_bad_forms() {
   done
 }
 
-test_collision_detection_blocks_crontab_write() {
-  # Default REGISTRY has morning-scan and morning-brief at the same schedule.
-  # _playbook_update_crontab should refuse to write.
-  # shellcheck disable=SC2034
-  CEO_CRON="/tmp/fake-cron.sh"
-  out=$(_playbook_update_crontab "$REGISTRY" 2>&1)
-  rc=$?
-  assert_eq "$rc" "1" "collision must produce non-zero rc"
-  assert_contains "$out" "collision" "must mention collision in error"
-  assert_contains "$out" "morning-scan" "must name first colliding playbook"
-  assert_contains "$out" "morning-brief" "must name second colliding playbook"
-}
-
-test_collision_resolved_after_override() {
-  # shellcheck disable=SC2034
-  CEO_CRON="/tmp/fake-cron.sh"
-  echo '{"morning-scan": "50 8 * * 1-5"}' > "$CEO_DIR/schedules.json"
-  merged=$(_playbook_apply_schedule_overrides "$REGISTRY")
-  # Use a fake crontab binary via CEO_CRONTAB_BIN so we exercise the real
-  # write path. Function-overrides in subshells aren't reliable (functions
-  # don't auto-export across $() boundaries).
-  local capture="$TMP/crontab-capture.out"
-  cat > "$TMP/fake-crontab" <<EOF
-#!/bin/bash
-cat > "$capture"
-EOF
-  chmod +x "$TMP/fake-crontab"
-  out=$(CEO_CRONTAB_BIN="$TMP/fake-crontab" _playbook_update_crontab "$merged" 2>&1)
-  rc=$?
-  assert_eq "$rc" "0" "no collision → rc 0"
-  assert_no_match "$out" "collision" "no collision message after override"
-  assert_contains "$out" "Crontab:" "must reach 'installed' message"
-  assert_contains "$(cat "$capture" 2>/dev/null)" "ceo:morning-scan" "fake crontab received the install"
-}
-
-test_crontab_install_failure_returns_nonzero() {
-  # Fake crontab that simulates a real failure (locked spool, quota, etc).
-  cat > "$TMP/failing-crontab" <<'EOF'
-#!/bin/bash
-echo "crontab: install failed (simulated)" >&2
-exit 1
-EOF
-  chmod +x "$TMP/failing-crontab"
-  echo '{"morning-scan": "50 8 * * 1-5"}' > "$CEO_DIR/schedules.json"
-  merged=$(_playbook_apply_schedule_overrides "$REGISTRY")
-  out=$(CEO_CRONTAB_BIN="$TMP/failing-crontab" _playbook_update_crontab "$merged" 2>&1)
-  rc=$?
-  assert_eq "$rc" "1" "crontab failure must propagate as rc=1"
-  assert_contains "$out" "crontab install failed" "must surface failure to caller"
-  assert_no_match "$out" "Crontab:.*installed" "must NOT print success message on failure"
-}
-
 test_validate_cron_inside_schedule_one_blocks_bad_input() {
   # Build a real registry so _schedule_one sees a known playbook.
   echo "$REGISTRY" | jq '.' > "$CEO_DIR/registry.json"
@@ -175,6 +127,16 @@ test_validate_cron_inside_schedule_one_blocks_bad_input() {
     written=$(jq -r '."morning-scan" // ""' "$CEO_DIR/schedules.json")
     assert_eq "$written" "" "schedules.json must not contain rejected value"
   fi
+}
+
+test_schedule_list_flags_collisions() {
+  # Default REGISTRY has morning-scan and morning-brief at the same schedule.
+  # The list view (the surviving collision surface after the crontab install
+  # path was retired) must mark them as colliding.
+  echo "$REGISTRY" | jq '.' > "$CEO_DIR/registry.json"
+  out=$(_schedule_list "$CEO_DIR/registry.json" 2>&1)
+  assert_contains "$out" "collides" "list view must flag the duplicate schedule as a collision"
+  assert_contains "$out" "morning-scan" "list view must include the colliding playbook"
 }
 
 test_schedule_source_returns_frontmatter_when_no_overrides() {

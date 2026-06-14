@@ -214,25 +214,26 @@ STUB
   chmod +x "$CEO_CRONTAB_BIN"
 }
 
-test_crontab_daemon_conflict_when_block_and_daemon_active() {
+# The native crontab install is retired (D1): a CEO block is ALWAYS a migration
+# leftover, flagged regardless of daemon/systemctl state.
+test_crontab_leftover_flagged_when_block_present() {
   export CEO_SCHEDULER=crontab
   _stub_crontab_with_ceo_block
-  _stub_systemctl active
   local out
   out=$(ceo_scheduler_crontab_daemon_conflict)
-  assert_eq "$out" "1" "must report the conflicting cron-trigger count when both schedulers run"
+  assert_eq "$out" "1" "must report the leftover cron-trigger count when a CEO block is present"
 }
 
-test_no_conflict_when_daemon_inactive() {
+test_crontab_leftover_flagged_even_when_daemon_inactive() {
   export CEO_SCHEDULER=crontab
   _stub_crontab_with_ceo_block
   _stub_systemctl inactive
   local out
   out=$(ceo_scheduler_crontab_daemon_conflict)
-  assert_eq "$out" "" "crontab block alone (daemon inactive) is not a conflict"
+  assert_eq "$out" "1" "a CEO crontab block is a leftover even with the daemon inactive (the blind-spot fix)"
 }
 
-test_no_conflict_when_no_ceo_crontab_block() {
+test_no_leftover_when_no_ceo_crontab_block() {
   export CEO_SCHEDULER=crontab
   export CEO_CRONTAB_BIN="$TEST_HOME/crontab-empty"
   cat > "$CEO_CRONTAB_BIN" <<'STUB'
@@ -243,20 +244,27 @@ case "$1" in
 esac
 STUB
   chmod +x "$CEO_CRONTAB_BIN"
-  _stub_systemctl active
   local out
   out=$(ceo_scheduler_crontab_daemon_conflict)
-  assert_eq "$out" "" "active daemon with no CEO crontab entries is not a conflict"
+  assert_eq "$out" "" "no CEO crontab entries is not a leftover"
 }
 
-test_no_conflict_when_systemctl_absent() {
+# A user cron line that merely MENTIONS ceo-cron.sh (no `# ceo:` install marker)
+# is not a CEO-installed line and must not be counted as a leftover.
+test_no_leftover_for_user_line_mentioning_ceo_cron() {
   export CEO_SCHEDULER=crontab
-  _stub_crontab_with_ceo_block
-  export CEO_SYSTEMCTL_BIN="$TEST_HOME/nonexistent-systemctl"
-  local out rc=0
-  out=$(ceo_scheduler_crontab_daemon_conflict) || rc=$?
-  assert_eq "$rc" "0" "absent systemctl (e.g. macOS) is not an error"
-  assert_eq "$out" "" "absent systemctl yields no conflict"
+  export CEO_CRONTAB_BIN="$TEST_HOME/crontab-user-mention"
+  cat > "$CEO_CRONTAB_BIN" <<'STUB'
+#!/bin/bash
+case "$1" in
+  -l) printf '%s\n' "# my own wrapper around ceo-cron.sh, do not touch" "0 3 * * * /home/me/run-ceo-cron.sh backup" ;;
+  *) echo "stub-crontab: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_CRONTAB_BIN"
+  local out
+  out=$(ceo_scheduler_crontab_daemon_conflict)
+  assert_eq "$out" "" "a user line mentioning ceo-cron.sh without the # ceo: marker is not a leftover"
 }
 
 # === Integration: ceo playbook scan end-to-end on the daemon backend ===

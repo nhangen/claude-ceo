@@ -16,7 +16,10 @@ setup() {
   HOME_BACKUP="$HOME"
   PATH_BACKUP="$PATH"
   export HOME="$TEST_HOME"
-  mkdir -p "$TEST_HOME/bin" "$TEST_HOME/vault/CEO"
+  mkdir -p "$TEST_HOME/bin" "$TEST_HOME/vault/CEO" "$TEST_HOME/.ceo"
+  # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
+  # the synced vault — `ceo trace` reads it from there.
+  REGISTRY_FILE="$HOME/.ceo/registry.json"
 
   export VAULT="$TEST_HOME/vault"
   export CEO_VAULT="$VAULT"
@@ -52,12 +55,13 @@ _run_cmd_trace() {
   body=$(sed -n '/^cmd_trace()/,/^}$/p' "$CEO_BIN")
   bash -c '
     set -uo pipefail
-    VAULT="$1"; CEO_VAULT="$2"; CEO_DIR="$3"
-    shift 3
+    VAULT="$1"; CEO_VAULT="$2"; CEO_DIR="$3"; REGISTRY_FILE="$4"
+    shift 4
     ceo_validate_vault() { return 0; }
+    _ceo_registry_path() { printf "%s\n" "$REGISTRY_FILE"; }
     '"$body"'
     cmd_trace "$@"
-  ' -- "$VAULT" "$CEO_VAULT" "$CEO_DIR" "$@" 2>"$TEST_HOME/err" 1>"$TEST_HOME/out"
+  ' -- "$VAULT" "$CEO_VAULT" "$CEO_DIR" "$REGISTRY_FILE" "$@" 2>"$TEST_HOME/err" 1>"$TEST_HOME/out"
 }
 
 test_cmd_trace_missing_name_prints_usage_and_exits_1() {
@@ -114,7 +118,7 @@ test_cmd_trace_missing_claude_binary_exits_with_diagnostic() {
 }
 
 test_cmd_trace_warns_when_playbook_not_registered() {
-  cat > "$CEO_DIR/registry.json" << 'JSON'
+  cat > "$REGISTRY_FILE" << 'JSON'
 { "playbooks": [ { "name": "other-playbook" } ] }
 JSON
   _run_cmd_trace morning-scan
@@ -123,7 +127,7 @@ JSON
 }
 
 test_cmd_trace_aborts_on_malformed_registry() {
-  echo "this is not json {{{" > "$CEO_DIR/registry.json"
+  echo "this is not json {{{" > "$REGISTRY_FILE"
   local rc=0
   _run_cmd_trace morning-scan || rc=$?
   assert_eq "$rc" "1" "malformed registry.json must abort, not be reported as 'not registered'"

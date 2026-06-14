@@ -290,6 +290,31 @@ CEOCONF
   export VAULT CEO_OS
 }
 
+ceo_setup_swarm() {
+  echo ""
+  echo "[9a] Swarm registration"
+  # ceo_setup_vault may have pushed CEO_VAULT onto MISSING_CONFIG and left
+  # VAULT empty; without a vault there is nowhere to write swarm.json. Skip
+  # rather than fail — the missing-config surface already flags the real issue.
+  if [ -z "${VAULT:-}" ]; then
+    echo "  Skipped (no vault configured yet)."
+    return 0
+  fi
+  if ! command -v jq &>/dev/null; then
+    echo "  Skipped (jq not installed). Re-run 'ceo setup' after installing jq."
+    return 0
+  fi
+  CEO_VAULT="$VAULT" _swarm_bootstrap || {
+    echo "  WARNING: could not bootstrap swarm.json."
+    return 0
+  }
+  if CEO_VAULT="$VAULT" _swarm_register_host; then
+    echo "  Registered this host in $VAULT/CEO/swarm.json"
+  else
+    echo "  Host NOT registered — set a unique CEO_HOSTNAME (see message above) and re-run 'ceo setup'."
+  fi
+}
+
 ceo_setup_pr_sources() {
   echo ""
   echo "[9b] PR sources configuration"
@@ -301,17 +326,17 @@ ceo_setup_cron() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   if [ -f "$ceo_cli" ] && command -v yq &>/dev/null; then
     echo ""
-    echo "[10/10] Cron Setup"
+    echo "[10/10] Playbook Scan"
     local install_cron
-    read -p "  Scan playbooks and install cron entries? (y/n) " install_cron
+    read -p "  Scan playbooks and generate the host-local registry? (y/n) " install_cron
     if _ceo_is_yes "$install_cron"; then
       bash "$ceo_cli" playbook scan
     else
-      echo "  Skipped ('${install_cron}' interpreted as no). Run 'ceo playbook scan' later to install cron entries."
+      echo "  Skipped ('${install_cron}' interpreted as no). Run 'ceo playbook scan' later to generate the registry."
     fi
   else
     echo ""
-    echo "[10/10] Skipping cron setup (ceo CLI or yq not available)."
+    echo "[10/10] Skipping playbook scan (ceo CLI or yq not available)."
     echo "  Run 'ceo playbook scan' after installing yq."
   fi
 }

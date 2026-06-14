@@ -28,6 +28,21 @@ Write domains are enforced by the CEO's scripts and documented in VAULT.md, not 
 | CEO/delegations/ | Yes (CEO Review) | Yes (create + results) |
 | Profile.md, Pending.md, People/, etc. | Yes | No |
 
+## Swarm State: What Syncs and What Doesn't
+
+The swarm model (multiple hosts) splits CEO state into synced (shared topology)
+and host-local (per-machine) files:
+
+| Path | Synced? | Why |
+|------|---------|-----|
+| `CEO/registry.json` | **No — host-local** | Generated per host at `~/.ceo/registry.json` by `ceo playbook scan`. Syncing it would let two hosts rewrite the same file and produce `.sync-conflict` copies. Ignored in `shared.stignore`. |
+| `CEO/swarm.json` | **Yes — shared topology** | Describes the swarm itself: which hosts participate (`hosts[]`) and which host owns each `single`-scope playbook (`owners{}`). Every host must read the same file. |
+| `CEO/heartbeats/<host>.json` | **Yes — per-host liveness** | One file per host (host-namespaced), so two hosts never write the same path. The offline-owner alert reads these to detect a host whose heartbeat has gone stale. |
+
+A stale `CEO/registry.json` may linger in the vault on first migration from a
+single-host install; the `shared.stignore` entry stops it from syncing going
+forward (delete the vault copy during migration — see `docs/migration.md`).
+
 ## Conflict Detection
 
 If both machines write to the same file within a sync window, Syncthing creates `.sync-conflict-*` files. The CEO's cleanup playbook scans for these and logs them as errors.

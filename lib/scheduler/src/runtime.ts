@@ -38,12 +38,31 @@ export function resolveFixedLookbackMs(raw: string | undefined): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-export function registryPath(vault: string): string {
-  return `${vault}/CEO/registry.json`;
+/** Host-local — the registry is now generated per host under `~/.ceo`, not synced via the vault, so concurrent hosts no longer write-conflict on it. */
+export function registryPath(home: string): string {
+  return `${home}/.ceo/registry.json`;
+}
+
+export function swarmPath(vault: string): string {
+  return `${vault}/CEO/swarm.json`;
+}
+
+export function enabledPath(home: string): string {
+  return `${home}/.ceo/enabled.json`;
 }
 
 export function heartbeatPath(home: string): string {
   return `${home}/.ceo/schedulerd/heartbeat.json`;
+}
+
+/**
+ * Synced per-host liveness heartbeat in the shared vault, namespaced by host so
+ * two hosts never write the same file (no Syncthing conflict). Consumed by the
+ * offline-owner alert (E2): a host whose synced heartbeat goes stale is
+ * presumed offline and its single-scope playbooks unowned.
+ */
+export function syncedHeartbeatPath(vault: string, host: string): string {
+  return `${vault}/CEO/heartbeats/${host}.json`;
 }
 
 export function resolveHost(env: { CEO_HOSTNAME?: string }, osHost: string): string {

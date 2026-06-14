@@ -1,7 +1,7 @@
 /**
  * Registry reader for the ceo-schedulerd daemon (#136 Phase 1.5).
  *
- * The on-disk registry (`$CEO_VAULT/CEO/registry.json`, schema v3) is written by
+ * The on-disk registry (host-local `~/.ceo/registry.json`, schema v3) is written by
  * `ceo playbook scan`. This module projects each entry down to the fields the
  * daemon needs and normalizes `hosts` the same way the bash scanner does
  * (absent / null / malformed → `["*"]`). Entries missing a required field are
@@ -16,6 +16,7 @@ export interface Playbook {
   status: string;
   trigger: string;
   hosts: string[];
+  scope: "each" | "single";
 }
 
 export interface ParsedRegistry {
@@ -42,6 +43,13 @@ function normalizeHosts(raw: unknown, name: string, warnings: string[]): string[
     return ["*"];
   }
   return raw as string[];
+}
+
+function normalizeScope(raw: unknown, name: string, warnings: string[]): "each" | "single" | null {
+  if (raw === undefined || raw === null) return "single";
+  if (raw === "each" || raw === "single") return raw;
+  warnings.push(`${name}: 'scope' must be 'each' or 'single' — entry skipped`);
+  return null;
 }
 
 export function parseRegistry(text: string): ParsedRegistry {
@@ -79,12 +87,15 @@ export function parseRegistry(text: string): ParsedRegistry {
       warnings.push(`${label}: missing a required field (name/schedule/status/trigger) — skipped`);
       continue;
     }
+    const scope = normalizeScope(e.scope, name, warnings);
+    if (scope === null) continue;
     playbooks.push({
       name,
       schedule: e.schedule,
       status: e.status,
       trigger: e.trigger,
       hosts: normalizeHosts(e.hosts, name, warnings),
+      scope,
     });
   }
   return { playbooks, warnings };

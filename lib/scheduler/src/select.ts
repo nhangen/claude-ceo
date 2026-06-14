@@ -8,23 +8,23 @@
 import type { CronMatcher } from "@/cron";
 import type { Playbook } from "@/registry";
 
-function hostMatches(hosts: string[], host: string): boolean {
-  return hosts.includes("*") || hosts.includes(host);
-}
-
 /**
  * The playbooks this host may run on a schedule: cron-triggered, active, with a
- * non-blank schedule, whose `hosts` includes `"*"` or this host. This is where
- * `hosts:` is enforced (Phase 1 only recorded it).
+ * non-blank schedule, gated by scope. A `scope: "each"` playbook runs iff it is
+ * in this host's local `enabled` set; a `scope: "single"` playbook runs iff this
+ * host is its owner (`owners[name] === host`). Ownership is authoritative —
+ * local enablement does not gate single-scope playbooks.
  */
-export function selectRunnable(playbooks: Playbook[], host: string): Playbook[] {
-  return playbooks.filter(
-    (p) =>
-      p.trigger === "cron" &&
-      p.status === "active" &&
-      p.schedule.trim() !== "" &&
-      hostMatches(p.hosts, host),
-  );
+export function selectRunnable(
+  playbooks: Playbook[],
+  host: string,
+  enabled: Set<string>,
+  owners: Record<string, string>,
+): Playbook[] {
+  return playbooks.filter((p) => {
+    if (p.trigger !== "cron" || p.status !== "active" || p.schedule.trim() === "") return false;
+    return p.scope === "single" ? owners[p.name] === host : enabled.has(p.name);
+  });
 }
 
 /** Playbooks firing during the minute containing `when`. Invalid schedules are skipped. */

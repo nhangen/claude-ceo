@@ -12,36 +12,56 @@ const pb = (over: Partial<Playbook>): Playbook => ({
   status: "active",
   trigger: "cron",
   hosts: ["*"],
+  scope: "each",
   ...over,
 });
 
-describe("selectRunnable — host + status + trigger gating", () => {
-  test("keeps active cron playbooks whose hosts include this host", () => {
-    const pbs = [
-      pb({ name: "wild", hosts: ["*"] }),
-      pb({ name: "mine", hosts: ["ml-1"] }),
-      pb({ name: "theirs", hosts: ["mac-mini"] }),
-    ];
-    expect(selectRunnable(pbs, "ml-1").map((p) => p.name)).toEqual(["wild", "mine"]);
-  });
+describe("selectRunnable — status + trigger + schedule gating", () => {
+  const enabled = new Set(["a", "b", "c", "p"]);
 
   test("drops non-active status", () => {
     const pbs = [pb({ name: "a", status: "draft" }), pb({ name: "b", status: "disabled" }), pb({ name: "c", status: "active" })];
-    expect(selectRunnable(pbs, "ml-1").map((p) => p.name)).toEqual(["c"]);
+    expect(selectRunnable(pbs, "ml-1", enabled, {}).map((p) => p.name)).toEqual(["c"]);
   });
 
   test("drops non-cron triggers", () => {
     const pbs = [pb({ name: "a", trigger: "manual" }), pb({ name: "b", trigger: "cron" })];
-    expect(selectRunnable(pbs, "ml-1").map((p) => p.name)).toEqual(["b"]);
+    expect(selectRunnable(pbs, "ml-1", enabled, {}).map((p) => p.name)).toEqual(["b"]);
   });
 
   test("drops entries with a blank schedule", () => {
     const pbs = [pb({ name: "a", schedule: "   " }), pb({ name: "b", schedule: "0 9 * * *" })];
-    expect(selectRunnable(pbs, "ml-1").map((p) => p.name)).toEqual(["b"]);
+    expect(selectRunnable(pbs, "ml-1", enabled, {}).map((p) => p.name)).toEqual(["b"]);
   });
+});
 
-  test("wildcard host matches any host id", () => {
-    expect(selectRunnable([pb({ hosts: ["*"] })], "whatever").map((p) => p.name)).toEqual(["p"]);
+describe("selectRunnable — scope gating", () => {
+  const owners = { soloA: "ml-1", soloB: "mac" };
+  const enabled = new Set(["eachOn"]);
+  test("each runs only when locally enabled", () => {
+    const pbs = [pb({ name: "eachOn", scope: "each" }), pb({ name: "eachOff", scope: "each" })];
+    expect(selectRunnable(pbs, "ml-1", enabled, owners).map((p) => p.name)).toEqual(["eachOn"]);
+  });
+  test("single runs only on its owner, ignoring local enable state", () => {
+    const pbs = [pb({ name: "soloA", scope: "single" }), pb({ name: "soloB", scope: "single" })];
+    expect(selectRunnable(pbs, "ml-1", enabled, owners).map((p) => p.name)).toEqual(["soloA"]);
+  });
+  test("single with no owner runs nowhere", () => {
+    const pbs = [pb({ name: "orphan", scope: "single" })];
+    expect(selectRunnable(pbs, "ml-1", new Set(), {})).toEqual([]);
+  });
+  test("a single playbook NOT owned by this host is excluded even if enabled", () => {
+    const pbs = [pb({ name: "soloB", scope: "single" })];
+    expect(selectRunnable(pbs, "ml-1", new Set(["soloB"]), owners)).toEqual([]);
+  });
+  test("status/trigger/blank-schedule gating still applies to each", () => {
+    const pbs = [
+      pb({ name: "draft", scope: "each", status: "draft" }),
+      pb({ name: "manual", scope: "each", trigger: "manual" }),
+      pb({ name: "blank", scope: "each", schedule: "  " }),
+      pb({ name: "ok", scope: "each" }),
+    ];
+    expect(selectRunnable(pbs, "ml-1", new Set(["draft","manual","blank","ok"]), {}).map((p) => p.name)).toEqual(["ok"]);
   });
 });
 

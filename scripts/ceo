@@ -66,6 +66,7 @@ Commands:
   playbook    Manage playbooks (scan, list, info)
   trace       Show claude-mem observations tagged by a playbook run (ceo trace <name>)
   schedule    List/edit per-user playbook schedules (overrides frontmatter)
+  swarm       Inspect/heal the synced swarm.json (swarm doctor [--fix])
   creds       Manage CEO credentials (list, check, path)
   help        Show this message
 
@@ -81,7 +82,7 @@ Examples:
   CEO_CHAT_EFFORT=high ceo chat # Override chat effort (default: medium)
   ceo chat morning-scan        # Morning triage conversation
   ceo cron pr-triage           # Autonomous cron trigger (no conversation)
-  ceo playbook scan            # Discover playbooks, update registry + crontab
+  ceo playbook scan            # Discover playbooks, update host-local registry
   ceo schedule                 # List effective schedules + collisions
   ceo schedule morning-scan    # Reschedule one playbook (interactive)
 USAGE
@@ -212,27 +213,12 @@ cmd_doctor() {
   local _backend
   _backend="$(ceo_scheduler_backend 2>/dev/null || echo unknown)"
   if [ "$_backend" = "crontab" ]; then
-    local _sched_state
-    _sched_state="$(ceo_scheduler_list 2>/dev/null || true)"
-    if printf '%s\n' "$_sched_state" | grep -q "ceo-cron.sh"; then
-      local count
-      count=$(printf '%s\n' "$_sched_state" | grep -c "ceo-cron.sh")
-      echo "  ✓ Cron entries installed ($count triggers)"
-      ok=$((ok + 1))
-    else
-      echo "  ! No ceo-cron entries in crontab — run: ceo setup"
-      warn=$((warn + 1))
-    fi
-    # duplicate cron triggers
-    local dup_count
-    dup_count=$(printf '%s\n' "$_sched_state" | grep "ceo-cron\.sh" | sed 's/.*ceo-cron\.sh //' | sort | uniq -d | wc -l | xargs || true)
-    if [ "${dup_count:-0}" -gt 0 ]; then
-      echo "  ✗ Duplicate cron triggers detected — run: ceo playbook scan"
-      fail=$((fail + 1))
-    else
-      echo "  ✓ No duplicate cron triggers"
-      ok=$((ok + 1))
-    fi
+    # The native crontab install path is retired (D1). On a crontab-backend
+    # host the healthy scheduler signal is the ceo-schedulerd heartbeat (checked
+    # below); any lingering ceo-cron.sh entries are a migration leftover flagged
+    # by the migration-leftover check further down. Nothing to install here.
+    echo "  ✓ Scheduling owned by ceo-schedulerd (native crontab install retired)"
+    ok=$((ok + 1))
   elif [ "$_backend" = "daemon" ]; then
     # macOS: scheduling is owned by ceo-schedulerd; the OS holds no per-playbook
     # entries. Liveness is the heartbeat check below (added in #142).
@@ -251,13 +237,17 @@ cmd_doctor() {
     fail=$((fail + 1))
   fi
 
-  # Linux double-fire (#159): the Phase-1 per-playbook crontab block AND the
-  # ceo-schedulerd systemd daemon both active dispatch every playbook twice.
+  # Migration leftover (D1, #159): the native crontab install path is retired —
+  # ceo-schedulerd reads the registry and is the sole scheduler. A host still
+  # carrying the Phase-1 per-playbook `# CEO Agent` crontab block is a migration
+  # leftover regardless of daemon state: once the daemon is up it double-fires
+  # every playbook, and before the daemon is up it fires playbooks the swarm no
+  # longer expects on this host. Flag it either way.
   local _cron_daemon_conflict
   _cron_daemon_conflict="$(ceo_scheduler_crontab_daemon_conflict 2>/dev/null || true)"
   if [ -n "$_cron_daemon_conflict" ]; then
-    echo "  ✗ CEO crontab block ($_cron_daemon_conflict triggers) active alongside the ceo-schedulerd daemon — every playbook double-fires"
-    echo "    Remove the crontab block (the daemon reads the registry): crontab -l | sed '/# CEO Agent START/,/# CEO Agent END/d' | grep -v '^# CEO Agent\$' | crontab -"
+    echo "  ✗ Migration leftover: CEO crontab block ($_cron_daemon_conflict triggers) still installed — ceo-schedulerd is the sole scheduler; this block double-fires (or mis-fires) playbooks"
+    echo "    Remove the leftover crontab block (the daemon reads the registry): crontab -l | sed '/# CEO Agent START/,/# CEO Agent END/d' | grep -v '^# CEO Agent\$' | crontab -"
     fail=$((fail + 1))
   fi
 
@@ -279,7 +269,7 @@ cmd_doctor() {
   fi
 
   # bin symlinks for playbooks
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   if [ ! -f "$registry_file" ]; then
     echo "  ⚠ bin-symlink check skipped: registry.json not found (run: ceo playbook scan)"
     warn=$((warn + 1))
@@ -418,10 +408,10 @@ cmd_doctor() {
     drafts=$(jq -r '.playbooks[] | select(.status == "draft") | .name' "$registry_file" 2>/dev/null)
     if [ -n "$drafts" ]; then
       echo ""
-      echo "  Drafts (not installed in cron; runnable on-demand):"
+      echo "  Drafts (not scheduled by the daemon; runnable on-demand):"
       while IFS= read -r d; do
         [ -z "$d" ] && continue
-        echo "    - $d  (flip frontmatter to 'status: active' then re-run 'ceo playbook scan' to install)"
+        echo "    - $d  (flip frontmatter to 'status: active' then re-run 'ceo playbook scan' to schedule)"
       done <<< "$drafts"
     fi
   fi
@@ -546,7 +536,7 @@ cmd_preflight() {
     return 1
   }
 
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   _require_registry_current "$registry_file"
 
   local would_run=0
@@ -590,14 +580,20 @@ cmd_playbook() {
     list) cmd_playbook_list ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
+    enable) cmd_playbook_enable "$@" ;;
+    disable) cmd_playbook_disable "$@" ;;
+    assign) cmd_playbook_assign "$@" ;;
     help|--help|-h)
-      echo "Usage: ceo playbook <scan|list|info|diff>"
+      echo "Usage: ceo playbook <scan|list|info|diff|enable|disable|assign>"
       echo ""
-      echo "  scan [--dry-run]   Discover playbooks, update registry + crontab"
-      echo "                     (--dry-run prints would-be cron block, no writes)"
-      echo "  list               Show all registered playbooks"
+      echo "  scan [--dry-run]   Discover playbooks, update host-local registry"
+      echo "                     (--dry-run prints the registry diff summary, no writes)"
+      echo "  list               Show all registered playbooks with scope + state"
       echo "  info <name>        Show details for one playbook"
       echo "  diff [--quiet]     Detect drift between vault and repo playbooks"
+      echo "  enable <name>      Run this each-scope playbook on THIS host"
+      echo "  disable <name>     Stop running this each-scope playbook on THIS host"
+      echo "  assign <name> <host>  Assign a single-scope playbook to an owner host"
       ;;
     *)
       echo "Unknown playbook command: $subcmd"
@@ -605,6 +601,360 @@ cmd_playbook() {
       exit 1
       ;;
   esac
+}
+
+cmd_swarm() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+  case "$subcmd" in
+    doctor) cmd_swarm_doctor "$@" ;;
+    owners-health) cmd_swarm_owners_health "$@" ;;
+    help|--help|-h)
+      echo "Usage: ceo swarm <doctor|owners-health> [--fix]"
+      echo ""
+      echo "  doctor          Detect Syncthing swarm.json sync-conflict copies."
+      echo "                  Read-only: prints the proposed merge and exits"
+      echo "                  non-zero if any conflict copy exists (health gate)."
+      echo "  doctor --fix    Apply the merge atomically, then remove the"
+      echo "                  conflict copies."
+      echo "  owners-health   Detect single-scope playbook owners whose synced"
+      echo "                  heartbeat has gone stale (host presumed offline →"
+      echo "                  those playbooks run nowhere). Escalates to the inbox"
+      echo "                  on a fresh→stale transition; exits non-zero if any"
+      echo "                  owner is stale."
+      ;;
+    *)
+      echo "Unknown swarm command: $subcmd"
+      echo "Run: ceo swarm help"
+      exit 1
+      ;;
+  esac
+}
+
+# cmd_swarm_doctor [--fix]
+#   swarm.json is the one synced mutable file. Near-simultaneous writes on two
+#   hosts make Syncthing drop a `swarm.sync-conflict-YYYYMMDD-HHMMSS-XXXXXXX.json`
+#   copy next to it. This detects those copies and merges them back into the
+#   live file with a deterministic rule so topology self-heals:
+#
+#     hosts[]  — UNION of live + every parseable conflict copy, de-duped.
+#     owners{} — per key: live's value wins when the key exists in live. A key
+#                present only in conflict copies is taken; if multiple conflict
+#                copies disagree on a live-absent key, the value from the
+#                lexicographically-GREATEST conflict FILENAME wins (filenames
+#                embed a timestamp, so "most recent conflict wins") and the
+#                contested key is logged.
+#     schema_version — keep the max; warn if they differ.
+#
+#   A malformed live file or conflict copy is skipped with a diagnostic — never
+#   crashes, never wins the merge.
+#
+#   Read-only (no --fix): prints the proposed merge and exits non-zero when any
+#   conflict copy exists (usable as a health gate). --fix writes the merge
+#   atomically (tmp+mv) and removes the conflict copies only after the write.
+cmd_swarm_doctor() {
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo swarm doctor}"
+  local fix=0
+  case "${1:-}" in
+    --fix) fix=1 ;;
+    "") ;;
+    *) echo "Unknown swarm doctor option: $1" >&2; echo "Usage: ceo swarm doctor [--fix]" >&2; exit 1 ;;
+  esac
+
+  local swarm_file; swarm_file=$(_swarm_path) || return 1
+  local swarm_dir; swarm_dir=$(dirname "$swarm_file")
+
+  # Anchored glob: only Syncthing conflict copies of swarm.json, never an
+  # unrelated *.json (anchored-regex-for-identifier-allowlists).
+  local conflicts=()
+  local f
+  for f in "$swarm_dir"/swarm.sync-conflict-*.json; do
+    [ -e "$f" ] && conflicts+=("$f")
+  done
+
+  if [ "${#conflicts[@]}" -eq 0 ]; then
+    echo "swarm doctor: no conflicts (no swarm.sync-conflict-*.json next to swarm.json)."
+    return 0
+  fi
+
+  if [ ! -f "$swarm_file" ]; then
+    echo "ERROR: $swarm_file is missing but conflict copies exist; refusing to merge." >&2
+    return 1
+  fi
+  if ! jq -e . "$swarm_file" >/dev/null 2>&1; then
+    echo "ERROR: live $swarm_file is malformed JSON; fix or remove it before merging." >&2
+    return 1
+  fi
+
+  # Sort conflict files so the lexicographically-greatest filename is processed
+  # last → its owner value overwrites earlier conflicts for live-absent keys.
+  local sorted=()
+  while IFS= read -r f; do sorted+=("$f"); done < <(printf '%s\n' "${conflicts[@]}" | sort)
+
+  local parseable=()
+  for f in "${sorted[@]}"; do
+    if jq -e . "$f" >/dev/null 2>&1; then
+      parseable+=("$f")
+    else
+      echo "swarm doctor: skipping malformed conflict copy $(basename "$f")" >&2
+    fi
+  done
+
+  # Host union across live + parseable conflicts.
+  local merged_hosts
+  merged_hosts=$(jq -s '[.[].hosts[]?] | unique' "$swarm_file" "${parseable[@]}")
+
+  # owners: start from live (live keys win). Walk conflicts in sorted order,
+  # adding only keys not yet present — so an earlier (smaller-filename) conflict
+  # seeds a live-absent key and a later (greater-filename) one overwrites it,
+  # because we re-add when the existing source was a conflict, not live.
+  local live_owners; live_owners=$(jq -c '.owners // {}' "$swarm_file")
+  local merged_owners="$live_owners"
+  local contested=""
+  for f in "${parseable[@]}"; do
+    local ck cv prev
+    while IFS=$'\t' read -r ck cv; do
+      [ -z "$ck" ] && continue
+      # Live wins: never overwrite a key the live file owns.
+      if jq -e --arg k "$ck" 'has($k)' <<<"$live_owners" >/dev/null 2>&1; then
+        continue
+      fi
+      prev=$(jq -r --arg k "$ck" '.[$k] // empty' <<<"$merged_owners")
+      if [ -n "$prev" ] && [ "$prev" != "$cv" ]; then
+        contested+="    $ck: '$prev' (earlier conflict) -> '$cv' (later conflict $(basename "$f")) — later wins"$'\n'
+      fi
+      merged_owners=$(jq -c --arg k "$ck" --arg v "$cv" '.[$k] = $v' <<<"$merged_owners")
+    done < <(jq -r '(.owners // {}) | to_entries[] | select(.value | type == "string") | "\(.key)\t\(.value)"' "$f")
+  done
+
+  # schema_version: max across live + conflicts; warn on disagreement.
+  local versions max_version
+  versions=$(jq -s '[.[].schema_version // 0]' "$swarm_file" "${parseable[@]}")
+  max_version=$(jq 'max' <<<"$versions")
+  if [ "$(jq 'unique | length' <<<"$versions")" != "1" ]; then
+    echo "swarm doctor: WARNING schema_version differs across files ($(jq -c . <<<"$versions")); keeping max=$max_version" >&2
+  fi
+
+  local merged
+  merged=$(jq -n \
+    --argjson v "$max_version" \
+    --argjson hosts "$merged_hosts" \
+    --argjson owners "$merged_owners" \
+    '{schema_version: $v, hosts: $hosts, owners: $owners}')
+
+  echo "swarm doctor: ${#parseable[@]} conflict cop$([ "${#parseable[@]}" -eq 1 ] && echo y || echo ies) detected."
+  echo "Proposed merge:"
+  echo "  hosts (union): $(jq -c '.hosts' <<<"$merged")"
+  echo "  owners:        $(jq -c '.owners' <<<"$merged")"
+  if [ -n "$contested" ]; then
+    echo "  contested owner keys (live-absent, resolved by greatest conflict filename):"
+    printf '%s' "$contested"
+  fi
+
+  if [ "$fix" -eq 0 ]; then
+    echo ""
+    echo "Read-only. Re-run with --fix to apply the merge and remove conflict copies."
+    return 1
+  fi
+
+  local tmp
+  tmp=$(mktemp "$swarm_file.XXXXXX") || {
+    echo "ERROR: mktemp failed for $swarm_file" >&2
+    return 1
+  }
+  if ! printf '%s\n' "$merged" > "$tmp" || ! mv -f "$tmp" "$swarm_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to write merged $swarm_file" >&2
+    return 1
+  fi
+
+  # Remove conflict copies only after the merged write landed. Includes the
+  # malformed ones (their content is preserved in syncthing history if needed,
+  # and a malformed copy contributes nothing to the merge).
+  for f in "${conflicts[@]}"; do
+    rm -f "$f"
+  done
+  echo ""
+  echo "swarm doctor: merged and removed ${#conflicts[@]} conflict cop$([ "${#conflicts[@]}" -eq 1 ] && echo y || echo ies)."
+  return 0
+}
+
+# How long a single-scope owner's synced heartbeat may go without an update
+# before the host is presumed offline. The daemon re-beats at least every
+# MAX_SLEEP_MS (60s) and `ceo doctor` calls a host-local heartbeat stale at 10
+# minutes; an *owner* being "offline" is a more consequential claim, so this
+# window is deliberately hours, not minutes — a brief daemon restart, a laptop
+# sleep, or a Syncthing propagation lag must not flip a live owner to "offline".
+CEO_OWNER_STALE_S=10800   # 3 hours
+
+# Hosts' clocks disagree. A heartbeat ts slightly AHEAD of this host's clock is
+# the producing host being a little fast, not a time-travelling failure — treat
+# a future-dated ts within this tolerance as fresh (age clamped to 0). Beyond
+# the tolerance the ts is nonsensical and we fall through to the stale path
+# rather than trust a wildly-future timestamp.
+CEO_OWNER_CLOCK_SKEW_S=300   # 5 minutes
+
+# _parse_iso8601_to_epoch <iso>
+#   Portable ISO8601 → epoch seconds for both GNU date (Linux) and BSD date
+#   (macOS). GNU `date -d` first (it accepts fractional seconds and colon
+#   offsets natively), then BSD `date -j -f`. The daemon writes its heartbeat
+#   ts with JS `new Date().toISOString()` → always fractional millis + "Z"
+#   (e.g. 2026-06-14T12:34:56.789Z); BSD `%S%z` rejects both the ".789" and a
+#   colon offset, so before the BSD branch we strip the fractional component and
+#   normalize the zone to a numeric offset BSD's %z understands. Second
+#   granularity is sufficient for an hours-wide staleness window. Prints the
+#   epoch on success; prints nothing and returns 1 on an unparseable value so
+#   the caller routes it to the stale path rather than treating a parse failure
+#   as "now".
+_parse_iso8601_to_epoch() {
+  local iso="$1" epoch="" norm
+  epoch=$(date -d "$iso" +%s 2>/dev/null) && { printf '%s\n' "$epoch"; return 0; }
+  # BSD date needs an explicit format and chokes on fractional seconds and
+  # colon offsets. Drop a ".NNN" fractional-seconds component (preserving any
+  # trailing zone), map "Z" to "+0000", and de-colon a "+HH:MM"/"-HH:MM" offset.
+  norm="$iso"
+  norm=$(printf '%s' "$norm" | sed -E 's/\.[0-9]+//; s/Z$/+0000/; s/([+-][0-9]{2}):([0-9]{2})$/\1\2/')
+  epoch=$(date -j -f '%Y-%m-%dT%H:%M:%S%z' "$norm" +%s 2>/dev/null) \
+    && { printf '%s\n' "$epoch"; return 0; }
+  return 1
+}
+
+# cmd_swarm_owners_health
+#   A scope:single playbook runs only on its owner host (swarm.json owners{});
+#   there is intentionally no failover. If an owner host goes offline its
+#   single-scope playbooks run NOWHERE and fail silently. This reads each
+#   owner's SYNCED heartbeat (CEO/heartbeats/<host>.json, {host, ts:ISO8601})
+#   and, when an owner is stale (or has never beat), escalates ON TRANSITION to
+#   the inbox. State machine, not signal generator: a host-local state file at
+#   ~/.ceo/owner-staleness-state.json records the currently-stale set so a
+#   sustained outage produces one task, not one per run (the disk-monitor
+#   incident). Exit non-zero when any owner is stale (health gate).
+cmd_swarm_owners_health() {
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo swarm owners-health}"
+  : "${HOME:?HOME must be set before ceo swarm owners-health}"
+
+  local swarm_file; swarm_file=$(_swarm_path) || return 1
+  if [ ! -f "$swarm_file" ]; then
+    echo "swarm owners-health: no swarm.json at $swarm_file (nothing to check)."
+    return 0
+  fi
+  if ! jq -e . "$swarm_file" >/dev/null 2>&1; then
+    echo "ERROR: $swarm_file is malformed JSON; cannot read owners." >&2
+    return 1
+  fi
+
+  # Testing seam: CEO_SWARM_NOW_EPOCH pins "now" for deterministic staleness.
+  # An empty/non-numeric value falls through to the real clock.
+  local now_epoch="${CEO_SWARM_NOW_EPOCH:-}"
+  case "$now_epoch" in
+    ''|*[!0-9]*) now_epoch=$(date +%s) ;;
+  esac
+
+  local hb_dir="$CEO_VAULT/CEO/heartbeats"
+  local state_file="$HOME/.ceo/owner-staleness-state.json"
+  local self_host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null)}"
+  : "${self_host:?cannot determine this host for the owners-health inbox}"
+  local inbox_dir="$CEO_VAULT/CEO/inbox"
+  local inbox_file="$inbox_dir/$self_host.md"
+
+  mkdir -p "$(dirname "$state_file")"
+  local prior_state="{}"
+  if [ -f "$state_file" ] && jq -e . "$state_file" >/dev/null 2>&1; then
+    prior_state=$(jq -c . "$state_file")
+  fi
+
+  # Distinct owner hosts and, for each, the sorted list of playbooks it owns.
+  local owner_hosts
+  owner_hosts=$(jq -r '(.owners // {}) | to_entries[] | select(.value | type == "string") | .value' \
+    "$swarm_file" | sort -u)
+
+  if [ -z "$owner_hosts" ]; then
+    echo "swarm owners-health: no single-scope owners assigned (nothing to check)."
+    return 0
+  fi
+
+  local new_state="{}"
+  local any_stale=0
+  local host
+  while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    local owned
+    owned=$(jq -r --arg h "$host" \
+      '(.owners // {}) | to_entries[] | select(.value == $h) | .key' "$swarm_file" \
+      | sort | paste -sd, -)
+
+    local hb_file="$hb_dir/$host.json"
+    local stale=0 reason=""
+    if [ ! -f "$hb_file" ]; then
+      stale=1; reason="no heartbeat file (never beat / long offline)"
+    else
+      local ts; ts=$(jq -r '.ts // empty' "$hb_file" 2>/dev/null)
+      local hb_epoch
+      if [ -z "$ts" ] || ! hb_epoch=$(_parse_iso8601_to_epoch "$ts"); then
+        stale=1; reason="unparseable heartbeat ts"
+      else
+        local age=$(( now_epoch - hb_epoch ))
+        if [ "$age" -lt $(( -CEO_OWNER_CLOCK_SKEW_S )) ]; then
+          # A ts beyond the skew tolerance into the future means the producing
+          # host's clock is badly wrong — an untrustworthy heartbeat is no
+          # liveness signal, so treat it as stale rather than "very fresh".
+          stale=1; reason="heartbeat ${age}s in the future (> ${CEO_OWNER_CLOCK_SKEW_S}s skew) — clock untrustworthy"
+        elif [ "$age" -lt 0 ]; then
+          # Slightly future within tolerance: the producing host is a little
+          # fast. Clamp to 0 so it reads as fresh, not negative-age.
+          age=0
+        fi
+        if [ "$stale" -eq 0 ] && [ "$age" -gt "$CEO_OWNER_STALE_S" ]; then
+          stale=1; reason="heartbeat ${age}s old (> ${CEO_OWNER_STALE_S}s)"
+        fi
+      fi
+    fi
+
+    if [ "$stale" -eq 1 ]; then
+      any_stale=1
+      new_state=$(jq -c --arg h "$host" '.[$h] = "stale"' <<<"$new_state")
+      local was_stale; was_stale=$(jq -r --arg h "$host" '.[$h] // "fresh"' <<<"$prior_state")
+      echo "  ✗ owner $host stale — $reason — single playbooks not running: ${owned:-<none>}"
+      if [ "$was_stale" != "stale" ]; then
+        mkdir -p "$inbox_dir"
+        local marker="<!-- owner-staleness:$host -->"
+        local hours=$(( CEO_OWNER_STALE_S / 3600 ))
+        local task="- [ ] owner $host heartbeat stale >${hours}h — single playbooks ${owned:-<none>} not running $marker"
+        # Defense-in-depth on top of the transition gate: the state file is
+        # host-local but inbox/<host>.md is synced, so a wiped ~/.ceo or a fresh
+        # checker host would lose the transition memory and duplicate a still-
+        # present synced alert. Mirror disk-monitor's marker dedupe: skip the
+        # append when an UNCHECKED line bearing this marker already exists. A
+        # checked-off / [done] line does NOT match, so a legitimate re-alert
+        # after the user resolves the old one still fires.
+        if [ -f "$inbox_file" ] && \
+          awk -v m="$marker" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$inbox_file"; then
+          :
+        elif ! printf '%s\n' "$task" >> "$inbox_file"; then
+          echo "ERROR: swarm owners-health: failed to append to $inbox_file" >&2
+          return 1
+        fi
+      fi
+    else
+      echo "  ✓ owner $host fresh — single playbooks running: ${owned:-<none>}"
+    fi
+  done <<<"$owner_hosts"
+
+  # Atomic state write: only the currently-stale set survives, so a recovered
+  # host drops out of state and a later re-stale re-alerts as a fresh transition.
+  local state_tmp
+  state_tmp=$(mktemp "$state_file.XXXXXX") || {
+    echo "ERROR: swarm owners-health: mktemp failed for $state_file" >&2
+    return 1
+  }
+  if ! printf '%s\n' "$new_state" > "$state_tmp" || ! mv -f "$state_tmp" "$state_file"; then
+    rm -f "$state_tmp"
+    echo "ERROR: swarm owners-health: failed to write $state_file" >&2
+    return 1
+  fi
+
+  [ "$any_stale" -eq 1 ] && return 1
+  return 0
 }
 
 cmd_playbook_diff() {
@@ -760,7 +1110,7 @@ cmd_playbook_scan() {
 
   local playbook_dir="$CEO_DIR/playbooks"
   local repo_playbook_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
 
   if [ ! -d "$playbook_dir" ]; then
     echo "ERROR: Playbooks directory not found at $playbook_dir"
@@ -801,6 +1151,10 @@ cmd_playbook_scan() {
   # cmd_playbook_scan's exit code per ~/.claude/rules/enum-config-typo-fallback.md
   # ("failed dispatch counts toward failure observability").
   local invalid_status=0
+  # Tracked separately so a typo'd scope propagates to the exit code the same
+  # way an invalid status does (enum-config-typo-fallback: failed dispatch
+  # counts toward failure observability).
+  local invalid_scope=0
 
   local seen_names_vault=""
   local seen_names_repo=""
@@ -817,7 +1171,7 @@ cmd_playbook_scan() {
     local from_repo=0
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
-    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual
+    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual scope
     name=$(_fm_scalar name "$f")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -932,9 +1286,9 @@ cmd_playbook_scan() {
         ;;
     esac
 
-    # `hosts` scopes which machines a playbook runs on. Absent → ["*"] (all
-    # hosts). Recorded in the registry but NOT enforced in Phase 1 — the daemon
-    # (Phase 1.5) consumes it. Validate shape at parse and default malformed
+    # `hosts` is deprecated: selectRunnable no longer reads it, so it is not
+    # consumed for scheduling. Scan still normalizes it (kept for back-compat
+    # with older registries; selection is scope-based). Validate shape at parse and default malformed
     # values to ["*"] rather than silently scoping to nowhere or a typo'd host
     # (per enum-config-typo-fallback). An empty array means "runs nowhere",
     # which is a likely mistake — use status:disabled to stop a playbook.
@@ -962,6 +1316,26 @@ cmd_playbook_scan() {
       echo "  SKIP  $basename (unknown runner: '$runner', expected: ${CEO_VALID_RUNNERS[*]})"
       skipped=$((skipped + 1))
       continue
+    fi
+
+    # `scope` selects single-run vs per-target fan-out (consumed by the
+    # scheduler daemon). Absent → the safe default `single`. An unknown value
+    # is a typo, not a default — skip the entry and count it toward the failure
+    # exit, per enum-config-typo-fallback.
+    scope=$(_fm_scalar scope "$f")
+    if [ -z "$scope" ]; then
+      scope="single"
+    else
+      local scope_valid=0
+      for s in "${CEO_VALID_SCOPES[@]}"; do
+        [ "$scope" = "$s" ] && { scope_valid=1; break; }
+      done
+      if [ "$scope_valid" -eq 0 ]; then
+        echo "  SKIP  $basename (unknown scope: '$scope', expected: ${CEO_VALID_SCOPES[*]})" >&2
+        skipped=$((skipped + 1))
+        invalid_scope=$((invalid_scope + 1))
+        continue
+      fi
     fi
 
     if [ "$runner" = "ollama" ] || [ "$runner" = "ollama-think" ]; then
@@ -1024,11 +1398,12 @@ cmd_playbook_scan() {
       --arg skill "$skill" \
       --arg out_pattern "$out_pattern" \
       --arg artifact "$artifact" \
+      --arg scope "$scope" \
       --argjson inputs "$inputs" \
       --argjson requires "$requires" \
       --argjson hosts "$hosts" \
       --arg file "$entry_file" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, scope:$scope, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))
@@ -1072,29 +1447,21 @@ cmd_playbook_scan() {
 
   if [ "$dry_run" -eq 1 ]; then
     echo ""
-    echo "=== DRY-RUN: would-be crontab block (no changes applied) ==="
-    _playbook_print_cron_block "$new_registry"
-    echo ""
     echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed) — NOT written"
-    if [ "$invalid_status" -gt 0 ]; then
-      echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+    if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ]; then
+      [ "$invalid_status" -gt 0 ] && echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+      [ "$invalid_scope" -gt 0 ] && echo "ERROR: $invalid_scope playbook(s) skipped due to invalid scope — see SKIP lines above" >&2
       return 1
     fi
     return 0
   fi
 
-  # Update crontab FIRST. If collision detection refuses, abort before
-  # touching the registry on disk — otherwise a refused scan would persist
-  # the conflicting state into registry.json and confuse later `ceo schedule`
-  # listings. Propagate the scheduler's rc so callers / cron / CI can see
-  # transient failures (rc=1) distinctly from a clean abort.
-  local _scan_install_rc=0
-  _playbook_update_crontab "$new_registry" || _scan_install_rc=$?
-  if [ "$_scan_install_rc" -ne 0 ]; then
-    echo "Aborted: registry not updated. See error above and re-run." >&2
-    return "$_scan_install_rc"
-  fi
-
+  # The native crontab install path is retired (D1). ceo-schedulerd reads the
+  # host-local registry directly and is the sole scheduler — it applies
+  # scope-aware per-host selection that the old "install everything on every
+  # host" crontab block could not. Scan now only writes the registry; it never
+  # touches the user's crontab.
+  mkdir -p "$(dirname "$registry_file")"
   local registry_tmp="$registry_file.tmp"
   echo "$new_registry" | jq '.' > "$registry_tmp"
   mv "$registry_tmp" "$registry_file"
@@ -1102,11 +1469,13 @@ cmd_playbook_scan() {
   echo ""
   echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed)"
   echo "Wrote: $registry_file"
+  echo "Scheduling: ceo-schedulerd reads this registry and dispatches scope-selected playbooks (native crontab install retired)."
 
   _playbook_sync_bins "$new_registry"
 
-  if [ "$invalid_status" -gt 0 ]; then
-    echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+  if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ]; then
+    [ "$invalid_status" -gt 0 ] && echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+    [ "$invalid_scope" -gt 0 ] && echo "ERROR: $invalid_scope playbook(s) skipped due to invalid scope — see SKIP lines above" >&2
     return 1
   fi
 }
@@ -1228,85 +1597,35 @@ _playbook_apply_schedule_overrides() {
   echo "$registry"
 }
 
-# _playbook_print_cron_block <registry-json>
-#   Prints the CEO Agent crontab block that would be installed for <registry>
-#   to stdout, without touching the user's crontab. Skips collision detection
-#   (dry-run only — collisions are caught by _playbook_update_crontab on the
-#   real install path).
-_playbook_print_cron_block() {
-  local registry="$1"
+# _remove_crontab_block
+#   Strips the retired Phase-1 `# CEO Agent START`…`# CEO Agent END` block (and
+#   any stray ceo-cron.sh / `# CEO Agent` lines) from the user's crontab and
+#   reinstalls the remainder. The native install path is retired (D1) — this
+#   removal capability survives for the migration (F3) that purges leftover
+#   blocks from hosts that ran an older CEO. Returns the scheduler's rc; a clean
+#   crontab with no CEO block is a no-op success.
+_remove_crontab_block() {
   local marker_start="# CEO Agent START"
   local marker_end="# CEO Agent END"
-  echo "$marker_start"
-  while IFS= read -r row; do
-    local p_name p_trigger p_schedule p_status
-    p_name=$(echo "$row" | jq -r '.name')
-    p_trigger=$(echo "$row" | jq -r '.trigger')
-    p_schedule=$(echo "$row" | jq -r '.schedule')
-    p_status=$(echo "$row" | jq -r '.status')
-    if [ "$p_trigger" = "cron" ] && [ "$p_status" = "active" ] && [ -n "$p_schedule" ]; then
-      echo "$p_schedule $CEO_CRON $p_name  # ceo:$p_name"
-    fi
-  done < <(echo "$registry" | jq -c '.playbooks[]')
-  echo "$marker_end"
-}
-
-_playbook_update_crontab() {
-  local registry="$1"
-  local marker_start="# CEO Agent START"
-  local marker_end="# CEO Agent END"
-
-  # Collision detection — refuse to install duplicate schedules.
-  # Two playbooks at the same minute fight for the global lock; one always
-  # loses silently. Better to fail loud at scan time than skip-with-reason
-  # at run time.
-  local collisions
-  collisions=$(echo "$registry" | jq -r '
-    [.playbooks[] | select(.trigger == "cron" and .status == "active" and .schedule != "")]
-    | group_by(.schedule)
-    | map(select(length > 1))
-    | .[] | "  \(.[0].schedule)  →  \([.[].name] | join(", "))"
-  ')
-
-  if [ -n "$collisions" ]; then
-    echo "ERROR: schedule collision(s) detected — refusing to install crontab" >&2
-    echo "$collisions" >&2
-    echo "" >&2
-    echo "Resolve via 'ceo schedule <playbook>' or by editing \$CEO_DIR/schedules.json." >&2
-    return 1
-  fi
-
-  # Share the emission body with _playbook_print_cron_block so dry-run and
-  # real install can't drift on the active+cron+scheduled filter.
-  local cron_block cron_count
-  cron_block=$(_playbook_print_cron_block "$registry")
-  cron_count=$(printf '%s\n' "$cron_block" | grep -c '# ceo:' || true)
 
   local existing
   existing=$(ceo_scheduler_list 2>/dev/null || true)
 
-  local new_crontab
-  new_crontab=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
-  new_crontab=$(echo "$new_crontab" | grep -v "ceo-cron\.sh" || true)
-  new_crontab=$(echo "$new_crontab" | grep -v "^# CEO Agent$" || true)
+  # Strip the wrapped block, then any stray CEO-installed lines that escaped it.
+  # A CEO cron line always carries the trailing `# ceo:<name>` marker that
+  # ceo_scheduler_list emits ("MIN HOUR D M W CMD  # ceo:NAME"); anchor on that
+  # marker (anchored-regex-for-identifier-allowlists) so a user line that merely
+  # mentions ceo-cron.sh in a comment or path is preserved, not clobbered.
+  local cleaned
+  cleaned=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
+  cleaned=$(echo "$cleaned" | grep -vE 'ceo-cron\.sh.*#[[:space:]]*ceo:[^[:space:]]+[[:space:]]*$' || true)
+  cleaned=$(echo "$cleaned" | grep -v "^# CEO Agent$" || true)
 
-  # Scheduler can fail for non-collision reasons (locked spool, quota, RO fs,
-  # missing crontab binary, unimplemented backend on Mac). The scheduler
-  # abstraction emits its own ERROR line to stderr; we propagate the rc.
-  local crontab_payload
-  if [ -n "$new_crontab" ]; then
-    crontab_payload=$(printf '%s\n%s\n' "$new_crontab" "$cron_block")
-  else
-    crontab_payload="$cron_block"
+  if [ "$cleaned" = "$existing" ]; then
+    return 0
   fi
 
-  local _install_rc=0
-  ceo_scheduler_install "$crontab_payload" || _install_rc=$?
-  if [ "$_install_rc" -ne 0 ]; then
-    return "$_install_rc"
-  fi
-
-  echo "Crontab: $cron_count entries installed"
+  ceo_scheduler_install "$cleaned"
 }
 
 # Validate a 5-field cron expression. Lightweight syntax check — verifies
@@ -1349,7 +1668,7 @@ _schedule_source() {
 }
 
 cmd_schedule() {
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   local overrides_file="$CEO_DIR/schedules.json"
 
   if [ ! -f "$registry_file" ]; then
@@ -1468,24 +1787,172 @@ _schedule_one() {
   cmd_playbook_scan
 }
 
-cmd_playbook_list() {
-  local registry_file="$CEO_DIR/registry.json"
-  _require_registry_current "$registry_file"
+# _playbook_registry_scope <registry_file> <name>
+#   Print the playbook's scope (each|single) on stdout, exit 0 if found.
+#   Exit 1 with nothing on stdout if the name isn't in the registry.
+#   enum-config-typo-fallback: a scope that isn't in CEO_VALID_SCOPES is
+#   treated as the safe `single` default (scan already rejects typos at parse).
+_playbook_registry_scope() {
+  local registry_file="$1" name="$2"
+  local entry
+  entry=$(jq -r --arg n "$name" '.playbooks[] | select(.name==$n) | .name' "$registry_file" 2>/dev/null)
+  [ -z "$entry" ] && return 1
+  local scope
+  scope=$(jq -r --arg n "$name" '.playbooks[] | select(.name==$n) | .scope // "single"' "$registry_file" 2>/dev/null)
+  case "$scope" in
+    each|single) printf '%s\n' "$scope" ;;
+    *) echo "WARN: registry entry '$name' has out-of-set scope '$scope'; treating as single" >&2; printf '%s\n' "single" ;;
+  esac
+  return 0
+}
 
-  printf "%-16s %-10s %-20s %-10s %-8s\n" "NAME" "TRIGGER" "SCHEDULE" "MODEL" "STATUS"
-  printf "%-16s %-10s %-20s %-10s %-8s\n" "----" "-------" "--------" "-----" "------"
+# _playbook_rows
+#   Render one line per registered playbook combining registry scope/status
+#   with this host's enabled.json and the swarm owners map:
+#     <name>  [scope]  <state>  <description>
+#   where state is enable-status for `each` and owner-status for `single`.
+#   Pure-ish: reads files, prints rows, no mutation. Tested directly.
+_playbook_rows() {
+  local registry_file; registry_file=$(_ceo_registry_path)
+  local enabled_file; enabled_file=$(_ceo_enabled_path)
+  local swarm_file; swarm_file=$(_swarm_path)
+
+  local enabled_json='[]'
+  [ -f "$enabled_file" ] && enabled_json=$(jq -c '. // []' "$enabled_file" 2>/dev/null || echo '[]')
+  local owners_json='{}'
+  [ -f "$swarm_file" ] && owners_json=$(jq -c '.owners // {}' "$swarm_file" 2>/dev/null)
 
   while IFS= read -r row; do
-    local p_name p_trigger p_schedule p_model p_status
+    local p_name p_scope p_desc p_status state
     p_name=$(echo "$row" | jq -r '.name')
-    p_trigger=$(echo "$row" | jq -r '.trigger')
-    p_schedule=$(echo "$row" | jq -r '.schedule // "-"')
-    p_model=$(echo "$row" | jq -r '.model // "-"')
+    p_scope=$(echo "$row" | jq -r '.scope // "single"')
+    p_desc=$(echo "$row" | jq -r '.description // ""')
     p_status=$(echo "$row" | jq -r '.status // "-"')
-    [ "$p_schedule" = "" ] && p_schedule="-"
-    [ "$p_model" = "" ] && p_model="-"
-    printf "%-16s %-10s %-20s %-10s %-8s\n" "$p_name" "$p_trigger" "$p_schedule" "$p_model" "$p_status"
+    [ -z "$p_status" ] && p_status="-"
+    case "$p_scope" in
+      each|single) ;;
+      *) echo "WARN: registry entry '$p_name' has out-of-set scope '$p_scope'; treating as single" >&2; p_scope="single" ;;
+    esac
+
+    if [ "$p_scope" = "each" ]; then
+      local is_on
+      is_on=$(echo "$enabled_json" | jq -r --arg n "$p_name" 'index($n) != null' 2>/dev/null)
+      if [ "$is_on" = "true" ]; then
+        state="✓ enabled here"
+      else
+        state="· disabled here"
+      fi
+    else
+      local owner
+      owner=$(echo "$owners_json" | jq -r --arg n "$p_name" '.[$n] // ""' 2>/dev/null)
+      if [ -n "$owner" ]; then
+        state="owner: $owner"
+      else
+        state="owner: (none) ⚠"
+      fi
+    fi
+
+    printf "%-16s %-8s %-9s %-18s %s\n" "$p_name" "[$p_scope]" "$p_status" "$state" "$p_desc"
   done < <(jq -c '.playbooks[]' "$registry_file")
+}
+
+cmd_playbook_list() {
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
+
+  printf "%-16s %-8s %-9s %-18s %s\n" "NAME" "SCOPE" "STATUS" "STATE" "DESCRIPTION"
+  printf "%-16s %-8s %-9s %-18s %s\n" "----" "-----" "------" "-----" "-----------"
+  _playbook_rows
+}
+
+cmd_playbook_enable() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "Usage: ceo playbook enable <name>" >&2
+    exit 1
+  fi
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
+
+  local scope
+  if ! scope=$(_playbook_registry_scope "$registry_file" "$name"); then
+    echo "ERROR: playbook '$name' is not in the registry. Run: ceo playbook list" >&2
+    exit 1
+  fi
+  if [ "$scope" = "single" ]; then
+    echo "ERROR: '$name' is a single-scope playbook — it is not enabled per-host." >&2
+    echo "  Assign it to an owner host instead: ceo playbook assign $name <host>" >&2
+    exit 1
+  fi
+
+  local enabled_file; enabled_file=$(_ceo_enabled_path)
+  mkdir -p "$(dirname "$enabled_file")"
+  [ -f "$enabled_file" ] || echo '[]' > "$enabled_file"
+
+  local tmp
+  tmp=$(mktemp "$enabled_file.XXXXXX") || { echo "ERROR: mktemp failed" >&2; exit 1; }
+  if ! jq --arg n "$name" '. + [$n] | unique' "$enabled_file" > "$tmp" \
+     || ! mv -f "$tmp" "$enabled_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to enable '$name' in $enabled_file" >&2
+    exit 1
+  fi
+  echo "Enabled '$name' on this host."
+}
+
+cmd_playbook_disable() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "Usage: ceo playbook disable <name>" >&2
+    exit 1
+  fi
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
+
+  if ! _playbook_registry_scope "$registry_file" "$name" >/dev/null; then
+    echo "ERROR: playbook '$name' is not in the registry. Run: ceo playbook list" >&2
+    exit 1
+  fi
+
+  local enabled_file; enabled_file=$(_ceo_enabled_path)
+  # Absent enabled.json means nothing is enabled — disabling is a no-op success.
+  [ -f "$enabled_file" ] || { echo "Disabled '$name' on this host."; return 0; }
+
+  local tmp
+  tmp=$(mktemp "$enabled_file.XXXXXX") || { echo "ERROR: mktemp failed" >&2; exit 1; }
+  if ! jq --arg n "$name" 'map(select(. != $n))' "$enabled_file" > "$tmp" \
+     || ! mv -f "$tmp" "$enabled_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to disable '$name' in $enabled_file" >&2
+    exit 1
+  fi
+  echo "Disabled '$name' on this host."
+}
+
+cmd_playbook_assign() {
+  local name="${1:-}" host="${2:-}"
+  if [ -z "$name" ] || [ -z "$host" ]; then
+    echo "Usage: ceo playbook assign <name> <host>" >&2
+    exit 1
+  fi
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
+
+  local scope
+  if ! scope=$(_playbook_registry_scope "$registry_file" "$name"); then
+    echo "ERROR: playbook '$name' is not in the registry. Run: ceo playbook list" >&2
+    exit 1
+  fi
+  if [ "$scope" = "each" ]; then
+    echo "ERROR: '$name' is an each-scope playbook — it runs where enabled, not by owner." >&2
+    echo "  Enable it on this host instead: ceo playbook enable $name" >&2
+    exit 1
+  fi
+
+  if ! _swarm_set_owner "$name" "$host"; then
+    exit 1
+  fi
+  echo "Assigned '$name' to '$host'."
 }
 
 cmd_playbook_info() {
@@ -1495,7 +1962,7 @@ cmd_playbook_info() {
     exit 1
   fi
 
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   _require_registry_current "$registry_file"
 
   local entry
@@ -1558,7 +2025,7 @@ cmd_creds() {
         exit 1
       fi
       ceo_require_vault
-      local registry_file="$CEO_VAULT/CEO/registry.json"
+      local registry_file; registry_file=$(_ceo_registry_path)
       _require_registry_current "$registry_file"
       local entry
       entry=$(jq -r --arg n "$playbook" '.playbooks[] | select(.name==$n)' "$registry_file")
@@ -1656,7 +2123,7 @@ cmd_cron() {
 cmd_chat() {
   local name="${1:-triage}"
   ceo_validate_vault || exit 1
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
 
   _require_registry_current "$registry_file"
 
@@ -1806,7 +2273,7 @@ cmd_trace() {
   done
 
   ceo_validate_vault || exit 1
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   if [ -f "$registry_file" ]; then
     if ! jq empty "$registry_file" 2>/dev/null; then
       echo "ERROR: $registry_file is not valid JSON. Run 'ceo playbook scan' to regenerate." >&2
@@ -1864,6 +2331,7 @@ case "${1:-help}" in
   playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
   trace)    ceo_require_vault; _bind_vault; shift; cmd_trace "$@" ;;
   schedule) ceo_require_vault; _bind_vault; shift; cmd_schedule "$@" ;;
+  swarm)    ceo_require_vault; _bind_vault; shift; cmd_swarm "$@" ;;
   creds)    shift; cmd_creds "$@" ;;
   help|-h|--help) cmd_help ;;
   *)

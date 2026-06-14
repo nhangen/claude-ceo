@@ -3,21 +3,36 @@ import {
   CATCHUP_LOOKBACK_CAP_MS,
   CATCHUP_LOOKBACK_FLOOR_MS,
   dispatchArgv,
+  enabledPath,
   HEARTBEAT_STALE_MS,
   heartbeatPath,
   MAX_SLEEP_MS,
   registryPath,
   resolveFixedLookbackMs,
   resolveHost,
+  swarmPath,
+  syncedHeartbeatPath,
 } from "@/runtime";
 
 describe("path resolution", () => {
-  test("registry lives under <vault>/CEO/registry.json", () => {
-    expect(registryPath("/Users/x/Obsidian")).toBe("/Users/x/Obsidian/CEO/registry.json");
+  test("registryPath is host-local under ~/.ceo, not the synced vault", () => {
+    expect(registryPath("/home/me")).toBe("/home/me/.ceo/registry.json");
+  });
+
+  test("swarmPath is in the synced vault", () => {
+    expect(swarmPath("/vault")).toBe("/vault/CEO/swarm.json");
+  });
+
+  test("enabledPath is host-local", () => {
+    expect(enabledPath("/home/me")).toBe("/home/me/.ceo/enabled.json");
   });
 
   test("heartbeat is host-local under ~/.ceo, never the synced vault", () => {
     expect(heartbeatPath("/home/nhang")).toBe("/home/nhang/.ceo/schedulerd/heartbeat.json");
+  });
+
+  test("syncedHeartbeatPath is in the synced vault, namespaced by host", () => {
+    expect(syncedHeartbeatPath("/vault", "ml-1")).toBe("/vault/CEO/heartbeats/ml-1.json");
   });
 });
 
