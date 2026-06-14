@@ -12,12 +12,16 @@
  * Schedules evaluate in the host's local timezone (the matcher is created with
  * no timezone, matching `new Date()`); registry schedules carry no per-entry tz.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { createMatcher } from "@/cron";
 import { type DaemonDeps, runForever } from "@/daemon";
-import { readHeartbeatFile, writeHeartbeatFile } from "@/heartbeat-store";
+import {
+  readHeartbeatFile,
+  writeHeartbeatFile,
+  writeHeartbeatWithSync,
+  writeSyncedHeartbeat,
+} from "@/heartbeat-store";
 import { parseRegistry } from "@/registry";
 import { parseEnabled } from "@/enabled";
 import { parseSwarm } from "@/swarm";
@@ -56,17 +60,6 @@ function nowStamp(): string {
  */
 function readIfExists(path: string): string {
   return existsSync(path) ? readFileSync(path, "utf8") : "";
-}
-
-/**
- * Atomically write the synced per-host heartbeat. The timestamp is taken here
- * at the I/O edge (not in a pure helper) so unit-tested code stays deterministic.
- */
-function writeSyncedHeartbeat(path: string, host: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ host, ts: new Date().toISOString() }, null, 2));
-  renameSync(tmp, path);
 }
 
 async function main(): Promise<void> {
@@ -135,18 +128,12 @@ async function main(): Promise<void> {
       }
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
-    writeHeartbeat: (hb) => {
-      writeHeartbeatFile(hbPath, hb);
-      // Synced per-host liveness for the offline-owner alert (E2). Filename is
-      // the host id, so two hosts never write the same file — no sync conflict.
-      // Best-effort: a synced-vault write failure must not crash the daemon or
-      // skip the host-local heartbeat above.
-      try {
-        writeSyncedHeartbeat(syncedHbPath, host);
-      } catch (err) {
-        log(`synced heartbeat write failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    },
+    writeHeartbeat: (hb) =>
+      writeHeartbeatWithSync(hb, {
+        writeLocal: (h) => writeHeartbeatFile(hbPath, h),
+        writeSynced: () => writeSyncedHeartbeat(syncedHbPath, host),
+        log,
+      }),
     log,
     host,
     matcher,

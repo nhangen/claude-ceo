@@ -1,9 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Heartbeat } from "@/daemon";
-import { readHeartbeatFile, writeHeartbeatFile } from "@/heartbeat-store";
+import {
+  readHeartbeatFile,
+  writeHeartbeatFile,
+  writeHeartbeatWithSync,
+  writeSyncedHeartbeat,
+} from "@/heartbeat-store";
 
 const dir = mkdtempSync(join(tmpdir(), "ceo-hb-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -63,5 +68,53 @@ describe("heartbeat round-trip", () => {
       JSON.stringify({ ts: 1, host: "x", dispatched_minute: {}, last_fired: { good: 99, bad: "x" } }),
     );
     expect(readHeartbeatFile(path)!.last_fired).toEqual({ good: 99 });
+  });
+});
+
+describe("synced heartbeat", () => {
+  test("writes {host, ts} atomically and leaves no .tmp on success", () => {
+    const path = join(dir, "heartbeats", "ml-1.json");
+    writeSyncedHeartbeat(path, "ml-1");
+    expect(existsSync(`${path}.tmp`)).toBe(false);
+    const written = JSON.parse(readFileSync(path, "utf8"));
+    expect(written.host).toBe("ml-1");
+    expect(typeof written.ts).toBe("string");
+  });
+});
+
+describe("writeHeartbeatWithSync", () => {
+  test("a synced-write failure does not skip the host-local heartbeat and is logged, not thrown", () => {
+    const localWrites: Heartbeat[] = [];
+    const logs: string[] = [];
+    expect(() =>
+      writeHeartbeatWithSync(hb, {
+        writeLocal: (h) => localWrites.push(h),
+        writeSynced: () => {
+          throw new Error("EROFS: read-only synced vault");
+        },
+        log: (m) => logs.push(m),
+      }),
+    ).not.toThrow();
+    // Invariant: host-local write happened even though the synced write failed.
+    expect(localWrites).toEqual([hb]);
+    expect(logs.some((m) => m.includes("synced heartbeat write failed"))).toBe(true);
+  });
+
+  test("on success both writes run and nothing is logged", () => {
+    let local = false;
+    let synced = false;
+    const logs: string[] = [];
+    writeHeartbeatWithSync(hb, {
+      writeLocal: () => {
+        local = true;
+      },
+      writeSynced: () => {
+        synced = true;
+      },
+      log: (m) => logs.push(m),
+    });
+    expect(local).toBe(true);
+    expect(synced).toBe(true);
+    expect(logs).toEqual([]);
   });
 });
