@@ -606,14 +606,20 @@ cmd_swarm() {
   shift 2>/dev/null || true
   case "$subcmd" in
     doctor) cmd_swarm_doctor "$@" ;;
+    owners-health) cmd_swarm_owners_health "$@" ;;
     help|--help|-h)
-      echo "Usage: ceo swarm <doctor> [--fix]"
+      echo "Usage: ceo swarm <doctor|owners-health> [--fix]"
       echo ""
       echo "  doctor          Detect Syncthing swarm.json sync-conflict copies."
       echo "                  Read-only: prints the proposed merge and exits"
       echo "                  non-zero if any conflict copy exists (health gate)."
       echo "  doctor --fix    Apply the merge atomically, then remove the"
       echo "                  conflict copies."
+      echo "  owners-health   Detect single-scope playbook owners whose synced"
+      echo "                  heartbeat has gone stale (host presumed offline →"
+      echo "                  those playbooks run nowhere). Escalates to the inbox"
+      echo "                  on a fresh→stale transition; exits non-zero if any"
+      echo "                  owner is stale."
       ;;
     *)
       echo "Unknown swarm command: $subcmd"
@@ -768,6 +774,165 @@ cmd_swarm_doctor() {
   done
   echo ""
   echo "swarm doctor: merged and removed ${#conflicts[@]} conflict cop$([ "${#conflicts[@]}" -eq 1 ] && echo y || echo ies)."
+  return 0
+}
+
+# How long a single-scope owner's synced heartbeat may go without an update
+# before the host is presumed offline. The daemon re-beats at least every
+# MAX_SLEEP_MS (60s) and `ceo doctor` calls a host-local heartbeat stale at 10
+# minutes; an *owner* being "offline" is a more consequential claim, so this
+# window is deliberately hours, not minutes — a brief daemon restart, a laptop
+# sleep, or a Syncthing propagation lag must not flip a live owner to "offline".
+CEO_OWNER_STALE_S=10800   # 3 hours
+
+# Hosts' clocks disagree. A heartbeat ts slightly AHEAD of this host's clock is
+# the producing host being a little fast, not a time-travelling failure — treat
+# a future-dated ts within this tolerance as fresh (age clamped to 0). Beyond
+# the tolerance the ts is nonsensical and we fall through to the stale path
+# rather than trust a wildly-future timestamp.
+CEO_OWNER_CLOCK_SKEW_S=300   # 5 minutes
+
+# _parse_iso8601_to_epoch <iso>
+#   Portable ISO8601 → epoch seconds for both GNU date (Linux) and BSD date
+#   (macOS). Mirrors the disk-monitor parse: GNU `date -d` first, then BSD
+#   `date -j -f`. Prints the epoch on success; prints nothing and returns 1 on
+#   an unparseable value so the caller routes it to the stale path rather than
+#   silently treating a parse failure as "now".
+_parse_iso8601_to_epoch() {
+  local iso="$1" epoch=""
+  epoch=$(date -d "$iso" +%s 2>/dev/null) && { printf '%s\n' "$epoch"; return 0; }
+  # BSD date needs an explicit format; the daemon writes either a "Z" suffix or
+  # a numeric offset, so try both shapes.
+  epoch=$(date -j -f '%Y-%m-%dT%H:%M:%S%z' "${iso/Z/+0000}" +%s 2>/dev/null) \
+    && { printf '%s\n' "$epoch"; return 0; }
+  return 1
+}
+
+# cmd_swarm_owners_health
+#   A scope:single playbook runs only on its owner host (swarm.json owners{});
+#   there is intentionally no failover. If an owner host goes offline its
+#   single-scope playbooks run NOWHERE and fail silently. This reads each
+#   owner's SYNCED heartbeat (CEO/heartbeats/<host>.json, {host, ts:ISO8601})
+#   and, when an owner is stale (or has never beat), escalates ON TRANSITION to
+#   the inbox. State machine, not signal generator: a host-local state file at
+#   ~/.ceo/owner-staleness-state.json records the currently-stale set so a
+#   sustained outage produces one task, not one per run (the disk-monitor
+#   incident). Exit non-zero when any owner is stale (health gate).
+cmd_swarm_owners_health() {
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo swarm owners-health}"
+  : "${HOME:?HOME must be set before ceo swarm owners-health}"
+
+  local swarm_file; swarm_file=$(_swarm_path) || return 1
+  if [ ! -f "$swarm_file" ]; then
+    echo "swarm owners-health: no swarm.json at $swarm_file (nothing to check)."
+    return 0
+  fi
+  if ! jq -e . "$swarm_file" >/dev/null 2>&1; then
+    echo "ERROR: $swarm_file is malformed JSON; cannot read owners." >&2
+    return 1
+  fi
+
+  # Testing seam: CEO_SWARM_NOW_EPOCH pins "now" for deterministic staleness.
+  # An empty/non-numeric value falls through to the real clock.
+  local now_epoch="${CEO_SWARM_NOW_EPOCH:-}"
+  case "$now_epoch" in
+    ''|*[!0-9]*) now_epoch=$(date +%s) ;;
+  esac
+
+  local hb_dir="$CEO_VAULT/CEO/heartbeats"
+  local state_file="$HOME/.ceo/owner-staleness-state.json"
+  local self_host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null)}"
+  : "${self_host:?cannot determine this host for the owners-health inbox}"
+  local inbox_dir="$CEO_VAULT/CEO/inbox"
+  local inbox_file="$inbox_dir/$self_host.md"
+
+  mkdir -p "$(dirname "$state_file")"
+  local prior_state="{}"
+  if [ -f "$state_file" ] && jq -e . "$state_file" >/dev/null 2>&1; then
+    prior_state=$(jq -c . "$state_file")
+  fi
+
+  # Distinct owner hosts and, for each, the sorted list of playbooks it owns.
+  local owner_hosts
+  owner_hosts=$(jq -r '(.owners // {}) | to_entries[] | select(.value | type == "string") | .value' \
+    "$swarm_file" | sort -u)
+
+  if [ -z "$owner_hosts" ]; then
+    echo "swarm owners-health: no single-scope owners assigned (nothing to check)."
+    return 0
+  fi
+
+  local new_state="{}"
+  local any_stale=0
+  local host
+  while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    local owned
+    owned=$(jq -r --arg h "$host" \
+      '(.owners // {}) | to_entries[] | select(.value == $h) | .key' "$swarm_file" \
+      | sort | paste -sd, -)
+
+    local hb_file="$hb_dir/$host.json"
+    local stale=0 reason=""
+    if [ ! -f "$hb_file" ]; then
+      stale=1; reason="no heartbeat file (never beat / long offline)"
+    else
+      local ts; ts=$(jq -r '.ts // empty' "$hb_file" 2>/dev/null)
+      local hb_epoch
+      if [ -z "$ts" ] || ! hb_epoch=$(_parse_iso8601_to_epoch "$ts"); then
+        stale=1; reason="unparseable heartbeat ts"
+      else
+        local age=$(( now_epoch - hb_epoch ))
+        if [ "$age" -lt $(( -CEO_OWNER_CLOCK_SKEW_S )) ]; then
+          # A ts beyond the skew tolerance into the future means the producing
+          # host's clock is badly wrong — an untrustworthy heartbeat is no
+          # liveness signal, so treat it as stale rather than "very fresh".
+          stale=1; reason="heartbeat ${age}s in the future (> ${CEO_OWNER_CLOCK_SKEW_S}s skew) — clock untrustworthy"
+        elif [ "$age" -lt 0 ]; then
+          # Slightly future within tolerance: the producing host is a little
+          # fast. Clamp to 0 so it reads as fresh, not negative-age.
+          age=0
+        fi
+        if [ "$stale" -eq 0 ] && [ "$age" -gt "$CEO_OWNER_STALE_S" ]; then
+          stale=1; reason="heartbeat ${age}s old (> ${CEO_OWNER_STALE_S}s)"
+        fi
+      fi
+    fi
+
+    if [ "$stale" -eq 1 ]; then
+      any_stale=1
+      new_state=$(jq -c --arg h "$host" '.[$h] = "stale"' <<<"$new_state")
+      local was_stale; was_stale=$(jq -r --arg h "$host" '.[$h] // "fresh"' <<<"$prior_state")
+      echo "  ✗ owner $host stale — $reason — single playbooks not running: ${owned:-<none>}"
+      if [ "$was_stale" != "stale" ]; then
+        mkdir -p "$inbox_dir"
+        local marker="<!-- owner-staleness:$host -->"
+        local hours=$(( CEO_OWNER_STALE_S / 3600 ))
+        local task="- [ ] owner $host heartbeat stale >${hours}h — single playbooks ${owned:-<none>} not running $marker"
+        if ! printf '%s\n' "$task" >> "$inbox_file"; then
+          echo "ERROR: swarm owners-health: failed to append to $inbox_file" >&2
+          return 1
+        fi
+      fi
+    else
+      echo "  ✓ owner $host fresh — single playbooks running: ${owned:-<none>}"
+    fi
+  done <<<"$owner_hosts"
+
+  # Atomic state write: only the currently-stale set survives, so a recovered
+  # host drops out of state and a later re-stale re-alerts as a fresh transition.
+  local state_tmp
+  state_tmp=$(mktemp "$state_file.XXXXXX") || {
+    echo "ERROR: swarm owners-health: mktemp failed for $state_file" >&2
+    return 1
+  }
+  if ! printf '%s\n' "$new_state" > "$state_tmp" || ! mv -f "$state_tmp" "$state_file"; then
+    rm -f "$state_tmp"
+    echo "ERROR: swarm owners-health: failed to write $state_file" >&2
+    return 1
+  fi
+
+  [ "$any_stale" -eq 1 ] && return 1
   return 0
 }
 

@@ -226,4 +226,130 @@ JSON
     "valid conflict-only owner key still merges alongside a dropped null"
 }
 
+# --- ceo swarm owners-health: alert when a single-playbook owner host is stale -
+#
+# A scope:single playbook runs ONLY on its owner host (swarm.json owners{}).
+# There is no failover, so an owner going offline silently stops that playbook
+# everywhere. owners-health reads the SYNCED per-host heartbeat
+# (CEO/heartbeats/<host>.json, written by the daemon with {host, ts:ISO8601})
+# and escalates to the inbox ON TRANSITION fresh->stale only — transition-gated
+# via a host-local state file under ~/.ceo (no append-on-every-fire).
+#
+# Tests inject "now" via CEO_SWARM_NOW_EPOCH so staleness is deterministic
+# without stubbing date(1). The stale threshold is hours; heartbeats are written
+# in ISO8601 with whatever offset the producing host used.
+
+_owners_health() {
+  env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="${OH_NOW:-}" PATH="$PATH" \
+    bash "$CEO_CLI" swarm owners-health "$@"
+}
+
+# Seed swarm.json with a single-scope owner map.
+_seed_owners() {
+  mkdir -p "$TEST_VAULT/CEO"
+  printf '%s\n' "$1" > "$TEST_VAULT/CEO/swarm.json"
+}
+
+# Write a synced heartbeat for <host> with an ISO8601 ts <secs> before/after
+# a fixed reference epoch. Positive secs = older (in the past).
+_write_heartbeat_iso() {
+  local host="$1" iso="$2"
+  mkdir -p "$TEST_VAULT/CEO/heartbeats"
+  printf '{ "host": "%s", "ts": "%s" }\n' "$host" "$iso" > "$TEST_VAULT/CEO/heartbeats/$host.json"
+}
+
+# A fixed reference "now": 2026-06-13T12:00:00Z == epoch 1781697600.
+OH_REF_EPOCH=1781697600
+
+_iso_at_offset() {
+  # $1 = seconds to subtract from OH_REF_EPOCH, rendered as UTC ISO8601.
+  local secs="$1" epoch=$((OH_REF_EPOCH - $1))
+  date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ
+}
+
+_inbox_count() {
+  local marker="$1" file="$TEST_VAULT/CEO/inbox/checker.md"
+  [ -f "$file" ] || { echo 0; return; }
+  grep -c -F "$marker" "$file"
+}
+
+test_owners_health_fresh_owner_healthy_no_inbox() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"   # 1 minute old → fresh
+  local rc=0 out
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || rc=$?
+  assert_eq "$rc" "0" "fresh owner must exit 0"
+  assert_contains "$out" "ml-1" "must report the owner host"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "0" "fresh owner must NOT write an inbox line"
+}
+
+test_owners_health_stale_owner_transition_alerts() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1", "pb2": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 36000)"  # 10h old → stale
+  local rc=0 out
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || rc=$?
+  assert_eq "$rc" "1" "stale owner must exit non-zero (issues found)"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" "fresh->stale must append exactly one inbox line"
+  local line; line=$(grep -F 'owner-staleness:ml-1' "$TEST_VAULT/CEO/inbox/checker.md")
+  assert_contains "$line" "ml-1" "alert names the stale host"
+  assert_contains "$line" "pb1" "alert names an owned playbook"
+  assert_contains "$line" "pb2" "alert names the second owned playbook"
+  assert_eq "$(jq -r '.["ml-1"]' "$TEST_HOME/.ceo/owner-staleness-state.json")" "stale" \
+    "state file records the host as stale"
+}
+
+test_owners_health_no_realert_while_still_stale() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 36000)"
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  local before; before=$(cat "$TEST_HOME/.ceo/owner-staleness-state.json")
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" "second stale run must NOT re-append"
+  assert_eq "$(cat "$TEST_HOME/.ceo/owner-staleness-state.json")" "$before" \
+    "state unchanged on a no-transition stale run"
+}
+
+test_owners_health_recovery_clears_state() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 36000)"   # stale first
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(jq -r '.["ml-1"] // "absent"' "$TEST_HOME/.ceo/owner-staleness-state.json")" "stale" \
+    "precondition: host flagged stale"
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"      # recovered
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "recovered owner must exit 0"
+  assert_eq "$(jq -r '.["ml-1"] // "absent"' "$TEST_HOME/.ceo/owner-staleness-state.json")" "absent" \
+    "recovery clears the host from state"
+}
+
+test_owners_health_missing_heartbeat_is_stale() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  # No heartbeat file written at all → owner has never beat / long gone.
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "missing heartbeat must be treated as stale (non-zero)"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" "missing heartbeat alerts on transition"
+}
+
+test_owners_health_future_ts_within_skew_is_fresh() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset -120)"  # 2 minutes in the FUTURE
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "a slightly-future ts within clock-skew tolerance is fresh, not stale"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "0" "future-within-tolerance must NOT alert"
+}
+
+test_owners_health_far_future_ts_beyond_skew_is_stale() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset -7200)"  # 2 hours in the FUTURE
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "a wildly-future ts beyond skew tolerance is untrustworthy → stale"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" "beyond-skew future alerts on transition"
+}
+
 run_tests
