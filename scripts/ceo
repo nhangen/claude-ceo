@@ -794,16 +794,25 @@ CEO_OWNER_CLOCK_SKEW_S=300   # 5 minutes
 
 # _parse_iso8601_to_epoch <iso>
 #   Portable ISO8601 → epoch seconds for both GNU date (Linux) and BSD date
-#   (macOS). Mirrors the disk-monitor parse: GNU `date -d` first, then BSD
-#   `date -j -f`. Prints the epoch on success; prints nothing and returns 1 on
-#   an unparseable value so the caller routes it to the stale path rather than
-#   silently treating a parse failure as "now".
+#   (macOS). GNU `date -d` first (it accepts fractional seconds and colon
+#   offsets natively), then BSD `date -j -f`. The daemon writes its heartbeat
+#   ts with JS `new Date().toISOString()` → always fractional millis + "Z"
+#   (e.g. 2026-06-14T12:34:56.789Z); BSD `%S%z` rejects both the ".789" and a
+#   colon offset, so before the BSD branch we strip the fractional component and
+#   normalize the zone to a numeric offset BSD's %z understands. Second
+#   granularity is sufficient for an hours-wide staleness window. Prints the
+#   epoch on success; prints nothing and returns 1 on an unparseable value so
+#   the caller routes it to the stale path rather than treating a parse failure
+#   as "now".
 _parse_iso8601_to_epoch() {
-  local iso="$1" epoch=""
+  local iso="$1" epoch="" norm
   epoch=$(date -d "$iso" +%s 2>/dev/null) && { printf '%s\n' "$epoch"; return 0; }
-  # BSD date needs an explicit format; the daemon writes either a "Z" suffix or
-  # a numeric offset, so try both shapes.
-  epoch=$(date -j -f '%Y-%m-%dT%H:%M:%S%z' "${iso/Z/+0000}" +%s 2>/dev/null) \
+  # BSD date needs an explicit format and chokes on fractional seconds and
+  # colon offsets. Drop a ".NNN" fractional-seconds component (preserving any
+  # trailing zone), map "Z" to "+0000", and de-colon a "+HH:MM"/"-HH:MM" offset.
+  norm="$iso"
+  norm=$(printf '%s' "$norm" | sed -E 's/\.[0-9]+//; s/Z$/+0000/; s/([+-][0-9]{2}):([0-9]{2})$/\1\2/')
+  epoch=$(date -j -f '%Y-%m-%dT%H:%M:%S%z' "$norm" +%s 2>/dev/null) \
     && { printf '%s\n' "$epoch"; return 0; }
   return 1
 }
@@ -909,7 +918,17 @@ cmd_swarm_owners_health() {
         local marker="<!-- owner-staleness:$host -->"
         local hours=$(( CEO_OWNER_STALE_S / 3600 ))
         local task="- [ ] owner $host heartbeat stale >${hours}h — single playbooks ${owned:-<none>} not running $marker"
-        if ! printf '%s\n' "$task" >> "$inbox_file"; then
+        # Defense-in-depth on top of the transition gate: the state file is
+        # host-local but inbox/<host>.md is synced, so a wiped ~/.ceo or a fresh
+        # checker host would lose the transition memory and duplicate a still-
+        # present synced alert. Mirror disk-monitor's marker dedupe: skip the
+        # append when an UNCHECKED line bearing this marker already exists. A
+        # checked-off / [done] line does NOT match, so a legitimate re-alert
+        # after the user resolves the old one still fires.
+        if [ -f "$inbox_file" ] && \
+          awk -v m="$marker" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$inbox_file"; then
+          :
+        elif ! printf '%s\n' "$task" >> "$inbox_file"; then
           echo "ERROR: swarm owners-health: failed to append to $inbox_file" >&2
           return 1
         fi

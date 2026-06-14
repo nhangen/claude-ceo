@@ -352,4 +352,49 @@ test_owners_health_far_future_ts_beyond_skew_is_stale() {
   assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" "beyond-skew future alerts on transition"
 }
 
+# A recent heartbeat in the REAL daemon (B4) shape — JS new Date().toISOString()
+# always emits fractional millis + "Z" (e.g. 2026-06-14T12:34:56.789Z). On a
+# BSD/macOS checker host the parser must accept it; before the parser fix the
+# fractional ".789" failed `date -j -f %S%z`, routing a healthy owner to the
+# stale path → false outage alert.
+test_owners_health_fractional_second_heartbeat_is_fresh() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  local epoch=$((OH_REF_EPOCH - 60))   # 1 minute old → fresh
+  local base
+  base=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
+    || date -u -r "$epoch" +%Y-%m-%dT%H:%M:%S)
+  _write_heartbeat_iso "ml-1" "${base}.789Z"   # real B4 fractional-millis shape
+  local rc=0 out
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || rc=$?
+  assert_eq "$rc" "0" "a recent fractional-second (B4) heartbeat must parse → fresh, exit 0"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "0" \
+    "recent fractional-second heartbeat must NOT alert (no parse-failure false outage)"
+}
+
+# Genuinely malformed ts must STILL route to stale — the parser fix must not
+# broaden into accepting garbage as a valid epoch.
+test_owners_health_malformed_ts_still_stale() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "not-a-date"
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "an unparseable heartbeat ts must be treated as stale (non-zero)"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" "malformed ts alerts on transition"
+}
+
+# Defense-in-depth: the synced inbox marker dedupes even when the host-local
+# state file is wiped (fresh checker host / cleared ~/.ceo). Without the marker
+# grep, the lost transition memory re-appends a duplicate of a still-present
+# synced alert line.
+test_owners_health_marker_dedupe_survives_state_wipe() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 36000)"   # 10h old → stale
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" "first transition writes one line"
+  rm -f "$TEST_HOME/.ceo/owner-staleness-state.json"      # simulate wiped host-local state
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "1" \
+    "marker grep prevents a duplicate after the state file is wiped"
+}
+
 run_tests
