@@ -22,8 +22,27 @@ describe("parseRegistry", () => {
     const { playbooks, warnings } = parseRegistry(registry(ENTRY));
     expect(warnings).toEqual([]);
     expect(playbooks).toEqual([
-      { name: "morning-scan", schedule: "50 8 * * 1-5", status: "active", trigger: "cron", hosts: ["ml-1"] },
+      { name: "morning-scan", schedule: "50 8 * * 1-5", status: "active", trigger: "cron", hosts: ["ml-1"], scope: "single" },
     ]);
+  });
+
+  test("projects scope, defaulting absent scope to 'single' (safe: off until owned)", () => {
+    const { playbooks, warnings } = parseRegistry(JSON.stringify({
+      playbooks: [
+        { name: "a", schedule: "0 9 * * *", status: "active", trigger: "cron", scope: "each" },
+        { name: "b", schedule: "0 9 * * *", status: "active", trigger: "cron" },
+      ],
+    }));
+    expect(playbooks.map((p) => [p.name, p.scope])).toEqual([["a", "each"], ["b", "single"]]);
+    expect(warnings).toHaveLength(0);
+  });
+
+  test("an unknown scope value skips the entry (no silent default)", () => {
+    const { playbooks, warnings } = parseRegistry(JSON.stringify({
+      playbooks: [{ name: "bad", schedule: "0 9 * * *", status: "active", trigger: "cron", scope: "all" }],
+    }));
+    expect(playbooks).toHaveLength(0);
+    expect(warnings[0]).toContain("scope");
   });
 
   test("tolerates unknown extra fields", () => {
