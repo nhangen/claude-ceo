@@ -81,7 +81,7 @@ Examples:
   CEO_CHAT_EFFORT=high ceo chat # Override chat effort (default: medium)
   ceo chat morning-scan        # Morning triage conversation
   ceo cron pr-triage           # Autonomous cron trigger (no conversation)
-  ceo playbook scan            # Discover playbooks, update registry + crontab
+  ceo playbook scan            # Discover playbooks, update host-local registry
   ceo schedule                 # List effective schedules + collisions
   ceo schedule morning-scan    # Reschedule one playbook (interactive)
 USAGE
@@ -212,27 +212,12 @@ cmd_doctor() {
   local _backend
   _backend="$(ceo_scheduler_backend 2>/dev/null || echo unknown)"
   if [ "$_backend" = "crontab" ]; then
-    local _sched_state
-    _sched_state="$(ceo_scheduler_list 2>/dev/null || true)"
-    if printf '%s\n' "$_sched_state" | grep -q "ceo-cron.sh"; then
-      local count
-      count=$(printf '%s\n' "$_sched_state" | grep -c "ceo-cron.sh")
-      echo "  ✓ Cron entries installed ($count triggers)"
-      ok=$((ok + 1))
-    else
-      echo "  ! No ceo-cron entries in crontab — run: ceo setup"
-      warn=$((warn + 1))
-    fi
-    # duplicate cron triggers
-    local dup_count
-    dup_count=$(printf '%s\n' "$_sched_state" | grep "ceo-cron\.sh" | sed 's/.*ceo-cron\.sh //' | sort | uniq -d | wc -l | xargs || true)
-    if [ "${dup_count:-0}" -gt 0 ]; then
-      echo "  ✗ Duplicate cron triggers detected — run: ceo playbook scan"
-      fail=$((fail + 1))
-    else
-      echo "  ✓ No duplicate cron triggers"
-      ok=$((ok + 1))
-    fi
+    # The native crontab install path is retired (D1). On a crontab-backend
+    # host the healthy scheduler signal is the ceo-schedulerd heartbeat (checked
+    # below); any lingering ceo-cron.sh entries are a migration leftover flagged
+    # by the migration-leftover check further down. Nothing to install here.
+    echo "  ✓ Scheduling owned by ceo-schedulerd (native crontab install retired)"
+    ok=$((ok + 1))
   elif [ "$_backend" = "daemon" ]; then
     # macOS: scheduling is owned by ceo-schedulerd; the OS holds no per-playbook
     # entries. Liveness is the heartbeat check below (added in #142).
@@ -251,13 +236,15 @@ cmd_doctor() {
     fail=$((fail + 1))
   fi
 
-  # Linux double-fire (#159): the Phase-1 per-playbook crontab block AND the
-  # ceo-schedulerd systemd daemon both active dispatch every playbook twice.
+  # Migration leftover (D1, #159): the native crontab install path is retired —
+  # ceo-schedulerd reads the registry and is the sole scheduler. A host still
+  # carrying the Phase-1 per-playbook `# CEO Agent` crontab block alongside the
+  # running daemon is a migration leftover that double-fires every playbook.
   local _cron_daemon_conflict
   _cron_daemon_conflict="$(ceo_scheduler_crontab_daemon_conflict 2>/dev/null || true)"
   if [ -n "$_cron_daemon_conflict" ]; then
-    echo "  ✗ CEO crontab block ($_cron_daemon_conflict triggers) active alongside the ceo-schedulerd daemon — every playbook double-fires"
-    echo "    Remove the crontab block (the daemon reads the registry): crontab -l | sed '/# CEO Agent START/,/# CEO Agent END/d' | grep -v '^# CEO Agent\$' | crontab -"
+    echo "  ✗ Migration leftover: CEO crontab block ($_cron_daemon_conflict triggers) lingering alongside the ceo-schedulerd daemon — it double-fires what the daemon already dispatches"
+    echo "    Remove the leftover crontab block (the daemon reads the registry): crontab -l | sed '/# CEO Agent START/,/# CEO Agent END/d' | grep -v '^# CEO Agent\$' | crontab -"
     fail=$((fail + 1))
   fi
 
@@ -418,10 +405,10 @@ cmd_doctor() {
     drafts=$(jq -r '.playbooks[] | select(.status == "draft") | .name' "$registry_file" 2>/dev/null)
     if [ -n "$drafts" ]; then
       echo ""
-      echo "  Drafts (not installed in cron; runnable on-demand):"
+      echo "  Drafts (not scheduled by the daemon; runnable on-demand):"
       while IFS= read -r d; do
         [ -z "$d" ] && continue
-        echo "    - $d  (flip frontmatter to 'status: active' then re-run 'ceo playbook scan' to install)"
+        echo "    - $d  (flip frontmatter to 'status: active' then re-run 'ceo playbook scan' to schedule)"
       done <<< "$drafts"
     fi
   fi
@@ -596,7 +583,7 @@ cmd_playbook() {
     help|--help|-h)
       echo "Usage: ceo playbook <scan|list|info|diff|enable|disable|assign>"
       echo ""
-      echo "  scan [--dry-run]   Discover playbooks, update registry + crontab"
+      echo "  scan [--dry-run]   Discover playbooks, update host-local registry"
       echo "                     (--dry-run prints would-be cron block, no writes)"
       echo "  list               Show all registered playbooks with scope + state"
       echo "  info <name>        Show details for one playbook"
@@ -1103,9 +1090,6 @@ cmd_playbook_scan() {
 
   if [ "$dry_run" -eq 1 ]; then
     echo ""
-    echo "=== DRY-RUN: would-be crontab block (no changes applied) ==="
-    _playbook_print_cron_block "$new_registry"
-    echo ""
     echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed) — NOT written"
     if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ]; then
       [ "$invalid_status" -gt 0 ] && echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
@@ -1115,18 +1099,11 @@ cmd_playbook_scan() {
     return 0
   fi
 
-  # Update crontab FIRST. If collision detection refuses, abort before
-  # touching the registry on disk — otherwise a refused scan would persist
-  # the conflicting state into registry.json and confuse later `ceo schedule`
-  # listings. Propagate the scheduler's rc so callers / cron / CI can see
-  # transient failures (rc=1) distinctly from a clean abort.
-  local _scan_install_rc=0
-  _playbook_update_crontab "$new_registry" || _scan_install_rc=$?
-  if [ "$_scan_install_rc" -ne 0 ]; then
-    echo "Aborted: registry not updated. See error above and re-run." >&2
-    return "$_scan_install_rc"
-  fi
-
+  # The native crontab install path is retired (D1). ceo-schedulerd reads the
+  # host-local registry directly and is the sole scheduler — it applies
+  # scope-aware per-host selection that the old "install everything on every
+  # host" crontab block could not. Scan now only writes the registry; it never
+  # touches the user's crontab.
   mkdir -p "$(dirname "$registry_file")"
   local registry_tmp="$registry_file.tmp"
   echo "$new_registry" | jq '.' > "$registry_tmp"
@@ -1135,6 +1112,7 @@ cmd_playbook_scan() {
   echo ""
   echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed)"
   echo "Wrote: $registry_file"
+  echo "Scheduling: ceo-schedulerd reads this registry and dispatches scope-selected playbooks (native crontab install retired)."
 
   _playbook_sync_bins "$new_registry"
 
@@ -1262,85 +1240,30 @@ _playbook_apply_schedule_overrides() {
   echo "$registry"
 }
 
-# _playbook_print_cron_block <registry-json>
-#   Prints the CEO Agent crontab block that would be installed for <registry>
-#   to stdout, without touching the user's crontab. Skips collision detection
-#   (dry-run only — collisions are caught by _playbook_update_crontab on the
-#   real install path).
-_playbook_print_cron_block() {
-  local registry="$1"
+# _remove_crontab_block
+#   Strips the retired Phase-1 `# CEO Agent START`…`# CEO Agent END` block (and
+#   any stray ceo-cron.sh / `# CEO Agent` lines) from the user's crontab and
+#   reinstalls the remainder. The native install path is retired (D1) — this
+#   removal capability survives for the migration (F3) that purges leftover
+#   blocks from hosts that ran an older CEO. Returns the scheduler's rc; a clean
+#   crontab with no CEO block is a no-op success.
+_remove_crontab_block() {
   local marker_start="# CEO Agent START"
   local marker_end="# CEO Agent END"
-  echo "$marker_start"
-  while IFS= read -r row; do
-    local p_name p_trigger p_schedule p_status
-    p_name=$(echo "$row" | jq -r '.name')
-    p_trigger=$(echo "$row" | jq -r '.trigger')
-    p_schedule=$(echo "$row" | jq -r '.schedule')
-    p_status=$(echo "$row" | jq -r '.status')
-    if [ "$p_trigger" = "cron" ] && [ "$p_status" = "active" ] && [ -n "$p_schedule" ]; then
-      echo "$p_schedule $CEO_CRON $p_name  # ceo:$p_name"
-    fi
-  done < <(echo "$registry" | jq -c '.playbooks[]')
-  echo "$marker_end"
-}
-
-_playbook_update_crontab() {
-  local registry="$1"
-  local marker_start="# CEO Agent START"
-  local marker_end="# CEO Agent END"
-
-  # Collision detection — refuse to install duplicate schedules.
-  # Two playbooks at the same minute fight for the global lock; one always
-  # loses silently. Better to fail loud at scan time than skip-with-reason
-  # at run time.
-  local collisions
-  collisions=$(echo "$registry" | jq -r '
-    [.playbooks[] | select(.trigger == "cron" and .status == "active" and .schedule != "")]
-    | group_by(.schedule)
-    | map(select(length > 1))
-    | .[] | "  \(.[0].schedule)  →  \([.[].name] | join(", "))"
-  ')
-
-  if [ -n "$collisions" ]; then
-    echo "ERROR: schedule collision(s) detected — refusing to install crontab" >&2
-    echo "$collisions" >&2
-    echo "" >&2
-    echo "Resolve via 'ceo schedule <playbook>' or by editing \$CEO_DIR/schedules.json." >&2
-    return 1
-  fi
-
-  # Share the emission body with _playbook_print_cron_block so dry-run and
-  # real install can't drift on the active+cron+scheduled filter.
-  local cron_block cron_count
-  cron_block=$(_playbook_print_cron_block "$registry")
-  cron_count=$(printf '%s\n' "$cron_block" | grep -c '# ceo:' || true)
 
   local existing
   existing=$(ceo_scheduler_list 2>/dev/null || true)
 
-  local new_crontab
-  new_crontab=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
-  new_crontab=$(echo "$new_crontab" | grep -v "ceo-cron\.sh" || true)
-  new_crontab=$(echo "$new_crontab" | grep -v "^# CEO Agent$" || true)
+  local cleaned
+  cleaned=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
+  cleaned=$(echo "$cleaned" | grep -v "ceo-cron\.sh" || true)
+  cleaned=$(echo "$cleaned" | grep -v "^# CEO Agent$" || true)
 
-  # Scheduler can fail for non-collision reasons (locked spool, quota, RO fs,
-  # missing crontab binary, unimplemented backend on Mac). The scheduler
-  # abstraction emits its own ERROR line to stderr; we propagate the rc.
-  local crontab_payload
-  if [ -n "$new_crontab" ]; then
-    crontab_payload=$(printf '%s\n%s\n' "$new_crontab" "$cron_block")
-  else
-    crontab_payload="$cron_block"
+  if [ "$cleaned" = "$existing" ]; then
+    return 0
   fi
 
-  local _install_rc=0
-  ceo_scheduler_install "$crontab_payload" || _install_rc=$?
-  if [ "$_install_rc" -ne 0 ]; then
-    return "$_install_rc"
-  fi
-
-  echo "Crontab: $cron_count entries installed"
+  ceo_scheduler_install "$cleaned"
 }
 
 # Validate a 5-field cron expression. Lightweight syntax check — verifies

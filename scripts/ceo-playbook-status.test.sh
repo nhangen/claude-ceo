@@ -27,6 +27,10 @@ setup() {
   : > "$CEO_DIR/TRAINING.md"
   : > "$CEO_DIR/inbox.md"
 
+  # The native crontab install path is retired (D1) — scan never touches the
+  # crontab now. This stub records any invocation to $HOME/.fake-crontab so the
+  # tests can assert scan does NOT install, and the status enum gates *registry
+  # inclusion* (ceo-schedulerd reads the registry) rather than cron lines.
   mkdir -p "$TEST_HOME/.bun/bin"
   cat > "$TEST_HOME/.bun/bin/crontab" << 'STUB'
 #!/bin/bash
@@ -40,6 +44,13 @@ STUB
   : > "$HOME/.fake-crontab"
 
   export PATH="$TEST_HOME/.bun/bin:$PATH"
+}
+
+# A playbook's effective schedule status in the registry: "active" means the
+# daemon will dispatch it; anything else (draft/disabled/absent) means it won't.
+_registry_status() {
+  jq -r --arg n "$1" '.playbooks[] | select(.name==$n) | .status // "none"' \
+    "$REGISTRY_FILE" 2>/dev/null
 }
 
 teardown() {
@@ -65,48 +76,42 @@ status: $status
 PB
 }
 
-test_status_active_installs_cron_line() {
+test_status_active_recorded_active_in_registry() {
   _write_playbook "p-active" "active"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_eq "$(_registry_status p-active)" "active" \
+    "active playbook must be recorded active in the registry (daemon schedules it)"
   local crontab
   crontab=$(cat "$HOME/.fake-crontab")
-  assert_contains "$crontab" "ceo:p-active" "active playbook must appear in installed crontab"
+  assert_not_contains "$crontab" "ceo:p-active" "scan must NOT install a cron line for an active playbook"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_status_draft_does_not_install_cron_line() {
+test_status_draft_recorded_draft_in_registry() {
   _write_playbook "p-draft" "draft"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local crontab
-  crontab=$(cat "$HOME/.fake-crontab")
-  assert_not_contains "$crontab" "ceo:p-draft" "draft playbook must NOT appear in crontab"
+  assert_eq "$(_registry_status p-draft)" "draft" \
+    "draft playbook must be recorded draft (daemon must not dispatch a non-active status)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_status_disabled_does_not_install_cron_line() {
+test_status_disabled_recorded_disabled_in_registry() {
   _write_playbook "p-disabled" "disabled"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local crontab
-  crontab=$(cat "$HOME/.fake-crontab")
-  assert_not_contains "$crontab" "ceo:p-disabled" "disabled playbook must NOT appear in crontab"
+  assert_eq "$(_registry_status p-disabled)" "disabled" \
+    "disabled playbook must be recorded disabled (daemon must not dispatch it)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_status_disabled_removes_previously_installed_line() {
+test_status_toggle_active_to_disabled_updates_registry() {
   _write_playbook "p-toggle" "active"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local crontab_before
-  crontab_before=$(cat "$HOME/.fake-crontab")
-  assert_contains "$crontab_before" "ceo:p-toggle" "precondition: active install must have placed a line"
+  assert_eq "$(_registry_status p-toggle)" "active" "precondition: active scan records active"
 
   _write_playbook "p-toggle" "disabled"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local crontab_after
-  crontab_after=$(cat "$HOME/.fake-crontab")
-  assert_not_contains "$crontab_after" "ceo:p-toggle" "disabled rescan must drop the previously-installed line"
-  local registry_status
-  registry_status=$(jq -r '.playbooks[] | select(.name=="p-toggle") | .status' "$REGISTRY_FILE" 2>/dev/null)
-  assert_eq "$registry_status" "disabled" "registry must reflect the new disabled status"
+  assert_eq "$(_registry_status p-toggle)" "disabled" \
+    "disabled rescan must flip the registry status so the daemon stops dispatching it"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -159,9 +164,6 @@ tier: read
 # noop
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local crontab
-  crontab=$(cat "$HOME/.fake-crontab")
-  assert_not_contains "$crontab" "ceo:p-empty" "missing status must not install cron line"
   local registry_has
   registry_has=$(jq -r '[.playbooks[] | select(.name=="p-empty")] | length' "$REGISTRY_FILE" 2>/dev/null)
   assert_eq "$registry_has" "1" "missing-status playbook must still land in registry (back-compat)"
@@ -188,47 +190,12 @@ test_dry_run_does_not_write_registry() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_dry_run_prints_would_install_block() {
+test_dry_run_reports_summary_without_writing() {
   _write_playbook "p-dry-print" "active"
   local output
   output=$(bash "$CEO_CLI" playbook scan --dry-run 2>&1)
-  assert_contains "$output" "DRY-RUN" "dry-run output must declare itself"
-  assert_contains "$output" "ceo:p-dry-print" "dry-run output must show the would-be cron line"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-}
-
-test_dry_run_output_matches_installed_block() {
-  # Locks in the invariant that the dry-run preview emits the SAME cron
-  # block the real install would write — protects against drift between
-  # _playbook_print_cron_block and _playbook_update_crontab.
-  _write_playbook "p-parity-a" "active"
-  _write_playbook "p-parity-b" "draft"
-  _write_playbook "p-parity-c" "active"
-  # Use unique schedules so collision detection on the real path passes.
-  sed -i.bak 's|0 9 \* \* \*|0 11 * * *|' "$CEO_DIR/playbooks/p-parity-c.md"
-  rm -f "$CEO_DIR/playbooks/p-parity-c.md.bak"
-
-  local dry_out
-  dry_out=$(bash "$CEO_CLI" playbook scan --dry-run 2>&1 \
-    | awk '/CEO Agent START/,/CEO Agent END/')
-
-  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local installed
-  installed=$(awk '/CEO Agent START/,/CEO Agent END/' "$HOME/.fake-crontab")
-
-  assert_eq "$dry_out" "$installed" "dry-run cron block must byte-equal the installed cron block"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-}
-
-test_dry_run_omits_draft_and_disabled() {
-  _write_playbook "p-dry-a" "active"
-  _write_playbook "p-dry-d" "draft"
-  _write_playbook "p-dry-x" "disabled"
-  local output
-  output=$(bash "$CEO_CLI" playbook scan --dry-run 2>&1)
-  assert_contains "$output" "ceo:p-dry-a" "dry-run must include active playbooks"
-  assert_not_contains "$output" "ceo:p-dry-d" "dry-run must omit draft playbooks from the cron block"
-  assert_not_contains "$output" "ceo:p-dry-x" "dry-run must omit disabled playbooks from the cron block"
+  assert_contains "$output" "NOT written" "dry-run must declare that nothing was written"
+  assert_contains "$output" "Registry:" "dry-run must report the registry summary"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -261,7 +228,7 @@ test_doctor_surfaces_drafts() {
   output=$(bash "$CEO_CLI" doctor 2>&1 || true)
   # Anchor on the section header literal so a regression that deletes the
   # Drafts block but leaves the standard playbook enumeration intact fails.
-  assert_contains "$output" "Drafts (not installed in cron" "doctor must emit the Drafts section header"
+  assert_contains "$output" "Drafts (not scheduled by the daemon" "doctor must emit the Drafts section header"
   assert_contains "$output" "p-doctor-wip" "doctor must list the draft playbook by name"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }

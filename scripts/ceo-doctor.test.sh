@@ -273,11 +273,13 @@ test_doctor_no_legacy_warning_when_only_daemon_agent() {
     "the daemon's own keep-alive agent must not be flagged as legacy"
 }
 
-# --- #159: Linux crontab + systemd daemon double-fire migration ---
+# --- #159 / D1: Linux crontab block is a migration leftover ---
 #
-# The Linux sibling of the macOS orphan check above. A host carrying the
-# Phase-1 per-playbook CEO crontab block AND running the ceo-schedulerd systemd
-# daemon (#142) fires every playbook twice. doctor must flag it.
+# The Linux sibling of the macOS orphan check above. The native crontab install
+# path is retired (D1) — ceo-schedulerd is the sole scheduler. A host still
+# carrying the Phase-1 per-playbook CEO crontab block alongside the running
+# daemon is a MIGRATION LEFTOVER (the block double-fires what the daemon already
+# dispatches). doctor must flag the leftover and recommend removing it.
 
 # Writes a CEO_CRONTAB_BIN stub whose `-l` prints $1 (a crontab body) and
 # exits non-zero on any other argv (per stub-cli-argv-validation).
@@ -314,7 +316,7 @@ STUB
   chmod +x "$CEO_SYSTEMCTL_BIN"
 }
 
-test_doctor_flags_crontab_daemon_double_fire() {
+test_doctor_flags_crontab_block_as_migration_leftover() {
   export CEO_SCHEDULER=crontab
   _write_crontab_list_stub "# CEO Agent START
 */5 * * * * /p/ceo-cron.sh morning  # ceo:morning
@@ -323,18 +325,20 @@ test_doctor_flags_crontab_daemon_double_fire() {
   _write_systemctl_stub active
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
-  assert_contains "$output" "double-fire" \
-    "doctor must warn when the crontab block and the systemd daemon both run"
+  assert_contains "$output" "Migration leftover" \
+    "doctor must flag a lingering CEO crontab block as a migration leftover"
   assert_contains "$output" "crontab block" \
-    "the warning must name the crontab block as the conflicting scheduler"
+    "the warning must name the crontab block as the thing to remove"
+  assert_contains "$output" "Remove" \
+    "the warning must recommend removing the leftover crontab block"
   if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on a crontab+daemon double-fire (got rc=0)\n' "$CURRENT_TEST"
+    printf '  FAIL [%s] doctor must return non-zero on a lingering crontab block (got rc=0)\n' "$CURRENT_TEST"
     _record_assertion_fail
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_doctor_no_double_fire_warning_when_daemon_inactive() {
+test_doctor_no_leftover_warning_when_daemon_inactive() {
   export CEO_SCHEDULER=crontab
   _write_crontab_list_stub "# CEO Agent START
 */5 * * * * /p/ceo-cron.sh morning  # ceo:morning
@@ -342,19 +346,19 @@ test_doctor_no_double_fire_warning_when_daemon_inactive() {
   _write_systemctl_stub inactive
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  assert_not_contains "$output" "double-fire" \
-    "the crontab block alone (daemon inactive) is not a double-fire"
+  assert_not_contains "$output" "Migration leftover" \
+    "the crontab block alone (daemon inactive) is not flagged as a leftover by this check"
 }
 
-test_doctor_no_double_fire_warning_when_no_crontab_block() {
+test_doctor_no_leftover_warning_when_no_crontab_block() {
   export CEO_SCHEDULER=crontab
   _write_crontab_list_stub "# unrelated user cron
 0 0 * * * /usr/bin/true"
   _write_systemctl_stub active
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  assert_not_contains "$output" "double-fire" \
-    "an active daemon with no CEO crontab entries is not a double-fire"
+  assert_not_contains "$output" "Migration leftover" \
+    "an active daemon with no CEO crontab entries has no leftover to flag"
 }
 
 # --- ceo-schedulerd liveness (#142) ---

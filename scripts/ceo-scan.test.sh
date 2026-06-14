@@ -26,21 +26,50 @@ _load_ceo_helpers() {
 
 # A crontab stub: `-l` prints nothing (empty existing crontab), a write
 # invocation (file arg or stdin) succeeds. Any other argv shape fails non-zero
-# per stub-cli-argv-validation.
+# per stub-cli-argv-validation. Every invocation is recorded (argv + stdin) to
+# $CRONTAB_LOG so a test can assert whether scan ever tried to install a block.
 _write_crontab_stub() {
   export CEO_CRONTAB_BIN="$TMP/stub-crontab"
+  export CRONTAB_LOG="$TMP/crontab-invocations.log"
+  : > "$CRONTAB_LOG"
   cat > "$CEO_CRONTAB_BIN" <<'STUB'
 #!/bin/bash
+{
+  printf 'argv:%s\n' "$*"
+  case "$1" in
+    -|"") sed 's/^/stdin:/' ;;
+    *) [ -f "$1" ] && sed 's/^/file:/' < "$1" ;;
+  esac
+} >> "$CRONTAB_LOG"
 case "$1" in
   -l) exit 0 ;;
   -r) exit 0 ;;
-  -|"") cat >/dev/null; exit 0 ;;
+  -|"") exit 0 ;;
   *)
     if [ -f "$1" ]; then exit 0; fi
     echo "stub-crontab: unexpected argv: $*" >&2; exit 99 ;;
 esac
 STUB
   chmod +x "$CEO_CRONTAB_BIN"
+}
+
+# A cron-triggered playbook with a concrete schedule. Under the retired Phase-1
+# behavior, scan would emit a `# CEO Agent` block containing this line and write
+# it to the crontab. The daemon now owns scheduling, so scan must NOT install.
+_write_cron_playbook() {
+  local file="$1" name="$2" schedule="$3"
+  {
+    echo "---"
+    echo "name: $name"
+    echo "description: $name desc"
+    echo "trigger: cron"
+    echo "schedule: \"$schedule\""
+    echo "status: active"
+    echo "runner: claude"
+    echo "---"
+    echo ""
+    echo "# $name"
+  } > "$file"
 }
 
 # Minimal valid frontmatter the scanner accepts. chat trigger + empty schedule
@@ -84,6 +113,7 @@ setup() {
   _write_playbook "$CEO_DIR/playbooks/scope-each.md"   "scope-each"   "scope: each"
   _write_playbook "$CEO_DIR/playbooks/scope-absent.md" "scope-absent" ""
   _write_playbook "$CEO_DIR/playbooks/scope-bogus.md"  "scope-bogus"  "scope: bogus"
+  _write_cron_playbook "$CEO_DIR/playbooks/cron-job.md" "cron-job" "0 9 * * *"
 }
 
 teardown() {
@@ -130,6 +160,28 @@ test_unknown_scope_skipped_diagnostic_and_failure_exit() {
   assert_contains "$SCAN_OUT" "scope-bogus" "skip diagnostic must name the offending playbook"
   # Counts toward the failure exit, same observable signal as unknown status.
   assert_eq "$SCAN_RC" "1" "unknown scope must produce a non-zero scan exit (failure observability)"
+}
+
+test_scan_does_not_install_crontab_block() {
+  _run_scan
+  # The cron playbook is in the registry — scan parsed it.
+  local present
+  present=$(jq -r '[.playbooks[] | select(.name=="cron-job")] | length' "$HOME/.ceo/registry.json")
+  assert_eq "$present" "1" "precondition: cron playbook must be parsed into the registry"
+  # …but scan must NOT have written a `# CEO Agent` block to the crontab. The
+  # ceo-schedulerd daemon owns scheduling now; scan only writes the registry.
+  local log
+  log=$(cat "$CRONTAB_LOG" 2>/dev/null || true)
+  assert_not_contains "$log" "# CEO Agent" \
+    "scan must NOT install a # CEO Agent crontab block (daemon is the sole scheduler)"
+  assert_not_contains "$log" "ceo:cron-job" \
+    "scan must NOT write any playbook cron line to the crontab"
+}
+
+test_scan_output_omits_crontab_install_message() {
+  _run_scan
+  assert_not_contains "$SCAN_OUT" "entries installed" \
+    "scan must not claim to install crontab entries"
 }
 
 _load_ceo_helpers
