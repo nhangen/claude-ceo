@@ -38,8 +38,17 @@ export function resolveFixedLookbackMs(raw: string | undefined): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-export function registryPath(vault: string): string {
-  return `${vault}/CEO/registry.json`;
+/** Host-local — the registry is now generated per host under `~/.ceo`, not synced via the vault, so concurrent hosts no longer write-conflict on it. */
+export function registryPath(home: string): string {
+  return `${home}/.ceo/registry.json`;
+}
+
+export function swarmPath(vault: string): string {
+  return `${vault}/CEO/swarm.json`;
+}
+
+export function enabledPath(home: string): string {
+  return `${home}/.ceo/enabled.json`;
 }
 
 export function heartbeatPath(home: string): string {

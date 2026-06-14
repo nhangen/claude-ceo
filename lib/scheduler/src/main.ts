@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   const home = requireEnv("HOME");
   const cronBin = process.env.CEO_CRON_BIN?.trim() || "ceo-cron.sh";
   const host = resolveHost({ CEO_HOSTNAME: process.env.CEO_HOSTNAME }, hostname().split(".")[0] ?? "unknown");
-  const regPath = registryPath(vault);
+  const regPath = registryPath(home);
   const hbPath = heartbeatPath(home);
 
   let running = true;
