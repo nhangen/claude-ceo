@@ -92,12 +92,12 @@ test_splits_large_report() {
 
   local count
   count=$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   if [ "$count" -lt 2 ]; then
     printf '  FAIL [%s] large report should split into multiple messages; got %s\n' \
       "$CURRENT_TEST" "$count"
-    FAILS=$((FAILS + 1))
+    _record_assertion_fail
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 _write_prior_report() {
@@ -126,12 +126,7 @@ test_appends_prior_day_report_for_morning_brief() {
   all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
   assert_contains "$all" "Prior-day full report — 2026-06-14" "prior-day section header must be posted"
   assert_contains "$all" "PRIOR_DAY_BODY_MARKER" "prior-day report body must be posted in full"
-  # Front matter must be stripped, not posted as Discord noise.
-  if printf '%s' "$all" | grep -q "type: ceo-daily-report"; then
-    printf '  FAIL [%s] prior-day front matter must be stripped before posting\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$all" "type: ceo-daily-report" "prior-day front matter must be stripped before posting"
   unset TODAY
 }
 
@@ -147,11 +142,7 @@ test_prior_day_append_gated_to_morning_brief() {
   local all
   all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null || echo "")
   assert_contains "$all" "scan body" "morning-scan's own report must still post"
-  if printf '%s' "$all" | grep -q "Prior-day full report"; then
-    printf '  FAIL [%s] prior-day append must not fire for non-morning-brief triggers\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$all" "Prior-day full report" "prior-day append must not fire for non-morning-brief triggers"
   unset TODAY
 }
 
@@ -165,11 +156,7 @@ test_skips_prior_day_when_none_exists() {
   local all
   all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
   assert_contains "$all" "todays brief" "brief must still post when no prior report exists"
-  if printf '%s' "$all" | grep -q "Prior-day full report"; then
-    printf '  FAIL [%s] must not post a prior-day section when no prior report exists\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$all" "Prior-day full report" "must not post a prior-day section when no prior report exists"
   unset TODAY
 }
 
@@ -185,15 +172,26 @@ test_picks_most_recent_prior_report_excluding_today() {
   local all
   all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
   assert_contains "$all" "MOST_RECENT_PRIOR_MARKER" "must pick the most recent report before today"
-  if printf '%s' "$all" | grep -q "OLDEST_MARKER"; then
-    printf '  FAIL [%s] must not post an older report when a more recent prior exists\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if printf '%s' "$all" | grep -q "TODAY_MARKER"; then
-    printf "  FAIL [%s] must not post today's own report as the prior day\n" "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$all" "OLDEST_MARKER" "must not post an older report when a more recent prior exists"
+  assert_not_contains "$all" "TODAY_MARKER" "must not post today's own report as the prior day"
+  unset TODAY
+}
+
+test_empty_prior_day_allowlist_disables_append() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  # An explicit empty list disables the append — the jq `// ["morning-brief"]`
+  # default only applies when the key is ABSENT, not when it is [].
+  echo '{"discord_prior_day_report_triggers":[]}' > "$CEO_DIR/settings.json"
+  export TODAY="2026-06-15"
+  _write_prior_report "2026-06-14" "PRIOR_DAY_BODY_MARKER"
+
+  printf 'todays brief' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local all
+  all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
+  assert_contains "$all" "todays brief" "the brief itself must still post when prior-day append is disabled"
+  assert_not_contains "$all" "Prior-day full report" "empty allowlist must disable the prior-day append"
+  assert_not_contains "$all" "PRIOR_DAY_BODY_MARKER" "prior-day body must not post when allowlist is empty"
   unset TODAY
 }
 
