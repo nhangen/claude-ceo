@@ -15,6 +15,10 @@ set -euo pipefail
 #   $CEO_DIR/settings.json -> .discord_report_triggers
 #     Defaults to ["morning-brief"] when unset. Set [] to disable.
 #
+# Prior-day full report append (after the brief, morning-brief only by default):
+#   $CEO_DIR/settings.json -> .discord_prior_day_report_triggers
+#     Defaults to ["morning-brief"] when unset. Set [] to disable.
+#
 # Exits 0 always after argument validation; report delivery must not break cron.
 
 TRIGGER="${1:-}"
@@ -78,6 +82,9 @@ TODAY="${TODAY:-$(date +%Y-%m-%d)}"
 _post_report() {
   local title="$1" body="$2"
   local cdir; cdir=$(mktemp -d)
+  # Guarantee cleanup even if a command between here and the tail aborts under
+  # set -e (RETURN fires on any function exit, unlike the prior bare tail rm).
+  trap 'rm -rf "$cdir"' RETURN
   printf '%s\n' "$body" | awk -v dir="$cdir" -v max=1800 '
     function flush() {
       if (chunk != "") {
@@ -121,7 +128,6 @@ $chunk"
     curl -sS -o /dev/null -X POST -H "Content-Type: application/json" \
       --max-time 10 -d "$payload" "$WEBHOOK" >/dev/null 2>&1 || true
   done
-  rm -rf "$cdir"
   printf '%s' "$sent"
 }
 
@@ -164,6 +170,8 @@ if [ "$prior_enabled" = "1" ]; then
       psent=$(_post_report "**📄 Prior-day full report — ${prior_date}**" "$prior_body")
       total=$((total + psent))
       _dlog "prior-day report posted date=$prior_date chunks=$psent"
+    else
+      _dlog "prior-day report empty after front-matter strip date=$prior_date"
     fi
   else
     _dlog "no prior-day report found to append"
