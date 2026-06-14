@@ -103,7 +103,7 @@ Selection verbs:
 - `ceo playbook assign <name> <host>` — set the owner of a `single`-scope playbook in `CEO/swarm.json` (rejected for `each` scope).
 - `ceo playbook list` — per-host view: shows each playbook's scope, status, and current state (`✓ enabled here` / `· disabled here` for `each`; `owner: <host>` / `owner: (none) ⚠` for `single`).
 
-`swarm.json` is synced across the fleet and has the shape `{schema_version, hosts: [], owners: {}}` — `owners` maps a single-scope playbook name to its owning host. Because it is synced, two hosts editing it can produce Syncthing conflict copies; `ceo swarm doctor [--fix]` self-heals by merging `swarm.sync-conflict-*.json` copies (live keys win, owners union, max `schema_version`). `ceo swarm owners-health` flags single-scope playbooks whose assigned owner is missing from the swarm's host list and files an inbox item.
+`swarm.json` is synced across the fleet and has the shape `{schema_version, hosts: [], owners: {}}` — `owners` maps a single-scope playbook name to its owning host. Because it is synced, two hosts editing it can produce Syncthing conflict copies; `ceo swarm doctor [--fix]` self-heals by merging `swarm.sync-conflict-*.json` copies: `hosts` union, `owners` live-wins-per-key (for live-absent keys the most-recent conflict wins), max `schema_version`. `ceo swarm owners-health` flags single-scope playbooks whose owner host's synced heartbeat has gone stale (presumed offline → those playbooks run nowhere), escalating to the inbox once on a fresh→stale transition.
 
 ### Host scoping (legacy)
 

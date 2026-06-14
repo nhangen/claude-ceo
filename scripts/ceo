@@ -1284,9 +1284,9 @@ cmd_playbook_scan() {
         ;;
     esac
 
-    # `hosts` scopes which machines a playbook runs on. Absent → ["*"] (all
-    # hosts). Recorded in the registry but NOT enforced in Phase 1 — the daemon
-    # (Phase 1.5) consumes it. Validate shape at parse and default malformed
+    # `hosts` is deprecated: selectRunnable no longer reads it, so it is not
+    # consumed for scheduling. Scan still normalizes it (kept for back-compat
+    # with older registries; selection is scope-based). Validate shape at parse and default malformed
     # values to ["*"] rather than silently scoping to nowhere or a typo'd host
     # (per enum-config-typo-fallback). An empty array means "runs nowhere",
     # which is a likely mistake — use status:disabled to stop a playbook.
