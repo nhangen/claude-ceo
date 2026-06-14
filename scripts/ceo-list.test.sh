@@ -167,4 +167,20 @@ test_renderer_single_unowned_row() {
   assert_contains "$out" "owner: (none)" "an unowned single playbook must render (none)"
 }
 
+test_enable_does_not_clobber_malformed_enabled() {
+  printf '%s' '{bad json' > "$ENABLED_FILE"
+  local rc=0
+  bash "$CEO_CLI" playbook enable git-monitor >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "enable must exit non-zero when jq cannot parse enabled.json"
+  assert_eq "$(cat "$ENABLED_FILE")" '{bad json' "malformed enabled.json must be preserved, not clobbered"
+}
+
+test_assign_does_not_clobber_malformed_swarm() {
+  printf '%s' '{bad json' > "$SWARM_FILE"
+  local rc=0
+  bash "$CEO_CLI" playbook assign value-tracker mac >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "assign must exit non-zero when swarm.json cannot be parsed"
+  assert_eq "$(cat "$SWARM_FILE")" '{bad json' "malformed swarm.json must be preserved, not clobbered"
+}
+
 run_tests

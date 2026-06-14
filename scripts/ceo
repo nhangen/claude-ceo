@@ -1533,7 +1533,7 @@ _playbook_rows() {
   local swarm_file; swarm_file=$(_swarm_path)
 
   local enabled_json='[]'
-  [ -f "$enabled_file" ] && enabled_json=$(cat "$enabled_file")
+  [ -f "$enabled_file" ] && enabled_json=$(jq -c '. // []' "$enabled_file" 2>/dev/null || echo '[]')
   local owners_json='{}'
   [ -f "$swarm_file" ] && owners_json=$(jq -c '.owners // {}' "$swarm_file" 2>/dev/null)
 
