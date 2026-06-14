@@ -32,3 +32,9 @@ CEO/log/.config-hash
 CEO/log/.fail-count
 // --dry-run preview output is host-local scratch (see ceo-cron.sh --dry-run)
 CEO/log/preview/
+// registry.json is host-local — it now lives at ~/.ceo/registry.json (each host
+// regenerates its own via `ceo playbook scan`). Two hosts scanning a synced copy
+// would both rewrite it and produce .sync-conflict files. Ignore any stale copy
+// lingering in the vault from before the swarm migration; nothing should sync it.
+// (CEO/swarm.json and CEO/heartbeats/ DO sync — they describe the swarm, not one host.)
+CEO/registry.json
