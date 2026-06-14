@@ -167,6 +167,24 @@ test_renderer_single_unowned_row() {
   assert_contains "$out" "owner: (none)" "an unowned single playbook must render (none)"
 }
 
+test_renderer_warns_on_out_of_set_scope() {
+  cat > "$REGISTRY_FILE" << 'JSON'
+{
+  "schema_version": 3,
+  "playbooks": [
+    { "name": "typo-scope", "description": "bad scope", "status": "active", "trigger": "cron", "scope": "signle" }
+  ]
+}
+JSON
+  local err
+  err=$(bash "$CEO_CLI" playbook list 2>&1 >/dev/null)
+  assert_contains "$err" "typo-scope" "a corrupt scope must warn and name the playbook on stderr"
+  assert_contains "$err" "out-of-set scope" "the warning must explain the scope was out of set"
+  local out
+  out=$(bash "$CEO_CLI" playbook list 2>/dev/null)
+  assert_contains "$out" "owner: (none)" "a corrupt-scope row must still render, treated as single"
+}
+
 test_enable_does_not_clobber_malformed_enabled() {
   printf '%s' '{bad json' > "$ENABLED_FILE"
   local rc=0

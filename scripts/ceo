@@ -1801,7 +1801,7 @@ _playbook_registry_scope() {
   scope=$(jq -r --arg n "$name" '.playbooks[] | select(.name==$n) | .scope // "single"' "$registry_file" 2>/dev/null)
   case "$scope" in
     each|single) printf '%s\n' "$scope" ;;
-    *) printf '%s\n' "single" ;;
+    *) echo "WARN: registry entry '$name' has out-of-set scope '$scope'; treating as single" >&2; printf '%s\n' "single" ;;
   esac
   return 0
 }
@@ -1829,7 +1829,10 @@ _playbook_rows() {
     p_desc=$(echo "$row" | jq -r '.description // ""')
     p_status=$(echo "$row" | jq -r '.status // "-"')
     [ -z "$p_status" ] && p_status="-"
-    case "$p_scope" in each|single) ;; *) p_scope="single" ;; esac
+    case "$p_scope" in
+      each|single) ;;
+      *) echo "WARN: registry entry '$p_name' has out-of-set scope '$p_scope'; treating as single" >&2; p_scope="single" ;;
+    esac
 
     if [ "$p_scope" = "each" ]; then
       local is_on
