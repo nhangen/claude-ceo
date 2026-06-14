@@ -12,22 +12,28 @@
  * Schedules evaluate in the host's local timezone (the matcher is created with
  * no timezone, matching `new Date()`); registry schedules carry no per-entry tz.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { createMatcher } from "@/cron";
 import { type DaemonDeps, runForever } from "@/daemon";
 import { readHeartbeatFile, writeHeartbeatFile } from "@/heartbeat-store";
 import { parseRegistry } from "@/registry";
+import { parseEnabled } from "@/enabled";
+import { parseSwarm } from "@/swarm";
 import { lookbackForSchedule } from "@/catchup";
 import {
   CATCHUP_LOOKBACK_CAP_MS,
   CATCHUP_LOOKBACK_FLOOR_MS,
   dispatchArgv,
+  enabledPath,
   heartbeatPath,
   MAX_SLEEP_MS,
   registryPath,
   resolveFixedLookbackMs,
   resolveHost,
+  swarmPath,
+  syncedHeartbeatPath,
 } from "@/runtime";
 
 function requireEnv(name: string): string {
@@ -42,6 +48,27 @@ function nowStamp(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Read a file, or return "" if it is absent. A missing enabled.json/swarm.json
+ * must be treated as a torn/empty read (the parsers fail safe on "") — never a
+ * crash. The registry uses readFileSync directly because a missing registry is
+ * a fatal misconfiguration the loop's last-good logic surfaces via its catch.
+ */
+function readIfExists(path: string): string {
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+/**
+ * Atomically write the synced per-host heartbeat. The timestamp is taken here
+ * at the I/O edge (not in a pure helper) so unit-tested code stays deterministic.
+ */
+function writeSyncedHeartbeat(path: string, host: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ host, ts: new Date().toISOString() }, null, 2));
+  renameSync(tmp, path);
+}
+
 async function main(): Promise<void> {
   const vault = requireEnv("CEO_VAULT");
   const home = requireEnv("HOME");
@@ -49,6 +76,9 @@ async function main(): Promise<void> {
   const host = resolveHost({ CEO_HOSTNAME: process.env.CEO_HOSTNAME }, hostname().split(".")[0] ?? "unknown");
   const regPath = registryPath(home);
   const hbPath = heartbeatPath(home);
+  const enPath = enabledPath(home);
+  const swPath = swarmPath(vault);
+  const syncedHbPath = syncedHeartbeatPath(vault, host);
 
   let running = true;
   let wakeEarly: (() => void) | null = null;
@@ -84,6 +114,8 @@ async function main(): Promise<void> {
         };
       }),
     loadRegistry: () => parseRegistry(readFileSync(regPath, "utf8")),
+    loadEnabled: () => parseEnabled(readIfExists(enPath)),
+    loadSwarm: () => parseSwarm(readIfExists(swPath)),
     dispatch: (name) => {
       // Bun.spawn throws synchronously on e.g. ENOENT (cronBin not on PATH).
       // Swallow + log so one bad dispatch can't crash-loop the daemon; the
@@ -103,7 +135,18 @@ async function main(): Promise<void> {
       }
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
-    writeHeartbeat: (hb) => writeHeartbeatFile(hbPath, hb),
+    writeHeartbeat: (hb) => {
+      writeHeartbeatFile(hbPath, hb);
+      // Synced per-host liveness for the offline-owner alert (E2). Filename is
+      // the host id, so two hosts never write the same file — no sync conflict.
+      // Best-effort: a synced-vault write failure must not crash the daemon or
+      // skip the host-local heartbeat above.
+      try {
+        writeSyncedHeartbeat(syncedHbPath, host);
+      } catch (err) {
+        log(`synced heartbeat write failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
     log,
     host,
     matcher,

@@ -5,7 +5,7 @@
 #
 # As of #144 (Phase 2 of #136) the macOS per-playbook launchd backend is
 # retired: on macOS the Bun daemon `ceo-schedulerd` (lib/scheduler/) owns cron
-# matching and reads CEO/registry.json directly, kept alive by ONE launchd agent
+# matching and reads the host-local $HOME/.ceo/registry.json directly, kept alive by ONE launchd agent
 # (com.ceo.schedulerd — install template at lib/scheduler/deploy/). The OS no
 # longer holds per-playbook schedules on macOS. Linux/WSL still uses crontab.
 #
@@ -95,7 +95,7 @@ ceo_scheduler_list() {
       ;;
     daemon)
       # The daemon holds no per-playbook OS entries — scheduling lives in
-      # registry.json, which it reads directly. Nothing to list.
+      # the host-local $HOME/.ceo/registry.json, which it reads directly. Nothing to list.
       return 0
       ;;
     *)

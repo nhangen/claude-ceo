@@ -55,6 +55,16 @@ export function heartbeatPath(home: string): string {
   return `${home}/.ceo/schedulerd/heartbeat.json`;
 }
 
+/**
+ * Synced per-host liveness heartbeat in the shared vault, namespaced by host so
+ * two hosts never write the same file (no Syncthing conflict). Consumed by the
+ * offline-owner alert (E2): a host whose synced heartbeat goes stale is
+ * presumed offline and its single-scope playbooks unowned.
+ */
+export function syncedHeartbeatPath(vault: string, host: string): string {
+  return `${vault}/CEO/heartbeats/${host}.json`;
+}
+
 export function resolveHost(env: { CEO_HOSTNAME?: string }, osHost: string): string {
   const override = env.CEO_HOSTNAME?.trim();
   return override ? override : osHost;

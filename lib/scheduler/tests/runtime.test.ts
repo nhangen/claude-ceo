@@ -11,6 +11,7 @@ import {
   resolveFixedLookbackMs,
   resolveHost,
   swarmPath,
+  syncedHeartbeatPath,
 } from "@/runtime";
 
 describe("path resolution", () => {
@@ -28,6 +29,10 @@ describe("path resolution", () => {
 
   test("heartbeat is host-local under ~/.ceo, never the synced vault", () => {
     expect(heartbeatPath("/home/nhang")).toBe("/home/nhang/.ceo/schedulerd/heartbeat.json");
+  });
+
+  test("syncedHeartbeatPath is in the synced vault, namespaced by host", () => {
+    expect(syncedHeartbeatPath("/vault", "ml-1")).toBe("/vault/CEO/heartbeats/ml-1.json");
   });
 });
 

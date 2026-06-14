@@ -16,6 +16,7 @@ import { catchUpFires } from "@/catchup";
 import type { CronMatcher } from "@/cron";
 import { dueAt, nextWake, selectRunnable } from "@/select";
 import type { Playbook } from "@/registry";
+import type { Swarm } from "@/swarm";
 
 const MINUTE_MS = 60_000;
 /** How many recent dispatches to retain in the heartbeat for observability. */
@@ -42,6 +43,18 @@ export interface DaemonDeps {
   now(): Date;
   sleep(ms: number): Promise<void>;
   loadRegistry(): { playbooks: Playbook[]; warnings: string[] };
+  /**
+   * Per-tick read of this host's enabled each-scope playbooks (`~/.ceo/enabled.json`).
+   * Returns an empty set on a torn/missing read — fail-safe, so an unreadable
+   * host-local selection means "nothing enabled here", never "run everything".
+   */
+  loadEnabled(): Set<string>;
+  /**
+   * Per-tick read of the synced swarm topology + single-scope owners
+   * (`<vault>/CEO/swarm.json`). Returns `null` on a torn/missing read so the loop
+   * can reuse its last-good owners instead of acting on a half-written file.
+   */
+  loadSwarm(): Swarm | null;
   /** Fire-and-forget spawn of the dispatch command; must not block the loop. */
   dispatch(name: string): void;
   /** Prior heartbeat (if any) used to restore the guard across restarts. */
@@ -59,15 +72,6 @@ export interface DaemonDeps {
    */
   resolveLookback(schedule: string, now: Date): number;
   shouldContinue(): boolean;
-  /**
-   * Scope gating for {@link selectRunnable}: the each-scope playbooks enabled on
-   * this host, and the name→owner map for single-scope playbooks. Optional only
-   * as a B3→B4 stopgap — production currently leaves both unset, so the daemon is
-   * a safe no-op (selects nothing). B4 wires `enabled.json` + `swarm.json` and
-   * should make these required.
-   */
-  enabled?: Set<string>;
-  owners?: Record<string, string>;
 }
 
 function epochMinute(when: Date): number {
@@ -80,6 +84,12 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
   const recent: DispatchRecord[] = prior ? [...prior.last_dispatch] : [];
   let lastFired: Record<string, number> = prior ? { ...prior.last_fired } : {};
   let lastGood: Playbook[] = [];
+  // Last-good swarm owners. Unlike enabled (safe-empty on a torn read), swarm
+  // owners are authoritative cross-host state: transiently losing them would
+  // de-own a single-scope playbook and skip a token-spending run that minute.
+  // So a torn swarm read reuses the previous tick's owners; enabled does not get
+  // last-good because an empty enabled set is the safe (nothing-runs) default.
+  let lastGoodOwners: Record<string, string> = {};
 
   while (deps.shouldContinue()) {
     const now = deps.now();
@@ -95,11 +105,10 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
       deps.log(`registry load failed, reusing last-good: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // TODO(B4): load enabled.json (each-scope enablement) + swarm.json owners
-    // in main.ts and make these DaemonDeps fields required. Until then an
-    // unwired production daemon selects nothing for each-scope and nothing for
-    // unowned single-scope — a safe no-op.
-    const runnable = selectRunnable(playbooks, deps.host, deps.enabled ?? new Set<string>(), deps.owners ?? {});
+    const enabled = deps.loadEnabled();
+    const swarm = deps.loadSwarm();
+    if (swarm !== null) lastGoodOwners = swarm.owners;
+    const runnable = selectRunnable(playbooks, deps.host, enabled, lastGoodOwners);
     const minuteStart = minute * MINUTE_MS;
 
     // Current-minute fires (live path), then catch-up fires for slots missed

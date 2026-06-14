@@ -3,6 +3,7 @@ import { lookbackForSchedule } from "@/catchup";
 import { createMatcher } from "@/cron";
 import type { Playbook } from "@/registry";
 import { type DaemonDeps, type Heartbeat, runForever } from "@/daemon";
+import type { Swarm } from "@/swarm";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "@/runtime";
 
 const m = createMatcher({ timezone: "UTC" });
@@ -26,6 +27,19 @@ interface HarnessOpts {
   cap?: number;
   /** Pin a fixed look-back for all schedules (the env-override path). Omit to use the production-default derived resolver. */
   lookback?: number;
+  /**
+   * Per-tick swarm reads (mirrors `loadSwarm`). `null` simulates a torn read.
+   * Default: a single static swarm with the given `owners`, returned every tick.
+   */
+  swarms?: (Swarm | null)[];
+  /** Owners for the default static swarm (when `swarms` is not supplied). */
+  owners?: Record<string, string>;
+  /**
+   * Per-tick enabled reads (mirrors `loadEnabled`). When supplied, REPLACES the
+   * default accumulate-every-loaded-name behavior. A `null` entry simulates a
+   * torn read → empty set that tick.
+   */
+  enabledByTick?: (Set<string> | null)[];
 }
 
 function harness(opts: HarnessOpts) {
@@ -47,15 +61,32 @@ function harness(opts: HarnessOpts) {
     typeof opts.playbooks === "function"
       ? opts.playbooks
       : () => ({ playbooks: opts.playbooks as Playbook[], warnings: [] });
-  // B3 made selection scope-aware; these tests predate per-host enablement and
-  // assert each-scope playbooks dispatch. Enable every name each load yields by
-  // accumulating into `enabled` as the loop loads — wrapping (not pre-calling)
-  // the loader so its call counter / throw-on-Nth-call behavior is preserved.
+  // B3 made selection scope-aware; the legacy dispatch tests predate per-host
+  // enablement and assert each-scope playbooks dispatch. Default behavior:
+  // accumulate every loaded name into `enabled` as the loop loads — wrapping
+  // (not pre-calling) the loader so its call counter / throw-on-Nth-call
+  // behavior is preserved. The accumulated set is returned each tick by
+  // `loadEnabled` unless a per-tick `enabledByTick` override is supplied.
   const enabled = new Set<string>();
   const loader = () => {
     const loaded = rawLoader();
     for (const p of loaded.playbooks) enabled.add(p.name);
     return loaded;
+  };
+  let enabledTick = 0;
+  const loadEnabled = (): Set<string> => {
+    if (opts.enabledByTick) {
+      return opts.enabledByTick[enabledTick++] ?? new Set<string>();
+    }
+    return new Set(enabled);
+  };
+  let swarmTick = 0;
+  const defaultSwarm: Swarm = { hosts: [], owners: opts.owners ?? {} };
+  const loadSwarm = (): Swarm | null => {
+    if (opts.swarms) {
+      return opts.swarms[swarmTick++] ?? null;
+    }
+    return defaultSwarm;
   };
 
   const deps: DaemonDeps = {
@@ -64,6 +95,8 @@ function harness(opts: HarnessOpts) {
       sleeps.push(ms);
     },
     loadRegistry: loader,
+    loadEnabled,
+    loadSwarm,
     dispatch: (name) => {
       guardAtDispatch[name] = lastHb?.dispatched_minute[name];
       lastFiredAtDispatch[name] = lastHb?.last_fired[name];
@@ -85,8 +118,6 @@ function harness(opts: HarnessOpts) {
         ? () => opts.lookback as number
         : (schedule, now) => lookbackForSchedule(schedule, now, m, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
     shouldContinue: () => i < opts.nows.length,
-    enabled,
-    owners: {},
   };
   return {
     deps,
@@ -319,5 +350,52 @@ describe("missed-slot catch-up (#143)", () => {
     });
     await runForever(h.deps);
     expect(Object.keys(h.heartbeats[0]!.last_fired)).toEqual(["stillhere"]);
+  });
+});
+
+describe("scope gating wired from loaders (B4)", () => {
+  test("dispatches enabled each-scope playbooks and single-scope playbooks owned by this host", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      host: "ml-1",
+      playbooks: [
+        pb({ name: "each-on", schedule: "0 9 * * *", scope: "each" }),
+        pb({ name: "single-mine", schedule: "0 9 * * *", scope: "single" }),
+        pb({ name: "single-theirs", schedule: "0 9 * * *", scope: "single" }),
+      ],
+      enabledByTick: [new Set(["each-on"])],
+      owners: { "single-mine": "ml-1", "single-theirs": "mac" },
+    });
+    await runForever(h.deps);
+    expect(h.dispatched.sort()).toEqual(["each-on", "single-mine"]);
+  });
+
+  test("last-good swarm: a torn swarm read keeps the prior tick's owners so an owned single-scope playbook still fires", async () => {
+    // Tick 1: swarm names ml-1 as owner → single-scope fires. Tick 2 (next
+    // minute): swarm read is torn (null) → owners reused from tick 1 → it still
+    // fires. Without last-good, owners would empty and the playbook be dropped.
+    const swarm: Swarm = { hosts: ["ml-1"], owners: { mine: "ml-1" } };
+    const h = harness({
+      nows: [d("2026-06-01T09:00:05Z"), d("2026-06-01T09:01:05Z")],
+      host: "ml-1",
+      playbooks: [pb({ name: "mine", schedule: "* * * * *", scope: "single" })],
+      enabledByTick: [new Set<string>(), new Set<string>()],
+      swarms: [swarm, null],
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["mine", "mine"]);
+  });
+
+  test("torn enabled read (empty set) disables each-scope dispatch that tick, safe and without crashing", async () => {
+    // Tick 1 enabled has the playbook → fires. Tick 2 (next minute) torn read
+    // (null → empty set) → not enabled → does NOT fire. No last-good for enabled.
+    const h = harness({
+      nows: [d("2026-06-01T09:00:05Z"), d("2026-06-01T09:01:05Z")],
+      playbooks: [pb({ name: "ev", schedule: "* * * * *", scope: "each" })],
+      enabledByTick: [new Set(["ev"]), null],
+      owners: {},
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ev"]);
   });
 });
