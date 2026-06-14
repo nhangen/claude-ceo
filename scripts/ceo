@@ -239,12 +239,14 @@ cmd_doctor() {
 
   # Migration leftover (D1, #159): the native crontab install path is retired —
   # ceo-schedulerd reads the registry and is the sole scheduler. A host still
-  # carrying the Phase-1 per-playbook `# CEO Agent` crontab block alongside the
-  # running daemon is a migration leftover that double-fires every playbook.
+  # carrying the Phase-1 per-playbook `# CEO Agent` crontab block is a migration
+  # leftover regardless of daemon state: once the daemon is up it double-fires
+  # every playbook, and before the daemon is up it fires playbooks the swarm no
+  # longer expects on this host. Flag it either way.
   local _cron_daemon_conflict
   _cron_daemon_conflict="$(ceo_scheduler_crontab_daemon_conflict 2>/dev/null || true)"
   if [ -n "$_cron_daemon_conflict" ]; then
-    echo "  ✗ Migration leftover: CEO crontab block ($_cron_daemon_conflict triggers) lingering alongside the ceo-schedulerd daemon — it double-fires what the daemon already dispatches"
+    echo "  ✗ Migration leftover: CEO crontab block ($_cron_daemon_conflict triggers) still installed — ceo-schedulerd is the sole scheduler; this block double-fires (or mis-fires) playbooks"
     echo "    Remove the leftover crontab block (the daemon reads the registry): crontab -l | sed '/# CEO Agent START/,/# CEO Agent END/d' | grep -v '^# CEO Agent\$' | crontab -"
     fail=$((fail + 1))
   fi
@@ -585,7 +587,7 @@ cmd_playbook() {
       echo "Usage: ceo playbook <scan|list|info|diff|enable|disable|assign>"
       echo ""
       echo "  scan [--dry-run]   Discover playbooks, update host-local registry"
-      echo "                     (--dry-run prints would-be cron block, no writes)"
+      echo "                     (--dry-run prints the registry diff summary, no writes)"
       echo "  list               Show all registered playbooks with scope + state"
       echo "  info <name>        Show details for one playbook"
       echo "  diff [--quiet]     Detect drift between vault and repo playbooks"
@@ -1609,9 +1611,14 @@ _remove_crontab_block() {
   local existing
   existing=$(ceo_scheduler_list 2>/dev/null || true)
 
+  # Strip the wrapped block, then any stray CEO-installed lines that escaped it.
+  # A CEO cron line always carries the trailing `# ceo:<name>` marker that
+  # ceo_scheduler_list emits ("MIN HOUR D M W CMD  # ceo:NAME"); anchor on that
+  # marker (anchored-regex-for-identifier-allowlists) so a user line that merely
+  # mentions ceo-cron.sh in a comment or path is preserved, not clobbered.
   local cleaned
   cleaned=$(echo "$existing" | sed "/$marker_start/,/$marker_end/d")
-  cleaned=$(echo "$cleaned" | grep -v "ceo-cron\.sh" || true)
+  cleaned=$(echo "$cleaned" | grep -vE 'ceo-cron\.sh.*#[[:space:]]*ceo:[^[:space:]]+[[:space:]]*$' || true)
   cleaned=$(echo "$cleaned" | grep -v "^# CEO Agent$" || true)
 
   if [ "$cleaned" = "$existing" ]; then

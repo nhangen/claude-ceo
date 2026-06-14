@@ -338,16 +338,21 @@ test_doctor_flags_crontab_block_as_migration_leftover() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_doctor_no_leftover_warning_when_daemon_inactive() {
+test_doctor_flags_crontab_leftover_even_when_daemon_inactive() {
   export CEO_SCHEDULER=crontab
   _write_crontab_list_stub "# CEO Agent START
 */5 * * * * /p/ceo-cron.sh morning  # ceo:morning
 # CEO Agent END"
   _write_systemctl_stub inactive
-  local output
-  output=$("$CEO_BIN" doctor 2>&1 || true)
-  assert_not_contains "$output" "Migration leftover" \
-    "the crontab block alone (daemon inactive) is not flagged as a leftover by this check"
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "Migration leftover" \
+    "a lingering CEO crontab block is a migration leftover regardless of daemon state (blind-spot fix)"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero on a lingering crontab block even with the daemon inactive (got rc=0)\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_no_leftover_warning_when_no_crontab_block() {
