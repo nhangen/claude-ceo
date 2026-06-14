@@ -976,4 +976,14 @@ test_discovery_probes_mnt_candidates_on_wsl() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_assert_primary_host_accepts_prior_day_report_triggers_key() {
+  local dir="$TEST_HOME/cdir"
+  mkdir -p "$dir"
+  printf '%s\n' '{"primary_host":"","discord_prior_day_report_triggers":["morning-brief"]}' > "$dir/settings.json"
+  local err
+  err=$(CEO_DIR="$dir" bash -c "source '$LIB'; ceo_assert_primary_host" 2>&1 >/dev/null)
+  assert_not_contains "$err" "unknown key 'discord_prior_day_report_triggers'" \
+    "discord_prior_day_report_triggers must be a registered settings key (no unknown-key warning)"
+}
+
 run_tests
