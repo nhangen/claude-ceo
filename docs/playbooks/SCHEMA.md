@@ -22,7 +22,8 @@ Unknown values for enum fields are **rejected at parse time** with a `SKIP` diag
 | `bin` | no | string | If set, `ceo playbook scan` installs a `~/.local/bin/<bin-without-.sh>` symlink pointing at `scripts/<bin>`. Only created for `status: active`. |
 | `inputs` | no | JSON array | Pre-gather keys the dispatcher injects into the prompt context. Empty array = no pre-gathered context. Absent = all keys (back-compat default). Unknown keys warn-and-skip at dispatch. Valid keys: `pr_data`, `pending_count`, `today_log`, `yesterday_log`, `daily_note`, `briefings_training`, `active_domains`, `pending_ask`, `scan_data`, `blessings`. |
 | `requires` | no | JSON array of env-var names | Credentials the playbook needs (e.g. `["HUBSPOT_REFRESH_TOKEN"]`). `ceo creds check <name>` reports missing values. Non-array entries are warned and dropped. |
-| `hosts` | no | JSON array of host names | Which machines the playbook runs on. Absent or `["*"]` → all hosts. **Recorded in the registry but not yet enforced** — the Phase-1.5 daemon consumes it; see [Host scoping](#host-scoping). Malformed values (scalar, empty array, blank element) warn and default to `["*"]`. |
+| `scope` | no | enum: `each`, `single` | How the playbook fans out across the swarm. Absent defaults to `single` (safe: a single-scope playbook runs nowhere until an owner is assigned). `each` runs on every host where locally enabled; `single` runs on exactly one owner host. Unknown values are **rejected at parse** with a `SKIP` and a non-zero scan exit. See [Swarm selection model](#swarm-selection-model). |
+| `hosts` | no | JSON array of host names | **DEPRECATED** — no longer consulted for scheduling. Selection is now `scope` plus host-local enablement (`each`) or `swarm.json` ownership (`single`); `selectRunnable` does not read `hosts`. `ceo playbook scan` still parses and normalizes it (malformed → `["*"]` with a `WARN`) but warns-and-ignores it for scheduling. See [Swarm selection model](#swarm-selection-model) and [Host scoping (legacy)](#host-scoping-legacy). |
 | `artifact` | recommended for `runner: script` | string template | Expected output path relative to the vault. Must start with `CEO/`. Supports `{TODAY}` (YYYY-MM-DD) and `{HOST}` (short hostname). Unknown tokens reject at parse. `ceo doctor` cross-checks declared artifact vs disk for every active script that logged "completed" today. |
 | `out_pattern` | no | string | Legacy reporting pattern (output filename hint). Kept for back-compat with older playbooks. New playbooks should use `artifact`. |
 
@@ -79,9 +80,36 @@ Unknown `--depth` values are rejected at parse (no silent default). `--depth` / 
 
 > **Note on `--model` vs the original design.** The issue proposed "unset → local Ollama default." Forcing Ollama globally would break tier:write playbooks (the three-phase pipeline requires Claude; Ollama is rejected for non-read tiers), so unset keeps each playbook's configured model. The cheap-sweep goal is met by the `preflight` default, which makes no model call at all.
 
-### Host scoping
+### Swarm selection model
 
-The `hosts` field declares which machines a playbook may run on:
+`scope` replaces `hosts` as the mechanism that decides which host runs a playbook. The daemon's run predicate (`selectRunnable`, `lib/scheduler/src/select.ts`) is:
+
+> A host runs a playbook iff it is an **active** `cron` playbook with a non-blank schedule **and** either:
+> - `scope: each` **and** the playbook is in this host's local `~/.ceo/enabled.json`, **or**
+> - `scope: single` **and** this host equals the playbook's owner in `CEO/swarm.json` (`owners[name] === host`).
+
+| `scope` value | Meaning |
+|---|---|
+| absent | `single` (the safe default — runs nowhere until an owner is assigned) |
+| `single` | runs on exactly **one** owner host; assigned via `ceo playbook assign <name> <host>`, recorded in the synced `CEO/swarm.json`. Guarantees no double token spend; an empty owner = runs nowhere. |
+| `each` | runs on **every** host where locally enabled, selected per-host via `ceo playbook enable` / `disable` (host-local `~/.ceo/enabled.json`). |
+| any other value | **unknown** — `ceo playbook scan` skips the entry with a `SKIP` diagnostic and a non-zero exit. |
+
+`ceo playbook scan` validates `scope` at parse time and never coerces an unknown value to a default (per [`enum-config-typo-fallback`](../../../.claude/rules/enum-config-typo-fallback.md)); a typo'd value counts toward the scan's failure exit, the same as an unknown `status`. Ownership is authoritative for `single` scope — local enablement does not gate it.
+
+Selection verbs:
+
+- `ceo playbook enable <name>` / `ceo playbook disable <name>` — toggle an `each`-scope playbook in this host's `~/.ceo/enabled.json` (rejected for `single` scope).
+- `ceo playbook assign <name> <host>` — set the owner of a `single`-scope playbook in `CEO/swarm.json` (rejected for `each` scope).
+- `ceo playbook list` — per-host view: shows each playbook's scope, status, and current state (`✓ enabled here` / `· disabled here` for `each`; `owner: <host>` / `owner: (none) ⚠` for `single`).
+
+`swarm.json` is synced across the fleet and has the shape `{schema_version, hosts: [], owners: {}}` — `owners` maps a single-scope playbook name to its owning host. Because it is synced, two hosts editing it can produce Syncthing conflict copies; `ceo swarm doctor [--fix]` self-heals by merging `swarm.sync-conflict-*.json` copies (live keys win, owners union, max `schema_version`). `ceo swarm owners-health` flags single-scope playbooks whose assigned owner is missing from the swarm's host list and files an inbox item.
+
+### Host scoping (legacy)
+
+> **Deprecated.** The `hosts` field below describes the pre-swarm selection mechanism. It is no longer consulted for scheduling — see [Swarm selection model](#swarm-selection-model). `ceo playbook scan` still parses and normalizes `hosts` for back-compat, but warns-and-ignores it; `selectRunnable` does not read it.
+
+The `hosts` field formerly declared which machines a playbook may run on:
 
 | `hosts` value | Meaning |
 |---|---|
@@ -91,22 +119,7 @@ The `hosts` field declares which machines a playbook may run on:
 | `["*", "ml-1"]` | `*` mixed with names is reserved to mean **all hosts** — the wildcard dominates |
 | scalar / `[]` / blank element | **malformed** — `ceo playbook scan` warns and records `["*"]` |
 
-`ceo playbook scan` validates the shape at parse time and never silently scopes a playbook to nowhere or to a typo'd host: any malformed value defaults to `["*"]` with a `WARN` (per [`enum-config-typo-fallback`](../../../.claude/rules/enum-config-typo-fallback.md)). To stop a playbook entirely, use `status: disabled`, not an empty `hosts` list.
-
-**Enforcement depends on the scheduler backend.** The Phase-1.5 daemon (`ceo-schedulerd`, `lib/scheduler/`) enforces `hosts` — it only dispatches playbooks whose `hosts` includes `"*"` or this host's short hostname (`selectRunnable`). The Phase-1 **native-cron** install path (`_playbook_update_crontab`) still records `hosts` without enforcing it, so a host running via crontab rather than the daemon runs every playbook regardless of scope. The deferred registry `schema_version` bump (which would stop a non-enforcing peer binary from running a host-scoped playbook everywhere) is tracked separately and is **not** part of the daemon change.
-
-### Fan-out scope
-
-The `scope` field declares whether a playbook runs once or fans out per target:
-
-| `scope` value | Meaning |
-|---|---|
-| absent | `single` — run once (the safe default) |
-| `single` | run once |
-| `each` | fan out per target (consumed by the scheduler daemon) |
-| any other value | **unknown** — `ceo playbook scan` skips the entry with a `SKIP` diagnostic and a non-zero exit |
-
-`ceo playbook scan` validates `scope` at parse time and never coerces an unknown value to a default (per [`enum-config-typo-fallback`](../../../.claude/rules/enum-config-typo-fallback.md)). An absent `scope` defaults to `single`; a typo'd value is skipped and counts toward the scan's failure exit, the same as an unknown `status`.
+`ceo playbook scan` still validates the shape at parse time and defaults any malformed value to `["*"]` with a `WARN` (per [`enum-config-typo-fallback`](../../../.claude/rules/enum-config-typo-fallback.md)), but the normalized value no longer affects whether any host runs the playbook. To scope a playbook to specific hosts, use `scope` + `assign` / `enable`; to stop it entirely, use `status: disabled`.
 
 ### Generated registry is host-local
 
