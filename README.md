@@ -135,6 +135,34 @@ ceo playbook info token-intake
 
 Open `http://localhost:8384` on each machine, add devices, share the Obsidian vault (Send & Receive everywhere), copy `syncthing/shared.stignore` to `~/Documents/Obsidian/.stignore`. See `syncthing/README.md` for write-domain rules and conflict handling.
 
+## Swarm (multi-machine)
+
+CEO runs across two or more machines from one synced Obsidian vault with no write-conflicts and no double token spend. Playbook `.md` *definitions* are synced (a shared catalog), but the generated `registry.json` is host-local at `~/.ceo/registry.json` — each host scans its own. A synced `CEO/swarm.json` (`{schema_version, hosts, owners}`) holds the topology and the owners of single-scope playbooks. Each host runs the intersection of the shared catalog, its host-local enablement, and the swarm owners — so the same scheduled work never fires twice.
+
+Per-playbook `scope` decides where it runs:
+
+| `scope` | Runs on | Select with |
+|---------|---------|-------------|
+| `each` | every host where locally enabled | `ceo playbook enable <name>` / `ceo playbook disable <name>` (host-local `~/.ceo/enabled.json`) |
+| `single` | exactly one owner host (no double spend; empty owner = nowhere) | `ceo playbook assign <name> <host>` (recorded in synced `CEO/swarm.json`) |
+
+`ceo playbook list` shows each playbook's scope, status, and current per-host state (`✓ enabled here` / `owner: <host>`).
+
+Operational commands:
+
+```bash
+ceo playbook list                 # per-host view of scope + state
+ceo playbook enable <name>        # run an each-scope playbook on THIS host
+ceo playbook disable <name>       # stop it on THIS host
+ceo playbook assign <name> <host> # set the owner of a single-scope playbook
+ceo swarm doctor [--fix]          # detect/heal swarm.json sync-conflict copies
+ceo swarm owners-health           # flag single-scope owners whose heartbeat is stale (offline)
+```
+
+Scheduling is owned by the `ceo-schedulerd` daemon (native crontab install is retired); its run predicate (`selectRunnable`) is exactly the intersection above.
+
+See [`docs/install.md`](docs/install.md) for fresh multi-machine setup, [`docs/playbooks/SCHEMA.md`](docs/playbooks/SCHEMA.md#swarm-selection-model) for the full selection model, and [`docs/migration.md`](docs/migration.md) for migrating an existing single-host install.
+
 ## Development
 
 ```bash
