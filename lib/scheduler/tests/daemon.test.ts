@@ -14,6 +14,7 @@ const pb = (over: Partial<Playbook>): Playbook => ({
   status: "active",
   trigger: "cron",
   hosts: ["*"],
+  scope: "each",
   ...over,
 });
 
@@ -42,10 +43,20 @@ function harness(opts: HarnessOpts) {
   // dispatch is called. Proves catch-up keeps at-most-once even if the two
   // fields are ever split into separate heartbeat writes.
   const lastFiredAtDispatch: Record<string, number | undefined> = {};
-  const loader =
+  const rawLoader =
     typeof opts.playbooks === "function"
       ? opts.playbooks
       : () => ({ playbooks: opts.playbooks as Playbook[], warnings: [] });
+  // B3 made selection scope-aware; these tests predate per-host enablement and
+  // assert each-scope playbooks dispatch. Enable every name each load yields by
+  // accumulating into `enabled` as the loop loads — wrapping (not pre-calling)
+  // the loader so its call counter / throw-on-Nth-call behavior is preserved.
+  const enabled = new Set<string>();
+  const loader = () => {
+    const loaded = rawLoader();
+    for (const p of loaded.playbooks) enabled.add(p.name);
+    return loaded;
+  };
 
   const deps: DaemonDeps = {
     now: () => opts.nows[i++]!,
@@ -74,6 +85,8 @@ function harness(opts: HarnessOpts) {
         ? () => opts.lookback as number
         : (schedule, now) => lookbackForSchedule(schedule, now, m, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
     shouldContinue: () => i < opts.nows.length,
+    enabled,
+    owners: {},
   };
   return {
     deps,

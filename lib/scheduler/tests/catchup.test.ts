@@ -16,6 +16,7 @@ const pb = (over: Partial<Playbook>): Playbook => ({
   status: "active",
   trigger: "cron",
   hosts: ["*"],
+  scope: "each",
   ...over,
 });
 

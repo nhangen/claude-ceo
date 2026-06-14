@@ -59,6 +59,15 @@ export interface DaemonDeps {
    */
   resolveLookback(schedule: string, now: Date): number;
   shouldContinue(): boolean;
+  /**
+   * Scope gating for {@link selectRunnable}: the each-scope playbooks enabled on
+   * this host, and the name→owner map for single-scope playbooks. Optional only
+   * as a B3→B4 stopgap — production currently leaves both unset, so the daemon is
+   * a safe no-op (selects nothing). B4 wires `enabled.json` + `swarm.json` and
+   * should make these required.
+   */
+  enabled?: Set<string>;
+  owners?: Record<string, string>;
 }
 
 function epochMinute(when: Date): number {
@@ -86,7 +95,11 @@ export async function runForever(deps: DaemonDeps): Promise<void> {
       deps.log(`registry load failed, reusing last-good: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    const runnable = selectRunnable(playbooks, deps.host);
+    // TODO(B4): load enabled.json (each-scope enablement) + swarm.json owners
+    // in main.ts and make these DaemonDeps fields required. Until then an
+    // unwired production daemon selects nothing for each-scope and nothing for
+    // unowned single-scope — a safe no-op.
+    const runnable = selectRunnable(playbooks, deps.host, deps.enabled ?? new Set<string>(), deps.owners ?? {});
     const minuteStart = minute * MINUTE_MS;
 
     // Current-minute fires (live path), then catch-up fires for slots missed
