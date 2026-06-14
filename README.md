@@ -15,7 +15,7 @@ Cron / interactive trigger
 ceo-cron.sh ──► ceo-config.sh        (resolve $CEO_VAULT)
             ──► ceo-gather.sh         (pre-gather context → env)
             ──► ceo-scan.sh           (vault diff)
-            ──► registry.json         (dispatch lookup)
+            ──► ~/.ceo/registry.json  (host-local dispatch lookup)
             ──► preflight_<name>()
             ──► runner:
                  • claude (default)   — read tier = single call,
@@ -27,7 +27,7 @@ Output: CEO/reports/YYYY-MM-DD.md
 State:  CEO/log/, CEO/approvals/, CEO/cache/
 ```
 
-Playbooks self-register: `ceo playbook scan` walks `CEO/playbooks/*.md`, extracts each frontmatter block via `yq`, rewrites `registry.json`, and updates the crontab between `# CEO Agent START/END` markers.
+Playbooks self-register: `ceo playbook scan` walks `CEO/playbooks/*.md`, extracts each frontmatter block via `yq`, and rewrites the host-local `~/.ceo/registry.json`. Scheduling is owned by the `ceo-schedulerd` daemon (which reads that registry) — scan does not touch the crontab.
 
 ## Subagents
 
@@ -108,14 +108,14 @@ ceo playbook info token-intake
 ## Install
 
 1. Clone somewhere persistent (e.g. `~/ML-AI/claude/ceo`).
-2. Run `scripts/ceo setup` — installs deps where it can, walks you through git/ssh/cron, creates `~/.ceo/config` with the resolved vault path.
+2. Run `scripts/ceo setup` — installs deps where it can, walks you through git/ssh and the `ceo-schedulerd` daemon, creates `~/.ceo/config` with the resolved vault path.
 3. Symlink the CLIs onto `PATH`:
    ```bash
    ln -s "$(pwd)/scripts/ceo"               ~/bin/ceo
    ln -s "$(pwd)/scripts/count-blessings.sh" ~/bin/count-blessings
    ```
-4. Run `scripts/ceo doctor` to verify everything resolves (yq, gh auth, vault, cron).
-5. Run `ceo playbook scan` to build `registry.json` and install the crontab.
+4. Run `scripts/ceo doctor` to verify everything resolves (yq, gh auth, vault, scheduler daemon).
+5. Run `ceo playbook scan` to build the host-local `~/.ceo/registry.json`. Scheduling is handled by the `ceo-schedulerd` daemon — scan does not install a crontab.
 
 ### Requirements
 
@@ -227,7 +227,7 @@ Playbook frontmatter `schedule:` is the default. Per-user overrides live in `$CE
 }
 ```
 
-Unknown playbook names and invalid cron syntax warn to stderr and are ignored — never silently coerced. `ceo playbook scan` performs collision detection before installing the crontab; a refused scan leaves the previous good state intact. Use `ceo schedule <playbook>` for an interactive reschedule.
+Unknown playbook names and invalid cron syntax warn to stderr and are ignored — never silently coerced. `ceo playbook scan` performs collision detection before writing the registry; a refused scan leaves the previous good registry intact. Use `ceo schedule <playbook>` for an interactive reschedule.
 
 ### Read-tier pre-gather
 
@@ -287,7 +287,7 @@ CEO/
 ├── TRAINING.md        — rules learned from corrections
 ├── training/          — domain-specific training rules
 ├── playbooks/         — step-by-step workflows (frontmatter drives registration)
-├── registry.json      — derived dispatch table
+├── swarm.json         — synced swarm topology + single-scope owners
 ├── settings.json      — runtime config (cooldown, branch_prefix, …)
 ├── repos.md           — registry of cloned repos
 ├── inbox.md           — shared task queue for the inbox playbook
@@ -305,9 +305,9 @@ CEO/
 `ceo`:
 
 ```
-ceo setup            First-time machine setup (deps, git, ssh, cron)
+ceo setup            First-time machine setup (deps, git, ssh, scheduler daemon)
 ceo next             Redisplay post-setup steps
-ceo doctor           Check system health (deps, vault, cron, auth)
+ceo doctor           Check system health (deps, vault, scheduler daemon, auth)
 ceo test             Smoke test: trigger morning-brief, check log
 ceo cron <name>      Manually run a cron trigger
 ceo chat [name]      Interactive playbook (no cron); empty = triage conversation; defaults to --effort medium
@@ -342,7 +342,7 @@ count-blessings show         Show today's three picks
 
 - **WSL2 cron does not auto-start at boot.** Add `[boot] command = service cron start` to `/etc/wsl.conf`, or set up a Windows Task Scheduler job that runs `wsl.exe -u <user> -- /etc/init.d/cron start` at logon.
 - **Portable timeout.** `ceo-cron.sh` uses `timeout` (Linux) or `gtimeout` (macOS via `brew install coreutils`). If neither is installed, the wrapper degrades to no wall-clock cap (`--max-turns` and API timeout still apply) and a `WARN` is logged.
-- **Schedule collisions are refused, not coerced.** Two cron-trigger playbooks on the same minute would race the global `/tmp/ceo-cron.lock`; `ceo playbook scan` refuses to install the crontab until you resolve via `ceo schedule <playbook>` or by editing `schedules.json`.
+- **Schedule collisions are refused, not coerced.** Two cron-trigger playbooks on the same minute would race the global `/tmp/ceo-cron.lock`; `ceo playbook scan` refuses to write the registry until you resolve via `ceo schedule <playbook>` or by editing `schedules.json`.
 - **Playbook frontmatter schema.** See [`docs/playbooks/SCHEMA.md`](docs/playbooks/SCHEMA.md) for the full field reference. `status:` is now an enum (`active` / `draft` / `disabled`) — drafts are runnable on-demand but never cron-installed, disabled tears down previously-installed cron lines. Unknown status values are rejected at parse time.
 
 ## License

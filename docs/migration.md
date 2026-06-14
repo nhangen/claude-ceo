@@ -54,9 +54,14 @@ hosts scanning a shared copy would both rewrite it and produce Syncthing
 ## 4. Create and populate `swarm.json`
 
 Run `ceo setup` to bootstrap `CEO/swarm.json` and register each host into
-`hosts[]`. Each machine needs a **unique `CEO_HOSTNAME`** — the registration
-collision guard refuses an ambiguous id (two machines sharing one id leads to
-double ownership of a `single`-scope playbook). See
+`hosts[]`. Set an explicit **`CEO_HOSTNAME` on every machine** as the default —
+not only when hostnames collide. An explicit id makes the bash (`hostname -s`)
+and TS (`os.hostname().split('.')[0]`) host-id resolution byte-identical,
+eliminating any rare OS divergence between the two. The registration collision
+guard is the backstop: if you do let identity auto-resolve and two machines
+share a short hostname, the guard refuses the ambiguous second registration
+(two machines sharing one id leads to double ownership of a `single`-scope
+playbook). See
 [`install.md` §2–§5](install.md#2-set-a-unique-ceo_hostname-per-machine) for the
 per-host setup, ordering (machine 1 creates `swarm.json`, others join after it
 syncs), and the scan step.

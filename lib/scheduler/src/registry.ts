@@ -1,7 +1,7 @@
 /**
  * Registry reader for the ceo-schedulerd daemon (#136 Phase 1.5).
  *
- * The on-disk registry (`$CEO_VAULT/CEO/registry.json`, schema v3) is written by
+ * The on-disk registry (host-local `~/.ceo/registry.json`, schema v3) is written by
  * `ceo playbook scan`. This module projects each entry down to the fields the
  * daemon needs and normalizes `hosts` the same way the bash scanner does
  * (absent / null / malformed → `["*"]`). Entries missing a required field are
