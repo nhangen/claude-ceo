@@ -290,6 +290,31 @@ CEOCONF
   export VAULT CEO_OS
 }
 
+ceo_setup_swarm() {
+  echo ""
+  echo "[9a] Swarm registration"
+  # ceo_setup_vault may have pushed CEO_VAULT onto MISSING_CONFIG and left
+  # VAULT empty; without a vault there is nowhere to write swarm.json. Skip
+  # rather than fail — the missing-config surface already flags the real issue.
+  if [ -z "${VAULT:-}" ]; then
+    echo "  Skipped (no vault configured yet)."
+    return 0
+  fi
+  if ! command -v jq &>/dev/null; then
+    echo "  Skipped (jq not installed). Re-run 'ceo setup' after installing jq."
+    return 0
+  fi
+  CEO_VAULT="$VAULT" _swarm_bootstrap || {
+    echo "  WARNING: could not bootstrap swarm.json."
+    return 0
+  }
+  if CEO_VAULT="$VAULT" _swarm_register_host; then
+    echo "  Registered this host in $VAULT/CEO/swarm.json"
+  else
+    echo "  Host NOT registered — set a unique CEO_HOSTNAME (see message above) and re-run 'ceo setup'."
+  fi
+}
+
 ceo_setup_pr_sources() {
   echo ""
   echo "[9b] PR sources configuration"

@@ -328,6 +328,95 @@ _ceo_registry_path() {
   : "${HOME:?HOME must be set to resolve the host-local registry path}"
   printf '%s\n' "$HOME/.ceo/registry.json"
 }
+
+# Unlike registry.json (host-local), swarm.json IS synced: it describes the
+# swarm itself (which hosts participate, who owns each single-scope playbook),
+# so every host must read the same file. The scheduler daemon reads this path
+# and tolerates the file being absent (treats as empty / no-op).
+_swarm_path() {
+  : "${CEO_VAULT:?CEO_VAULT must be set to resolve the swarm path}"
+  printf '%s\n' "$CEO_VAULT/CEO/swarm.json"
+}
+CEO_SWARM_SCHEMA_VERSION=1
+
+# _swarm_resolve_host
+#   Prints this host's swarm id on stdout. Prefers an explicit CEO_HOSTNAME;
+#   falls back to `hostname -s`. Empty result is a fatal misconfiguration
+#   (shell-required-env-vars: an empty id silently corrupts the swarm).
+_swarm_resolve_host() {
+  local host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null)}"
+  : "${host:?cannot determine this host (CEO_HOSTNAME unset and 'hostname -s' returned empty)}"
+  printf '%s\n' "$host"
+}
+
+# _swarm_bootstrap
+#   Create swarm.json if absent: {"schema_version":1,"hosts":[],"owners":{}}.
+#   Idempotent — an existing file (with its hosts[]/owners{}) is left untouched
+#   so a re-run never clobbers peer-registered hosts or assigned owners.
+_swarm_bootstrap() {
+  local swarm_file; swarm_file=$(_swarm_path) || return 1
+  [ -f "$swarm_file" ] && return 0
+  mkdir -p "$(dirname "$swarm_file")"
+  local tmp
+  tmp=$(mktemp "$swarm_file.XXXXXX") || {
+    echo "ERROR: mktemp failed for $swarm_file" >&2
+    return 1
+  }
+  if ! jq -n --argjson v "$CEO_SWARM_SCHEMA_VERSION" \
+        '{schema_version: $v, hosts: [], owners: {}}' > "$tmp" \
+     || ! mv -f "$tmp" "$swarm_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to write $swarm_file" >&2
+    return 1
+  fi
+  return 0
+}
+
+# _swarm_register_host
+#   Register this host into swarm.json hosts[]. Bootstraps the file first if
+#   absent. Idempotent for an explicit CEO_HOSTNAME: re-registering an
+#   already-present id is a safe no-op.
+#
+#   Collision guard (the safety invariant): a host can't know whether an
+#   existing hosts[] entry is itself or a clone. When CEO_HOSTNAME is NOT
+#   explicitly set and the bare `hostname -s` value already appears in
+#   hosts[], the id is ambiguous — two machines could silently share it and
+#   end up with double ownership of a single-scope playbook. Refuse with a
+#   non-zero exit and instruct the user to set a unique CEO_HOSTNAME. An
+#   explicit CEO_HOSTNAME is trusted: the user has asserted the id is unique,
+#   so re-registering it is the safe no-op above, never a refusal.
+_swarm_register_host() {
+  _swarm_bootstrap || return 1
+  local swarm_file; swarm_file=$(_swarm_path) || return 1
+  local host; host=$(_swarm_resolve_host) || return 1
+
+  local already_present
+  already_present=$(jq -r --arg h "$host" '.hosts | index($h) != null' "$swarm_file" 2>/dev/null)
+
+  if [ "$already_present" = "true" ]; then
+    if [ -z "${CEO_HOSTNAME:-}" ]; then
+      echo "ERROR: host id '$host' (from 'hostname -s') is already in swarm.json hosts[]." >&2
+      echo "  Cannot tell whether that entry is this machine or a different one." >&2
+      echo "  Set a unique CEO_HOSTNAME for this machine and re-run, e.g.:" >&2
+      echo "    echo 'CEO_HOSTNAME=$host-2' >> ~/.ceo/config" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  local tmp
+  tmp=$(mktemp "$swarm_file.XXXXXX") || {
+    echo "ERROR: mktemp failed for $swarm_file" >&2
+    return 1
+  }
+  if ! jq --arg h "$host" '.hosts += [$h]' "$swarm_file" > "$tmp" \
+     || ! mv -f "$tmp" "$swarm_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to register host '$host' in $swarm_file" >&2
+    return 1
+  fi
+  return 0
+}
 # shellcheck disable=SC2034
 CEO_VALID_RUNNERS=(claude script ollama ollama-think skill)
 # shellcheck disable=SC2034

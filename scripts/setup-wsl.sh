@@ -75,6 +75,7 @@ ceo_setup_check_yq "sudo snap install yq  (or: brew install yq on Mac)"
 ceo_setup_repos_dir
 ceo_setup_check_claude
 ceo_setup_vault
+ceo_setup_swarm
 ceo_setup_pr_sources
 ceo_setup_cron
 ceo_setup_path_symlink
