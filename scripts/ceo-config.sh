@@ -319,10 +319,24 @@ ceo_pin_home_or_warn() {
 #   1 — implicit (pre-runner-script registry; missing field treated as <2)
 # ---------------------------------------------------------------------------
 CEO_REGISTRY_SCHEMA_VERSION=3
+
+# The generated registry.json lives host-local, not in the synced vault: two
+# hosts scanning would otherwise both rewrite the synced file and produce
+# Syncthing .sync-conflict copies. The vault keeps only the playbook .md
+# definitions (which scan reads). The scheduler daemon reads the same path.
+_ceo_registry_path() {
+  : "${HOME:?HOME must be set to resolve the host-local registry path}"
+  printf '%s\n' "$HOME/.ceo/registry.json"
+}
 # shellcheck disable=SC2034
 CEO_VALID_RUNNERS=(claude script ollama ollama-think skill)
 # shellcheck disable=SC2034
 CEO_VALID_STATUSES=(active draft disabled)
+# Per-playbook fan-out scope. `single` runs the playbook once; `each` fans it
+# out per target (consumed by the scheduler daemon). Absent defaults to the
+# safe `single` — never coerce an unknown value to `each`.
+# shellcheck disable=SC2034
+CEO_VALID_SCOPES=(each single)
 
 # ceo_status_valid <value>
 #   Returns 0 if <value> is one of the supported statuses, 1 otherwise.
@@ -340,7 +354,7 @@ ceo_status_valid() {
 # ceo_registry_version <registry_file>
 #   Prints the integer schema_version, or nothing if missing/malformed.
 ceo_registry_version() {
-  local registry_file="${1:-${CEO_DIR:-}/registry.json}"
+  local registry_file="${1:-$(_ceo_registry_path)}"
   jq -r '
     if has("schema_version")
       and (.schema_version | type) == "number"
@@ -362,7 +376,7 @@ ceo_registry_version() {
 # Codes 2 and 3 are kept distinct so a real downgrade is never retried into
 # acceptance and a transient unreadable read is never misreported as a downgrade.
 ceo_registry_validate() {
-  local registry_file="${1:-${CEO_DIR:-}/registry.json}"
+  local registry_file="${1:-$(_ceo_registry_path)}"
   if [ ! -f "$registry_file" ]; then
     return 1
   fi

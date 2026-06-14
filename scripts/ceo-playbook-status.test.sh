@@ -16,8 +16,11 @@ setup() {
   export HOME="$TEST_HOME"
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
+  # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
+  # the synced vault — `ceo playbook scan` writes it there.
+  REGISTRY_FILE="$HOME/.ceo/registry.json"
 
-  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$TEST_HOME/empty-repo-playbooks"
+  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$TEST_HOME/empty-repo-playbooks" "$HOME/.ceo"
   export CEO_REPO_PLAYBOOK_DIR="$TEST_HOME/empty-repo-playbooks"
   : > "$CEO_DIR/AGENTS.md"
   : > "$CEO_DIR/IDENTITY.md"
@@ -102,7 +105,7 @@ test_status_disabled_removes_previously_installed_line() {
   crontab_after=$(cat "$HOME/.fake-crontab")
   assert_not_contains "$crontab_after" "ceo:p-toggle" "disabled rescan must drop the previously-installed line"
   local registry_status
-  registry_status=$(jq -r '.playbooks[] | select(.name=="p-toggle") | .status' "$CEO_DIR/registry.json" 2>/dev/null)
+  registry_status=$(jq -r '.playbooks[] | select(.name=="p-toggle") | .status' "$REGISTRY_FILE" 2>/dev/null)
   assert_eq "$registry_status" "disabled" "registry must reflect the new disabled status"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -115,7 +118,7 @@ test_status_invalid_rejects_at_parse() {
   assert_contains "$output" "p-typo" "scan must mention the offending playbook"
   assert_contains "$output" "scrpt" "scan must echo the rejected value"
   local registry_has
-  registry_has=$(jq -r '[.playbooks[] | select(.name=="p-typo")] | length' "$CEO_DIR/registry.json" 2>/dev/null)
+  registry_has=$(jq -r '[.playbooks[] | select(.name=="p-typo")] | length' "$REGISTRY_FILE" 2>/dev/null)
   assert_eq "$registry_has" "0" "rejected playbook must not land in the registry"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -160,7 +163,7 @@ PB
   crontab=$(cat "$HOME/.fake-crontab")
   assert_not_contains "$crontab" "ceo:p-empty" "missing status must not install cron line"
   local registry_has
-  registry_has=$(jq -r '[.playbooks[] | select(.name=="p-empty")] | length' "$CEO_DIR/registry.json" 2>/dev/null)
+  registry_has=$(jq -r '[.playbooks[] | select(.name=="p-empty")] | length' "$REGISTRY_FILE" 2>/dev/null)
   assert_eq "$registry_has" "1" "missing-status playbook must still land in registry (back-compat)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -177,10 +180,10 @@ test_dry_run_does_not_modify_crontab() {
 
 test_dry_run_does_not_write_registry() {
   _write_playbook "p-dry-reg" "active"
-  [ -f "$CEO_DIR/registry.json" ] && rm -f "$CEO_DIR/registry.json"
+  [ -f "$REGISTRY_FILE" ] && rm -f "$REGISTRY_FILE"
   bash "$CEO_CLI" playbook scan --dry-run >/dev/null 2>&1
   local exists="missing"
-  [ -f "$CEO_DIR/registry.json" ] && exists="present"
+  [ -f "$REGISTRY_FILE" ] && exists="present"
   assert_eq "$exists" "missing" "scan --dry-run must not create registry.json"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }

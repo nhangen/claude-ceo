@@ -19,7 +19,10 @@ setup() {
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
   export CEO_HOSTNAME="testhost"
-  mkdir -p "$CEO_DIR/log" "$CEO_DIR/reports/value-tracker" "$CEO_DIR/reports/token"
+  # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
+  # the synced vault — doctor reads it from there.
+  REGISTRY_FILE="$HOME/.ceo/registry.json"
+  mkdir -p "$CEO_DIR/log" "$CEO_DIR/reports/value-tracker" "$CEO_DIR/reports/token" "$HOME/.ceo"
   : > "$CEO_DIR/AGENTS.md"
 
   # Stub the binaries cmd_doctor probes so the surrounding checks don't
@@ -74,7 +77,7 @@ STUB
   chmod +x "$CEO_PLUTIL_BIN"
 
   # Minimal registry with one runner:script playbook + artifact template.
-  cat > "$CEO_DIR/registry.json" << EOF
+  cat > "$REGISTRY_FILE" << EOF
 {
   "schema_version": 3,
   "generated": "2026-05-28T00:00:00Z",
@@ -151,7 +154,7 @@ test_doctor_flags_malformed_artifact_template() {
   # coverage before this test. Seed a registry with a {BOGUS} token + a
   # completed log line and assert doctor surfaces the error and returns
   # non-zero.
-  cat > "$CEO_DIR/registry.json" << EOF
+  cat > "$REGISTRY_FILE" << EOF
 {
   "schema_version": 3,
   "generated": "2026-05-28T00:00:00Z",
@@ -192,7 +195,7 @@ test_doctor_warns_when_cron_log_missing() {
 
 test_doctor_skips_empty_artifact_field() {
   # Playbook with no artifact declared must not be checked.
-  cat > "$CEO_DIR/registry.json" << EOF
+  cat > "$REGISTRY_FILE" << EOF
 {
   "schema_version": 3,
   "generated": "2026-05-28T00:00:00Z",

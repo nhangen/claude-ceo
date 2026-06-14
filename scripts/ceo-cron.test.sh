@@ -17,6 +17,10 @@ setup() {
   export HOME="$TEST_HOME"
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
+  # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
+  # the synced vault. Both `ceo playbook scan` (write) and `ceo cron` (read)
+  # resolve this path; tests seed/inspect it here, not under $CEO_DIR.
+  REGISTRY_FILE="$HOME/.ceo/registry.json"
   # Bypass the ollama daemon HTTP probe in tests (the stubbed ollama binary
   # has no daemon backing it). Production runs leave this unset.
   export CEO_OLLAMA_SKIP_PROBE=1
@@ -24,7 +28,7 @@ setup() {
   # Isolate cron lock to this test invocation
   export CEO_LOCK_FILE="$TEST_HOME/ceo-cron.lock"
 
-  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports"
+  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports" "$HOME/.ceo"
   : > "$CEO_DIR/AGENTS.md"
   : > "$CEO_DIR/IDENTITY.md"
   : > "$CEO_DIR/TRAINING.md"
@@ -783,7 +787,7 @@ PB
   assert_contains "$scan_out" "unknown runner: 'scrpt'" "scan must skip unknown runner with diagnostic"
 
   local entry
-  entry=$(jq -r '.playbooks[] | select(.name=="typo-runner")' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  entry=$(jq -r '.playbooks[] | select(.name=="typo-runner")' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$entry" "" "skipped playbook must not appear in registry.json"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -805,8 +809,8 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   jq '(.playbooks[] | select(.name=="forced-typo") | .runner) |= "scrpt"' \
-    "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
-  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+    "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp"
+  mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
 
   local rc=0
   CEO_VERBOSE=1 bash "$CRON" forced-typo >/dev/null 2>&1 || rc=$?
@@ -841,7 +845,7 @@ PB
   fi
 
   local entry
-  entry=$(jq -r '.playbooks[] | select(.name=="ollama-ok") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  entry=$(jq -r '.playbooks[] | select(.name=="ollama-ok") | .runner' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$entry" "ollama" "ollama playbook must be registered with runner:ollama"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1124,7 +1128,7 @@ PB
   fi
 
   local entry
-  entry=$(jq -r '.playbooks[] | select(.name=="ollama-think-ok") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  entry=$(jq -r '.playbooks[] | select(.name=="ollama-think-ok") | .runner' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$entry" "ollama-think" "ollama-think playbook must be registered with runner:ollama-think"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1432,7 +1436,7 @@ status: active
 # morning-scan body
 PB
 
-  cat > "$CEO_DIR/registry.json" << JSON
+  cat > "$REGISTRY_FILE" << JSON
 {
   "schema_version": 3,
   "generated": "2026-06-02T00:00:00Z",
@@ -1779,9 +1783,9 @@ test_production_morning_brief_registers_with_ollama_runner() {
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   local runner tier model
-  runner=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
-  tier=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .tier' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
-  model=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .model' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  runner=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .runner' "$REGISTRY_FILE" 2>/dev/null || echo "")
+  tier=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .tier' "$REGISTRY_FILE" 2>/dev/null || echo "")
+  model=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .model' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$runner" "ollama" "production morning-brief.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-brief.md must declare tier: read"
   assert_eq "$model" "gemma4:12b-it-qat" "production morning-brief.md must declare model: gemma4:12b-it-qat"
@@ -1801,9 +1805,9 @@ test_production_morning_scan_registers_with_ollama_runner() {
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   local runner tier model
-  runner=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .runner' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
-  tier=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .tier' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
-  model=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .model' "$CEO_DIR/registry.json" 2>/dev/null || echo "")
+  runner=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .runner' "$REGISTRY_FILE" 2>/dev/null || echo "")
+  tier=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .tier' "$REGISTRY_FILE" 2>/dev/null || echo "")
+  model=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .model' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$runner" "ollama" "production morning-scan.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-scan.md must declare tier: read"
   assert_eq "$model" "gemma4:12b-it-qat" "production morning-scan.md must declare model: gemma4:12b-it-qat"
@@ -1898,7 +1902,7 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   local v
-  v=$(jq -r '.schema_version // "missing"' "$CEO_DIR/registry.json")
+  v=$(jq -r '.schema_version // "missing"' "$REGISTRY_FILE")
   assert_eq "$v" "3" "playbook scan must write schema_version=3 into registry.json"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1917,16 +1921,16 @@ status: active
 # noop
 PB
   printf '{"schema_version":99,"future_field":"must-stay","playbooks":[]}\n' \
-    > "$CEO_DIR/registry.json"
+    > "$REGISTRY_FILE"
   local before
-  before=$(cat "$CEO_DIR/registry.json")
+  before=$(cat "$REGISTRY_FILE")
 
   local rc=0
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "playbook scan must refuse to overwrite newer registry schema"
 
   local after
-  after=$(cat "$CEO_DIR/registry.json")
+  after=$(cat "$REGISTRY_FILE")
   assert_eq "$after" "$before" "newer registry content must remain unchanged"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1946,8 +1950,8 @@ status: active
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  jq 'del(.schema_version)' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
-  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+  jq 'del(.schema_version)' "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp"
+  mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
 
   # RETRY_SLEEP=0: a missing schema_version is code 3 (malformed/transient), so
   # the preflight re-reads once before failing. A persistently-missing field
@@ -1987,8 +1991,8 @@ status: active
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
-  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+  jq '.schema_version = 1' "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp"
+  mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
 
   local rc=0
   bash "$CRON" example >/dev/null 2>&1 || rc=$?
@@ -2023,8 +2027,8 @@ status: active
 # noop
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
-  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+  jq '.schema_version = 1' "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp"
+  mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
 
   local rc=0
   bash "$CEO_CLI" playbook list >/dev/null 2>&1 || rc=$?
@@ -2046,8 +2050,8 @@ status: active
 # noop
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
-  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+  jq '.schema_version = 1' "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp"
+  mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
 
   local rc=0
   bash "$CEO_CLI" playbook info example >/dev/null 2>&1 || rc=$?
@@ -2069,8 +2073,8 @@ status: active
 # noop
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
-  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+  jq '.schema_version = 1' "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp"
+  mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
 
   local rc=0
   bash "$CEO_CLI" chat example >/dev/null 2>&1 || rc=$?
@@ -2092,8 +2096,8 @@ status: active
 # noop
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  jq '.schema_version = 1' "$CEO_DIR/registry.json" > "$CEO_DIR/registry.json.tmp"
-  mv "$CEO_DIR/registry.json.tmp" "$CEO_DIR/registry.json"
+  jq '.schema_version = 1' "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp"
+  mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
 
   local rc=0
   bash "$CEO_CLI" preflight >/dev/null 2>&1 || rc=$?
@@ -2140,13 +2144,13 @@ status: active
 ---
 PB
   printf '{"primary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
-  rm -f "$CEO_DIR/registry.json"
+  rm -f "$REGISTRY_FILE"
 
   local rc=0 out
   out=$(CEO_HOSTNAME=beta bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
   assert_eq "$rc" "1" "non-primary host must be refused"
   assert_contains "$out" "primary host" "error must mention primary host gating"
-  if [ -f "$CEO_DIR/registry.json" ]; then
+  if [ -f "$REGISTRY_FILE" ]; then
     printf '  FAIL [%s] non-primary host wrote registry.json (must not)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
@@ -2166,12 +2170,12 @@ status: active
 ---
 PB
   printf '{"primary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
-  rm -f "$CEO_DIR/registry.json"
+  rm -f "$REGISTRY_FILE"
 
   local rc=0
   CEO_HOSTNAME=alpha bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "primary host must be allowed to scan"
-  assert_file_exists "$CEO_DIR/registry.json" "registry must be written by primary host"
+  assert_file_exists "$REGISTRY_FILE" "registry must be written by primary host"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -2188,12 +2192,12 @@ status: active
 ---
 PB
   printf '{}\n' > "$CEO_DIR/settings.json"
-  rm -f "$CEO_DIR/registry.json"
+  rm -f "$REGISTRY_FILE"
 
   local rc=0
   CEO_HOSTNAME=anyhost bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "no primary_host setting → backward-compatible (any host can scan)"
-  assert_file_exists "$CEO_DIR/registry.json" "registry must be written when no gate is configured"
+  assert_file_exists "$REGISTRY_FILE" "registry must be written when no gate is configured"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -2210,13 +2214,13 @@ status: active
 ---
 PB
   printf '{"promary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
-  rm -f "$CEO_DIR/registry.json"
+  rm -f "$REGISTRY_FILE"
 
   local rc=0 out
   out=$(CEO_HOSTNAME=beta bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
   assert_eq "$rc" "0" "typo'd key falls through to no-gate (backward-compat) but must warn"
   assert_contains "$out" "unknown key 'promary_host'" "typo'd key must surface a warning so operator notices"
-  assert_file_exists "$CEO_DIR/registry.json" "scan continues despite typo (gate is not configured from parser's view)"
+  assert_file_exists "$REGISTRY_FILE" "scan continues despite typo (gate is not configured from parser's view)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -2233,13 +2237,13 @@ status: active
 ---
 PB
   printf 'not valid json\n' > "$CEO_DIR/settings.json"
-  rm -f "$CEO_DIR/registry.json"
+  rm -f "$REGISTRY_FILE"
 
   local rc=0 out
   out=$(CEO_HOSTNAME=anyhost bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
   assert_eq "$rc" "1" "malformed settings.json must fail loud, not silently fall through"
   assert_contains "$out" "not valid JSON" "error must name the JSON parse failure"
-  if [ -f "$CEO_DIR/registry.json" ]; then
+  if [ -f "$REGISTRY_FILE" ]; then
     printf '  FAIL [%s] registry written despite malformed settings.json\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
@@ -2259,14 +2263,14 @@ status: active
 ---
 PB
   printf '{"primary_host":"alpha"}\n' > "$CEO_DIR/settings.json"
-  rm -f "$CEO_DIR/registry.json"
+  rm -f "$REGISTRY_FILE"
 
   local rc=0 out
   out=$(CEO_JQ_BIN=jq-deliberately-missing-for-test CEO_HOSTNAME=anyhost \
         bash "$CEO_CLI" playbook scan 2>&1) || rc=$?
   assert_eq "$rc" "1" "missing jq with settings.json must fail loud"
   assert_contains "$out" "jq is not installed" "error must name the missing dependency"
-  if [ -f "$CEO_DIR/registry.json" ]; then
+  if [ -f "$REGISTRY_FILE" ]; then
     printf '  FAIL [%s] registry written despite missing-jq error\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
@@ -2405,7 +2409,7 @@ tier: read
 status: active
 ---
 PB
-  cat > "$CEO_DIR/registry.json" << JSON
+  cat > "$REGISTRY_FILE" << JSON
 {"schema_version":3,"playbooks":[{"name":"pending-drip","file":"$CEO_DIR/playbooks/pending-drip.md","model":"haiku","preflight":"has_pending_items","trigger":"cron","tier":"read","status":"active"}]}
 JSON
   printf -- '- [ ] pending approval sentinel\n' > "$CEO_DIR/approvals/pending.md"
@@ -2767,7 +2771,7 @@ PB
   assert_contains "$out" "ADD   _test-repo-pb" "repo playbook must be picked up by scan"
 
   local file_field
-  file_field=$(jq -r '.playbooks[] | select(.name=="_test-repo-pb") | .file' "$CEO_DIR/registry.json")
+  file_field=$(jq -r '.playbooks[] | select(.name=="_test-repo-pb") | .file' "$REGISTRY_FILE")
   assert_eq "${file_field:0:1}" "/" "repo playbook .file must be absolute"
   assert_contains "$file_field" "_test-repo-pb.md" "repo playbook .file must point at repo path"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -2807,8 +2811,8 @@ PB
   assert_contains "$out" "SHADOW" "scan must report shadowing"
 
   local desc status
-  desc=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .description' "$CEO_DIR/registry.json")
-  status=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .status' "$CEO_DIR/registry.json")
+  desc=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .description' "$REGISTRY_FILE")
+  status=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .status' "$REGISTRY_FILE")
   assert_eq "$desc" "Vault override" "vault entry must win on collision"
   assert_eq "$status" "disabled" "vault status must override repo status"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -3180,9 +3184,9 @@ PB
   local rc=0
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ceo playbook scan must succeed even when yq is not on PATH"
-  assert_file_exists "$CEO_DIR/registry.json" "registry.json must be written without yq"
+  assert_file_exists "$REGISTRY_FILE" "registry.json must be written without yq"
   local reg_name
-  reg_name=$(jq -r '.playbooks[] | select(.name=="no-yq-test") | .name' "$CEO_DIR/registry.json" 2>/dev/null)
+  reg_name=$(jq -r '.playbooks[] | select(.name=="no-yq-test") | .name' "$REGISTRY_FILE" 2>/dev/null)
   assert_eq "$reg_name" "no-yq-test" "playbook must be registered without yq"
 
   # Restore yq stub for subsequent tests.
@@ -3268,7 +3272,7 @@ tier: read
 ---
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  assert_contains "$(jq -r '.playbooks[].name' "$CEO_DIR/registry.json" 2>/dev/null)" "rm-nostatus" "missing-status playbook must be registered (so the gate, not a missing entry, is what skips it)"
+  assert_contains "$(jq -r '.playbooks[].name' "$REGISTRY_FILE" 2>/dev/null)" "rm-nostatus" "missing-status playbook must be registered (so the gate, not a missing entry, is what skips it)"
   bash "$CRON" rm-nostatus --scheduled >/dev/null 2>&1 || true
   assert_fails "scheduled run of a missing-status playbook must NOT dispatch (SCHEMA: missing = not active)" test -f "$HOME/claude-invoked.txt"
   assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "not runnable in scheduled mode" "skip must come from the run-mode gate, not a missing registry entry"
@@ -3337,7 +3341,7 @@ test_cron_force_flag_bypasses_cooldown() {
 # the old gate (that would be a tautology passing on pre-change code).
 test_cron_catchall_skips_unknown_status() {
   _register_status_playbook rm-weird active
-  local reg="$CEO_DIR/registry.json"
+  local reg="$REGISTRY_FILE"
   jq '(.playbooks[] | select(.name=="rm-weird") | .status) = "bogus"' "$reg" > "$reg.tmp" && mv "$reg.tmp" "$reg"
   bash "$CRON" rm-weird --manual >/dev/null 2>&1 || true
   assert_fails "out-of-set status must never dispatch (defense-in-depth catch-all)" test -f "$HOME/claude-invoked.txt"
@@ -3657,7 +3661,7 @@ SH
 
 # --- #139: hosts: frontmatter (host-scoped scheduling, recorded not enforced) ---
 _hosts_in_registry() {
-  jq -r --arg n "$1" '.playbooks[] | select(.name==$n) | .hosts | tojson' "$CEO_DIR/registry.json" 2>/dev/null
+  jq -r --arg n "$1" '.playbooks[] | select(.name==$n) | .hosts | tojson' "$REGISTRY_FILE" 2>/dev/null
 }
 
 # Absent hosts → recorded as ["*"] (all hosts), the backward-compatible default.

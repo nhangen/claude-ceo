@@ -279,7 +279,7 @@ cmd_doctor() {
   fi
 
   # bin symlinks for playbooks
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   if [ ! -f "$registry_file" ]; then
     echo "  ⚠ bin-symlink check skipped: registry.json not found (run: ceo playbook scan)"
     warn=$((warn + 1))
@@ -546,7 +546,7 @@ cmd_preflight() {
     return 1
   }
 
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   _require_registry_current "$registry_file"
 
   local would_run=0
@@ -760,7 +760,7 @@ cmd_playbook_scan() {
 
   local playbook_dir="$CEO_DIR/playbooks"
   local repo_playbook_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
 
   if [ ! -d "$playbook_dir" ]; then
     echo "ERROR: Playbooks directory not found at $playbook_dir"
@@ -801,6 +801,10 @@ cmd_playbook_scan() {
   # cmd_playbook_scan's exit code per ~/.claude/rules/enum-config-typo-fallback.md
   # ("failed dispatch counts toward failure observability").
   local invalid_status=0
+  # Tracked separately so a typo'd scope propagates to the exit code the same
+  # way an invalid status does (enum-config-typo-fallback: failed dispatch
+  # counts toward failure observability).
+  local invalid_scope=0
 
   local seen_names_vault=""
   local seen_names_repo=""
@@ -817,7 +821,7 @@ cmd_playbook_scan() {
     local from_repo=0
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
-    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual
+    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual scope
     name=$(_fm_scalar name "$f")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -964,6 +968,26 @@ cmd_playbook_scan() {
       continue
     fi
 
+    # `scope` selects single-run vs per-target fan-out (consumed by the
+    # scheduler daemon). Absent → the safe default `single`. An unknown value
+    # is a typo, not a default — skip the entry and count it toward the failure
+    # exit, per enum-config-typo-fallback.
+    scope=$(_fm_scalar scope "$f")
+    if [ -z "$scope" ]; then
+      scope="single"
+    else
+      local scope_valid=0
+      for s in "${CEO_VALID_SCOPES[@]}"; do
+        [ "$scope" = "$s" ] && { scope_valid=1; break; }
+      done
+      if [ "$scope_valid" -eq 0 ]; then
+        echo "  SKIP  $basename (unknown scope: '$scope', expected: ${CEO_VALID_SCOPES[*]})" >&2
+        skipped=$((skipped + 1))
+        invalid_scope=$((invalid_scope + 1))
+        continue
+      fi
+    fi
+
     if [ "$runner" = "ollama" ] || [ "$runner" = "ollama-think" ]; then
       local effective_model="$model"
       if [ "$runner" = "ollama" ]; then
@@ -1024,11 +1048,12 @@ cmd_playbook_scan() {
       --arg skill "$skill" \
       --arg out_pattern "$out_pattern" \
       --arg artifact "$artifact" \
+      --arg scope "$scope" \
       --argjson inputs "$inputs" \
       --argjson requires "$requires" \
       --argjson hosts "$hosts" \
       --arg file "$entry_file" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, scope:$scope, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))
@@ -1076,8 +1101,9 @@ cmd_playbook_scan() {
     _playbook_print_cron_block "$new_registry"
     echo ""
     echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed) — NOT written"
-    if [ "$invalid_status" -gt 0 ]; then
-      echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+    if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ]; then
+      [ "$invalid_status" -gt 0 ] && echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+      [ "$invalid_scope" -gt 0 ] && echo "ERROR: $invalid_scope playbook(s) skipped due to invalid scope — see SKIP lines above" >&2
       return 1
     fi
     return 0
@@ -1095,6 +1121,7 @@ cmd_playbook_scan() {
     return "$_scan_install_rc"
   fi
 
+  mkdir -p "$(dirname "$registry_file")"
   local registry_tmp="$registry_file.tmp"
   echo "$new_registry" | jq '.' > "$registry_tmp"
   mv "$registry_tmp" "$registry_file"
@@ -1105,8 +1132,9 @@ cmd_playbook_scan() {
 
   _playbook_sync_bins "$new_registry"
 
-  if [ "$invalid_status" -gt 0 ]; then
-    echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+  if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ]; then
+    [ "$invalid_status" -gt 0 ] && echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
+    [ "$invalid_scope" -gt 0 ] && echo "ERROR: $invalid_scope playbook(s) skipped due to invalid scope — see SKIP lines above" >&2
     return 1
   fi
 }
@@ -1349,7 +1377,7 @@ _schedule_source() {
 }
 
 cmd_schedule() {
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   local overrides_file="$CEO_DIR/schedules.json"
 
   if [ ! -f "$registry_file" ]; then
@@ -1469,7 +1497,7 @@ _schedule_one() {
 }
 
 cmd_playbook_list() {
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   _require_registry_current "$registry_file"
 
   printf "%-16s %-10s %-20s %-10s %-8s\n" "NAME" "TRIGGER" "SCHEDULE" "MODEL" "STATUS"
@@ -1495,7 +1523,7 @@ cmd_playbook_info() {
     exit 1
   fi
 
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   _require_registry_current "$registry_file"
 
   local entry
@@ -1558,7 +1586,7 @@ cmd_creds() {
         exit 1
       fi
       ceo_require_vault
-      local registry_file="$CEO_VAULT/CEO/registry.json"
+      local registry_file; registry_file=$(_ceo_registry_path)
       _require_registry_current "$registry_file"
       local entry
       entry=$(jq -r --arg n "$playbook" '.playbooks[] | select(.name==$n)' "$registry_file")
@@ -1656,7 +1684,7 @@ cmd_cron() {
 cmd_chat() {
   local name="${1:-triage}"
   ceo_validate_vault || exit 1
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
 
   _require_registry_current "$registry_file"
 
@@ -1806,7 +1834,7 @@ cmd_trace() {
   done
 
   ceo_validate_vault || exit 1
-  local registry_file="$CEO_DIR/registry.json"
+  local registry_file; registry_file=$(_ceo_registry_path)
   if [ -f "$registry_file" ]; then
     if ! jq empty "$registry_file" 2>/dev/null; then
       echo "ERROR: $registry_file is not valid JSON. Run 'ceo playbook scan' to regenerate." >&2

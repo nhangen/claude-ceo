@@ -1,0 +1,137 @@
+#!/bin/bash
+# Tests for `ceo playbook scan` (cmd_playbook_scan):
+#   - the generated registry.json is written HOST-LOCAL ($HOME/.ceo/registry.json),
+#     NOT into the synced vault ($CEO_VAULT/CEO/registry.json)
+#   - per-playbook `scope` frontmatter: passthrough, safe default (single),
+#     and rejection of an unknown value through the existing skip/fail path
+#
+# Drives cmd_playbook_scan end-to-end against a temp vault + temp HOME, with a
+# stub crontab so no real crontab is touched.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CEO_CLI="$SCRIPT_DIR/ceo"
+
+source "$SCRIPT_DIR/test-harness.sh"
+
+_load_ceo_helpers() {
+  export CEO_LIB_ONLY=1
+  set +u
+  # shellcheck disable=SC1090,SC1091
+  source "$CEO_CLI"
+  set +e +u
+  unset CEO_LIB_ONLY
+}
+
+# A crontab stub: `-l` prints nothing (empty existing crontab), a write
+# invocation (file arg or stdin) succeeds. Any other argv shape fails non-zero
+# per stub-cli-argv-validation.
+_write_crontab_stub() {
+  export CEO_CRONTAB_BIN="$TMP/stub-crontab"
+  cat > "$CEO_CRONTAB_BIN" <<'STUB'
+#!/bin/bash
+case "$1" in
+  -l) exit 0 ;;
+  -r) exit 0 ;;
+  -|"") cat >/dev/null; exit 0 ;;
+  *)
+    if [ -f "$1" ]; then exit 0; fi
+    echo "stub-crontab: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_CRONTAB_BIN"
+}
+
+# Minimal valid frontmatter the scanner accepts. chat trigger + empty schedule
+# keeps the crontab path a no-op (no collision detection on these entries).
+_write_playbook() {
+  local file="$1" name="$2" scope_line="$3"
+  {
+    echo "---"
+    echo "name: $name"
+    echo "description: $name desc"
+    echo "trigger: chat"
+    echo "schedule: \"\""
+    echo "status: active"
+    echo "runner: claude"
+    [ -n "$scope_line" ] && echo "$scope_line"
+    echo "---"
+    echo ""
+    echo "# $name"
+  } > "$file"
+}
+
+setup() {
+  TMP=$(mktemp -d)
+  export HOME="$TMP/home"
+  mkdir -p "$HOME"
+
+  export CEO_VAULT="$TMP/vault"
+  export CEO_DIR="$CEO_VAULT/CEO"
+  mkdir -p "$CEO_DIR/playbooks"
+  # ceo_validate_vault requires CEO/inbox.md to exist.
+  : > "$CEO_DIR/inbox.md"
+
+  # No repo playbooks should leak in.
+  export CEO_REPO_PLAYBOOK_DIR="$TMP/no-such-repo-playbooks"
+
+  # Resolve hostname deterministically so the primary-host gate (absent
+  # settings.json → pass) and any host lookups don't depend on the runner.
+  export CEO_HOSTNAME="testhost"
+
+  _write_crontab_stub
+  _write_playbook "$CEO_DIR/playbooks/scope-each.md"   "scope-each"   "scope: each"
+  _write_playbook "$CEO_DIR/playbooks/scope-absent.md" "scope-absent" ""
+  _write_playbook "$CEO_DIR/playbooks/scope-bogus.md"  "scope-bogus"  "scope: bogus"
+}
+
+teardown() {
+  rm -rf "$TMP"
+  unset HOME CEO_VAULT CEO_DIR CEO_REPO_PLAYBOOK_DIR CEO_HOSTNAME CEO_CRONTAB_BIN
+}
+
+_run_scan() {
+  # Capture combined output; cmd_playbook_scan returns non-zero when an entry
+  # is skipped for an invalid enum (same path as unknown status).
+  SCAN_OUT=$(cmd_playbook_scan 2>&1)
+  SCAN_RC=$?
+}
+
+test_registry_written_host_local_not_vault() {
+  _run_scan
+  assert_file_exists "$HOME/.ceo/registry.json" "registry must be written host-local under \$HOME/.ceo"
+  assert_no_match "$(ls "$CEO_DIR" 2>/dev/null)" "registry.json" \
+    "registry.json must NOT be written into the synced vault CEO dir"
+}
+
+test_scope_each_passthrough() {
+  _run_scan
+  local scope
+  scope=$(jq -r '.playbooks[] | select(.name=="scope-each") | .scope' "$HOME/.ceo/registry.json")
+  assert_eq "$scope" "each" "scope: each must pass through to the registry"
+}
+
+test_scope_absent_defaults_to_single() {
+  _run_scan
+  local scope
+  scope=$(jq -r '.playbooks[] | select(.name=="scope-absent") | .scope' "$HOME/.ceo/registry.json")
+  assert_eq "$scope" "single" "absent scope must default to the safe value 'single'"
+}
+
+test_unknown_scope_skipped_diagnostic_and_failure_exit() {
+  _run_scan
+  # Absent from the registry.
+  local present
+  present=$(jq -r '[.playbooks[] | select(.name=="scope-bogus")] | length' "$HOME/.ceo/registry.json")
+  assert_eq "$present" "0" "playbook with unknown scope must be absent from the registry"
+  # Diagnostic mentions scope.
+  assert_contains "$SCAN_OUT" "scope" "skip diagnostic must mention scope"
+  assert_contains "$SCAN_OUT" "scope-bogus" "skip diagnostic must name the offending playbook"
+  # Counts toward the failure exit, same observable signal as unknown status.
+  assert_eq "$SCAN_RC" "1" "unknown scope must produce a non-zero scan exit (failure observability)"
+}
+
+_load_ceo_helpers
+
+run_tests

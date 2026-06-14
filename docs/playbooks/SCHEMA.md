@@ -95,6 +95,23 @@ The `hosts` field declares which machines a playbook may run on:
 
 **Enforcement depends on the scheduler backend.** The Phase-1.5 daemon (`ceo-schedulerd`, `lib/scheduler/`) enforces `hosts` — it only dispatches playbooks whose `hosts` includes `"*"` or this host's short hostname (`selectRunnable`). The Phase-1 **native-cron** install path (`_playbook_update_crontab`) still records `hosts` without enforcing it, so a host running via crontab rather than the daemon runs every playbook regardless of scope. The deferred registry `schema_version` bump (which would stop a non-enforcing peer binary from running a host-scoped playbook everywhere) is tracked separately and is **not** part of the daemon change.
 
+### Fan-out scope
+
+The `scope` field declares whether a playbook runs once or fans out per target:
+
+| `scope` value | Meaning |
+|---|---|
+| absent | `single` — run once (the safe default) |
+| `single` | run once |
+| `each` | fan out per target (consumed by the scheduler daemon) |
+| any other value | **unknown** — `ceo playbook scan` skips the entry with a `SKIP` diagnostic and a non-zero exit |
+
+`ceo playbook scan` validates `scope` at parse time and never coerces an unknown value to a default (per [`enum-config-typo-fallback`](../../../.claude/rules/enum-config-typo-fallback.md)). An absent `scope` defaults to `single`; a typo'd value is skipped and counts toward the scan's failure exit, the same as an unknown `status`.
+
+### Generated registry is host-local
+
+`ceo playbook scan` reads the playbook `.md` definitions from the synced vault (`$CEO_VAULT/CEO/playbooks/`) but writes the generated `registry.json` host-local to `~/.ceo/registry.json`. The vault holds only the definitions; the registry is per-host. Two machines scanning a shared vault would otherwise both rewrite the synced `registry.json` and produce Syncthing `.sync-conflict` copies. The scheduler daemon (`lib/scheduler/`) reads the same host-local path.
+
 ### Use draft for WIP playbooks
 
 `draft` exists for "exists, runnable on demand, not ready for cron." Author iteratively via `bash scripts/ceo-cron.sh <name>` (optionally `--force` to bypass the cooldown between runs) until happy with the behavior, then flip frontmatter to `status: active` and re-run `ceo playbook scan` to install.

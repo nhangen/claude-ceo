@@ -610,7 +610,7 @@ mkdir -p "$REPORT_DIR"
 # acquire it sequentially (no parent-vs-child contention). Model override and
 # CEO_DRY_RUN_DEPTH already exported above are inherited by the children.
 _run_test_all() {
-  local registry="$CEO_DIR/registry.json"
+  local registry; registry=$(_ceo_registry_path)
   local rc=0
   ceo_registry_validate "$registry" || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -866,7 +866,7 @@ preflight_has_auto_review_prs() {
 }
 
 # --- Look up trigger in registry ---
-REGISTRY_FILE="$CEO_DIR/registry.json"
+REGISTRY_FILE="$(_ceo_registry_path)"
 # Append the offending registry head + jq parse status to the skip log so a
 # recurrence is diagnosable from evidence instead of re-guessed.
 _registry_diag() {
