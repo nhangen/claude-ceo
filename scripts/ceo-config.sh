@@ -849,7 +849,7 @@ ceo_assert_primary_host() {
     return 1
   fi
 
-  local known_keys=" primary_host cooldown_seconds branch_prefix notify_events discord_report_triggers "
+  local known_keys=" primary_host cooldown_seconds branch_prefix notify_events discord_report_triggers discord_prior_day_report_triggers "
   local k
   while IFS= read -r k; do
     [ -n "$k" ] || continue
