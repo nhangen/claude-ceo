@@ -69,57 +69,106 @@ fi
   exit 0
 }
 
-tmp_dir=$(mktemp -d)
-trap 'rm -rf "$tmp_dir"' EXIT
-
-printf '%s\n' "$CONTENT" | awk -v dir="$tmp_dir" -v max=1800 '
-  function flush() {
-    if (chunk != "") {
-      n += 1
-      file = sprintf("%s/chunk-%04d.txt", dir, n)
-      printf "%s", chunk > file
-      close(file)
-      chunk = ""
-    }
-  }
-  {
-    line = $0 "\n"
-    if (length(chunk) + length(line) > max) {
-      flush()
-    }
-    while (length(line) > max) {
-      n += 1
-      file = sprintf("%s/chunk-%04d.txt", dir, n)
-      printf "%s", substr(line, 1, max) > file
-      close(file)
-      line = substr(line, max + 1)
-    }
-    chunk = chunk line
-  }
-  END { flush() }
-'
-
 HOSTNAME_SHORT="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}"
 TODAY="${TODAY:-$(date +%Y-%m-%d)}"
-sent=0
 
-for chunk_file in "$tmp_dir"/chunk-*.txt; do
-  [ -f "$chunk_file" ] || continue
-  chunk=$(cat "$chunk_file")
-  sent=$((sent + 1))
-  if [ "$sent" -eq 1 ]; then
-    message="**CEO full report: ${TRIGGER} — ${TODAY} (${HOSTNAME_SHORT})**
+# Post a body to the report webhook, chunked to Discord's per-message limit. The
+# first message carries the bold title; continuation chunks are bare. Echoes the
+# number of messages sent.
+_post_report() {
+  local title="$1" body="$2"
+  local cdir; cdir=$(mktemp -d)
+  printf '%s\n' "$body" | awk -v dir="$cdir" -v max=1800 '
+    function flush() {
+      if (chunk != "") {
+        n += 1
+        file = sprintf("%s/chunk-%04d.txt", dir, n)
+        printf "%s", chunk > file
+        close(file)
+        chunk = ""
+      }
+    }
+    {
+      line = $0 "\n"
+      if (length(chunk) + length(line) > max) {
+        flush()
+      }
+      while (length(line) > max) {
+        n += 1
+        file = sprintf("%s/chunk-%04d.txt", dir, n)
+        printf "%s", substr(line, 1, max) > file
+        close(file)
+        line = substr(line, max + 1)
+      }
+      chunk = chunk line
+    }
+    END { flush() }
+  '
+  local sent=0 chunk_file chunk message payload
+  for chunk_file in "$cdir"/chunk-*.txt; do
+    [ -f "$chunk_file" ] || continue
+    chunk=$(cat "$chunk_file")
+    sent=$((sent + 1))
+    if [ "$sent" -eq 1 ]; then
+      message="$title
 
 $chunk"
-  else
-    message="$chunk"
+    else
+      message="$chunk"
+    fi
+    payload=$(jq -n --arg content "$message" \
+      '{username: "CEO Report", content: $content}')
+    curl -sS -o /dev/null -X POST -H "Content-Type: application/json" \
+      --max-time 10 -d "$payload" "$WEBHOOK" >/dev/null 2>&1 || true
+  done
+  rm -rf "$cdir"
+  printf '%s' "$sent"
+}
+
+total=0
+sent=$(_post_report "**CEO full report: ${TRIGGER} — ${TODAY} (${HOSTNAME_SHORT})**" "$CONTENT")
+total=$((total + sent))
+
+# Prior-day full report append (morning-brief only by default). The Obsidian
+# report keeps its existing front matter and is untouched; the complete prior-day
+# report is delivered here, on Discord only. Gate on its own allow-list so other
+# report triggers don't carry yesterday's report.
+if [ -f "$SETTINGS_FILE" ]; then
+  prior_enabled=$(jq -e --arg trig "$TRIGGER" \
+    '(.discord_prior_day_report_triggers // ["morning-brief"]) | index($trig) != null' \
+    "$SETTINGS_FILE" >/dev/null 2>&1 && echo 1 || echo 0)
+else
+  [ "$TRIGGER" = "morning-brief" ] && prior_enabled=1 || prior_enabled=0
+fi
+
+if [ "$prior_enabled" = "1" ]; then
+  report_dir="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/reports"
+  prior_base=""
+  if [ -d "$report_dir" ]; then
+    # Most recent dated report strictly before today (the glob is lexically sorted
+    # and lexical == chronological for YYYY-MM-DD), so a Monday brief surfaces
+    # Friday's report, not an empty Sunday.
+    shopt -s nullglob
+    for _rf in "$report_dir"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md; do
+      _rb=$(basename "$_rf")
+      [ "$_rb" \< "${TODAY}.md" ] && prior_base="$_rb"
+    done
+    shopt -u nullglob
   fi
+  if [ -n "$prior_base" ] && [ -s "$report_dir/$prior_base" ]; then
+    prior_date="${prior_base%.md}"
+    # Strip a leading YAML front-matter block — it is Obsidian metadata, noise on Discord.
+    prior_body=$(awk 'NR==1 && $0=="---" {fm=1; next} fm && $0=="---" {fm=0; next} !fm {print}' \
+      "$report_dir/$prior_base")
+    if [ -n "${prior_body//[[:space:]]/}" ]; then
+      psent=$(_post_report "**📄 Prior-day full report — ${prior_date}**" "$prior_body")
+      total=$((total + psent))
+      _dlog "prior-day report posted date=$prior_date chunks=$psent"
+    fi
+  else
+    _dlog "no prior-day report found to append"
+  fi
+fi
 
-  payload=$(jq -n --arg content "$message" \
-    '{username: "CEO Report", content: $content}')
-  curl -sS -o /dev/null -X POST -H "Content-Type: application/json" \
-    --max-time 10 -d "$payload" "$WEBHOOK" >/dev/null 2>&1 || true
-done
-
-_dlog "posted chunks=$sent"
+_dlog "posted chunks=$total"
 exit 0

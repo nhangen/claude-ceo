@@ -47,6 +47,10 @@ Then append a Personal section sourced from the `<external-data>` `Blessings tod
 
 _Add one?_ Run `count-blessings add "your blessing"` from a terminal.
 
+## Delivery
+
+The brief is written to `CEO/reports/YYYY-MM-DD.md` (Obsidian, canonical) and, when a report webhook is configured, posted to Discord by `ceo-discord-report.sh`. On Discord only, the prior day's full daily report (most recent `CEO/reports/<date>.md` before today) is appended after the brief as additional messages. The Obsidian report is untouched — keeps its existing front matter. Disable the prior-day append by setting `discord_prior_day_report_triggers: []` in `CEO/settings.json`.
+
 ## Constraints
 
 - This is a read-only playbook. Do not execute any write actions.

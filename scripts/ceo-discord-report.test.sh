@@ -100,4 +100,101 @@ test_splits_large_report() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+_write_prior_report() {
+  # _write_prior_report <date> <body-line>
+  mkdir -p "$CEO_DIR/reports"
+  cat > "$CEO_DIR/reports/$1.md" << EOF
+---
+date: $1
+type: ceo-daily-report
+---
+
+# CEO Daily Report — $1
+
+$2
+EOF
+}
+
+test_appends_prior_day_report_for_morning_brief() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  export TODAY="2026-06-15"
+  _write_prior_report "2026-06-14" "PRIOR_DAY_BODY_MARKER"
+
+  printf 'todays brief' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local all
+  all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
+  assert_contains "$all" "Prior-day full report — 2026-06-14" "prior-day section header must be posted"
+  assert_contains "$all" "PRIOR_DAY_BODY_MARKER" "prior-day report body must be posted in full"
+  # Front matter must be stripped, not posted as Discord noise.
+  if printf '%s' "$all" | grep -q "type: ceo-daily-report"; then
+    printf '  FAIL [%s] prior-day front matter must be stripped before posting\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  unset TODAY
+}
+
+test_prior_day_append_gated_to_morning_brief() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  # Post morning-scan's own report, but prior-day append stays morning-brief-only.
+  echo '{"discord_report_triggers":["morning-brief","morning-scan"]}' > "$CEO_DIR/settings.json"
+  export TODAY="2026-06-15"
+  _write_prior_report "2026-06-14" "PRIOR_DAY_BODY_MARKER"
+
+  printf 'scan body' | "$REPORT" morning-scan >/dev/null 2>&1
+
+  local all
+  all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null || echo "")
+  assert_contains "$all" "scan body" "morning-scan's own report must still post"
+  if printf '%s' "$all" | grep -q "Prior-day full report"; then
+    printf '  FAIL [%s] prior-day append must not fire for non-morning-brief triggers\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  unset TODAY
+}
+
+test_skips_prior_day_when_none_exists() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  export TODAY="2026-06-15"
+  mkdir -p "$CEO_DIR/reports"
+
+  printf 'todays brief' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local all
+  all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
+  assert_contains "$all" "todays brief" "brief must still post when no prior report exists"
+  if printf '%s' "$all" | grep -q "Prior-day full report"; then
+    printf '  FAIL [%s] must not post a prior-day section when no prior report exists\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  unset TODAY
+}
+
+test_picks_most_recent_prior_report_excluding_today() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  export TODAY="2026-06-15"
+  _write_prior_report "2026-06-11" "OLDEST_MARKER"
+  _write_prior_report "2026-06-12" "MOST_RECENT_PRIOR_MARKER"
+  _write_prior_report "2026-06-15" "TODAY_MARKER"
+
+  printf 'todays brief' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local all
+  all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
+  assert_contains "$all" "MOST_RECENT_PRIOR_MARKER" "must pick the most recent report before today"
+  if printf '%s' "$all" | grep -q "OLDEST_MARKER"; then
+    printf '  FAIL [%s] must not post an older report when a more recent prior exists\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if printf '%s' "$all" | grep -q "TODAY_MARKER"; then
+    printf "  FAIL [%s] must not post today's own report as the prior day\n" "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  unset TODAY
+}
+
 run_tests

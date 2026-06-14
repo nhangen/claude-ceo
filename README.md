@@ -268,6 +268,14 @@ Store that JSON at `~/.config/claude-ceo/secrets.json`, or set `CEO_DISCORD_REPO
 
 The full report is split across multiple Discord messages when it exceeds Discord's message limit.
 
+After posting `morning-brief`, the poster also appends the **prior day's full daily report** (the most recent `CEO/reports/<date>.md` before today, so a Monday brief surfaces Friday's) as additional Discord messages. This is Discord-only — the Obsidian report keeps its existing front matter and is untouched. Gate it with its own allowlist (defaults to `morning-brief`):
+
+```json
+{
+  "discord_prior_day_report_triggers": ["morning-brief"]
+}
+```
+
 ## Architecture
 
 ### Authority tiers
