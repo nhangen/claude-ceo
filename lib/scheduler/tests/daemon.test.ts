@@ -386,6 +386,23 @@ describe("scope gating wired from loaders (B4)", () => {
     expect(h.dispatched).toEqual(["mine", "mine"]);
   });
 
+  test("a fresh good swarm read overwrites last-good owners (reassignment is not stuck)", async () => {
+    // Tick 1: ml-1 owns `mine` → fires here. Tick 2: a fresh good read reassigns
+    // ownership to mac → ml-1 must DROP it. If last-good owners were only ever
+    // set (never overwritten), ml-1 would keep firing — a stuck-owners bug.
+    const tick1: Swarm = { hosts: ["ml-1", "mac"], owners: { mine: "ml-1" } };
+    const tick2: Swarm = { hosts: ["ml-1", "mac"], owners: { mine: "mac" } };
+    const h = harness({
+      nows: [d("2026-06-01T09:00:05Z"), d("2026-06-01T09:01:05Z")],
+      host: "ml-1",
+      playbooks: [pb({ name: "mine", schedule: "* * * * *", scope: "single" })],
+      enabledByTick: [new Set<string>(), new Set<string>()],
+      swarms: [tick1, tick2],
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["mine"]);
+  });
+
   test("torn enabled read (empty set) disables each-scope dispatch that tick, safe and without crashing", async () => {
     // Tick 1 enabled has the playbook → fires. Tick 2 (next minute) torn read
     // (null → empty set) → not enabled → does NOT fire. No last-good for enabled.
