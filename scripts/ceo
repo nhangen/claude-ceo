@@ -66,6 +66,7 @@ Commands:
   playbook    Manage playbooks (scan, list, info)
   trace       Show claude-mem observations tagged by a playbook run (ceo trace <name>)
   schedule    List/edit per-user playbook schedules (overrides frontmatter)
+  swarm       Inspect/heal the synced swarm.json (swarm doctor [--fix])
   creds       Manage CEO credentials (list, check, path)
   help        Show this message
 
@@ -598,6 +599,176 @@ cmd_playbook() {
       exit 1
       ;;
   esac
+}
+
+cmd_swarm() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+  case "$subcmd" in
+    doctor) cmd_swarm_doctor "$@" ;;
+    help|--help|-h)
+      echo "Usage: ceo swarm <doctor> [--fix]"
+      echo ""
+      echo "  doctor          Detect Syncthing swarm.json sync-conflict copies."
+      echo "                  Read-only: prints the proposed merge and exits"
+      echo "                  non-zero if any conflict copy exists (health gate)."
+      echo "  doctor --fix    Apply the merge atomically, then remove the"
+      echo "                  conflict copies."
+      ;;
+    *)
+      echo "Unknown swarm command: $subcmd"
+      echo "Run: ceo swarm help"
+      exit 1
+      ;;
+  esac
+}
+
+# cmd_swarm_doctor [--fix]
+#   swarm.json is the one synced mutable file. Near-simultaneous writes on two
+#   hosts make Syncthing drop a `swarm.sync-conflict-YYYYMMDD-HHMMSS-XXXXXXX.json`
+#   copy next to it. This detects those copies and merges them back into the
+#   live file with a deterministic rule so topology self-heals:
+#
+#     hosts[]  — UNION of live + every parseable conflict copy, de-duped.
+#     owners{} — per key: live's value wins when the key exists in live. A key
+#                present only in conflict copies is taken; if multiple conflict
+#                copies disagree on a live-absent key, the value from the
+#                lexicographically-GREATEST conflict FILENAME wins (filenames
+#                embed a timestamp, so "most recent conflict wins") and the
+#                contested key is logged.
+#     schema_version — keep the max; warn if they differ.
+#
+#   A malformed live file or conflict copy is skipped with a diagnostic — never
+#   crashes, never wins the merge.
+#
+#   Read-only (no --fix): prints the proposed merge and exits non-zero when any
+#   conflict copy exists (usable as a health gate). --fix writes the merge
+#   atomically (tmp+mv) and removes the conflict copies only after the write.
+cmd_swarm_doctor() {
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo swarm doctor}"
+  local fix=0
+  case "${1:-}" in
+    --fix) fix=1 ;;
+    "") ;;
+    *) echo "Unknown swarm doctor option: $1" >&2; echo "Usage: ceo swarm doctor [--fix]" >&2; exit 1 ;;
+  esac
+
+  local swarm_file; swarm_file=$(_swarm_path) || return 1
+  local swarm_dir; swarm_dir=$(dirname "$swarm_file")
+
+  # Anchored glob: only Syncthing conflict copies of swarm.json, never an
+  # unrelated *.json (anchored-regex-for-identifier-allowlists).
+  local conflicts=()
+  local f
+  for f in "$swarm_dir"/swarm.sync-conflict-*.json; do
+    [ -e "$f" ] && conflicts+=("$f")
+  done
+
+  if [ "${#conflicts[@]}" -eq 0 ]; then
+    echo "swarm doctor: no conflicts (no swarm.sync-conflict-*.json next to swarm.json)."
+    return 0
+  fi
+
+  if [ ! -f "$swarm_file" ]; then
+    echo "ERROR: $swarm_file is missing but conflict copies exist; refusing to merge." >&2
+    return 1
+  fi
+  if ! jq -e . "$swarm_file" >/dev/null 2>&1; then
+    echo "ERROR: live $swarm_file is malformed JSON; fix or remove it before merging." >&2
+    return 1
+  fi
+
+  # Sort conflict files so the lexicographically-greatest filename is processed
+  # last → its owner value overwrites earlier conflicts for live-absent keys.
+  local sorted=()
+  while IFS= read -r f; do sorted+=("$f"); done < <(printf '%s\n' "${conflicts[@]}" | sort)
+
+  local parseable=()
+  for f in "${sorted[@]}"; do
+    if jq -e . "$f" >/dev/null 2>&1; then
+      parseable+=("$f")
+    else
+      echo "swarm doctor: skipping malformed conflict copy $(basename "$f")" >&2
+    fi
+  done
+
+  # Host union across live + parseable conflicts.
+  local merged_hosts
+  merged_hosts=$(jq -s '[.[].hosts[]?] | unique' "$swarm_file" "${parseable[@]}")
+
+  # owners: start from live (live keys win). Walk conflicts in sorted order,
+  # adding only keys not yet present — so an earlier (smaller-filename) conflict
+  # seeds a live-absent key and a later (greater-filename) one overwrites it,
+  # because we re-add when the existing source was a conflict, not live.
+  local live_owners; live_owners=$(jq -c '.owners // {}' "$swarm_file")
+  local merged_owners="$live_owners"
+  local contested=""
+  for f in "${parseable[@]}"; do
+    local ck cv prev
+    while IFS=$'\t' read -r ck cv; do
+      [ -z "$ck" ] && continue
+      # Live wins: never overwrite a key the live file owns.
+      if jq -e --arg k "$ck" 'has($k)' <<<"$live_owners" >/dev/null 2>&1; then
+        continue
+      fi
+      prev=$(jq -r --arg k "$ck" '.[$k] // empty' <<<"$merged_owners")
+      if [ -n "$prev" ] && [ "$prev" != "$cv" ]; then
+        contested+="    $ck: '$prev' (earlier conflict) -> '$cv' (later conflict $(basename "$f")) — later wins"$'\n'
+      fi
+      merged_owners=$(jq -c --arg k "$ck" --arg v "$cv" '.[$k] = $v' <<<"$merged_owners")
+    done < <(jq -r '(.owners // {}) | to_entries[] | "\(.key)\t\(.value)"' "$f")
+  done
+
+  # schema_version: max across live + conflicts; warn on disagreement.
+  local versions max_version
+  versions=$(jq -s '[.[].schema_version // 0]' "$swarm_file" "${parseable[@]}")
+  max_version=$(jq 'max' <<<"$versions")
+  if [ "$(jq 'unique | length' <<<"$versions")" != "1" ]; then
+    echo "swarm doctor: WARNING schema_version differs across files ($(jq -c . <<<"$versions")); keeping max=$max_version" >&2
+  fi
+
+  local merged
+  merged=$(jq -n \
+    --argjson v "$max_version" \
+    --argjson hosts "$merged_hosts" \
+    --argjson owners "$merged_owners" \
+    '{schema_version: $v, hosts: $hosts, owners: $owners}')
+
+  echo "swarm doctor: ${#parseable[@]} conflict cop$([ "${#parseable[@]}" -eq 1 ] && echo y || echo ies) detected."
+  echo "Proposed merge:"
+  echo "  hosts (union): $(jq -c '.hosts' <<<"$merged")"
+  echo "  owners:        $(jq -c '.owners' <<<"$merged")"
+  if [ -n "$contested" ]; then
+    echo "  contested owner keys (live-absent, resolved by greatest conflict filename):"
+    printf '%s' "$contested"
+  fi
+
+  if [ "$fix" -eq 0 ]; then
+    echo ""
+    echo "Read-only. Re-run with --fix to apply the merge and remove conflict copies."
+    return 1
+  fi
+
+  local tmp
+  tmp=$(mktemp "$swarm_file.XXXXXX") || {
+    echo "ERROR: mktemp failed for $swarm_file" >&2
+    return 1
+  }
+  if ! printf '%s\n' "$merged" > "$tmp" || ! mv -f "$tmp" "$swarm_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to write merged $swarm_file" >&2
+    return 1
+  fi
+
+  # Remove conflict copies only after the merged write landed. Includes the
+  # malformed ones (their content is preserved in syncthing history if needed,
+  # and a malformed copy contributes nothing to the merge).
+  for f in "${conflicts[@]}"; do
+    rm -f "$f"
+  done
+  echo ""
+  echo "swarm doctor: merged and removed ${#conflicts[@]} conflict cop$([ "${#conflicts[@]}" -eq 1 ] && echo y || echo ies)."
+  return 0
 }
 
 cmd_playbook_diff() {
@@ -1966,6 +2137,7 @@ case "${1:-help}" in
   playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
   trace)    ceo_require_vault; _bind_vault; shift; cmd_trace "$@" ;;
   schedule) ceo_require_vault; _bind_vault; shift; cmd_schedule "$@" ;;
+  swarm)    ceo_require_vault; _bind_vault; shift; cmd_swarm "$@" ;;
   creds)    shift; cmd_creds "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
