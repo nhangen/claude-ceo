@@ -590,14 +590,20 @@ cmd_playbook() {
     list) cmd_playbook_list ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
+    enable) cmd_playbook_enable "$@" ;;
+    disable) cmd_playbook_disable "$@" ;;
+    assign) cmd_playbook_assign "$@" ;;
     help|--help|-h)
-      echo "Usage: ceo playbook <scan|list|info|diff>"
+      echo "Usage: ceo playbook <scan|list|info|diff|enable|disable|assign>"
       echo ""
       echo "  scan [--dry-run]   Discover playbooks, update registry + crontab"
       echo "                     (--dry-run prints would-be cron block, no writes)"
-      echo "  list               Show all registered playbooks"
+      echo "  list               Show all registered playbooks with scope + state"
       echo "  info <name>        Show details for one playbook"
       echo "  diff [--quiet]     Detect drift between vault and repo playbooks"
+      echo "  enable <name>      Run this each-scope playbook on THIS host"
+      echo "  disable <name>     Stop running this each-scope playbook on THIS host"
+      echo "  assign <name> <host>  Assign a single-scope playbook to an owner host"
       ;;
     *)
       echo "Unknown playbook command: $subcmd"
@@ -1496,24 +1502,169 @@ _schedule_one() {
   cmd_playbook_scan
 }
 
+# _playbook_registry_scope <registry_file> <name>
+#   Print the playbook's scope (each|single) on stdout, exit 0 if found.
+#   Exit 1 with nothing on stdout if the name isn't in the registry.
+#   enum-config-typo-fallback: a scope that isn't in CEO_VALID_SCOPES is
+#   treated as the safe `single` default (scan already rejects typos at parse).
+_playbook_registry_scope() {
+  local registry_file="$1" name="$2"
+  local entry
+  entry=$(jq -r --arg n "$name" '.playbooks[] | select(.name==$n) | .name' "$registry_file" 2>/dev/null)
+  [ -z "$entry" ] && return 1
+  local scope
+  scope=$(jq -r --arg n "$name" '.playbooks[] | select(.name==$n) | .scope // "single"' "$registry_file" 2>/dev/null)
+  case "$scope" in
+    each|single) printf '%s\n' "$scope" ;;
+    *) printf '%s\n' "single" ;;
+  esac
+  return 0
+}
+
+# _playbook_rows
+#   Render one line per registered playbook combining registry scope/status
+#   with this host's enabled.json and the swarm owners map:
+#     <name>  [scope]  <state>  <description>
+#   where state is enable-status for `each` and owner-status for `single`.
+#   Pure-ish: reads files, prints rows, no mutation. Tested directly.
+_playbook_rows() {
+  local registry_file; registry_file=$(_ceo_registry_path)
+  local enabled_file; enabled_file=$(_ceo_enabled_path)
+  local swarm_file; swarm_file=$(_swarm_path)
+
+  local enabled_json='[]'
+  [ -f "$enabled_file" ] && enabled_json=$(cat "$enabled_file")
+  local owners_json='{}'
+  [ -f "$swarm_file" ] && owners_json=$(jq -c '.owners // {}' "$swarm_file" 2>/dev/null)
+
+  while IFS= read -r row; do
+    local p_name p_scope p_desc p_status state
+    p_name=$(echo "$row" | jq -r '.name')
+    p_scope=$(echo "$row" | jq -r '.scope // "single"')
+    p_desc=$(echo "$row" | jq -r '.description // ""')
+    p_status=$(echo "$row" | jq -r '.status // "-"')
+    [ -z "$p_status" ] && p_status="-"
+    case "$p_scope" in each|single) ;; *) p_scope="single" ;; esac
+
+    if [ "$p_scope" = "each" ]; then
+      local is_on
+      is_on=$(echo "$enabled_json" | jq -r --arg n "$p_name" 'index($n) != null' 2>/dev/null)
+      if [ "$is_on" = "true" ]; then
+        state="✓ enabled here"
+      else
+        state="· disabled here"
+      fi
+    else
+      local owner
+      owner=$(echo "$owners_json" | jq -r --arg n "$p_name" '.[$n] // ""' 2>/dev/null)
+      if [ -n "$owner" ]; then
+        state="owner: $owner"
+      else
+        state="owner: (none) ⚠"
+      fi
+    fi
+
+    printf "%-16s %-8s %-9s %-18s %s\n" "$p_name" "[$p_scope]" "$p_status" "$state" "$p_desc"
+  done < <(jq -c '.playbooks[]' "$registry_file")
+}
+
 cmd_playbook_list() {
   local registry_file; registry_file=$(_ceo_registry_path)
   _require_registry_current "$registry_file"
 
-  printf "%-16s %-10s %-20s %-10s %-8s\n" "NAME" "TRIGGER" "SCHEDULE" "MODEL" "STATUS"
-  printf "%-16s %-10s %-20s %-10s %-8s\n" "----" "-------" "--------" "-----" "------"
+  printf "%-16s %-8s %-9s %-18s %s\n" "NAME" "SCOPE" "STATUS" "STATE" "DESCRIPTION"
+  printf "%-16s %-8s %-9s %-18s %s\n" "----" "-----" "------" "-----" "-----------"
+  _playbook_rows
+}
 
-  while IFS= read -r row; do
-    local p_name p_trigger p_schedule p_model p_status
-    p_name=$(echo "$row" | jq -r '.name')
-    p_trigger=$(echo "$row" | jq -r '.trigger')
-    p_schedule=$(echo "$row" | jq -r '.schedule // "-"')
-    p_model=$(echo "$row" | jq -r '.model // "-"')
-    p_status=$(echo "$row" | jq -r '.status // "-"')
-    [ "$p_schedule" = "" ] && p_schedule="-"
-    [ "$p_model" = "" ] && p_model="-"
-    printf "%-16s %-10s %-20s %-10s %-8s\n" "$p_name" "$p_trigger" "$p_schedule" "$p_model" "$p_status"
-  done < <(jq -c '.playbooks[]' "$registry_file")
+cmd_playbook_enable() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "Usage: ceo playbook enable <name>" >&2
+    exit 1
+  fi
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
+
+  local scope
+  if ! scope=$(_playbook_registry_scope "$registry_file" "$name"); then
+    echo "ERROR: playbook '$name' is not in the registry. Run: ceo playbook list" >&2
+    exit 1
+  fi
+  if [ "$scope" = "single" ]; then
+    echo "ERROR: '$name' is a single-scope playbook — it is not enabled per-host." >&2
+    echo "  Assign it to an owner host instead: ceo playbook assign $name <host>" >&2
+    exit 1
+  fi
+
+  local enabled_file; enabled_file=$(_ceo_enabled_path)
+  mkdir -p "$(dirname "$enabled_file")"
+  [ -f "$enabled_file" ] || echo '[]' > "$enabled_file"
+
+  local tmp
+  tmp=$(mktemp "$enabled_file.XXXXXX") || { echo "ERROR: mktemp failed" >&2; exit 1; }
+  if ! jq --arg n "$name" '. + [$n] | unique' "$enabled_file" > "$tmp" \
+     || ! mv -f "$tmp" "$enabled_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to enable '$name' in $enabled_file" >&2
+    exit 1
+  fi
+  echo "Enabled '$name' on this host."
+}
+
+cmd_playbook_disable() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "Usage: ceo playbook disable <name>" >&2
+    exit 1
+  fi
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
+
+  if ! _playbook_registry_scope "$registry_file" "$name" >/dev/null; then
+    echo "ERROR: playbook '$name' is not in the registry. Run: ceo playbook list" >&2
+    exit 1
+  fi
+
+  local enabled_file; enabled_file=$(_ceo_enabled_path)
+  # Absent enabled.json means nothing is enabled — disabling is a no-op success.
+  [ -f "$enabled_file" ] || { echo "Disabled '$name' on this host."; return 0; }
+
+  local tmp
+  tmp=$(mktemp "$enabled_file.XXXXXX") || { echo "ERROR: mktemp failed" >&2; exit 1; }
+  if ! jq --arg n "$name" 'map(select(. != $n))' "$enabled_file" > "$tmp" \
+     || ! mv -f "$tmp" "$enabled_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to disable '$name' in $enabled_file" >&2
+    exit 1
+  fi
+  echo "Disabled '$name' on this host."
+}
+
+cmd_playbook_assign() {
+  local name="${1:-}" host="${2:-}"
+  if [ -z "$name" ] || [ -z "$host" ]; then
+    echo "Usage: ceo playbook assign <name> <host>" >&2
+    exit 1
+  fi
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
+
+  local scope
+  if ! scope=$(_playbook_registry_scope "$registry_file" "$name"); then
+    echo "ERROR: playbook '$name' is not in the registry. Run: ceo playbook list" >&2
+    exit 1
+  fi
+  if [ "$scope" = "each" ]; then
+    echo "ERROR: '$name' is an each-scope playbook — it runs where enabled, not by owner." >&2
+    echo "  Enable it on this host instead: ceo playbook enable $name" >&2
+    exit 1
+  fi
+
+  if ! _swarm_set_owner "$name" "$host"; then
+    exit 1
+  fi
+  echo "Assigned '$name' to '$host'."
 }
 
 cmd_playbook_info() {

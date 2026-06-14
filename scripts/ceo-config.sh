@@ -329,6 +329,15 @@ _ceo_registry_path() {
   printf '%s\n' "$HOME/.ceo/registry.json"
 }
 
+# enabled.json is host-local like the registry: it lists the `each`-scope
+# playbook names THIS machine runs. The scheduler daemon reads the same path.
+# (`single`-scope playbooks are not gated here — they run on their assigned
+# owner host, recorded in the synced swarm.json owners map.)
+_ceo_enabled_path() {
+  : "${HOME:?HOME must be set to resolve the host-local enabled path}"
+  printf '%s\n' "$HOME/.ceo/enabled.json"
+}
+
 # Unlike registry.json (host-local), swarm.json IS synced: it describes the
 # swarm itself (which hosts participate, who owns each single-scope playbook),
 # so every host must read the same file. The scheduler daemon reads this path
@@ -413,6 +422,43 @@ _swarm_register_host() {
      || ! mv -f "$tmp" "$swarm_file"; then
     rm -f "$tmp"
     echo "ERROR: failed to register host '$host' in $swarm_file" >&2
+    return 1
+  fi
+  return 0
+}
+
+# _swarm_set_owner <name> <host>
+#   Assign single-scope playbook <name> to <host> in swarm.json owners{}.
+#   <host> must already be a registered member of hosts[] — refuse otherwise
+#   so ownership can't point at a machine the swarm doesn't know. The jq
+#   assignment `.owners[$n] = $h` REPLACES any prior owner: ownership is
+#   single-host, so re-assigning overwrites rather than accumulating. Scope
+#   validation (refusing `each` playbooks) is the caller's responsibility —
+#   it owns the registry; this helper only knows the swarm.
+_swarm_set_owner() {
+  local name="${1:?_swarm_set_owner requires a playbook name}"
+  local host="${2:?_swarm_set_owner requires a host}"
+  _swarm_bootstrap || return 1
+  local swarm_file; swarm_file=$(_swarm_path) || return 1
+
+  local known
+  known=$(jq -r --arg h "$host" '.hosts | index($h) != null' "$swarm_file" 2>/dev/null)
+  if [ "$known" != "true" ]; then
+    echo "ERROR: host '$host' is not registered in swarm.json hosts[]." >&2
+    echo "  Known hosts: $(jq -r '.hosts | join(", ")' "$swarm_file" 2>/dev/null)" >&2
+    echo "  Register it from that machine first (ceo setup), then assign." >&2
+    return 1
+  fi
+
+  local tmp
+  tmp=$(mktemp "$swarm_file.XXXXXX") || {
+    echo "ERROR: mktemp failed for $swarm_file" >&2
+    return 1
+  }
+  if ! jq --arg n "$name" --arg h "$host" '.owners[$n] = $h' "$swarm_file" > "$tmp" \
+     || ! mv -f "$tmp" "$swarm_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to set owner '$host' for '$name' in $swarm_file" >&2
     return 1
   fi
   return 0
