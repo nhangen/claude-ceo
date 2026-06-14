@@ -326,17 +326,17 @@ ceo_setup_cron() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   if [ -f "$ceo_cli" ] && command -v yq &>/dev/null; then
     echo ""
-    echo "[10/10] Cron Setup"
+    echo "[10/10] Playbook Scan"
     local install_cron
-    read -p "  Scan playbooks and install cron entries? (y/n) " install_cron
+    read -p "  Scan playbooks and generate the host-local registry? (y/n) " install_cron
     if _ceo_is_yes "$install_cron"; then
       bash "$ceo_cli" playbook scan
     else
-      echo "  Skipped ('${install_cron}' interpreted as no). Run 'ceo playbook scan' later to install cron entries."
+      echo "  Skipped ('${install_cron}' interpreted as no). Run 'ceo playbook scan' later to generate the registry."
     fi
   else
     echo ""
-    echo "[10/10] Skipping cron setup (ceo CLI or yq not available)."
+    echo "[10/10] Skipping playbook scan (ceo CLI or yq not available)."
     echo "  Run 'ceo playbook scan' after installing yq."
   fi
 }
