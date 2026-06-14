@@ -212,4 +212,18 @@ JSON
     "malformed file contributes no hosts and does not win"
 }
 
+test_doctor_drops_non_string_owner_value() {
+  _seed_live_swarm
+  cat > "$TEST_VAULT/CEO/swarm.sync-conflict-20260613-150000-EEEEEEE.json" << 'JSON'
+{ "schema_version": 1, "hosts": ["mac"], "owners": { "pbNull": null, "pbValid": "mac" } }
+JSON
+  local rc=0
+  _doctor --fix >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "--fix must exit 0"
+  assert_eq "$(jq -r '.owners | has("pbNull")' "$TEST_VAULT/CEO/swarm.json")" "false" \
+    "null owner value must be dropped, not written as the string \"null\""
+  assert_eq "$(jq -r '.owners.pbValid' "$TEST_VAULT/CEO/swarm.json")" "mac" \
+    "valid conflict-only owner key still merges alongside a dropped null"
+}
+
 run_tests

@@ -716,7 +716,7 @@ cmd_swarm_doctor() {
         contested+="    $ck: '$prev' (earlier conflict) -> '$cv' (later conflict $(basename "$f")) — later wins"$'\n'
       fi
       merged_owners=$(jq -c --arg k "$ck" --arg v "$cv" '.[$k] = $v' <<<"$merged_owners")
-    done < <(jq -r '(.owners // {}) | to_entries[] | "\(.key)\t\(.value)"' "$f")
+    done < <(jq -r '(.owners // {}) | to_entries[] | select(.value | type == "string") | "\(.key)\t\(.value)"' "$f")
   done
 
   # schema_version: max across live + conflicts; warn on disagreement.
