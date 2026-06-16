@@ -61,18 +61,52 @@ STUB
 
   # Stub ollama on PATH for runner:ollama / runner:ollama-think tests. Captures
   # the model argument so tests can assert which model was dispatched.
+  # Presence stub: production checks `command -v ollama` before dispatching, but
+  # generation now goes through the HTTP API (curl), not `ollama run`. This stub
+  # only needs to exist; the curl stub below does the real emulation.
   cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
 #!/bin/bash
-if [ "${1:-}" = "run" ]; then
-  echo "$2" > "$HOME/ollama-invoked-model.txt"
-  printf '%s' "${CEO_MODEL_SOURCE:-UNSET}" > "$HOME/ollama-model-source.txt"
-  cat > "$HOME/ollama-invoked-prompt.txt"
-  echo "ollama-stub-response"
-  exit 0
-fi
 exit 0
 STUB
   chmod +x "$TEST_HOME/.bun/bin/ollama"
+
+  # _ollama_run posts to the ollama HTTP API (POST /api/generate). Emulate it:
+  # validate the request shape (model present, num_ctx a positive integer),
+  # capture model/prompt/num_ctx so tests can assert what was dispatched, record
+  # full argv (so timeout tests can check --max-time), and return a canned
+  # completion. Per stub-cli-argv-validation the stub exits non-zero on a
+  # malformed generate call. Any non-generate curl (Discord webhook, daemon
+  # probe) execs the real binary so unrelated behavior is unchanged; tests that
+  # need different curl behavior override this file.
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+args="$*"
+url="" ; data="" ; prev=""
+for a in "$@"; do
+  case "$prev" in -d|--data|--data-binary|--data-raw) data="$a" ;; esac
+  case "$a" in http://*|https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  */api/generate)
+    echo "$args" >> "$HOME/curl-invoked.txt"
+    [ "$data" = "@-" ] && data="$(cat)"
+    model=$(printf '%s' "$data" | jq -r '.model // empty' 2>/dev/null)
+    numctx=$(printf '%s' "$data" | jq -r '.options.num_ctx // empty' 2>/dev/null)
+    if [ -z "$model" ]; then echo "curl stub: /api/generate body missing .model" >&2; exit 91; fi
+    case "$numctx" in ''|*[!0-9]*|0) echo "curl stub: /api/generate missing positive .options.num_ctx (got '$numctx')" >&2; exit 92 ;; esac
+    printf '%s\n' "$model" >> "$HOME/ollama-invoked-model.txt"
+    printf '%s' "$data" | jq -r '.prompt // empty' > "$HOME/ollama-invoked-prompt.txt"
+    { printf '%s' "$data" | jq -r '.prompt // empty'; printf '\n---CALL---\n'; } >> "$HOME/ollama-invoked-prompts.txt"
+    printf '%s' "$numctx" > "$HOME/ollama-invoked-numctx.txt"
+    printf '%s' "${CEO_MODEL_SOURCE:-UNSET}" > "$HOME/ollama-model-source.txt"
+    printf 'ollama-stub-response' | jq -Rs '{response:.}'
+    exit 0 ;;
+  *)
+    exec /usr/bin/curl "$@" ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
 
   # macOS lacks `timeout` from GNU coreutils; the dispatcher uses
   # `timeout N claude ...`. Stub it as a transparent passthrough.
@@ -226,16 +260,13 @@ runner: ollama
 # Body
 PB
 
-  cat > "$TEST_HOME/.bun/bin/ollama" << SH
+  cat > "$TEST_HOME/.bun/bin/curl" << SH
 #!/bin/bash
-if [ "\${1:-}" = "run" ]; then
-  printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-ollama.txt"
-  cat >/dev/null
-  echo "ollama-stub-response"
-fi
-exit 0
+printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-ollama.txt"
+cat >/dev/null
+printf 'ollama-stub-response' | jq -Rs '{response:.}'
 SH
-  chmod +x "$TEST_HOME/.bun/bin/ollama"
+  chmod +x "$TEST_HOME/.bun/bin/curl"
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" playbook-id-ollama >/dev/null 2>&1 || true
@@ -877,28 +908,22 @@ PB
     FAILS=$((FAILS + 1))
   fi
 
-  local model got_source
+  local model got_source numctx
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "gemma4:12b-it-qat" "runner:ollama default must be gemma4:12b-it-qat"
   got_source=$(cat "$HOME/ollama-model-source.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$got_source" "invoked" "ollama runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
+  # The headline fix: the request must carry the model's real context window, not
+  # ollama's ~4K CLI default. Fails if options.num_ctx is dropped or shrunk.
+  numctx=$(cat "$HOME/ollama-invoked-numctx.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$numctx" "32768" "request must set options.num_ctx to the model's real window (default 32768)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ollama_run_is_bounded_by_timeout() {
-  # Recording timeout stub: capture argv, enforce the real `timeout` contract
-  # (first arg is a numeric duration), then pass the command through so the
-  # ollama stub still runs. Asserts the dispatcher wraps `ollama run` in a
-  # timeout bound by CEO_OLLAMA_TIMEOUT so a runaway can't hang a cron slot.
-  cat > "$TEST_HOME/.bun/bin/timeout" << 'STUB'
-#!/bin/bash
-echo "$*" >> "$HOME/timeout-invoked.txt"
-case "${1:-}" in ''|*[!0-9]*) echo "timeout stub: non-numeric duration: ${1:-}" >&2; exit 99 ;; esac
-shift
-exec "$@"
-STUB
-  chmod +x "$TEST_HOME/.bun/bin/timeout"
-
+  # _ollama_run bounds wall-clock via curl --max-time (no separate timeout
+  # binary). Assert the API call carries --max-time <CEO_OLLAMA_TIMEOUT> so a
+  # runaway generation can't hang a cron slot.
   cat > "$CEO_DIR/playbooks/ollama-timeout.md" << 'PB'
 ---
 name: ollama-timeout
@@ -916,13 +941,13 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   local rc=0
   CEO_OLLAMA_TIMEOUT=123 bash "$CRON" ollama-timeout >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "0" "dispatcher must exit 0 when the timeout wrapper passes through"
+  assert_eq "$rc" "0" "dispatcher must exit 0 when the ollama API call succeeds"
 
-  assert_file_exists "$HOME/timeout-invoked.txt" "ollama run must be wrapped in a timeout"
+  assert_file_exists "$HOME/curl-invoked.txt" "ollama generation must go through curl"
   local rec
-  rec=$(cat "$HOME/timeout-invoked.txt" 2>/dev/null || echo "")
-  assert_contains "$rec" "123 ollama run gemma4:12b-it-qat" \
-    "ollama run must be bounded by CEO_OLLAMA_TIMEOUT seconds"
+  rec=$(cat "$HOME/curl-invoked.txt" 2>/dev/null || echo "")
+  assert_contains "$rec" "--max-time 123" \
+    "ollama API call must be bounded by CEO_OLLAMA_TIMEOUT seconds"
 }
 
 test_runner_ollama_think_uses_gpt_oss_default() {
@@ -993,13 +1018,15 @@ runner: ollama
 # body
 PB
 
-  # Override the default ollama stub for this test to simulate failure.
-  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+  # Override the default curl stub to simulate an ollama API failure: write a
+  # sentinel to stderr (which _ollama_run's caller redirects to cron-stderr.log)
+  # and exit non-zero so the run is recorded as a failure, not silent-empty.
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
 #!/bin/bash
 echo "ollama-error-sentinel" >&2
 exit 9
 STUB
-  chmod +x "$TEST_HOME/.bun/bin/ollama"
+  chmod +x "$TEST_HOME/.bun/bin/curl"
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" ollama-fail >/dev/null 2>&1 || true
@@ -1026,17 +1053,14 @@ STUB
 }
 
 test_ollama_timeout_kill_propagates_as_failure() {
-  # The whole point of the timeout wrap: when it fires (exit 124), the run must
-  # be recorded as a failure, not silently skipped. Stub `timeout` to simulate a
-  # kill (124) specifically when wrapping ollama; everything else passes through.
-  cat > "$TEST_HOME/.bun/bin/timeout" << 'STUB'
+  # The point of curl --max-time: when it fires (curl exit 28), the run must be
+  # recorded as a failure, not silently skipped. Stub curl to simulate the
+  # timeout exit.
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
 #!/bin/bash
-case "${1:-}" in ''|*[!0-9]*) echo "timeout stub: bad duration: ${1:-}" >&2; exit 99 ;; esac
-shift
-if [ "${1:-}" = "ollama" ]; then exit 124; fi
-exec "$@"
+exit 28
 STUB
-  chmod +x "$TEST_HOME/.bun/bin/timeout"
+  chmod +x "$TEST_HOME/.bun/bin/curl"
 
   cat > "$CEO_DIR/playbooks/ollama-killed.md" << 'PB'
 ---
@@ -1070,15 +1094,7 @@ PB
 
 test_ollama_timeout_rejects_non_numeric_bound() {
   # A non-numeric CEO_OLLAMA_TIMEOUT must be rejected (warn + fall back to 300),
-  # not passed verbatim to `timeout` (which would exit 125 without running ollama).
-  cat > "$TEST_HOME/.bun/bin/timeout" << 'STUB'
-#!/bin/bash
-echo "$1" > "$HOME/timeout-duration.txt"
-shift
-exec "$@"
-STUB
-  chmod +x "$TEST_HOME/.bun/bin/timeout"
-
+  # not passed verbatim to curl --max-time (which would exit before connecting).
   cat > "$CEO_DIR/playbooks/ollama-badto.md" << 'PB'
 ---
 name: ollama-badto
@@ -1095,9 +1111,9 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_OLLAMA_TIMEOUT=abc bash "$CRON" ollama-badto >/dev/null 2>&1 || true
 
-  local dur
-  dur=$(cat "$HOME/timeout-duration.txt" 2>/dev/null || echo "missing")
-  assert_eq "$dur" "300" "non-numeric CEO_OLLAMA_TIMEOUT must fall back to 300, not reach timeout verbatim"
+  local rec
+  rec=$(cat "$HOME/curl-invoked.txt" 2>/dev/null || echo "missing")
+  assert_contains "$rec" "--max-time 300" "non-numeric CEO_OLLAMA_TIMEOUT must fall back to 300, not reach curl verbatim"
 
   local stderr_log
   stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
@@ -1208,11 +1224,14 @@ runner: ollama
 # body
 PB
 
-  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+  # API returns 200 with an empty .response — _ollama_run must surface that as
+  # empty output so the caller records a failure (not a silent success).
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
 #!/bin/bash
+echo '{"response":""}'
 exit 0
 STUB
-  chmod +x "$TEST_HOME/.bun/bin/ollama"
+  chmod +x "$TEST_HOME/.bun/bin/curl"
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" ollama-empty >/dev/null 2>&1 || true
@@ -1226,6 +1245,211 @@ STUB
   if [[ "$runs_log" == *"ollama-empty completed"* ]]; then
     printf '  FAIL [%s] empty ollama output must NOT log completed\n    runs_log: %q\n' \
       "$CURRENT_TEST" "$runs_log"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_ollama_error_in_200_body_records_failure() {
+  # non-throwing-client-success-check: a 200 response can still carry an .error
+  # (model not found, OOM). _ollama_run must inspect it and route to failure,
+  # not treat the (empty .response) as success — and must log the error text.
+  cat > "$CEO_DIR/playbooks/ollama-apierror.md" << 'PB'
+---
+name: ollama-apierror
+description: ollama 200 body carries an .error
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+echo '{"error":"model not found"}'
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-apierror >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "a 200 body carrying .error must increment FAIL_COUNT_FILE"
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "ollama API error" "the API .error text must be logged, not swallowed"
+  assert_contains "$stderr_log" "model not found" "the daemon's error message must reach cron-stderr.log"
+
+  local runs_log
+  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  if [[ "$runs_log" == *"ollama-apierror completed"* ]]; then
+    printf '  FAIL [%s] a .error response must NOT log completed\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_ollama_non_json_body_records_failure() {
+  # A non-JSON body (proxy HTML error, truncated stream) must route to failure
+  # via explicit validation with a logged diagnostic — not an ambient set -e
+  # trip that leaves cron-stderr.log silent.
+  cat > "$CEO_DIR/playbooks/ollama-nonjson.md" << 'PB'
+---
+name: ollama-nonjson
+description: ollama returns a non-JSON body
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+echo '<html>502 Bad Gateway</html>'
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-nonjson >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "a non-JSON ollama body must increment FAIL_COUNT_FILE"
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "non-JSON or empty body" "a non-JSON body must log a diagnostic, not fail silently"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ollama_num_ctx_rejects_non_integer() {
+  # Sibling of test_ollama_timeout_rejects_non_numeric_bound: a typo'd
+  # CEO_OLLAMA_NUM_CTX must warn and fall back to 32768, not reach the request
+  # verbatim.
+  cat > "$CEO_DIR/playbooks/ollama-badctx.md" << 'PB'
+---
+name: ollama-badctx
+description: bad num_ctx value
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_OLLAMA_NUM_CTX=abc bash "$CRON" ollama-badctx >/dev/null 2>&1 || true
+
+  local numctx
+  numctx=$(cat "$HOME/ollama-invoked-numctx.txt" 2>/dev/null || echo "missing")
+  assert_eq "$numctx" "32768" "non-integer CEO_OLLAMA_NUM_CTX must fall back to 32768, not reach the request verbatim"
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "CEO_OLLAMA_NUM_CTX='abc'" "a rejected num_ctx value must be warned about"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_ollama_default_budget_admits_real_prompt() {
+  # Pins the budget raise (24576 -> 90000). The production failures were 27-51 KB
+  # prompts rejected/chunked at the old 24 KB cap. This fixture's scan prompt
+  # lands ~25-32 KB — above the old cap, below the new one — so at the default
+  # (90000) it dispatches as a SINGLE call; revert the default to 24576 and the
+  # same prompt is over budget and routes to the chunker (>= 2 calls). The
+  # curl stub records the prompt size so the test self-validates its premise.
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+url="" ; data="" ; prev=""
+for a in "$@"; do
+  case "$prev" in -d|--data|--data-binary|--data-raw) data="$a" ;; esac
+  case "$a" in http://*|https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  */api/generate)
+    [ "$data" = "@-" ] && data="$(cat)"
+    echo x >> "$HOME/ollama-call-count.txt"
+    printf '%s' "$data" | jq -r '.prompt' | wc -c | tr -d ' ' > "$HOME/ollama-prompt-bytes.txt"
+    printf '%s' 'LOG_ENTRY:
+## 03:10 — morning-scan
+**Status:** completed
+**Playbook:** playbooks/morning-scan.md
+**Output:**
+- budget-ok-sentinel
+**Errors:**
+- none
+END_LOG_ENTRY' | jq -Rs '{response:.}'
+    exit 0 ;;
+  *) exec /usr/bin/curl "$@" ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  cat > "$CEO_DIR/playbooks/morning-scan.md" << 'PB'
+---
+name: morning-scan
+description: default-budget admits real prompt
+trigger: cron
+schedule: "50 8 * * 1-5"
+runner: ollama
+model: gemma4:12b-it-qat
+preflight: none
+tier: read
+status: active
+---
+# morning-scan body
+PB
+
+  touch -t 202501010000 "$CEO_DIR/log/.last-scan" 2>/dev/null || touch "$CEO_DIR/log/.last-scan"
+  mkdir -p "$CEO_VAULT/Projects" "$CEO_VAULT/Areas" "$CEO_VAULT/Daily"
+  for i in $(seq 1 8); do echo "project note content $i" > "$CEO_VAULT/Projects/note-$i.md"; done
+  echo "area work content" > "$CEO_VAULT/Areas/work.md"
+  local _y _t
+  _y=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+  _t=$(date +%Y-%m-%d)
+  { echo "# Yesterday"; for _ in $(seq 1 280); do echo "yesterday content line for the default-budget scan test padding"; done; } > "$CEO_VAULT/Daily/$_y.md"
+  { echo "# Today"; for _ in $(seq 1 140); do echo "today content line for the default-budget scan test padding"; done; } > "$CEO_VAULT/Daily/$_t.md"
+  { echo "# Report"; for _ in $(seq 1 140); do echo "yesterday report line for the default-budget scan test padding"; done; } > "$CEO_DIR/reports/$_y.md"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" morning-scan >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "the scan prompt must dispatch at the default budget, not fail"
+
+  # Premise guard: the prompt must sit strictly between the old and new caps,
+  # else the mutation (default -> 24576) wouldn't change behavior.
+  local pbytes
+  pbytes=$(cat "$HOME/ollama-prompt-bytes.txt" 2>/dev/null || echo 0)
+  if [ "$pbytes" -le 24576 ] || [ "$pbytes" -ge 90000 ]; then
+    printf '  FAIL [%s] fixture prompt %s bytes must be in (24576, 90000) for this test to bite\n' \
+      "$CURRENT_TEST" "$pbytes"
+    FAILS=$((FAILS + 1))
+  fi
+
+  # At the default budget this prompt is under budget -> exactly one API call.
+  # Reverting the default to 24576 forces the chunker (>= 2 calls).
+  local calls
+  calls=$(wc -l < "$HOME/ollama-call-count.txt" 2>/dev/null | tr -d ' ')
+  assert_eq "${calls:-0}" "1" "a ~25-32 KB prompt must be a single call at the default budget (90000), not chunked"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  if echo "$skips_log" | grep -q "exceeds budget"; then
+    printf '  FAIL [%s] the scan prompt must NOT hit the budget-exceeded path at the default (90000)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -1379,47 +1603,39 @@ PB
 
 test_runner_ollama_chunked_scan_when_prompt_exceeds_budget() {
   # Trigger chunking by creating real vault files so ceo-scan.sh produces enough
-  # scan data to push the prompt over CEO_OLLAMA_MAX_PROMPT_BYTES=5000.
-  # The mock ollama appends to a call log so we can count invocations.
-  #
-  # jq stub: ceo-cron.sh and ceo-config.sh require jq for registry parsing
-  # (schema validation, entry lookup). Install the shared jq-stub.js which
-  # handles the jq subset used by these scripts.
-  cp "$SCRIPT_DIR/jq-stub.js" "$TEST_HOME/.bun/bin/jq.js"
-  cat > "$TEST_HOME/.bun/bin/jq" << 'SHIM'
+  # scan data to push the prompt over CEO_OLLAMA_MAX_PROMPT_BYTES=5000. Both the
+  # per-chunk extraction calls and the synthesis call go through _ollama_run →
+  # curl /api/generate; the stub appends a model line per call so the test can
+  # count invocations, and returns the LOG_ENTRY as the API .response. Real jq
+  # is used (the API request/response encoding needs the full jq, not a subset
+  # stub).
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
 #!/bin/bash
-exec node "$(dirname "$0")/jq.js" "$@"
-SHIM
-  chmod +x "$TEST_HOME/.bun/bin/jq"
-
-  # yq stub: prevents path-lookup noise in the controlled test PATH. ceo-cron.sh
-  # itself does not call yq (removed in PR #130); stub retained for test isolation.
-  cat > "$TEST_HOME/.bun/bin/yq" << 'STUB'
-#!/bin/bash
-exit 0
+url="" ; data="" ; prev=""
+for a in "$@"; do
+  case "$prev" in -d|--data|--data-binary|--data-raw) data="$a" ;; esac
+  case "$a" in http://*|https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  */api/generate)
+    [ "$data" = "@-" ] && data="$(cat)"
+    printf '%s' "$data" | jq -r '.model' >> "$HOME/ollama-invoked-model.txt"
+    { printf '%s' "$data" | jq -r '.prompt'; printf '\n---CALL---\n'; } >> "$HOME/ollama-invoked-prompts.txt"
+    printf '%s' 'LOG_ENTRY:
+## 03:10 — morning-scan
+**Status:** completed
+**Playbook:** playbooks/morning-scan.md
+**Output:**
+- chunked-scan-sentinel
+**Errors:**
+- none
+END_LOG_ENTRY' | jq -Rs '{response:.}'
+    exit 0 ;;
+  *) exec /usr/bin/curl "$@" ;;
+esac
 STUB
-  chmod +x "$TEST_HOME/.bun/bin/yq"
-
-  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
-#!/bin/bash
-if [ "${1:-}" = "run" ]; then
-  echo "$2" >> "$HOME/ollama-invoked-model.txt"
-  cat >> "$HOME/ollama-invoked-prompts.txt"
-  printf '\n---CALL---\n' >> "$HOME/ollama-invoked-prompts.txt"
-  echo "LOG_ENTRY:"
-  echo "## 03:10 — morning-scan"
-  echo "**Status:** completed"
-  echo "**Playbook:** playbooks/morning-scan.md"
-  echo "**Output:**"
-  echo "- chunked-scan-sentinel"
-  echo "**Errors:**"
-  echo "- none"
-  echo "END_LOG_ENTRY"
-  exit 0
-fi
-exit 0
-STUB
-  chmod +x "$TEST_HOME/.bun/bin/ollama"
+  chmod +x "$TEST_HOME/.bun/bin/curl"
 
   cat > "$CEO_DIR/playbooks/morning-scan.md" << 'PB'
 ---
@@ -1597,17 +1813,26 @@ runner: ollama
 # body
 PB
 
-  # ollama stub emits a parseable LOG_ENTRY block — the helper extracts and
-  # routes through ceo-report.sh intake, which writes to REPORT_FILE and
-  # fires the Discord side-channel via curl. We capture curl to assert the
-  # side-channel fired (same shape as test_read_tier_posts_full_report).
-  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+  # curl now serves two roles: the ollama /api/generate call (returns a
+  # parseable LOG_ENTRY block routed through ceo-report.sh intake) and the
+  # Discord side-channel POST (captured to assert it fired, same shape as
+  # test_read_tier_posts_full_report).
+  mkdir -p "$TEST_HOME/curl"
+  export CURL_CAPTURE_DIR="$TEST_HOME/curl"
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
 #!/bin/bash
-if [ "${1:-}" = "run" ]; then
-  echo "$2" > "$HOME/ollama-invoked-model.txt"
-  cat > "$HOME/ollama-invoked-prompt.txt"
-  cat << 'OUT'
-LOG_ENTRY:
+url="" ; data="" ; prev=""
+for a in "$@"; do
+  case "$prev" in -d|--data|--data-binary|--data-raw) data="$a" ;; esac
+  case "$a" in http://*|https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  */api/generate)
+    [ "$data" = "@-" ] && data="$(cat)"
+    printf '%s' "$data" | jq -r '.model'  > "$HOME/ollama-invoked-model.txt"
+    printf '%s' "$data" | jq -r '.prompt' > "$HOME/ollama-invoked-prompt.txt"
+    printf '%s' 'LOG_ENTRY:
 ## 09:00 — ollama-intake
 **Status:** completed
 **Playbook:** playbooks/ollama-intake.md
@@ -1615,26 +1840,13 @@ LOG_ENTRY:
 Hello from ollama-intake-sentinel.
 **Errors:**
 - none
-END_LOG_ENTRY
-OUT
-  exit 0
-fi
-exit 0
-STUB
-  chmod +x "$TEST_HOME/.bun/bin/ollama"
-
-  mkdir -p "$TEST_HOME/curl"
-  export CURL_CAPTURE_DIR="$TEST_HOME/curl"
-  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
-#!/bin/bash
-out="$CURL_CAPTURE_DIR/payload.json"
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -d) shift; printf '%s' "$1" > "$out" ;;
-  esac
-  shift || true
-done
-exit 0
+END_LOG_ENTRY' | jq -Rs '{response:.}'
+    exit 0 ;;
+  *)
+    [ "$data" = "@-" ] && data="$(cat)"
+    printf '%s' "$data" > "$CURL_CAPTURE_DIR/payload.json"
+    exit 0 ;;
+esac
 STUB
   chmod +x "$TEST_HOME/.bun/bin/curl"
 
@@ -1686,11 +1898,18 @@ runner: ollama
 # body
 PB
 
-  cat > "$TEST_HOME/.bun/bin/ollama" << 'STUB'
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
 #!/bin/bash
-if [ "${1:-}" = "run" ]; then
-  cat << 'OUT'
-LOG_ENTRY:
+url="" ; data="" ; prev=""
+for a in "$@"; do
+  case "$prev" in -d|--data|--data-binary|--data-raw) data="$a" ;; esac
+  case "$a" in http://*|https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  */api/generate)
+    [ "$data" = "@-" ] && data="$(cat)"
+    printf '%s' 'LOG_ENTRY:
 ## 09:00 — ollama-selffail
 **Status:** failed
 **Playbook:** playbooks/ollama-selffail.md
@@ -1698,13 +1917,12 @@ LOG_ENTRY:
 Simulated playbook failure.
 **Errors:**
 - something broke during synthesis
-END_LOG_ENTRY
-OUT
-  exit 0
-fi
-exit 0
+END_LOG_ENTRY' | jq -Rs '{response:.}'
+    exit 0 ;;
+  *) exec /usr/bin/curl "$@" ;;
+esac
 STUB
-  chmod +x "$TEST_HOME/.bun/bin/ollama"
+  chmod +x "$TEST_HOME/.bun/bin/curl"
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" ollama-selffail >/dev/null 2>&1 || true
