@@ -242,7 +242,7 @@ JSON
 _owners_health() {
   env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
     CEO_SWARM_NOW_EPOCH="${OH_NOW:-}" PATH="$PATH" \
-    bash "$CEO_CLI" swarm owners-health "$@"
+    bash "$CEO_CLI" swarm owners-health
 }
 
 # Seed swarm.json with a single-scope owner map.
@@ -264,7 +264,7 @@ OH_REF_EPOCH=1781697600
 
 _iso_at_offset() {
   # $1 = seconds to subtract from OH_REF_EPOCH, rendered as UTC ISO8601.
-  local secs="$1" epoch=$((OH_REF_EPOCH - $1))
+  local epoch=$((OH_REF_EPOCH - $1))
   date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ
 }
