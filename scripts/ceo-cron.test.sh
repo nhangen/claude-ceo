@@ -908,11 +908,15 @@ PB
     FAILS=$((FAILS + 1))
   fi
 
-  local model got_source
+  local model got_source numctx
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "gemma4:12b-it-qat" "runner:ollama default must be gemma4:12b-it-qat"
   got_source=$(cat "$HOME/ollama-model-source.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$got_source" "invoked" "ollama runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
+  # The headline fix: the request must carry the model's real context window, not
+  # ollama's ~4K CLI default. Fails if options.num_ctx is dropped or shrunk.
+  numctx=$(cat "$HOME/ollama-invoked-numctx.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$numctx" "32768" "request must set options.num_ctx to the model's real window (default 32768)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -1241,6 +1245,211 @@ STUB
   if [[ "$runs_log" == *"ollama-empty completed"* ]]; then
     printf '  FAIL [%s] empty ollama output must NOT log completed\n    runs_log: %q\n' \
       "$CURRENT_TEST" "$runs_log"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_ollama_error_in_200_body_records_failure() {
+  # non-throwing-client-success-check: a 200 response can still carry an .error
+  # (model not found, OOM). _ollama_run must inspect it and route to failure,
+  # not treat the (empty .response) as success — and must log the error text.
+  cat > "$CEO_DIR/playbooks/ollama-apierror.md" << 'PB'
+---
+name: ollama-apierror
+description: ollama 200 body carries an .error
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+echo '{"error":"model not found"}'
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-apierror >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "a 200 body carrying .error must increment FAIL_COUNT_FILE"
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "ollama API error" "the API .error text must be logged, not swallowed"
+  assert_contains "$stderr_log" "model not found" "the daemon's error message must reach cron-stderr.log"
+
+  local runs_log
+  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  if [[ "$runs_log" == *"ollama-apierror completed"* ]]; then
+    printf '  FAIL [%s] a .error response must NOT log completed\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_ollama_non_json_body_records_failure() {
+  # A non-JSON body (proxy HTML error, truncated stream) must route to failure
+  # via explicit validation with a logged diagnostic — not an ambient set -e
+  # trip that leaves cron-stderr.log silent.
+  cat > "$CEO_DIR/playbooks/ollama-nonjson.md" << 'PB'
+---
+name: ollama-nonjson
+description: ollama returns a non-JSON body
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+echo '<html>502 Bad Gateway</html>'
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_VERBOSE=1 bash "$CRON" ollama-nonjson >/dev/null 2>&1 || true
+
+  local fails
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  assert_eq "$fails" "1" "a non-JSON ollama body must increment FAIL_COUNT_FILE"
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "non-JSON or empty body" "a non-JSON body must log a diagnostic, not fail silently"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ollama_num_ctx_rejects_non_integer() {
+  # Sibling of test_ollama_timeout_rejects_non_numeric_bound: a typo'd
+  # CEO_OLLAMA_NUM_CTX must warn and fall back to 32768, not reach the request
+  # verbatim.
+  cat > "$CEO_DIR/playbooks/ollama-badctx.md" << 'PB'
+---
+name: ollama-badctx
+description: bad num_ctx value
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# body
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_OLLAMA_NUM_CTX=abc bash "$CRON" ollama-badctx >/dev/null 2>&1 || true
+
+  local numctx
+  numctx=$(cat "$HOME/ollama-invoked-numctx.txt" 2>/dev/null || echo "missing")
+  assert_eq "$numctx" "32768" "non-integer CEO_OLLAMA_NUM_CTX must fall back to 32768, not reach the request verbatim"
+
+  local stderr_log
+  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_contains "$stderr_log" "CEO_OLLAMA_NUM_CTX='abc'" "a rejected num_ctx value must be warned about"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_ollama_default_budget_admits_real_prompt() {
+  # Pins the budget raise (24576 -> 90000). The production failures were 27-51 KB
+  # prompts rejected/chunked at the old 24 KB cap. This fixture's scan prompt
+  # lands ~25-32 KB — above the old cap, below the new one — so at the default
+  # (90000) it dispatches as a SINGLE call; revert the default to 24576 and the
+  # same prompt is over budget and routes to the chunker (>= 2 calls). The
+  # curl stub records the prompt size so the test self-validates its premise.
+  cat > "$TEST_HOME/.bun/bin/curl" << 'STUB'
+#!/bin/bash
+url="" ; data="" ; prev=""
+for a in "$@"; do
+  case "$prev" in -d|--data|--data-binary|--data-raw) data="$a" ;; esac
+  case "$a" in http://*|https://*) url="$a" ;; esac
+  prev="$a"
+done
+case "$url" in
+  */api/generate)
+    [ "$data" = "@-" ] && data="$(cat)"
+    echo x >> "$HOME/ollama-call-count.txt"
+    printf '%s' "$data" | jq -r '.prompt' | wc -c | tr -d ' ' > "$HOME/ollama-prompt-bytes.txt"
+    printf '%s' 'LOG_ENTRY:
+## 03:10 — morning-scan
+**Status:** completed
+**Playbook:** playbooks/morning-scan.md
+**Output:**
+- budget-ok-sentinel
+**Errors:**
+- none
+END_LOG_ENTRY' | jq -Rs '{response:.}'
+    exit 0 ;;
+  *) exec /usr/bin/curl "$@" ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+
+  cat > "$CEO_DIR/playbooks/morning-scan.md" << 'PB'
+---
+name: morning-scan
+description: default-budget admits real prompt
+trigger: cron
+schedule: "50 8 * * 1-5"
+runner: ollama
+model: gemma4:12b-it-qat
+preflight: none
+tier: read
+status: active
+---
+# morning-scan body
+PB
+
+  touch -t 202501010000 "$CEO_DIR/log/.last-scan" 2>/dev/null || touch "$CEO_DIR/log/.last-scan"
+  mkdir -p "$CEO_VAULT/Projects" "$CEO_VAULT/Areas" "$CEO_VAULT/Daily"
+  for i in $(seq 1 8); do echo "project note content $i" > "$CEO_VAULT/Projects/note-$i.md"; done
+  echo "area work content" > "$CEO_VAULT/Areas/work.md"
+  local _y _t
+  _y=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+  _t=$(date +%Y-%m-%d)
+  { echo "# Yesterday"; for _ in $(seq 1 280); do echo "yesterday content line for the default-budget scan test padding"; done; } > "$CEO_VAULT/Daily/$_y.md"
+  { echo "# Today"; for _ in $(seq 1 140); do echo "today content line for the default-budget scan test padding"; done; } > "$CEO_VAULT/Daily/$_t.md"
+  { echo "# Report"; for _ in $(seq 1 140); do echo "yesterday report line for the default-budget scan test padding"; done; } > "$CEO_DIR/reports/$_y.md"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_VERBOSE=1 bash "$CRON" morning-scan >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "the scan prompt must dispatch at the default budget, not fail"
+
+  # Premise guard: the prompt must sit strictly between the old and new caps,
+  # else the mutation (default -> 24576) wouldn't change behavior.
+  local pbytes
+  pbytes=$(cat "$HOME/ollama-prompt-bytes.txt" 2>/dev/null || echo 0)
+  if [ "$pbytes" -le 24576 ] || [ "$pbytes" -ge 90000 ]; then
+    printf '  FAIL [%s] fixture prompt %s bytes must be in (24576, 90000) for this test to bite\n' \
+      "$CURRENT_TEST" "$pbytes"
+    FAILS=$((FAILS + 1))
+  fi
+
+  # At the default budget this prompt is under budget -> exactly one API call.
+  # Reverting the default to 24576 forces the chunker (>= 2 calls).
+  local calls
+  calls=$(wc -l < "$HOME/ollama-call-count.txt" 2>/dev/null | tr -d ' ')
+  assert_eq "${calls:-0}" "1" "a ~25-32 KB prompt must be a single call at the default budget (90000), not chunked"
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  if echo "$skips_log" | grep -q "exceeds budget"; then
+    printf '  FAIL [%s] the scan prompt must NOT hit the budget-exceeded path at the default (90000)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
