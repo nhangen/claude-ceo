@@ -428,21 +428,26 @@ _append_pending_drip_to_inbox() {
   } >> "$inbox_file"
 }
 
-# _ollama_run — invoke `ollama run <model>`, reading the prompt from stdin,
-# bounded by a wall-clock timeout so a degenerate runaway (observed: a 12B model
-# emitting 65k tokens over ~18 min on a single prompt) cannot hang a cron slot.
-# `ollama run` (the CLI) has no num_predict flag, so a timeout — not a token cap
-# — is what bounds the operational risk. Prefer GNU `timeout` (Linux), else
-# `gtimeout` (macOS via Homebrew coreutils). When neither is present the call
-# runs unbounded (re-opening the hang risk), so log that fact rather than
-# degrade silently. Override the bound with CEO_OLLAMA_TIMEOUT (seconds; default
-# 300). On expiry the wrapper exits 124, which callers already treat as failure.
+# _ollama_run — generate a completion from <model>, reading the prompt from
+# stdin, via the ollama HTTP API (`/api/generate`) rather than `ollama run`.
+#
+# Two reasons for the API over the CLI:
+#  1. `ollama run` exposes no way to set num_ctx, so it uses the server default
+#     (~4096 tokens). Our prompts run 27–50 KB (well past that), so the CLI path
+#     silently truncated them. The API takes options.num_ctx — set it to the
+#     model's real window (gemma4:12b-it-qat holds 256K; we use 32K, override
+#     via CEO_OLLAMA_NUM_CTX) so the whole prompt is actually ingested.
+#  2. curl --max-time bounds wall-clock natively, so a degenerate runaway (a 12B
+#     model emitting 65k tokens over ~18 min) can't hang a cron slot — no
+#     separate timeout/gtimeout binary needed. Override with CEO_OLLAMA_TIMEOUT
+#     (seconds; default 300). curl --fail makes HTTP errors exit non-zero, and
+#     we also inspect the JSON .error field (a 200 can still carry one), so a
+#     failed generation routes to the caller's failure path instead of looking
+#     like empty-but-successful output.
 _ollama_run() {
-  local model="$1" tbin="" to="${CEO_OLLAMA_TIMEOUT:-300}"
-  # Validate the bound: a typo (`300s`, `abc`) makes `timeout` exit 125 without
-  # running ollama, surfacing as a misleading model failure; `0` is a legal GNU
-  # value meaning "no limit", silently re-opening the hang. Reject non-integers,
-  # warn loudly on the cap-disabling 0.
+  local model="$1" to="${CEO_OLLAMA_TIMEOUT:-300}" num_ctx="${CEO_OLLAMA_NUM_CTX:-32768}"
+  local host="${OLLAMA_HOST:-http://localhost:11434}"
+  case "$host" in http://*|https://*) ;; *) host="http://$host" ;; esac
   case "$to" in
     ''|*[!0-9]*)
       echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT='$to' is not a non-negative integer; using 300" \
@@ -452,18 +457,34 @@ _ollama_run() {
       echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT=0 disables the wall-clock cap (hang risk)" \
         >> "${LOG_DIR:-/tmp}/cron-stderr.log" ;;
   esac
-  if command -v timeout >/dev/null 2>&1; then
-    tbin="timeout"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    tbin="gtimeout"
-  fi
-  if [ -n "$tbin" ]; then
-    "$tbin" "$to" ollama run "$model"
-  else
-    echo "$(date): WARNING — no timeout/gtimeout on PATH; running ollama unbounded (model: $model)" \
+  case "$num_ctx" in
+    ''|*[!0-9]*|0)
+      echo "$(date): WARNING — CEO_OLLAMA_NUM_CTX='$num_ctx' is not a positive integer; using 32768" \
+        >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+      num_ctx=32768 ;;
+  esac
+
+  local req resp rc=0
+  req=$(jq -Rs --arg model "$model" --argjson num_ctx "$num_ctx" \
+    '{model:$model, prompt:., stream:false, options:{num_ctx:$num_ctx}}') || {
+    echo "$(date): WARNING — failed to encode ollama request (model: $model)" \
       >> "${LOG_DIR:-/tmp}/cron-stderr.log"
-    ollama run "$model"
+    return 1
+  }
+  resp=$(printf '%s' "$req" | curl -fsS --max-time "$to" "$host/api/generate" -d @-) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "$(date): WARNING — ollama API call failed (curl exit $rc, model: $model, host: $host)" \
+      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+    return "$rc"
   fi
+  local err
+  err=$(printf '%s' "$resp" | jq -r '.error // empty' 2>/dev/null)
+  if [ -n "$err" ]; then
+    echo "$(date): WARNING — ollama API error (model: $model): $err" \
+      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+    return 1
+  fi
+  printf '%s' "$resp" | jq -r '.response // empty'
 }
 
 # _ollama_chunked_scan — run an ollama playbook whose scan data exceeds the
@@ -1441,12 +1462,14 @@ END_LOG_ENTRY"
     export CEO_MODEL_SOURCE="invoked"
 
     OLLAMA_PROMPT="$SINGLE_PROMPT_BODY"
-    # gemma4:12b-it-qat fits fully in 12 GB VRAM and holds a 32K+ context
-    # window. Reserve ~8K for output
-    # and overhead; the rest is the prompt budget. Override via env when a
-    # larger-context model is selected. `wc -c` measures bytes — `${#var}`
-    # would return character count under a UTF-8 locale and undercount.
-    : "${CEO_OLLAMA_MAX_PROMPT_BYTES:=24576}"
+    # Sized to the num_ctx _ollama_run requests (CEO_OLLAMA_NUM_CTX, default 32K
+    # tokens). The prompt and the generated output share that window, so reserve
+    # ~7K tokens for output: 90 KB ≈ 24K prompt tokens leaves headroom. The old
+    # 24 KB cap predated the API path — it was a proxy for `ollama run`'s ~4K
+    # default num_ctx and is no longer the real constraint. `wc -c` measures
+    # bytes — `${#var}` would return character count under a UTF-8 locale and
+    # undercount. Override via env if num_ctx is raised for a larger model.
+    : "${CEO_OLLAMA_MAX_PROMPT_BYTES:=90000}"
     OLLAMA_PROMPT_BYTES=$(printf '%s' "$OLLAMA_PROMPT" | wc -c | tr -d ' ')
     if [ "$OLLAMA_PROMPT_BYTES" -gt "$CEO_OLLAMA_MAX_PROMPT_BYTES" ]; then
       if [ -n "${SCAN_BLOCK:-}" ]; then
