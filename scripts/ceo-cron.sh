@@ -428,6 +428,15 @@ _append_pending_drip_to_inbox() {
   } >> "$inbox_file"
 }
 
+# _ollama_host — normalized base URL for the ollama daemon. Single source of
+# truth so the reachability probe and the generation call never target
+# different hosts. Honors OLLAMA_HOST (adding an http:// scheme if bare).
+_ollama_host() {
+  local host="${OLLAMA_HOST:-http://localhost:11434}"
+  case "$host" in http://*|https://*) ;; *) host="http://$host" ;; esac
+  printf '%s' "$host"
+}
+
 # _ollama_run — generate a completion from <model>, reading the prompt from
 # stdin, via the ollama HTTP API (`/api/generate`) rather than `ollama run`.
 #
@@ -446,8 +455,7 @@ _append_pending_drip_to_inbox() {
 #     like empty-but-successful output.
 _ollama_run() {
   local model="$1" to="${CEO_OLLAMA_TIMEOUT:-300}" num_ctx="${CEO_OLLAMA_NUM_CTX:-32768}"
-  local host="${OLLAMA_HOST:-http://localhost:11434}"
-  case "$host" in http://*|https://*) ;; *) host="http://$host" ;; esac
+  local host; host=$(_ollama_host)
   case "$to" in
     ''|*[!0-9]*)
       echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT='$to' is not a non-negative integer; using 300" \
@@ -471,18 +479,28 @@ _ollama_run() {
       >> "${LOG_DIR:-/tmp}/cron-stderr.log"
     return 1
   }
-  resp=$(printf '%s' "$req" | curl -fsS --max-time "$to" "$host/api/generate" -d @-) || rc=$?
+  # --fail-with-body (not -f): HTTP 4xx/5xx still exits non-zero, but the body is
+  # retained so the daemon's JSON .error (model-not-found, OOM) can be logged.
+  resp=$(printf '%s' "$req" | curl -sS --fail-with-body --max-time "$to" "$host/api/generate" -d @-) || rc=$?
+  # Validate the body is JSON explicitly — don't let a non-JSON body (proxy HTML
+  # error, truncated stream) fall through on an ambient `set -e` trip with no
+  # diagnostic. A failed parse routes to the failure path with the body logged.
+  if ! printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then
+    echo "$(date): WARNING — ollama returned non-JSON or empty body (curl exit $rc, model: $model, host: $host): $(printf '%s' "$resp" | head -c 200)" \
+      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+    return "$(( rc != 0 ? rc : 1 ))"
+  fi
+  local err
+  err=$(printf '%s' "$resp" | jq -r '.error // empty')
+  if [ -n "$err" ]; then
+    echo "$(date): WARNING — ollama API error (curl exit $rc, model: $model): $err" \
+      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+    return "$(( rc != 0 ? rc : 1 ))"
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "$(date): WARNING — ollama API call failed (curl exit $rc, model: $model, host: $host)" \
       >> "${LOG_DIR:-/tmp}/cron-stderr.log"
     return "$rc"
-  fi
-  local err
-  err=$(printf '%s' "$resp" | jq -r '.error // empty' 2>/dev/null)
-  if [ -n "$err" ]; then
-    echo "$(date): WARNING — ollama API error (model: $model): $err" \
-      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
-    return 1
   fi
   printf '%s' "$resp" | jq -r '.response // empty'
 }
@@ -1433,8 +1451,9 @@ END_LOG_ENTRY"
         _record_failure "curl not available — cannot probe ollama daemon (playbook: $TRIGGER)"
         exit 1
       fi
-      if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>>"$LOG_DIR/cron-stderr.log"; then
-        _record_failure "ollama daemon not reachable at 127.0.0.1:11434 (playbook: $TRIGGER)"
+      _OLLAMA_HOST=$(_ollama_host)
+      if ! curl -fsS --max-time 3 "$_OLLAMA_HOST/api/tags" >/dev/null 2>>"$LOG_DIR/cron-stderr.log"; then
+        _record_failure "ollama daemon not reachable at $_OLLAMA_HOST (playbook: $TRIGGER)"
         exit 1
       fi
     else
