@@ -342,7 +342,9 @@ _dispatch_single_output() {
   fi
 
   if [ "$self_reported_failed" -eq 0 ]; then
-    ceo_morning_observe_hook "$trigger" "$log_entry"
+    # Pass raw output so CEO-PREDICTED-PRIORITIES survives regardless of
+    # whether the model placed it inside or after the LOG_ENTRY fence.
+    ceo_morning_observe_hook "$trigger" "$output"
   fi
 
   if [ "$self_reported_failed" -eq 1 ]; then

@@ -21,7 +21,7 @@ You are the CEO arriving at the office. Produce ONE briefing from the pre-gather
 2. **Priorities (ranked by REAL signal).** Rank today's work. **Sprint membership is the primary key: an item in `CURRENT_SPRINT_ITEMS` outranks an older non-sprint PR.** Never rank by age alone. For Personal, use `Daily note Top 3`. Show the top 3-5 with a one-clause justification each ("in current sprint", "Top 3 today").
 3. **Day plan.** Translate the priorities into a short ordered plan.
 4. **Goals/todos.** Surface relevant items from `Active Domains` + `Daily note Tasks` + 1-2 `Pending [ask] questions`.
-5. **Predicted-priorities block.** End the output with this exact machine-readable block (consumed by the learning ledger), listing the top priorities you chose in step 2:
+5. **Predicted-priorities block.** Place this block as the final lines of your **Output:** section (before END_LOG_ENTRY), listing the top priorities you chose in step 2. The learning ledger reads the full raw output, so the block will be found wherever it appears — but inline keeps the structure tidy:
 
    ```
    <!-- CEO-PREDICTED-PRIORITIES
@@ -31,7 +31,7 @@ You are the CEO arriving at the office. Produce ONE briefing from the pre-gather
 
 ## Output Format
 
-A briefing of <= 10 bullets (digest, priorities-with-justification, day plan, goals/todos), then the CEO-PREDICTED-PRIORITIES block. The shell writes it to CEO/reports/YYYY-MM-DD.md and posts to Discord.
+A briefing of <= 10 bullets (digest, priorities-with-justification, day plan, goals/todos), then the CEO-PREDICTED-PRIORITIES block (inside the Output section, before END_LOG_ENTRY). The shell writes it to CEO/reports/YYYY-MM-DD.md and posts to Discord.
 
 ## Constraints
 
