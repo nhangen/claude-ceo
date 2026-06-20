@@ -50,6 +50,17 @@ test_discretion_scrub_drops_employer_specifics() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_empty_prev_predicted_yields_na_hit_rate() {
+  setup
+  printf '<!-- CEO-PREDICTED-PRIORITIES\n- o/r#9: Thing\n-->\n' | \
+    YESTERDAY_MERGED='[{"number":9,"repo":"o/r"}]' LEDGER_PREV_PREDICTED='[]' bash "$OBS"
+  entry=$(cat "$CEO_VAULT/CEO/model/2026-06.md")
+  assert_contains "$entry" "yesterday hit-rate: n/a" "empty prev-predicted yields n/a not 0/0"
+  assert_no_match "$entry" "0/0" "no 0/0 on first run"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_denylist_metachar_is_matched_literally() {
   # The awk extractor strips ': description' leaving bare repo#num.
   # Denylist term with a regex metachar like 'a[cme/repo' must match literally
