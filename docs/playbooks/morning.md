@@ -7,7 +7,7 @@ runner: claude
 model: sonnet
 preflight: none
 tier: read
-status: draft
+status: active
 inputs: [pr_data, pending_count, today_log, yesterday_log, daily_note, active_domains, pending_ask, current_sprint, yesterday_merged, ledger_recent]
 ---
 
