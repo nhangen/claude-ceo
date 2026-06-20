@@ -309,13 +309,19 @@ _dispatch_single_output() {
   log_entry=$(printf '%s\n' "$output" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
 
   if [ -z "$log_entry" ]; then
-    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-    _report action "$trigger" "**Status:** completed (unparseable output)
+    if [ "$trigger" = "morning" ]; then
+      _v "morning synthesis empty — using raw digest fallback"
+      log_entry=$(ceo_morning_raw_digest)
+      # fall through to the normal report path below with the digest as log_entry
+    else
+      _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
+      _report action "$trigger" "**Status:** completed (unparseable output)
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution succeeded but log format could not be parsed ($model_label)."
-    printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
-    _record_success
-    return 0
+      printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
+      _record_success
+      return 0
+    fi
   fi
 
   _v ""

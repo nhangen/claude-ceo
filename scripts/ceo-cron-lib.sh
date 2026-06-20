@@ -35,4 +35,13 @@ ceo_morning_observe_hook() {
   return 0
 }
 
-# (ceo_morning_raw_digest is added to this lib by Task 7.)
+# Deterministic fallback digest for morning trigger when synthesis produces no
+# usable LOG_ENTRY output. Reads module-scope globals set by the pre-gather phase.
+ceo_morning_raw_digest() {
+  echo "**Morning (raw digest — synthesis unavailable)**"
+  local sprint; sprint=$(echo "${CURRENT_SPRINT_ITEMS:-[]}" | jq -r '.[]? | "- [sprint] " + .repo + "#" + (.number|tostring) + " " + .title' 2>/dev/null)
+  [ -n "$sprint" ] && { echo "Current sprint:"; echo "$sprint"; }
+  local rev; rev=$(echo "${PR_REVIEW_REQUESTED:-[]}" | jq -r '.[]? | "- [review] " + (.title // "PR")' 2>/dev/null)
+  [ -n "$rev" ] && { echo "Needs review:"; echo "$rev"; }
+  [ -n "${DAILY_NOTE_TOP3:-}" ] && { echo "Top 3:"; echo "${DAILY_NOTE_TOP3}"; }
+}
