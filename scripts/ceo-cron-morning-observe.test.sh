@@ -70,4 +70,12 @@ test_call_site_passes_raw_output() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_dry_run_skips_observe() {
+  setup
+  CEO_DRY_RUN=1 ceo_morning_observe_hook "morning" "$ENTRY_OUT"
+  assert_fails "ledger not created in dry-run" test -f "$CEO_VAULT/CEO/model/2026-06.md"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests

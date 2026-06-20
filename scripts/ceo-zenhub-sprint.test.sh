@@ -53,4 +53,14 @@ test_degrades_to_empty_array_when_token_missing() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_degrades_to_empty_array_when_workspace_id_missing() {
+  setup
+  unset ZENHUB_WORKSPACE_ID
+  out=$(bash "$HELPER"); rc=$?
+  assert_eq "$rc" "0" "exit 0 when workspace id missing"
+  assert_eq "$out" "[]" "empty array when workspace id missing"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
