@@ -50,4 +50,46 @@ test_discretion_scrub_drops_employer_specifics() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_denylist_metachar_is_matched_literally() {
+  # The awk extractor strips ': description' leaving bare repo#num.
+  # Denylist term with a regex metachar like 'a[cme/repo' must match literally
+  # against 'a[cme/repo#1' without crashing grep or wiping all predictions.
+  setup
+  mkdir -p "$CEO_VAULT/Profile"
+  printf 'a[cme/repo\n' > "$CEO_VAULT/Profile/discretion-denylist.txt"
+  printf '<!-- CEO-PREDICTED-PRIORITIES\n- a[cme/repo#1: sensitive item\n- legit/repo#2: regular item\n-->\n' | \
+    YESTERDAY_MERGED='[]' bash "$OBS"
+  entry=$(cat "$CEO_VAULT/CEO/model/2026-06.md")
+  assert_no_match "$entry" "a\[cme" "metachar term scrubbed"
+  assert_contains "$entry" "legit/repo#2" "non-matching item preserved"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_denylist_file_scrubs_matching_term() {
+  setup
+  mkdir -p "$CEO_VAULT/Profile"
+  printf 'SecretClient\n' > "$CEO_VAULT/Profile/discretion-denylist.txt"
+  printf '<!-- CEO-PREDICTED-PRIORITIES\n- altamira/repo#1: SecretClient#1: confidential\n- public/repo#2: visible work\n-->\n' | \
+    YESTERDAY_MERGED='[]' bash "$OBS"
+  entry=$(cat "$CEO_VAULT/CEO/model/2026-06.md")
+  assert_no_match "$entry" "SecretClient" "denylist file term scrubbed"
+  assert_contains "$entry" "public/repo#2" "non-matching item preserved"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_non_matching_denylist_leaves_predictions_intact() {
+  setup
+  mkdir -p "$CEO_VAULT/Profile"
+  printf 'NOMATCH_TERM\n' > "$CEO_VAULT/Profile/discretion-denylist.txt"
+  printf '<!-- CEO-PREDICTED-PRIORITIES\n- visible/repo#1: visible item 1\n- visible/repo#2: visible item 2\n-->\n' | \
+    YESTERDAY_MERGED='[]' bash "$OBS"
+  entry=$(cat "$CEO_VAULT/CEO/model/2026-06.md")
+  assert_contains "$entry" "visible/repo#1" "first item preserved"
+  assert_contains "$entry" "visible/repo#2" "second item preserved"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests

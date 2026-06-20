@@ -37,20 +37,22 @@ _ceo_observe_main() {
     | awk '/CEO-PREDICTED-PRIORITIES/{f=1;next}/-->/{f=0}f' \
     | sed -E 's/^- //; s/:.*$//' | sed '/^$/d')
 
-  # Discretion scrub: drop any line containing a denied term.
-  # CEO_DISCRETION_DENY (regex) is the test/runtime override.
-  # The vault denylist (one term/regex per line, # comments and blanks ignored)
-  # extends the deny pattern in production without carrying real secrets in code.
   local denyfile="$CEO_VAULT/Profile/discretion-denylist.txt"
-  local deny="${CEO_DISCRETION_DENY:-}"
+  # Build fixed-string denylist: one term per line, from file + env var.
+  # Fixed strings (-F) prevent regex metachar in client/company names from
+  # causing grep to exit non-zero and the || true from silently wiping predicted.
+  local _deny_tmp
+  _deny_tmp=$(mktemp)
   if [ -f "$denyfile" ]; then
-    local fileterms
-    fileterms=$(grep -vE '^\s*(#|$)' "$denyfile" 2>/dev/null | paste -sd '|' - 2>/dev/null || true)
-    [ -n "$fileterms" ] && deny="${deny:+$deny|}$fileterms"
+    grep -vE '^\s*(#|$)' "$denyfile" 2>/dev/null >> "$_deny_tmp" || true
   fi
-  if [ -n "$deny" ]; then
-    predicted=$(printf '%s\n' "$predicted" | grep -viE "$deny" || true)
+  if [ -n "${CEO_DISCRETION_DENY:-}" ]; then
+    printf '%s\n' "${CEO_DISCRETION_DENY}" | tr '|' '\n' | sed '/^$/d' >> "$_deny_tmp"
   fi
+  if [ -s "$_deny_tmp" ]; then
+    predicted=$(printf '%s\n' "$predicted" | grep -viFf "$_deny_tmp" || true)
+  fi
+  rm -f "$_deny_tmp"
 
   local hit="n/a"
   if [ -n "${YESTERDAY_MERGED:-}" ] && [ -n "${LEDGER_PREV_PREDICTED:-}" ]; then
