@@ -147,6 +147,8 @@ if [ "$TEST_ALL" != "1" ] && [[ ! "$TRIGGER" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/ceo-cron-lib.sh"
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
 
@@ -1001,13 +1003,6 @@ SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
 # rather than silently empty-prompt.
 INPUTS_JSON=$(echo "$ENTRY" | jq -c '.inputs' 2>/dev/null) || INPUTS_JSON="null"
 [ -z "$INPUTS_JSON" ] && INPUTS_JSON="null"
-_inputs_includes() {
-  local key="$1"
-  # Default-all when inputs is absent (backward-compat with playbooks that
-  # predate this feature).
-  [ "$INPUTS_JSON" = "null" ] && return 0
-  echo "$INPUTS_JSON" | jq -e --arg k "$key" 'index($k) != null' >/dev/null 2>&1
-}
 
 # Chat-only playbooks cannot run via cron
 if [ "$TRIGGER_TYPE" = "chat" ]; then
