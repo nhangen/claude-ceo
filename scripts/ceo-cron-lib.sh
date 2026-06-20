@@ -20,5 +20,19 @@ ceo_build_pregathered_extras() {
   printf '%s' "$out"
 }
 
-# (ceo_morning_observe_hook, ceo_morning_raw_digest
-#  are added to this lib by Tasks 6, 7 respectively.)
+# Append the model-of-Nathan ledger entry after a successful morning run.
+# In the lib so it is unit-testable. Never fails the flow.
+ceo_morning_observe_hook() {
+  local trigger="$1" log_entry="$2"
+  [ "$trigger" = "morning" ] || return 0
+  [ "${CEO_DRY_RUN:-}" = "1" ] && return 0
+  if ! printf '%s\n' "$log_entry" \
+      | YESTERDAY_MERGED="${YESTERDAY_MERGED:-[]}" \
+        LEDGER_PREV_PREDICTED="${LEDGER_PREV_PREDICTED:-[]}" \
+        bash "${SCRIPT_DIR}/ceo-observe.sh" >/dev/null 2>&1; then
+    command -v _v >/dev/null 2>&1 && _v "observe step failed (non-fatal)"
+  fi
+  return 0
+}
+
+# (ceo_morning_raw_digest is added to this lib by Task 7.)

@@ -335,6 +335,10 @@ _dispatch_single_output() {
     _report intake "$trigger" "$log_entry"
   fi
 
+  if [ "$self_reported_failed" -eq 0 ]; then
+    ceo_morning_observe_hook "$trigger" "$log_entry"
+  fi
+
   if [ "$self_reported_failed" -eq 1 ]; then
     _record_failure "$trigger self-reported **Status:** failed ($model_label)"
     return 1
