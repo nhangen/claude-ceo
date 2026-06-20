@@ -356,15 +356,18 @@ export YESTERDAY_MERGED_DEGRADED=0
 _yday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev/null || echo "")
 if command -v gh >/dev/null 2>&1 && [ -n "$_yday" ]; then
   _ym_err=$(mktemp)
-  _ym_raw=$(_CEO_TIMEOUT 30 gh search prs --author "@me" --merged \
-    --json number,title,repository,mergedAt --limit 50 2>"$_ym_err"); _ym_rc=$?
-  if [ "$_ym_rc" -ne 0 ]; then
-    echo "WARN: gh search prs (yesterday-merged) failed (rc=$_ym_rc): $(head -c 200 "$_ym_err")" >&2
-    YESTERDAY_MERGED="[]"
-    YESTERDAY_MERGED_DEGRADED=1
-  else
+  # `if assignment; then` keeps this set-e-safe: a failing command substitution
+  # in an if-condition does NOT trip errexit, so the degrade branch runs instead
+  # of aborting the gather. (Bare `_x=$(cmd); rc=$?` would abort under set -e
+  # before $? is ever read.)
+  if _ym_raw=$(_CEO_TIMEOUT 30 gh search prs --author "@me" --merged \
+    --json number,title,repository,mergedAt --limit 50 2>"$_ym_err"); then
     YESTERDAY_MERGED=$(printf '%s' "$_ym_raw" | jq -c --arg d "$_yday" \
       '[.[] | select(.mergedAt and (.mergedAt | startswith($d))) | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
+  else
+    echo "WARN: gh search prs (yesterday-merged) failed: $(head -c 200 "$_ym_err")" >&2
+    YESTERDAY_MERGED="[]"
+    YESTERDAY_MERGED_DEGRADED=1
   fi
   rm -f "$_ym_err"
 else
