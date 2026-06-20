@@ -147,6 +147,8 @@ if [ "$TEST_ALL" != "1" ] && [[ ! "$TRIGGER" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/ceo-cron-lib.sh"
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
 
@@ -307,13 +309,19 @@ _dispatch_single_output() {
   log_entry=$(printf '%s\n' "$output" | sed -n '/^LOG_ENTRY:/,/^END_LOG_ENTRY/p' | sed '1d;$d')
 
   if [ -z "$log_entry" ]; then
-    _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
-    _report action "$trigger" "**Status:** completed (unparseable output)
+    if [ "$trigger" = "morning" ]; then
+      _v "morning synthesis empty — using raw digest fallback"
+      log_entry=$(ceo_morning_raw_digest)
+      # fall through to the normal report path below with the digest as log_entry
+    else
+      _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
+      _report action "$trigger" "**Status:** completed (unparseable output)
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution succeeded but log format could not be parsed ($model_label)."
-    printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
-    _record_success
-    return 0
+      printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
+      _record_success
+      return 0
+    fi
   fi
 
   _v ""
@@ -331,6 +339,12 @@ _dispatch_single_output() {
     _append_pending_drip_to_inbox "$log_entry"
   else
     _report intake "$trigger" "$log_entry"
+  fi
+
+  if [ "$self_reported_failed" -eq 0 ]; then
+    # Pass raw output so CEO-PREDICTED-PRIORITIES survives regardless of
+    # whether the model placed it inside or after the LOG_ENTRY fence.
+    ceo_morning_observe_hook "$trigger" "$output"
   fi
 
   if [ "$self_reported_failed" -eq 1 ]; then
@@ -1001,13 +1015,6 @@ SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
 # rather than silently empty-prompt.
 INPUTS_JSON=$(echo "$ENTRY" | jq -c '.inputs' 2>/dev/null) || INPUTS_JSON="null"
 [ -z "$INPUTS_JSON" ] && INPUTS_JSON="null"
-_inputs_includes() {
-  local key="$1"
-  # Default-all when inputs is absent (backward-compat with playbooks that
-  # predate this feature).
-  [ "$INPUTS_JSON" = "null" ] && return 0
-  echo "$INPUTS_JSON" | jq -e --arg k "$key" 'index($k) != null' >/dev/null 2>&1
-}
 
 # Chat-only playbooks cannot run via cron
 if [ "$TRIGGER_TYPE" = "chat" ]; then
@@ -1357,6 +1364,7 @@ if [ "$TIER" = "read" ]; then
     PRE_GATHERED+="- Daily note Top 3: $DAILY_NOTE_TOP3"$'\n'
     PRE_GATHERED+="- Daily note Tasks: $DAILY_NOTE_TASKS"$'\n'
   fi
+  _extras=$(ceo_build_pregathered_extras); [ -n "$_extras" ] && PRE_GATHERED+="$_extras"$'\n'
 
   BRIEFINGS_BLOCK=""
   if _inputs_includes briefings_training; then

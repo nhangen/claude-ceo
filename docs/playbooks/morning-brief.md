@@ -7,7 +7,7 @@ runner: ollama
 model: gemma4:12b-it-qat
 preflight: none
 tier: read
-status: active
+status: disabled
 ---
 
 # Morning Brief

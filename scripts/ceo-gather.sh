@@ -272,6 +272,21 @@ fi
 export SYNC_CONFLICT_COUNT
 SYNC_CONFLICT_COUNT=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs)
 
+# --- Current-sprint signal (AM priority key; degrades to empty) ---
+_CEO_CREDS="${CEO_CREDS_FILE:-$HOME/.config/ceo/credentials.env}"
+[ -f "$_CEO_CREDS" ] && { set -a; # shellcheck source=/dev/null
+  . "$_CEO_CREDS"; set +a; }
+_SPRINT_HELPER="${CEO_SPRINT_HELPER:-$(dirname "${BASH_SOURCE[0]}")/ceo-zenhub-sprint.sh}"
+export CURRENT_SPRINT_ITEMS
+if [ -x "$_SPRINT_HELPER" ]; then
+  CURRENT_SPRINT_ITEMS=$(bash "$_SPRINT_HELPER" 2>/dev/null || echo "[]")
+else
+  CURRENT_SPRINT_ITEMS="[]"
+fi
+[ -n "$CURRENT_SPRINT_ITEMS" ] || CURRENT_SPRINT_ITEMS="[]"
+export CURRENT_SPRINT_COUNT
+CURRENT_SPRINT_COUNT=$(echo "$CURRENT_SPRINT_ITEMS" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
+
 # --- Daily note sections ---
 DAILY_NOTE="$VAULT/Daily/$TODAY.md"
 if [ -f "$DAILY_NOTE" ]; then
@@ -333,6 +348,58 @@ export PENDING_ASK_QUESTIONS
 PENDING_ASK_QUESTIONS=$(grep -n '^- \[ \]' "$PENDING_FILE" 2>/dev/null | head -20)
 else
   export PENDING_ASK_QUESTIONS=""
+fi
+
+# --- Yesterday's observable actions (positives only) + recent ledger ---
+export YESTERDAY_MERGED
+export YESTERDAY_MERGED_DEGRADED=0
+_yday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev/null || echo "")
+if command -v gh >/dev/null 2>&1 && [ -n "$_yday" ]; then
+  _ym_err=$(mktemp)
+  # `if assignment; then` keeps this set-e-safe: a failing command substitution
+  # in an if-condition does NOT trip errexit, so the degrade branch runs instead
+  # of aborting the gather. (Bare `_x=$(cmd); rc=$?` would abort under set -e
+  # before $? is ever read.)
+  if _ym_raw=$(_CEO_TIMEOUT 30 gh search prs --author "@me" --merged \
+    --json number,title,repository,mergedAt --limit 50 2>"$_ym_err"); then
+    YESTERDAY_MERGED=$(printf '%s' "$_ym_raw" | jq -c --arg d "$_yday" \
+      '[.[] | select(.mergedAt and (.mergedAt | startswith($d))) | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
+  else
+    echo "WARN: gh search prs (yesterday-merged) failed: $(head -c 200 "$_ym_err")" >&2
+    YESTERDAY_MERGED="[]"
+    YESTERDAY_MERGED_DEGRADED=1
+  fi
+  rm -f "$_ym_err"
+else
+  YESTERDAY_MERGED="[]"
+fi
+[ -n "$YESTERDAY_MERGED" ] || YESTERDAY_MERGED="[]"
+
+export LEDGER_RECENT
+export LEDGER_PREV_PREDICTED
+LEDGER_PREV_PREDICTED="[]"
+_ledger_dir="$CEO_DIR/model"
+if [ -d "$_ledger_dir" ]; then
+  _latest=$(ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1)
+  if [ -n "$_latest" ]; then
+    LEDGER_RECENT=$(tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
+    # Parse the LAST "predicted today:" block's indented bullets into "repo#num" strings.
+    # awk sets f=1 at each header (resetting on each, so only the last block's lines survive
+    # into the final emitted set), captures "  - " bullets, stops at the next non-indented line.
+    _pred_lines=$(awk '
+      /predicted today:/ { f=1; out=""; next }
+      f && /^  - / { out=out $0 "\n"; next }
+      f && /^[^ ]/ { f=0 }
+      END { printf "%s", out }
+    ' "$_latest" 2>/dev/null | sed -E 's/^  - //; s/:.*$//' | sed '/^$/d')
+    if [ -n "$_pred_lines" ]; then
+      LEDGER_PREV_PREDICTED=$(printf '%s\n' "$_pred_lines" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+    fi
+  else
+    LEDGER_RECENT=""
+  fi
+else
+  LEDGER_RECENT=""
 fi
 
 # --- Evaluate Gather Status ---

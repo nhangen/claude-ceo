@@ -6,7 +6,7 @@ schedule: "3 10 * * 1-5"
 model: sonnet
 preflight: has_prs_to_review
 tier: read
-status: active
+status: disabled
 ---
 
 # PR Triage

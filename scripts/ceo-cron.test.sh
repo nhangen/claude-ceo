@@ -2937,6 +2937,33 @@ PB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_inputs_morning_flow_keys_do_not_warn() {
+  cat > "$CEO_DIR/playbooks/inputs-morning.md" << 'PB'
+---
+name: inputs-morning
+description: Morning flow playbook with new input keys
+trigger: cron
+schedule: "0 7 * * *"
+model: haiku
+preflight: none
+tier: read
+status: active
+inputs:
+  - current_sprint
+  - yesterday_merged
+  - ledger_recent
+---
+PB
+
+  local out
+  out=$(bash "$CEO_CLI" playbook scan 2>&1)
+  if echo "$out" | grep -q "unknown key.*current_sprint\|unknown key.*yesterday_merged\|unknown key.*ledger_recent"; then
+    printf '  FAIL [%s] scan must NOT warn on valid morning-flow keys (current_sprint, yesterday_merged, ledger_recent)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_inputs_non_array_warns_and_defaults_to_all() {
   cat > "$CEO_DIR/playbooks/inputs-scalar.md" << 'PB'
 ---

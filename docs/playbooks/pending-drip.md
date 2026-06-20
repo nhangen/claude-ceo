@@ -6,7 +6,7 @@ schedule: "33 9 * * *"
 model: haiku
 preflight: has_pending_items
 tier: read
-status: active
+status: disabled
 ---
 
 # Pending Drip
