@@ -352,11 +352,21 @@ fi
 
 # --- Yesterday's observable actions (positives only) + recent ledger ---
 export YESTERDAY_MERGED
+export YESTERDAY_MERGED_DEGRADED=0
 _yday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev/null || echo "")
 if command -v gh >/dev/null 2>&1 && [ -n "$_yday" ]; then
-  YESTERDAY_MERGED=$(gh search prs --author "@me" --merged --json number,title,repository,mergedAt \
-    --limit 50 2>/dev/null | jq -c --arg d "$_yday" \
-    '[.[] | select(.mergedAt and (.mergedAt | startswith($d))) | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
+  _ym_err=$(mktemp)
+  _ym_raw=$(_CEO_TIMEOUT 30 gh search prs --author "@me" --merged \
+    --json number,title,repository,mergedAt --limit 50 2>"$_ym_err"); _ym_rc=$?
+  if [ "$_ym_rc" -ne 0 ]; then
+    echo "WARN: gh search prs (yesterday-merged) failed (rc=$_ym_rc): $(head -c 200 "$_ym_err")" >&2
+    YESTERDAY_MERGED="[]"
+    YESTERDAY_MERGED_DEGRADED=1
+  else
+    YESTERDAY_MERGED=$(printf '%s' "$_ym_raw" | jq -c --arg d "$_yday" \
+      '[.[] | select(.mergedAt and (.mergedAt | startswith($d))) | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
+  fi
+  rm -f "$_ym_err"
 else
   YESTERDAY_MERGED="[]"
 fi

@@ -55,10 +55,14 @@ _ceo_observe_main() {
   rm -f "$_deny_tmp"
 
   local hit="n/a"
-  local _prev_len
-  _prev_len=$(printf '%s' "${LEDGER_PREV_PREDICTED:-[]}" | jq 'length' 2>/dev/null || echo 0)
-  if [ -n "${YESTERDAY_MERGED:-}" ] && [ "${_prev_len:-0}" -gt 0 ]; then
-    hit=$(compute_hit_rate "$LEDGER_PREV_PREDICTED" "$YESTERDAY_MERGED")
+  if [ "${YESTERDAY_MERGED_DEGRADED:-0}" = "1" ]; then
+    hit="n/a (actuals unavailable)"
+  else
+    local _prev_len
+    _prev_len=$(printf '%s' "${LEDGER_PREV_PREDICTED:-[]}" | jq 'length' 2>/dev/null || echo 0)
+    if [ -n "${YESTERDAY_MERGED:-}" ] && [ "${_prev_len:-0}" -gt 0 ]; then
+      hit=$(compute_hit_rate "$LEDGER_PREV_PREDICTED" "$YESTERDAY_MERGED")
+    fi
   fi
 
   {

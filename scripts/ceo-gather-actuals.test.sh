@@ -47,4 +47,30 @@ test_exports_yesterday_merged_ledger_tail_and_prev_predicted() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_gh_failure_sets_degraded_flag() {
+  # Separate setup: override gh stub to fail for search prs
+  local TMP2; TMP2=$(mktemp -d)
+  local STUB2="$TMP2/bin"; mkdir -p "$STUB2"
+  cat > "$STUB2/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"search prs"*) echo "gh: auth error" >&2; exit 1 ;;
+  *) echo "stub gh: unexpected: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$STUB2/gh"
+  local OLD_PATH="$PATH"
+  export PATH="$STUB2:$PATH"
+  local OLD_VAULT="$CEO_VAULT"
+  export CEO_VAULT="$TMP2/vault"; mkdir -p "$CEO_VAULT/CEO"
+  # shellcheck source=/dev/null
+  source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1 || true
+  assert_eq "$YESTERDAY_MERGED" "[]" "degraded: YESTERDAY_MERGED is []"
+  assert_eq "${YESTERDAY_MERGED_DEGRADED:-0}" "1" "degraded flag set to 1"
+  export PATH="$OLD_PATH"
+  export CEO_VAULT="$OLD_VAULT"
+  rm -rf "$TMP2"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
