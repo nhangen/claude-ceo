@@ -1352,6 +1352,7 @@ if [ "$TIER" = "read" ]; then
     PRE_GATHERED+="- Daily note Top 3: $DAILY_NOTE_TOP3"$'\n'
     PRE_GATHERED+="- Daily note Tasks: $DAILY_NOTE_TASKS"$'\n'
   fi
+  PRE_GATHERED+="$(ceo_build_pregathered_extras)"$'\n'
 
   BRIEFINGS_BLOCK=""
   if _inputs_includes briefings_training; then

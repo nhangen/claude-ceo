@@ -10,5 +10,15 @@ _inputs_includes() {
   echo "$INPUTS_JSON" | jq -e --arg k "$key" 'index($k) != null' >/dev/null 2>&1
 }
 
-# (ceo_build_pregathered_extras, ceo_morning_observe_hook, ceo_morning_raw_digest
-#  are added to this lib by Tasks 3B, 6, 7 respectively.)
+# Emit the v1 morning-flow extra signals, gated by the playbook's inputs list.
+# In the lib so it is unit-testable without driving a full dispatch.
+ceo_build_pregathered_extras() {
+  local out=""
+  _inputs_includes current_sprint  && out+="- Current sprint (${CURRENT_SPRINT_COUNT:-0} items): ${CURRENT_SPRINT_ITEMS:-[]}"$'\n'
+  _inputs_includes yesterday_merged && out+="- Yesterday merged (observable positives): ${YESTERDAY_MERGED:-[]}"$'\n'
+  _inputs_includes ledger_recent    && out+="- model ledger (recent, model-of-Nathan): ${LEDGER_RECENT:-}"$'\n'
+  printf '%s' "$out"
+}
+
+# (ceo_morning_observe_hook, ceo_morning_raw_digest
+#  are added to this lib by Tasks 6, 7 respectively.)
