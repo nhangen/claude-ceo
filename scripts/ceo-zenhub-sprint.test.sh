@@ -23,7 +23,7 @@ case "$args" in
 esac
 cat <<'JSON'
 {"data":{"workspace":{"sprints":{"nodes":[{"state":"OPEN","issues":{"nodes":[
-{"number":42,"title":"Sprint task A","repository":{"ownerName":"awesomemotive","name":"optin-monster-app"}}
+{"number":42,"title":"Sprint task A","repository":{"id":"repo_abc123","name":"optin-monster-app"}}
 ]}}]}}}}
 JSON
 STUB

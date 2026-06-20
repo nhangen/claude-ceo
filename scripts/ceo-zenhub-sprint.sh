@@ -14,7 +14,7 @@ query($ws: ID!) {
   workspace(id: $ws) {
     sprints(filters: {state: {eq: OPEN}}, first: 1) {
       nodes { state issues(first: 100) { nodes {
-        number title repository { ownerName name }
+        number title repository { id name }
       } } }
     }
   }
@@ -32,4 +32,4 @@ resp=$(curl -sS -X POST "https://api.zenhub.com/public/graphql" \
 echo "$resp" | jq -e '.data.workspace.sprints.nodes[0].issues.nodes' >/dev/null 2>&1 || emit_empty
 
 echo "$resp" | jq '[.data.workspace.sprints.nodes[0].issues.nodes[]
-  | {number, repo: (.repository.ownerName + "/" + .repository.name), title}]' 2>/dev/null || emit_empty
+  | {number, repo: .repository.name, title}]' 2>/dev/null || emit_empty
