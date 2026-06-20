@@ -272,6 +272,21 @@ fi
 export SYNC_CONFLICT_COUNT
 SYNC_CONFLICT_COUNT=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs)
 
+# --- Current-sprint signal (AM priority key; degrades to empty) ---
+_CEO_CREDS="${CEO_CREDS_FILE:-$HOME/.config/ceo/credentials.env}"
+[ -f "$_CEO_CREDS" ] && { set -a; # shellcheck source=/dev/null
+  . "$_CEO_CREDS"; set +a; }
+_SPRINT_HELPER="${CEO_SPRINT_HELPER:-$(dirname "${BASH_SOURCE[0]}")/ceo-zenhub-sprint.sh}"
+export CURRENT_SPRINT_ITEMS
+if [ -x "$_SPRINT_HELPER" ]; then
+  CURRENT_SPRINT_ITEMS=$(bash "$_SPRINT_HELPER" 2>/dev/null || echo "[]")
+else
+  CURRENT_SPRINT_ITEMS="[]"
+fi
+[ -n "$CURRENT_SPRINT_ITEMS" ] || CURRENT_SPRINT_ITEMS="[]"
+export CURRENT_SPRINT_COUNT
+CURRENT_SPRINT_COUNT=$(echo "$CURRENT_SPRINT_ITEMS" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
+
 # --- Daily note sections ---
 DAILY_NOTE="$VAULT/Daily/$TODAY.md"
 if [ -f "$DAILY_NOTE" ]; then
