@@ -1273,11 +1273,11 @@ cmd_playbook_scan() {
         # gate at dispatch, never silently coerce.
         local unknown_keys
         unknown_keys=$(echo "$inputs" | jq -r '
-          ["pr_data","pending_count","today_log","yesterday_log","daily_note","briefings_training","active_domains","pending_ask","scan_data","blessings"] as $valid
+          ["pr_data","pending_count","today_log","yesterday_log","daily_note","briefings_training","active_domains","pending_ask","scan_data","blessings","current_sprint","yesterday_merged","ledger_recent"] as $valid
           | .[]? | select(. as $k | $valid | index($k) | not)
         ' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
         if [ -n "$unknown_keys" ]; then
-          echo "  WARN  $basename: 'inputs' contains unknown key(s): $unknown_keys — ignored at dispatch. Known: pr_data, pending_count, today_log, yesterday_log, daily_note, briefings_training, active_domains, pending_ask, scan_data, blessings" >&2
+          echo "  WARN  $basename: 'inputs' contains unknown key(s): $unknown_keys — ignored at dispatch. Known: pr_data, pending_count, today_log, yesterday_log, daily_note, briefings_training, active_domains, pending_ask, scan_data, blessings, current_sprint, yesterday_merged, ledger_recent" >&2
         fi
         ;;
       *)
