@@ -350,6 +350,45 @@ else
   export PENDING_ASK_QUESTIONS=""
 fi
 
+# --- Yesterday's observable actions (positives only) + recent ledger ---
+export YESTERDAY_MERGED
+_yday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev/null || echo "")
+if command -v gh >/dev/null 2>&1 && [ -n "$_yday" ]; then
+  YESTERDAY_MERGED=$(gh search prs --author "@me" --merged --json number,title,repository \
+    --limit 50 2>/dev/null | jq -c --arg d "$_yday" \
+    '[.[] | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
+else
+  YESTERDAY_MERGED="[]"
+fi
+[ -n "$YESTERDAY_MERGED" ] || YESTERDAY_MERGED="[]"
+
+export LEDGER_RECENT
+export LEDGER_PREV_PREDICTED
+LEDGER_PREV_PREDICTED="[]"
+_ledger_dir="$CEO_DIR/model"
+if [ -d "$_ledger_dir" ]; then
+  _latest=$(ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1)
+  if [ -n "$_latest" ]; then
+    LEDGER_RECENT=$(tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
+    # Parse the LAST "predicted today:" block's indented bullets into "repo#num" strings.
+    # awk sets f=1 at each header (resetting on each, so only the last block's lines survive
+    # into the final emitted set), captures "  - " bullets, stops at the next non-indented line.
+    _pred_lines=$(awk '
+      /predicted today:/ { f=1; out=""; next }
+      f && /^  - / { out=out $0 "\n"; next }
+      f && /^[^ ]/ { f=0 }
+      END { printf "%s", out }
+    ' "$_latest" 2>/dev/null | sed -E 's/^  - //; s/:.*$//' | sed '/^$/d')
+    if [ -n "$_pred_lines" ]; then
+      LEDGER_PREV_PREDICTED=$(printf '%s\n' "$_pred_lines" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+    fi
+  else
+    LEDGER_RECENT=""
+  fi
+else
+  LEDGER_RECENT=""
+fi
+
 # --- Evaluate Gather Status ---
 export CEO_GATHER_STATUS="ok"
 export CEO_GATHER_REASONS=""
