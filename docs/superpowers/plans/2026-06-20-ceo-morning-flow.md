@@ -23,6 +23,91 @@
 
 ---
 
+### Task 0: Extract a sourceable `ceo-cron-lib.sh` (testability prerequisite)
+
+**Why this task exists:** `ceo-cron.sh` runs its dispatch at top level (no `main`/`BASH_SOURCE` guard — confirmed at the file tail), and the existing `ceo-cron.test.sh` invokes it as a **subprocess**, never sourcing it. The new helper functions (`ceo_build_pregathered_extras`, `ceo_morning_observe_hook`, `ceo_morning_raw_digest`) and the existing `_inputs_includes` must be **unit-testable by sourcing**, which `ceo-cron.sh` is not. Fix: move pure helper functions into a sourceable lib (mirrors how `test-harness.sh` is already sourced). Tasks 3B/6/7 source THIS lib, never `ceo-cron.sh`.
+
+**Files:**
+- Create: `scripts/ceo-cron-lib.sh`
+- Modify: `scripts/ceo-cron.sh` (source the lib near the top, after `SCRIPT_DIR` is set and before `_inputs_includes` is first used; delete the now-moved inline `_inputs_includes` definition at ~`:1004-1010`)
+- Test: `scripts/ceo-cron-lib.test.sh`
+
+**Interfaces:**
+- Produces: a lib defining `_inputs_includes` (reads global `INPUTS_JSON`) plus stubs for the morning helpers added in later tasks. Source-safe: defines functions only, no top-level side effects.
+
+- [ ] **Step 1: Write the failing test**
+
+```bash
+# scripts/ceo-cron-lib.test.sh
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/test-harness.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/ceo-cron-lib.sh"   # MUST be safe to source (no dispatch)
+
+test_inputs_includes_reads_inputs_json() {
+  INPUTS_JSON='["current_sprint","daily_note"]'
+  _inputs_includes current_sprint && r1=0 || r1=1
+  _inputs_includes nope && r2=0 || r2=1
+  assert_eq "$r1" "0" "present key returns 0"
+  assert_eq "$r2" "1" "absent key returns 1"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inputs_includes_defaults_all_when_null() {
+  INPUTS_JSON="null"
+  _inputs_includes anything && r=0 || r=1
+  assert_eq "$r" "0" "null inputs → default-all (returns 0)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+run_tests
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `bash scripts/ceo-cron-lib.test.sh`
+Expected: FAIL — `ceo-cron-lib.sh` does not exist.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```bash
+# scripts/ceo-cron-lib.sh
+# Sourceable pure-function library for ceo-cron.sh. NO top-level side effects —
+# safe to `source` from tests. Functions read the caller's module-scope globals.
+
+# Returns 0 if the pre-gather key should be injected. Reads global INPUTS_JSON
+# (a JSON array, or "null"/empty → default-all for pre-feature playbooks).
+_inputs_includes() {
+  local key="$1"
+  [ "${INPUTS_JSON:-null}" = "null" ] && return 0
+  [ -z "${INPUTS_JSON:-}" ] && return 0
+  echo "$INPUTS_JSON" | jq -e --arg k "$key" 'index($k) != null' >/dev/null 2>&1
+}
+
+# (ceo_build_pregathered_extras, ceo_morning_observe_hook, ceo_morning_raw_digest
+#  are added to this lib by Tasks 3B, 6, 7 respectively.)
+```
+
+In `scripts/ceo-cron.sh`: after `SCRIPT_DIR` is defined, add `# shellcheck source=/dev/null` + `source "$SCRIPT_DIR/ceo-cron-lib.sh"`, and **delete** the inline `_inputs_includes()` definition (`:1004-1010`). Leave the `INPUTS_JSON=$(echo "$ENTRY" | jq ...)` assignment (`:1002`) in place — the lib function reads it.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `bash scripts/ceo-cron-lib.test.sh`
+Then confirm no dispatch regression: `bash scripts/ceo-cron.test.sh` (the subprocess suite must stay green after the source line + deletion).
+Expected: both PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/ceo-cron-lib.sh scripts/ceo-cron-lib.test.sh scripts/ceo-cron.sh
+git commit -m "refactor(ceo): extract sourceable ceo-cron-lib.sh (_inputs_includes)"
+```
+
+---
+
 ### Task 1: Zenhub current-sprint shell helper
 
 **Files:**
@@ -394,10 +479,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test-harness.sh"
 
 test_pregathered_emits_new_signals_when_inputs_list_them() {
-  # _inputs_includes (ceo-cron.sh:1004) reads the module-scope INPUTS_JSON,
-  # a JSON array parsed from the registry entry's .inputs. Set it directly.
+  # Source the LIB (Task 0), not ceo-cron.sh (which runs dispatch on source).
+  # _inputs_includes reads the module-scope INPUTS_JSON; set it directly.
   # shellcheck source=/dev/null
-  source "$SCRIPT_DIR/ceo-cron.sh" 2>/dev/null || true
+  source "$SCRIPT_DIR/ceo-cron-lib.sh"
   INPUTS_JSON='["current_sprint","yesterday_merged","ledger_recent"]'
   export CURRENT_SPRINT_ITEMS='[{"number":7,"repo":"o/r","title":"S"}]'
   export CURRENT_SPRINT_COUNT=1
@@ -421,24 +506,24 @@ Expected: FAIL — `ceo_build_pregathered_extras` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Extract a small testable helper and call it from the existing builder. Add the function near the other helpers in `scripts/ceo-cron.sh`:
+Add the helper to the sourceable lib `scripts/ceo-cron-lib.sh` (created in Task 0), replacing the placeholder comment:
 
 ```bash
 # Emit the v1 morning-flow extra signals, gated by the playbook's inputs list.
-# Kept as a function so it can be unit-tested without driving a full dispatch.
+# In the lib so it is unit-testable without driving a full dispatch.
 ceo_build_pregathered_extras() {
   local out=""
-  _inputs_includes current_sprint && out+="- Current sprint ($CURRENT_SPRINT_COUNT items): $CURRENT_SPRINT_ITEMS"$'\n'
+  _inputs_includes current_sprint  && out+="- Current sprint (${CURRENT_SPRINT_COUNT:-0} items): ${CURRENT_SPRINT_ITEMS:-[]}"$'\n'
   _inputs_includes yesterday_merged && out+="- Yesterday merged (observable positives): ${YESTERDAY_MERGED:-[]}"$'\n'
-  _inputs_includes ledger_recent && out+="- Model ledger (recent, model-of-Nathan): ${LEDGER_RECENT:-}"$'\n'
+  _inputs_includes ledger_recent    && out+="- Model ledger (recent, model-of-Nathan): ${LEDGER_RECENT:-}"$'\n'
   printf '%s' "$out"
 }
 ```
 
-Then in the `PRE_GATHERED` builder, after the `daily_note` block (`:1359`), append:
+Then in `scripts/ceo-cron.sh`'s `PRE_GATHERED` builder, after the `daily_note` block (`:1359`), append — note the trailing `$'\n'` to replace the newline that `$(...)` strips:
 
 ```bash
-  PRE_GATHERED+="$(ceo_build_pregathered_extras)"
+  PRE_GATHERED+="$(ceo_build_pregathered_extras)"$'\n'
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -726,8 +811,9 @@ setup() {
   TMP=$(mktemp -d); export CEO_VAULT="$TMP/v"; mkdir -p "$CEO_VAULT/CEO/model"
   export TODAY="2026-06-20"
   ENTRY_OUT=$'**Status:** ok\n<!-- CEO-PREDICTED-PRIORITIES\n- o/r#7: Ship\n-->'
+  # Source the LIB (Task 0), not ceo-cron.sh.
   # shellcheck source=/dev/null
-  source "$SCRIPT_DIR/ceo-cron.sh" 2>/dev/null || true
+  source "$SCRIPT_DIR/ceo-cron-lib.sh"
   export SCRIPT_DIR  # ceo_morning_observe_hook resolves ceo-observe.sh via it
 }
 teardown() { rm -rf "$TMP"; unset CEO_VAULT TODAY; }
@@ -759,24 +845,26 @@ Expected: FAIL — `ceo_morning_observe_hook` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add the hook near the other helpers in `scripts/ceo-cron.sh`:
+Add the hook to the sourceable lib `scripts/ceo-cron-lib.sh` (Task 0). The failure branch must not hard-depend on `_v` (the lib is sourced in tests where `_v` is undefined):
 
 ```bash
 # Append the model-of-Nathan ledger entry after a successful morning run.
-# Extracted so it is unit-testable without driving the full dispatch.
+# In the lib so it is unit-testable. Never fails the flow.
 ceo_morning_observe_hook() {
   local trigger="$1" log_entry="$2"
   [ "$trigger" = "morning" ] || return 0
   [ "${CEO_DRY_RUN:-}" = "1" ] && return 0
-  printf '%s\n' "$log_entry" \
-    | YESTERDAY_MERGED="${YESTERDAY_MERGED:-[]}" \
-      LEDGER_PREV_PREDICTED="${LEDGER_PREV_PREDICTED:-[]}" \
-      bash "${SCRIPT_DIR}/ceo-observe.sh" >/dev/null 2>&1 \
-    || _v "observe step failed (non-fatal)"
+  if ! printf '%s\n' "$log_entry" \
+      | YESTERDAY_MERGED="${YESTERDAY_MERGED:-[]}" \
+        LEDGER_PREV_PREDICTED="${LEDGER_PREV_PREDICTED:-[]}" \
+        bash "${SCRIPT_DIR}/ceo-observe.sh" >/dev/null 2>&1; then
+    command -v _v >/dev/null 2>&1 && _v "observe step failed (non-fatal)"
+  fi
+  return 0
 }
 ```
 
-Then call it from `_dispatch_single_output`, immediately after the report branch (`ceo-cron.sh:330-334`), inside the `self_reported_failed -eq 0` success region:
+Then call it from `_dispatch_single_output` in `scripts/ceo-cron.sh`, immediately after the report branch (`:330-334`), inside the `self_reported_failed -eq 0` success region:
 
 ```bash
   if [ "$self_reported_failed" -eq 0 ]; then
@@ -819,8 +907,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test-harness.sh"
 
 test_raw_digest_helper_emits_signals_when_synthesis_empty() {
+  # Source the LIB (Task 0), not ceo-cron.sh.
   # shellcheck source=/dev/null
-  source "$SCRIPT_DIR/ceo-cron.sh" 2>/dev/null || true
+  source "$SCRIPT_DIR/ceo-cron-lib.sh"
   CURRENT_SPRINT_ITEMS='[{"number":7,"repo":"o/r","title":"Sprint Y"}]'
   PR_REVIEW_REQUESTED='[]'; DAILY_NOTE_TOP3="Write spec"
   out=$(ceo_morning_raw_digest)
@@ -839,7 +928,7 @@ Expected: FAIL — `ceo_morning_raw_digest` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add the helper near the top of `scripts/ceo-cron.sh` (function definitions area):
+Add the helper to the sourceable lib `scripts/ceo-cron-lib.sh` (Task 0):
 
 ```bash
 ceo_morning_raw_digest() {
@@ -978,4 +1067,11 @@ An independent audit against the verified `ceo-cron.sh` internals found four HIG
 5. **MEDIUM — Zenhub query guess → FIXED (bounded spike).** Task 1 Step 4 now points at the proven `@octokit/graphql` client (`~/.claude/skills/story-points/scripts/analyzer/`) for auth/endpoint and the Zenhub MCP `getSprint` schema for sprint field names; the `emit_empty` wrapper bounds the risk.
 6. **MEDIUM — discretion scrub inert → FIXED.** Task 5 now loads the denylist from `Profile/discretion-denylist.txt` (seeded in the vault, referenced by `discretion.md`); `CEO_DISCRETION_DENY` is an additional override. Non-inert by default.
 
-**Status: design approved; plan drafted, audited, and revised (6/6 findings folded in). Execution-ready.** Task count: 1, 2, 3, 3B, 4, 5, 6, 7, 8 (9 tasks).
+### Re-audit (after revision)
+
+A second focused audit verified fixes 2-6 are sound (round-trips and contracts confirmed against source) and found one more real issue + one minor:
+
+7. **MEDIUM — `ceo-cron.sh` not source-safe → FIXED.** It runs dispatch at top level (no `main`/`BASH_SOURCE` guard; confirmed at file tail) and the existing test invokes it as a subprocess. So the 3B/6/7 tests' `source ceo-cron.sh` would trigger dispatch and fail. **Added Task 0**: extract `_inputs_includes` + the three morning helpers into a sourceable `scripts/ceo-cron-lib.sh`; `ceo-cron.sh` sources it; the helper tests source the **lib**, not `ceo-cron.sh`. Tasks 3B/6/7 updated accordingly.
+8. **LOW — `$(...)` strips the extras' trailing newline → FIXED.** The `PRE_GATHERED` append now adds a trailing `$'\n'`.
+
+**Status: design approved; plan drafted, audited twice, revised (8/8 findings folded in). Execution-ready.** Task order: 0, 1, 2, 3, 3B, 4, 5, 6, 7, 8 (10 tasks). Task 0 (lib extraction) is the prerequisite for 3B/6/7's testability.
