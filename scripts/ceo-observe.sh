@@ -34,7 +34,7 @@ _ceo_observe_main() {
   local input; input=$(cat || true)
   # Extract predicted lines from the synthesis block.
   local predicted; predicted=$(printf '%s\n' "$input" \
-    | awk '/CEO-PREDICTED-PRIORITIES/{f=1;next}/-->/{f=0}f' \
+    | awk '/CEO-PREDICTED-PRIORITIES/{f=1;next}/^[[:space:]]*-->[[:space:]]*$/{f=0}f' \
     | sed -E 's/^- //; s/:.*$//' | sed '/^$/d')
 
   local denyfile="$CEO_VAULT/Profile/discretion-denylist.txt"

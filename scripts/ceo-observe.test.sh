@@ -50,6 +50,17 @@ test_discretion_scrub_drops_employer_specifics() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_predicted_block_with_arrow_in_title_not_truncated() {
+  setup
+  printf '<!-- CEO-PREDICTED-PRIORITIES\n- repo-a#1: Migrate A --> B\n- repo-b#2: Regular item\n-->\n' | \
+    YESTERDAY_MERGED='[]' bash "$OBS"
+  entry=$(cat "$CEO_VAULT/CEO/model/2026-06.md")
+  assert_contains "$entry" "repo-a#1" "item with --> in title preserved"
+  assert_contains "$entry" "repo-b#2" "subsequent item preserved"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_degraded_actuals_yields_na_hit_rate() {
   setup
   printf '<!-- CEO-PREDICTED-PRIORITIES\n- o/r#7: thing\n-->\n' | \

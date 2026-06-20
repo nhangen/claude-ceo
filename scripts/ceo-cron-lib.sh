@@ -6,7 +6,6 @@
 _inputs_includes() {
   local key="$1"
   [ "${INPUTS_JSON:-null}" = "null" ] && return 0
-  [ -z "${INPUTS_JSON:-}" ] && return 0
   echo "$INPUTS_JSON" | jq -e --arg k "$key" 'index($k) != null' >/dev/null 2>&1
 }
 
