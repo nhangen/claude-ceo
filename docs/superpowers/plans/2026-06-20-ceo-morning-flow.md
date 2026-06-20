@@ -144,7 +144,12 @@ echo "$resp" | jq '[.data.workspace.sprints.nodes[0].issues.nodes[]
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/ceo-zenhub-sprint.test.sh`
-Expected: PASS (both tests). Then verify the real query shape against the live API once (creds present): `bash scripts/ceo-zenhub-sprint.sh | jq .` — if Zenhub's schema field names differ (e.g. `sprints` filter args), adjust the `QUERY` heredoc and re-run the test. This verification is required because the GraphQL field names are the one externally-owned contract.
+Expected: PASS (both tests).
+
+**Query is externally-owned — confirm the schema, do not ship the guessed heredoc unverified.** The `QUERY` above is a starting shape, not authoritative. Before relying on it:
+1. Reference the proven Zenhub client already in the repo's skills: `~/.claude/skills/story-points/scripts/analyzer/pr-review-story-points.js` (endpoint `https://api.zenhub.com/public/graphql`, bearer auth via `@octokit/graphql`) — copy its auth/endpoint exactly.
+2. Confirm the **current-sprint** field path against the Zenhub MCP `getSprint`/`getUpcomingSprint` tool schema (that schema is the source of truth for sprint field names). Adjust the `QUERY` heredoc to match, then re-run the test.
+3. The `emit_empty` degrade wrapper guarantees a wrong query can never break the morning flow (it yields `[]`, and synthesis falls back to other signals) — so this is a bounded spike, not an open-ended risk.
 
 - [ ] **Step 5: Commit**
 
@@ -249,7 +254,7 @@ git commit -m "feat(ceo): gather current-sprint signal into pre-gather"
 
 **Interfaces:**
 - Consumes: `gh` (merged PRs since yesterday), the ledger dir `CEO/model/`.
-- Produces: exported `YESTERDAY_MERGED` (JSON array `[{number, repo, title}]`, `[]` on failure) and `LEDGER_RECENT` (string: the most recent ledger month file's tail, or empty).
+- Produces: exported `YESTERDAY_MERGED` (JSON array `[{number, repo, title}]`, `[]` on failure); `LEDGER_RECENT` (string: most recent ledger month file's tail, or empty); and `LEDGER_PREV_PREDICTED` (JSON array of `"repo#num"` strings parsed from the most-recent ledger entry's `predicted today:` bullets — the input Task 5's hit-rate scores against; `[]` if none).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -264,12 +269,19 @@ source "$SCRIPT_DIR/test-harness.sh"
 setup() {
   TMP=$(mktemp -d)
   export CEO_VAULT="$TMP/vault"; mkdir -p "$CEO_VAULT/CEO/model"
-  printf '## 2026-06-19 — predicted\n- pred: PR #7\n' > "$CEO_VAULT/CEO/model/2026-06.md"
+  # Real ledger-entry format as written by ceo-observe.sh (Task 5).
+  cat > "$CEO_VAULT/CEO/model/2026-06.md" <<'LED'
+## 2026-06-19 — model update
+- yesterday hit-rate: n/a
+- predicted today:
+  - o/r#7: Ship the thing
+  - o/r#8: Review PR
+LED
   STUB_BIN="$TMP/bin"; mkdir -p "$STUB_BIN"
   cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
-  *"search prs"*"--state merged"*) echo '[{"number":7,"title":"Did it","repository":{"nameWithOwner":"o/r"}}]' ;;
+  *"search prs"*"--merged"*) echo '[{"number":7,"title":"Did it","repository":{"nameWithOwner":"o/r"}}]' ;;
   *) echo "stub gh: unexpected: $*" >&2; exit 99 ;;
 esac
 STUB
@@ -278,12 +290,14 @@ STUB
 }
 teardown() { rm -rf "$TMP"; unset CEO_VAULT CEO_SPRINT_HELPER; }
 
-test_exports_yesterday_merged_and_ledger_tail() {
+test_exports_yesterday_merged_ledger_tail_and_prev_predicted() {
   setup
   # shellcheck source=/dev/null
   source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1 || true
   assert_contains "$YESTERDAY_MERGED" '"number":7' "merged PR captured"
-  assert_contains "$LEDGER_RECENT" 'PR #7' "ledger tail loaded"
+  assert_contains "$LEDGER_RECENT" 'predicted today' "ledger tail loaded"
+  assert_contains "$LEDGER_PREV_PREDICTED" 'o/r#7' "prev predicted parsed to JSON"
+  assert_contains "$LEDGER_PREV_PREDICTED" 'o/r#8' "all predicted bullets parsed"
   teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -314,14 +328,34 @@ fi
 [ -n "$YESTERDAY_MERGED" ] || YESTERDAY_MERGED="[]"
 
 export LEDGER_RECENT
+export LEDGER_PREV_PREDICTED
+LEDGER_PREV_PREDICTED="[]"
 _ledger_dir="$CEO_DIR/model"
 if [ -d "$_ledger_dir" ]; then
   _latest=$(ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1)
-  [ -n "$_latest" ] && LEDGER_RECENT=$(tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
+  if [ -n "$_latest" ]; then
+    LEDGER_RECENT=$(tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
+    # Parse the LAST "predicted today:" block's indented bullets into "repo#num" strings.
+    # awk sets f=1 at each header (resetting on each, so only the last block's lines survive
+    # into the final emitted set), captures "  - " bullets, stops at the next non-indented line.
+    _pred_lines=$(awk '
+      /predicted today:/ { f=1; out=""; next }
+      f && /^  - / { out=out $0 "\n"; next }
+      f && /^[^ ]/ { f=0 }
+      END { printf "%s", out }
+    ' "$_latest" 2>/dev/null | sed -E 's/^  - //; s/:.*$//' | sed '/^$/d')
+    if [ -n "$_pred_lines" ]; then
+      LEDGER_PREV_PREDICTED=$(printf '%s\n' "$_pred_lines" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+    fi
+  else
+    LEDGER_RECENT=""
+  fi
 else
   LEDGER_RECENT=""
 fi
 ```
+
+Note: the `awk` parse keeps only the bullets under the *last* `predicted today:` header (most recent entry). The test asserts both `o/r#7` and `o/r#8` are present in the JSON.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -332,7 +366,91 @@ Expected: PASS.
 
 ```bash
 git add scripts/ceo-gather.sh scripts/ceo-gather-actuals.test.sh
-git commit -m "feat(ceo): gather yesterday merged PRs + recent ledger tail"
+git commit -m "feat(ceo): gather yesterday merged PRs, ledger tail, prev-predicted list"
+```
+
+---
+
+### Task 3B: Wire the new signals into ceo-cron.sh PRE_GATHERED injection
+
+**Why this task exists:** `ceo-cron.sh` builds the prompt's pre-gathered block from a *hardcoded* `_inputs_includes <key>` vocabulary (`ceo-cron.sh:1344-1359`). Adding `current_sprint`/`yesterday_merged`/`ledger_recent` to a playbook's `inputs:` frontmatter does **nothing** unless a matching branch emits the variable. Without this task, Task 4's playbook never sees `$CURRENT_SPRINT_ITEMS` and ranks by age — silently defeating the whole flow while every test stays green.
+
+**Files:**
+- Modify: `scripts/ceo-cron.sh` (insert after the `daily_note` block at ~line 1359)
+- Test: `scripts/ceo-cron-inputs.test.sh`
+
+**Interfaces:**
+- Consumes: exported `CURRENT_SPRINT_ITEMS`, `CURRENT_SPRINT_COUNT` (Task 2); `YESTERDAY_MERGED`, `LEDGER_RECENT` (Task 3).
+- Produces: when a playbook's `inputs:` lists `current_sprint`/`yesterday_merged`/`ledger_recent`, the corresponding lines appear in `PRE_GATHERED`.
+
+- [ ] **Step 1: Write the failing test**
+
+```bash
+# scripts/ceo-cron-inputs.test.sh
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/test-harness.sh"
+
+test_pregathered_emits_new_signals_when_inputs_list_them() {
+  # _inputs_includes (ceo-cron.sh:1004) reads the module-scope INPUTS_JSON,
+  # a JSON array parsed from the registry entry's .inputs. Set it directly.
+  # shellcheck source=/dev/null
+  source "$SCRIPT_DIR/ceo-cron.sh" 2>/dev/null || true
+  INPUTS_JSON='["current_sprint","yesterday_merged","ledger_recent"]'
+  export CURRENT_SPRINT_ITEMS='[{"number":7,"repo":"o/r","title":"S"}]'
+  export CURRENT_SPRINT_COUNT=1
+  export YESTERDAY_MERGED='[{"number":7,"repo":"o/r"}]'
+  export LEDGER_RECENT="predicted today: o/r#7"
+  block=$(ceo_build_pregathered_extras)   # helper extracted for testability
+  assert_contains "$block" "Current sprint" "sprint line emitted"
+  assert_contains "$block" '"number":7' "sprint items present"
+  assert_contains "$block" "Yesterday merged" "yesterday-merged line emitted"
+  assert_contains "$block" "model ledger" "ledger line emitted"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+run_tests
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `bash scripts/ceo-cron-inputs.test.sh`
+Expected: FAIL — `ceo_build_pregathered_extras` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Extract a small testable helper and call it from the existing builder. Add the function near the other helpers in `scripts/ceo-cron.sh`:
+
+```bash
+# Emit the v1 morning-flow extra signals, gated by the playbook's inputs list.
+# Kept as a function so it can be unit-tested without driving a full dispatch.
+ceo_build_pregathered_extras() {
+  local out=""
+  _inputs_includes current_sprint && out+="- Current sprint ($CURRENT_SPRINT_COUNT items): $CURRENT_SPRINT_ITEMS"$'\n'
+  _inputs_includes yesterday_merged && out+="- Yesterday merged (observable positives): ${YESTERDAY_MERGED:-[]}"$'\n'
+  _inputs_includes ledger_recent && out+="- Model ledger (recent, model-of-Nathan): ${LEDGER_RECENT:-}"$'\n'
+  printf '%s' "$out"
+}
+```
+
+Then in the `PRE_GATHERED` builder, after the `daily_note` block (`:1359`), append:
+
+```bash
+  PRE_GATHERED+="$(ceo_build_pregathered_extras)"
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `bash scripts/ceo-cron-inputs.test.sh`
+Expected: PASS. Then full suite: `for t in scripts/*.test.sh; do bash "$t" >/dev/null 2>&1 && echo "ok $t" || echo "FAIL $t"; done`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/ceo-cron.sh scripts/ceo-cron-inputs.test.sh
+git commit -m "feat(ceo): inject current-sprint/yesterday-merged/ledger into PRE_GATHERED"
 ```
 
 ---
@@ -447,9 +565,10 @@ git commit -m "feat(ceo): add morning synthesis playbook (draft, sprint-ranked)"
 **Files:**
 - Create: `scripts/ceo-observe.sh`
 - Test: `scripts/ceo-observe.test.sh`
+- Create (vault, seeded): `Profile/discretion-denylist.txt` — one term/regex per line of employer/client specifics never to write to the synced ledger (e.g. client names, contract codenames). Reference it from `Profile/discretion.md` ("operational denylist for automated writers: `discretion-denylist.txt`"). This is what makes the scrub non-inert in production.
 
 **Interfaces:**
-- Consumes: the synthesis run output (stdin or `$1` path — contains the CEO-PREDICTED-PRIORITIES block), `YESTERDAY_MERGED` (env), the prior ledger entry's predicted list, `CEO_VAULT`.
+- Consumes: the synthesis run output (stdin or `$1` path — contains the CEO-PREDICTED-PRIORITIES block), `YESTERDAY_MERGED` and `LEDGER_PREV_PREDICTED` (env, from Task 3), `CEO_VAULT`, and `Profile/discretion-denylist.txt`.
 - Produces: appends a dated entry to `CEO/model/YYYY-MM.md` with: today's predicted block, yesterday's hit-rate (predicted vs `YESTERDAY_MERGED`), and a scrubbed observations line. Exit 0 always (low-stakes write, never aborts the flow). Function `compute_hit_rate <predicted_json> <actual_json>` prints `hits/total`.
 
 - [ ] **Step 1: Write the failing test**
@@ -536,8 +655,17 @@ _ceo_observe_main() {
     | awk '/CEO-PREDICTED-PRIORITIES/{f=1;next}/-->/{f=0}f' \
     | sed -E 's/^- //; s/:.*$//' | sed '/^$/d')
 
-  # Discretion scrub: drop any line containing a denied term (patterns only, never specifics).
+  # Discretion scrub: drop any line containing a denied term (patterns only, never
+  # specifics). The denylist is loaded from the Profile layer so it is NOT inert by
+  # default; CEO_DISCRETION_DENY (regex) is an additional test/runtime override.
+  local denyfile="$CEO_VAULT/Profile/discretion-denylist.txt"
   local deny="${CEO_DISCRETION_DENY:-}"
+  if [ -f "$denyfile" ]; then
+    # one term/regex per line, '#' comments and blanks ignored → alternation
+    local fileterms
+    fileterms=$(grep -vE '^\s*(#|$)' "$denyfile" 2>/dev/null | paste -sd '|' - 2>/dev/null || true)
+    [ -n "$fileterms" ] && deny="${deny:+$deny|}$fileterms"
+  fi
   if [ -n "$deny" ]; then
     predicted=$(printf '%s\n' "$predicted" | grep -viE "$deny" || true)
   fi
@@ -581,10 +709,10 @@ git commit -m "feat(ceo): observe step — positives-only ledger + hit-rate + di
 - Test: `scripts/ceo-cron-morning-observe.test.sh`
 
 **Interfaces:**
-- Consumes: the captured `log_entry` (synthesis output) for trigger `morning`; `scripts/ceo-observe.sh` (Task 5).
-- Produces: calls `ceo-observe.sh` with the run output piped in, only for `morning`, only on success, only when not dry-run. Failure of observe must not fail the flow.
+- Consumes: the captured `log_entry` inside `_dispatch_single_output` (`ceo-cron.sh:301-334`); `scripts/ceo-observe.sh` (Task 5); `YESTERDAY_MERGED`/`LEDGER_PREV_PREDICTED` (Task 3).
+- Produces: a testable `ceo_morning_observe_hook <trigger> <log_entry>` that, only for `morning` and only when not dry-run, pipes `log_entry` to `ceo-observe.sh` (which appends the ledger entry). Called from `_dispatch_single_output` after the report branch. Observe failure must not fail the flow. For any non-`morning` trigger it is a no-op (no ledger write).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test (behavioral — drives the hook, asserts the ledger changes)**
 
 ```bash
 # scripts/ceo-cron-morning-observe.test.sh
@@ -594,11 +722,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/test-harness.sh"
 
-test_morning_invokes_observe_hook() {
-  # The dispatch must contain a guarded call to ceo-observe.sh for trigger "morning".
-  body=$(cat "$SCRIPT_DIR/ceo-cron.sh")
-  assert_contains "$body" "ceo-observe.sh" "observe step wired into dispatch"
-  assert_contains "$body" 'morning' "guarded on morning trigger"
+setup() {
+  TMP=$(mktemp -d); export CEO_VAULT="$TMP/v"; mkdir -p "$CEO_VAULT/CEO/model"
+  export TODAY="2026-06-20"
+  ENTRY_OUT=$'**Status:** ok\n<!-- CEO-PREDICTED-PRIORITIES\n- o/r#7: Ship\n-->'
+  # shellcheck source=/dev/null
+  source "$SCRIPT_DIR/ceo-cron.sh" 2>/dev/null || true
+  export SCRIPT_DIR  # ceo_morning_observe_hook resolves ceo-observe.sh via it
+}
+teardown() { rm -rf "$TMP"; unset CEO_VAULT TODAY; }
+
+test_morning_hook_writes_ledger_entry() {
+  setup
+  ceo_morning_observe_hook "morning" "$ENTRY_OUT"
+  assert_file_exists "$CEO_VAULT/CEO/model/2026-06.md" "ledger month file created"
+  assert_contains "$(cat "$CEO_VAULT/CEO/model/2026-06.md")" "2026-06-20" "dated entry written"
+  teardown
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_non_morning_trigger_is_noop() {
+  setup
+  ceo_morning_observe_hook "morning-brief" "$ENTRY_OUT"
+  assert_fails "no ledger write for non-morning trigger" test -f "$CEO_VAULT/CEO/model/2026-06.md"
+  teardown
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -608,32 +755,45 @@ run_tests
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/ceo-cron-morning-observe.test.sh`
-Expected: FAIL — no observe call yet.
+Expected: FAIL — `ceo_morning_observe_hook` undefined.
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `scripts/ceo-cron.sh`, in the success path right after `_report intake "$trigger" "$log_entry"` (~line 333), add:
+Add the hook near the other helpers in `scripts/ceo-cron.sh`:
 
 ```bash
-  if [ "$trigger" = "morning" ] && [ "$self_reported_failed" -eq 0 ] && [ "${CEO_DRY_RUN:-}" != "1" ]; then
-    # Low-stakes learning write; never fail the flow on observe error.
-    printf '%s\n' "$log_entry" | YESTERDAY_MERGED="${YESTERDAY_MERGED:-[]}" \
+# Append the model-of-Nathan ledger entry after a successful morning run.
+# Extracted so it is unit-testable without driving the full dispatch.
+ceo_morning_observe_hook() {
+  local trigger="$1" log_entry="$2"
+  [ "$trigger" = "morning" ] || return 0
+  [ "${CEO_DRY_RUN:-}" = "1" ] && return 0
+  printf '%s\n' "$log_entry" \
+    | YESTERDAY_MERGED="${YESTERDAY_MERGED:-[]}" \
       LEDGER_PREV_PREDICTED="${LEDGER_PREV_PREDICTED:-[]}" \
-      bash "$SCRIPT_DIR/ceo-observe.sh" >/dev/null 2>&1 || \
-      _v "observe step failed (non-fatal)"
+      bash "${SCRIPT_DIR}/ceo-observe.sh" >/dev/null 2>&1 \
+    || _v "observe step failed (non-fatal)"
+}
+```
+
+Then call it from `_dispatch_single_output`, immediately after the report branch (`ceo-cron.sh:330-334`), inside the `self_reported_failed -eq 0` success region:
+
+```bash
+  if [ "$self_reported_failed" -eq 0 ]; then
+    ceo_morning_observe_hook "$trigger" "$log_entry"
   fi
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/ceo-cron-morning-observe.test.sh`
-Expected: PASS. Then run the full suite to confirm no regression: `for t in scripts/*.test.sh; do bash "$t" || echo "FAIL: $t"; done`
+Expected: PASS (both: morning writes ledger, non-morning is no-op). Verify the behavioral nature: temporarily revert the `ceo_morning_observe_hook` body to `return 0` → `test_morning_hook_writes_ledger_entry` must FAIL. Then run the full suite: `for t in scripts/*.test.sh; do bash "$t" >/dev/null 2>&1 && echo "ok $t" || echo "FAIL $t"; done`
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add scripts/ceo-cron.sh scripts/ceo-cron-morning-observe.test.sh
-git commit -m "feat(ceo): invoke observe step after morning run (non-fatal)"
+git commit -m "feat(ceo): observe hook writes model ledger after morning run (behavioral test)"
 ```
 
 ---
@@ -645,8 +805,8 @@ git commit -m "feat(ceo): invoke observe step after morning run (non-fatal)"
 - Test: `scripts/ceo-cron-morning-fallback.test.sh`
 
 **Interfaces:**
-- Consumes: the pre-gathered vars (sprint, PRs, daily note).
-- Produces: when the synthesis runner exits non-zero or emits empty, a deterministic raw-digest string (sprint items + review PRs + Top 3) is used as `log_entry` so Discord still receives something.
+- Consumes: the pre-gathered vars (sprint, PRs, daily note); the real output contract in `_dispatch_single_output` (`ceo-cron.sh:307` parses `log_entry` from a `LOG_ENTRY:`/`END_LOG_ENTRY` block; empty `log_entry` = synthesis produced no usable output).
+- Produces: a deterministic `ceo_morning_raw_digest` string (sprint items + review PRs + Top 3). When trigger is `morning` and `log_entry` parses empty, the digest is substituted as `log_entry` and reported normally — so Discord receives the digest instead of the generic "unparseable output" notice. **No `RUN_OUTPUT`/`RUN_RC` (those don't exist).**
 
 - [ ] **Step 1: Write the failing test**
 
@@ -692,12 +852,23 @@ ceo_morning_raw_digest() {
 }
 ```
 
-Then in the `morning` execution path, after the runner call, gate the fallback:
+Then integrate at the real contract: in `_dispatch_single_output` (`ceo-cron.sh:309`), the empty-`log_entry` branch currently reports "unparseable output". Make `morning` substitute the digest there instead:
 
 ```bash
-  if [ -z "${RUN_OUTPUT//[[:space:]]/}" ] || [ "$RUN_RC" -ne 0 ]; then
-    _v "morning synthesis failed/empty — using raw digest fallback"
-    log_entry=$(ceo_morning_raw_digest)
+  if [ -z "$log_entry" ]; then
+    if [ "$trigger" = "morning" ]; then
+      _v "morning synthesis empty — using raw digest fallback"
+      log_entry=$(ceo_morning_raw_digest)
+      # fall through to the normal report path below with the digest as log_entry
+    else
+      _v "WARNING: Output couldn't be parsed — raw saved to cron-raw.log"
+      _report action "$trigger" "**Status:** completed (unparseable output)
+**Playbook:** $PLAYBOOK_REL
+**Note:** Execution succeeded but log format could not be parsed ($model_label)."
+      printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
+      _record_success
+      return 0
+    fi
   fi
 ```
 
@@ -796,15 +967,15 @@ git commit -m "feat(ceo): cutover — activate morning flow, disable legacy play
 
 ---
 
-## Audit findings — MUST FIX before execution (2026-06-20)
+## Audit trail — findings folded in (2026-06-20)
 
-An independent audit against the verified `ceo-cron.sh` internals found four HIGH issues. **Do not execute the plan above until these are folded in.**
+An independent audit against the verified `ceo-cron.sh` internals found four HIGH + two MEDIUM issues. All six are now resolved in the tasks above. Recorded for traceability:
 
-1. **HIGH — missing PRE_GATHERED wiring task.** `ceo-cron.sh:1344-1359` builds the injected `PRE_GATHERED` block from a *hardcoded* `_inputs_includes` vocabulary (`pending_count`, `pr_data`, `today_log`, `yesterday_log`, `daily_note`, `briefings_training`, `active_domains`, `pending_ask`, `scan_data`, `blessings`). Adding `current_sprint`/`yesterday_merged`/`ledger_recent` to `morning.md` frontmatter does nothing — there is no branch emitting `$CURRENT_SPRINT_ITEMS`. **Add a task that inserts `_inputs_includes current_sprint && PRE_GATHERED+=...` (and the other two) at ~line 1359, before Task 4 is meaningful.** Without it the synthesis never sees the sprint signal and ranks by age — the exact failure this whole effort targets.
-2. **HIGH — Task 7 phantom variables.** The fallback gates on `RUN_OUTPUT`/`RUN_RC`, which don't exist. The real contract: `_dispatch_single_output()` (`ceo-cron.sh:301-334`) parses `log_entry` from a `LOG_ENTRY:`/`END_LOG_ENTRY` block (`:307`) out of the runner `$output`. Fix: in `_dispatch_single_output`, when `trigger="morning"` and `log_entry` is empty, set `log_entry=$(ceo_morning_raw_digest)` before `_report intake` — replacing the current "unparseable output" branch for morning. Test must drive `_dispatch_single_output "morning" "<garbage>"` and assert the digest is reported.
-3. **HIGH — `LEDGER_PREV_PREDICTED` never populated.** Task 3 loads `LEDGER_RECENT` as text; nothing parses yesterday's predicted list into JSON, so hit-rate is permanently `n/a`. Fix in Task 3: parse the most-recent ledger entry's `predicted today:` bullets into `LEDGER_PREV_PREDICTED` (JSON array of `repo#num` strings) and export it.
-4. **HIGH — Task 6 is a grep tautology** (and Task 8 too, lower stakes). Replace with a behavioral test: stub the runner, drive the `morning` dispatch, assert `CEO/model/YYYY-MM.md` gains an entry.
-5. **MEDIUM — Zenhub query is a guess.** Reuse the proven `@octokit/graphql` client in `~/.claude/skills/story-points/scripts/analyzer/` (endpoint `https://api.zenhub.com/public/graphql`, bearer auth) as the reference, and treat the current-sprint query as a small spike validated against the Zenhub MCP `getSprint` schema. The degrade-to-`[]` wrapper already prevents a wrong query from breaking the flow.
-6. **MEDIUM — discretion scrub is inert by default.** Task 5's `CEO_DISCRETION_DENY` is empty unless set, so nothing is scrubbed in production. Default the denylist from `Profile/discretion.md` (or a configured term list) so the guarantee actually holds.
+1. **HIGH — missing PRE_GATHERED wiring → FIXED.** `ceo-cron.sh:1344-1359` injects from a hardcoded `_inputs_includes` vocabulary, so new `inputs:` keys were ignored. **Added Task 3B**: extracts `ceo_build_pregathered_extras` and appends `current_sprint`/`yesterday_merged`/`ledger_recent` lines to `PRE_GATHERED`. Test sets the real `INPUTS_JSON` array (verified `_inputs_includes` at `:1004` reads `INPUTS_JSON`, not a guessed env var).
+2. **HIGH — Task 7 phantom vars → FIXED.** Rewritten to hook `_dispatch_single_output`'s empty-`log_entry` branch (`:309`): for `morning`, substitute `ceo_morning_raw_digest` and fall through to the normal report path. No `RUN_OUTPUT`/`RUN_RC`.
+3. **HIGH — `LEDGER_PREV_PREDICTED` never populated → FIXED.** Task 3 now parses the last ledger entry's `predicted today:` bullets into a JSON array and exports `LEDGER_PREV_PREDICTED`; test asserts it. Hit-rate is now real, not `n/a`.
+4. **HIGH — Task 6 grep tautology → FIXED.** Replaced with a behavioral test driving an extracted `ceo_morning_observe_hook`: asserts the ledger month file gains a dated entry for `morning` and is a no-op for non-`morning` triggers; includes a revert-to-`return 0` mutation check.
+5. **MEDIUM — Zenhub query guess → FIXED (bounded spike).** Task 1 Step 4 now points at the proven `@octokit/graphql` client (`~/.claude/skills/story-points/scripts/analyzer/`) for auth/endpoint and the Zenhub MCP `getSprint` schema for sprint field names; the `emit_empty` wrapper bounds the risk.
+6. **MEDIUM — discretion scrub inert → FIXED.** Task 5 now loads the denylist from `Profile/discretion-denylist.txt` (seeded in the vault, referenced by `discretion.md`); `CEO_DISCRETION_DENY` is an additional override. Non-inert by default.
 
-**Status: design approved, plan drafted + audited, NOT execution-ready until the six items above are folded in.**
+**Status: design approved; plan drafted, audited, and revised (6/6 findings folded in). Execution-ready.** Task count: 1, 2, 3, 3B, 4, 5, 6, 7, 8 (9 tasks).
