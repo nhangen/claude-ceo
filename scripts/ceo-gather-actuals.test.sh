@@ -16,11 +16,17 @@ setup() {
   - o/r#8: Review PR
 LED
   STUB_BIN="$TMP/bin"; mkdir -p "$STUB_BIN"
-  cat > "$STUB_BIN/gh" <<'STUB'
+  # Compute yesterday's date for the stub — same logic as ceo-gather.sh.
+  D=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d)
+  # Emit two PRs: #7 merged yesterday (should be included), #99 merged in 2020 (should be excluded).
+  # The stub requires --author "@me" and --merged to prevent privacy leaks.
+  cat > "$STUB_BIN/gh" <<STUB
 #!/usr/bin/env bash
-case "$*" in
-  *"search prs"*"--merged"*) echo '[{"number":7,"title":"Did it","repository":{"nameWithOwner":"o/r"}}]' ;;
-  *) echo "stub gh: unexpected: $*" >&2; exit 99 ;;
+case "\$*" in
+  *"search prs"*"--author"*"@me"*"--merged"*)
+    echo '[{"number":7,"title":"Did it","repository":{"nameWithOwner":"o/r"},"mergedAt":"${D}T12:00:00Z"},{"number":99,"title":"Old PR","repository":{"nameWithOwner":"o/r"},"mergedAt":"2020-01-01T00:00:00Z"}]'
+    ;;
+  *) echo "stub gh: unexpected: \$*" >&2; exit 99 ;;
 esac
 STUB
   chmod +x "$STUB_BIN/gh"; export PATH="$STUB_BIN:$PATH"
@@ -33,6 +39,7 @@ test_exports_yesterday_merged_ledger_tail_and_prev_predicted() {
   # shellcheck source=/dev/null
   source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1 || true
   assert_contains "$YESTERDAY_MERGED" '"number":7' "merged PR captured"
+  assert_no_match "$YESTERDAY_MERGED" '"number":99' "old PR excluded by date filter"
   assert_contains "$LEDGER_RECENT" 'predicted today' "ledger tail loaded"
   assert_contains "$LEDGER_PREV_PREDICTED" 'o/r#7' "prev predicted parsed to JSON"
   assert_contains "$LEDGER_PREV_PREDICTED" 'o/r#8' "all predicted bullets parsed"

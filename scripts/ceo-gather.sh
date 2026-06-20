@@ -354,9 +354,9 @@ fi
 export YESTERDAY_MERGED
 _yday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev/null || echo "")
 if command -v gh >/dev/null 2>&1 && [ -n "$_yday" ]; then
-  YESTERDAY_MERGED=$(gh search prs --author "@me" --merged --json number,title,repository \
+  YESTERDAY_MERGED=$(gh search prs --author "@me" --merged --json number,title,repository,mergedAt \
     --limit 50 2>/dev/null | jq -c --arg d "$_yday" \
-    '[.[] | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
+    '[.[] | select(.mergedAt and (.mergedAt | startswith($d))) | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
 else
   YESTERDAY_MERGED="[]"
 fi
