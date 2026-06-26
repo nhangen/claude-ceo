@@ -6,8 +6,10 @@ governed task registry (#190).
 """
 from .agent import run_agent
 from .rules import compose_system, load_rule_index, select_rules
+from .skills import USE_SKILL_TOOL, get_skill, load_skill_index, render_catalog
 from .tools import ToolBox, TOOLS
 from .transport import ollama_transport, parse_chat_response
 
 __all__ = ["run_agent", "ToolBox", "TOOLS", "ollama_transport", "parse_chat_response",
-           "compose_system", "load_rule_index", "select_rules"]
+           "compose_system", "load_rule_index", "select_rules",
+           "USE_SKILL_TOOL", "get_skill", "load_skill_index", "render_catalog"]

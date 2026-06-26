@@ -10,6 +10,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from .skills import MAX_SKILL_BODY
+
 MAX_OUTPUT = 4000      # chars of stdout/stderr returned to the model per call
 MAX_READ = 20000       # chars returned by read_file
 
@@ -20,11 +22,12 @@ def _clip(s, n):
 
 
 class ToolBox:
-    def __init__(self, cwd=".", timeout=30):
+    def __init__(self, cwd=".", timeout=30, skills=None):
         self.cwd = Path(cwd).resolve()
         self.timeout = timeout
+        self.skills = list(skills) if skills else []   # [Skill] for use_skill, if any
         self.calls = []            # (name, args) of every dispatched call
-        self.unknown_calls = []    # names the model hallucinated
+        self.unknown_calls = []    # tool/skill names the model hallucinated
 
     def _resolve(self, path):
         p = Path(path)
@@ -71,6 +74,14 @@ class ToolBox:
         return json.dumps({"path": str(d),
                            "entries": sorted(p.name + ("/" if p.is_dir() else "") for p in d.iterdir())})
 
+    def use_skill(self, name):
+        for s in self.skills:
+            if s.name == name:
+                return json.dumps({"name": s.name, "body": _clip(s.body(), MAX_SKILL_BODY)})
+        self.unknown_calls.append(name)
+        return json.dumps({"error": f"unknown skill: {name}",
+                           "available": [s.name for s in self.skills]})
+
     def dispatch(self, name, args):
         """Route one tool call. Records every call; unknown names are recorded
         separately and returned as an error string (never silently dropped)."""
@@ -81,6 +92,7 @@ class ToolBox:
             "read_file": lambda a: self.read_file(a.get("path", "")),
             "write_file": lambda a: self.write_file(a.get("path", ""), a.get("content", "")),
             "list_dir": lambda a: self.list_dir(a.get("path", ".")),
+            "use_skill": lambda a: self.use_skill(a.get("name", "")),
         }.get(name)
         if handler is None:
             self.unknown_calls.append(name)

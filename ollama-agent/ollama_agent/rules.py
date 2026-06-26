@@ -90,7 +90,11 @@ def load_rule_index(rules_dir):
     if not d.is_dir():
         return rules
     for f in sorted(d.glob("*.md")):
-        text = f.read_text(errors="replace")
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            # One unreadable rule file must not abort loading the rest.
+            continue
         desc, _globs, title = _parse_frontmatter(text)
         rules.append(Rule(f.stem, str(f), desc, title, len(text)))
     return rules
