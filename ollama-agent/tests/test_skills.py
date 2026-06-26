@@ -12,10 +12,10 @@ from ollama_agent.skills import (  # noqa: E402
 )
 
 
-def _skill(root, name, desc=None, body="procedure body", fm_name=None):
+def _skill(root, name, desc=None, body="procedure body"):
     d = root / name
     d.mkdir()
-    nm = f"name: {fm_name}\n" if fm_name is not None else (f"name: {name}\n" if desc is not None else "")
+    nm = f"name: {name}\n" if desc is not None else ""
     ds = f"description: {desc}\n" if desc is not None else ""
     fm = f"---\n{nm}{ds}---\n\n" if (nm or ds) else ""
     (d / "SKILL.md").write_text(f"{fm}# {name}\n\n{body}\n")
@@ -38,6 +38,16 @@ def test_parse_skill_frontmatter():
 
 def test_parse_skill_frontmatter_missing_is_empty():
     assert _parse_skill_frontmatter("no frontmatter\nbody") == ("", "")
+
+
+def test_parse_skill_frontmatter_folded_scalar():
+    text = "---\nname: foo\ndescription: >-\n  a long\n  wrapped description\n---\n\n# Foo\nbody"
+    name, desc = _parse_skill_frontmatter(text)
+    assert name == "foo" and desc == "a long wrapped description"
+
+
+def test_parse_skill_frontmatter_no_closing_fence_is_empty():
+    assert _parse_skill_frontmatter("---\nname: foo\ndescription: bar\n\n# no closing fence") == ("", "")
 
 
 def test_load_skill_index(skills_root):
@@ -78,6 +88,24 @@ def test_render_catalog_empty():
     assert render_catalog([]) == ""
 
 
+def test_render_catalog_no_description_placeholder(tmp_path):
+    r = tmp_path / "skills"
+    r.mkdir()
+    _skill(r, "bare", desc=None)  # no frontmatter → empty description
+    cat = render_catalog(load_skill_index(r))
+    assert "bare: (no description)" in cat
+
+
+def test_load_skill_index_folded_scalar_in_catalog(tmp_path):
+    r = tmp_path / "skills"
+    d = r / "auto-review"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: auto-review\ndescription: >\n  reviews a PR\n  automatically\n---\n\n# auto-review\nbody")
+    desc = load_skill_index(r)[0].description
+    assert desc == "reviews a PR automatically"  # not a bare ">"
+
+
 def test_use_skill_tool_returns_body(skills_root):
     tb = ToolBox(cwd=skills_root, skills=load_skill_index(skills_root))
     out = json.loads(tb.dispatch("use_skill", {"name": "obsidian-save"}))
@@ -95,6 +123,23 @@ def test_use_skill_with_no_skills_loaded_errors_cleanly(tmp_path):
     tb = ToolBox(cwd=tmp_path)  # no skills
     out = json.loads(tb.dispatch("use_skill", {"name": "anything"}))
     assert "error" in out and out["available"] == []
+    assert tb.unknown_calls == ["anything"]
+
+
+def test_load_skill_index_skips_unreadable_file(tmp_path, monkeypatch):
+    r = tmp_path / "skills"
+    r.mkdir()
+    _skill(r, "good", "fine")
+    _skill(r, "bad", "broken")
+    real = Path.read_text
+
+    def selective(self, *a, **k):
+        if self.parent.name == "bad":
+            raise PermissionError("nope")
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "read_text", selective)
+    idx = load_skill_index(r)  # must not raise; bad skill skipped
+    assert {s.name for s in idx} == {"good"}
 
 
 def test_use_skill_body_is_clipped(tmp_path):
