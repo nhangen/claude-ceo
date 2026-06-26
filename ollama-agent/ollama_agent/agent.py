@@ -39,9 +39,17 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8):
             completed = True
             break
         for c in calls:
-            fn = c["function"]["name"]
-            args = _normalize_args(c["function"].get("arguments"))
-            result = toolbox.dispatch(fn, args)
+            fn_obj = c.get("function") or {}
+            fn = fn_obj.get("name")
+            if not fn:
+                # A malformed call envelope (no function/name) is a hallucination,
+                # not a reason to crash the run — record it and feed an error back,
+                # mirroring dispatch's unknown-tool path.
+                toolbox.unknown_calls.append(fn)
+                result = json.dumps({"error": "malformed tool_call: missing function name"})
+            else:
+                args = _normalize_args(fn_obj.get("arguments"))
+                result = toolbox.dispatch(fn, args)
             tool_msg = {"role": "tool", "content": result}
             transcript.append(tool_msg)
             messages.append(tool_msg)

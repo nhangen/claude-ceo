@@ -128,6 +128,86 @@ def test_loop_records_unknown_tool(tmp_path):
     assert rec["unknown_calls"] == ["make_coffee"]
 
 
+def test_loop_survives_malformed_tool_call_envelope(tmp_path):
+    # A tool_call missing function/name must not crash the loop — it records as
+    # an unknown call and feeds an error back to the model.
+    transport = _script(
+        {"role": "assistant", "tool_calls": [{"id": "1"}]},
+        {"role": "assistant", "content": "recovered"},
+    )
+    rec = run_agent("oops", "sys", transport, ToolBox(cwd=tmp_path), TOOLS)
+    assert rec["completed"] is True
+    assert rec["unknown_calls"] == [None]
+    assert "malformed" in rec["transcript"][3]["content"]
+
+
+def test_loop_survives_tool_handler_exception(tmp_path):
+    # write_file into a read-only dir raises PermissionError inside dispatch; the
+    # loop must keep running with a recorded error, not abort the run.
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    transport = _script(
+        {"role": "assistant", "tool_calls": [
+            {"function": {"name": "write_file", "arguments": {"path": "ro/x.txt", "content": "hi"}}}]},
+        {"role": "assistant", "content": "noted the failure"},
+    )
+    try:
+        rec = run_agent("write", "sys", transport, ToolBox(cwd=tmp_path), TOOLS)
+    finally:
+        ro.chmod(0o700)
+    assert rec["completed"] is True
+    err = json.loads(rec["transcript"][3]["content"])
+    assert "error" in err and "write_file failed" in err["error"]
+
+
+def test_write_file_reports_byte_length_not_char_count(tmp_path):
+    out = json.loads(ToolBox(cwd=tmp_path).write_file("m.txt", "héllo"))
+    assert out["bytes"] == 6  # 5 chars, 6 UTF-8 bytes
+
+
+# --- transport error branches (the headline non-throwing-client claim) ---
+
+class _FakeResp:
+    def __init__(self, status, body):
+        self.status, self._body = status, body
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def read(self):
+        return self._body.encode()
+
+
+def test_transport_success(monkeypatch):
+    import ollama_agent.transport as t
+    monkeypatch.setattr(t.urllib.request, "urlopen",
+                        lambda req, timeout: _FakeResp(200, json.dumps({"message": {"role": "assistant", "content": "ok"}})))
+    msg = t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    assert msg["content"] == "ok"
+
+
+def test_transport_httperror_routes_through_success_parser(monkeypatch):
+    import io
+    import ollama_agent.transport as t
+
+    def boom(req, timeout):
+        raise t.urllib.error.HTTPError("u", 500, "err", {}, io.BytesIO(b'{"error":"server"}'))
+    monkeypatch.setattr(t.urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+
+
+def test_transport_urlerror_raises_unreachable(monkeypatch):
+    import ollama_agent.transport as t
+
+    def boom(req, timeout):
+        raise t.urllib.error.URLError("connection refused")
+    monkeypatch.setattr(t.urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError, match="unreachable"):
+        t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+
+
 # --- transport success check ---
 
 def test_parse_chat_response_ok():

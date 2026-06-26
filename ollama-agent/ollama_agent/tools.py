@@ -60,8 +60,9 @@ class ToolBox:
     def write_file(self, path, content):
         f = self._resolve(path)
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(content if content is not None else "")
-        return json.dumps({"path": str(f), "bytes": len(content or "")})
+        data = content if content is not None else ""
+        f.write_text(data)
+        return json.dumps({"path": str(f), "bytes": len(data.encode())})
 
     def list_dir(self, path="."):
         d = self._resolve(path)
@@ -84,7 +85,13 @@ class ToolBox:
         if handler is None:
             self.unknown_calls.append(name)
             return json.dumps({"error": f"unknown tool: {name}"})
-        return handler(args)
+        try:
+            return handler(args)
+        except Exception as e:
+            # A tool that raises (PermissionError, ENOSPC, UnicodeError, cwd
+            # deleted, …) must return a recorded error to the model, never abort
+            # the run — keep the loop and transcript alive (safety-invariant-scope).
+            return json.dumps({"error": f"{name} failed: {type(e).__name__}: {e}"})
 
 
 TOOLS = [
