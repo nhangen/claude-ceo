@@ -22,10 +22,12 @@ def _clip(s, n):
 
 
 class ToolBox:
-    def __init__(self, cwd=".", timeout=30, skills=None):
+    def __init__(self, cwd=".", timeout=30, skills=None, mcp_client=None, mcp_names=None):
         self.cwd = Path(cwd).resolve()
         self.timeout = timeout
         self.skills = list(skills) if skills else []   # [Skill] for use_skill, if any
+        self.mcp_client = mcp_client                   # MCPClient, if an MCP server is bridged
+        self.mcp_names = dict(mcp_names) if mcp_names else {}  # prefixed_name -> real MCP tool name
         self.calls = []            # (name, args) of every dispatched call
         self.unknown_calls = []    # tool/skill names the model hallucinated
 
@@ -82,6 +84,11 @@ class ToolBox:
         return json.dumps({"error": f"unknown skill: {name}",
                            "available": [s.name for s in self.skills]})
 
+    def call_mcp(self, prefixed_name, args):
+        real = self.mcp_names[prefixed_name]
+        result = self.mcp_client.call_tool(real, args)
+        return json.dumps({"tool": prefixed_name, "result": _clip(str(result), MAX_READ)})
+
     def dispatch(self, name, args):
         """Route one tool call. Records every call; unknown names are recorded
         separately and returned as an error string (never silently dropped)."""
@@ -94,6 +101,8 @@ class ToolBox:
             "list_dir": lambda a: self.list_dir(a.get("path", ".")),
             "use_skill": lambda a: self.use_skill(a.get("name", "")),
         }.get(name)
+        if handler is None and name in self.mcp_names:
+            handler = lambda a: self.call_mcp(name, a)  # noqa: E731
         if handler is None:
             self.unknown_calls.append(name)
             return json.dumps({"error": f"unknown tool: {name}"})

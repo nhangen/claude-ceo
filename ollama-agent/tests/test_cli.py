@@ -108,3 +108,48 @@ def test_cli_no_skills_suppresses_catalog_and_tool(tmp_path, monkeypatch, capsys
     assert "obsidian-save" not in captured["system"]
     assert "use_skill" not in _tool_names(captured["tools"])
     assert "skills:" not in capsys.readouterr().err
+
+
+def _stub_mcp(monkeypatch, closed, *, init_raises=False):
+    class FT:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            closed["v"] = True
+    monkeypatch.setattr(cli, "StdioMCPTransport", FT)
+
+    class FC:
+        def __init__(self, t):
+            pass
+
+        def initialize(self):
+            if init_raises:
+                raise RuntimeError("no server there")
+
+        def list_tools(self):
+            return [{"name": "echo", "description": "e", "inputSchema": {"type": "object", "properties": {}}}]
+    monkeypatch.setattr(cli, "MCPClient", FC)
+
+
+def test_cli_mcp_bridges_tools_and_closes_transport(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--mcp", "fake-server arg"])
+    assert rc == 0
+    assert "mcp__echo" in _tool_names(captured["tools"])
+    assert "mcp: 1 tools" in capsys.readouterr().err
+    assert closed["v"] is True   # finally teardown ran
+
+
+def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, capsys):
+    closed = {"v": False}
+    _stub(monkeypatch, {})
+    _stub_mcp(monkeypatch, closed, init_raises=True)
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--mcp", "broken-server"])
+    assert rc == 1
+    assert "mcp bridge failed for 'broken-server'" in capsys.readouterr().err
+    assert closed["v"] is True
