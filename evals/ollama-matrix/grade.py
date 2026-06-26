@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -223,6 +224,37 @@ GRADERS = {
 }
 
 
+def write_scores_tsv(scores, models, out_dir, generated_at, task_order=None):
+    """Persist per-(task, model) correctness as a stable, machine-readable
+    contract for downstream consumers (the CEO min_score delegation gate),
+    rather than forcing them to parse this script's printed table.
+
+    `scores` is {model: {task: (correct, total) | None}}. A None entry (absent
+    output or an ERR/infra failure) is omitted — the gate treats a missing
+    score as "refuse", so it must not appear as a row. A total of 0 yields a
+    blank ratio (never a div-by-zero). The write is atomic (temp + rename) so a
+    reader mid-grade never observes a partial file. Models are written in the
+    filename/dot form they already carry (e.g. `gpt-oss.20b`); the gate maps a
+    registry model id to this form by replacing `:` with `.`."""
+    out_dir = Path(out_dir)
+    tasks = task_order if task_order is not None else sorted({t for m in scores for t in scores[m]})
+    tmp = out_dir / "scores.tsv.tmp"
+    final = out_dir / "scores.tsv"
+    with tmp.open("w") as fh:
+        fh.write(f"# generated_at={generated_at}\n")
+        fh.write("task\tmodel\tcorrect\ttotal\tratio\n")
+        for task in tasks:
+            for m in models:
+                s = scores.get(m, {}).get(task)
+                if s is None:
+                    continue
+                got, tot = s
+                ratio = f"{got / tot:.4f}" if tot else ""
+                fh.write(f"{task}\t{m}\t{got}\t{tot}\t{ratio}\n")
+    os.replace(tmp, final)
+    return final
+
+
 def _selftest():
     """Lock the extractors against the failure modes a review panel found:
     KEEP whose reason prose says "close", list-prefixed lines, "S3 and S4"
@@ -270,6 +302,31 @@ def _selftest():
         if got != want:
             fails += 1
             print(f"SELFTEST FAIL: {fn.__name__}({text!r}) -> {got}, want {want}")
+
+    # write_scores_tsv: stable shape, total=0 handling, None/ERR omission, atomicity.
+    import tempfile
+    with tempfile.TemporaryDirectory() as _td:
+        _sample = {
+            "m1": {"think-01": (3, 4), "think-02": (0, 0), "think-03": None},
+            "m2": {"think-01": (4, 4)},
+        }
+        _p = write_scores_tsv(_sample, ["m1", "m2"], _td, "2026-01-01T00:00:00Z",
+                              task_order=["think-01", "think-02", "think-03"])
+        _lines = Path(_p).read_text().splitlines()
+        _checks = [
+            (_lines[0] == "# generated_at=2026-01-01T00:00:00Z", "generated_at header"),
+            (_lines[1] == "task\tmodel\tcorrect\ttotal\tratio", "column header"),
+            ("think-01\tm1\t3\t4\t0.7500" in _lines, "ratio computed"),
+            ("think-02\tm1\t0\t0\t" in _lines, "total=0 -> blank ratio, no div-by-zero"),
+            (not any("think-03" in _l for _l in _lines), "None/ERR row omitted"),
+            ("think-01\tm2\t4\t4\t1.0000" in _lines, "second model row"),
+            (not (Path(_td) / "scores.tsv.tmp").exists(), "tmp removed after atomic rename"),
+        ]
+        for _ok, _desc in _checks:
+            if not _ok:
+                fails += 1
+                print(f"SELFTEST FAIL: write_scores_tsv — {_desc}")
+
     print("selftest: OK" if not fails else f"selftest: {fails} FAILED")
     sys.exit(1 if fails else 0)
 
@@ -325,3 +382,8 @@ for m in models:
     errs = sum(1 for s in scores[m].values() if s is None)
     note = f"  [{errs} task(s) ERR, excluded]" if errs else ""
     print(f"  {m:<24} {got}/{tot}  ({pct:.0f}%){note}")
+
+generated_at = os.environ.get("CEO_SCORES_GENERATED_AT") \
+    or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+scores_path = write_scores_tsv(scores, models, OUT, generated_at, task_order=list(KEYS))
+print(f"\nwrote {scores_path}")
