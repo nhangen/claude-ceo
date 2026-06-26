@@ -1,0 +1,11 @@
+"""ollama-agent: run a local ollama model as a tool-using agent.
+
+Slice 1 (#186) — the bridge core and the real (non-stub) tool layer. Later
+slices add rule loading (#187), skills (#188), an MCP adapter (#189), and a
+governed task registry (#190).
+"""
+from .agent import run_agent
+from .tools import ToolBox, TOOLS
+from .transport import ollama_transport, parse_chat_response
+
+__all__ = ["run_agent", "ToolBox", "TOOLS", "ollama_transport", "parse_chat_response"]
