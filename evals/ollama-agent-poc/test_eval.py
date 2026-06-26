@@ -53,3 +53,18 @@ def test_grade_partial_staging_is_invalid():
     # excludes tmp/ but dropped README.md -> not a real PASS
     g = grade(["src/app.py"])
     assert g["valid"] is False
+
+import pytest
+from eval import _parse_chat_response
+
+def test_parse_chat_response_raises_on_error_body():
+    with pytest.raises(RuntimeError):
+        _parse_chat_response(200, '{"error":"model not found"}')
+
+def test_parse_chat_response_raises_on_http_error():
+    with pytest.raises(RuntimeError):
+        _parse_chat_response(500, '{}')
+
+def test_parse_chat_response_returns_message():
+    msg = _parse_chat_response(200, '{"message":{"role":"assistant","content":"hi"}}')
+    assert msg["content"] == "hi"
