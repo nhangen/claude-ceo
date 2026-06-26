@@ -76,7 +76,7 @@ def main(argv=None):
         except Exception as e:
             if mcp_transport:
                 mcp_transport.close()
-            print(f"mcp bridge failed: {e}", file=sys.stderr)
+            print(f"mcp bridge failed for {a.mcp!r}: {e}", file=sys.stderr)
             return 1
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,

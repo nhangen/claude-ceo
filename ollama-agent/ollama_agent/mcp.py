@@ -11,6 +11,7 @@ agent's failure path rather than reading as a successful tool turn
 (non-throwing-client-success-check).
 """
 import json
+import select
 import shlex
 import subprocess
 
@@ -40,10 +41,22 @@ class MCPClient:
     def _rpc(self, method, params=None):
         self._id += 1
         self.t.send({"jsonrpc": "2.0", "id": self._id, "method": method, "params": params or {}})
-        resp = self.t.recv()
-        if not isinstance(resp, dict):
-            raise MCPError(f"{method}: non-object response {resp!r}")
-        if resp.get("error"):
+        # Correlate the response to this request id. A server may interleave a
+        # notification/log frame (no id) before the reply; skip those (bounded, so
+        # a notification flood can't loop forever), and treat a mismatched id as a
+        # protocol desync rather than silently returning the wrong call's result.
+        for _ in range(100):
+            resp = self.t.recv()
+            if not isinstance(resp, dict):
+                raise MCPError(f"{method}: non-object response {resp!r}")
+            if "id" not in resp:
+                continue
+            if resp["id"] != self._id:
+                raise MCPError(f"{method}: response id {resp['id']} != request {self._id}")
+            break
+        else:
+            raise MCPError(f"{method}: no response with id {self._id} after 100 frames")
+        if "error" in resp:
             raise MCPError(f"{method}: {resp['error']}")
         return resp.get("result", {})
 
@@ -89,8 +102,9 @@ def mcp_tools_to_ollama(tools, prefix="mcp"):
 class StdioMCPTransport:
     """Spawn an MCP server subprocess and exchange newline-delimited JSON-RPC."""
 
-    def __init__(self, command, cwd=None):
+    def __init__(self, command, cwd=None, timeout=30):
         argv = command if isinstance(command, list) else shlex.split(command)
+        self.timeout = timeout
         self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True, cwd=cwd, bufsize=1)
 
@@ -101,16 +115,31 @@ class StdioMCPTransport:
         self.proc.stdin.flush()
 
     def recv(self):
-        line = self.proc.stdout.readline() if self.proc.stdout else ""
+        # Bound the read: a server that is alive but never writes a response would
+        # otherwise block readline() forever and hang the whole agent (the sibling
+        # ollama_transport bounds its read for the same reason). select on the pipe
+        # surfaces a stuck server as a typed error instead of a silent hang.
+        if not self.proc.stdout:
+            raise MCPError("server has no stdout")
+        ready, _, _ = select.select([self.proc.stdout], [], [], self.timeout)
+        if not ready:
+            raise MCPError(f"server did not respond within {self.timeout}s")
+        line = self.proc.stdout.readline()
         if not line:
             raise MCPError("server closed stdout (crashed or exited)")
         return json.loads(line)
 
     def close(self):
+        # Runs in a finally; must never raise, and must reap the process even when
+        # it ignores SIGTERM (otherwise a zombie lingers).
         try:
             if self.proc.stdin:
                 self.proc.stdin.close()
             self.proc.terminate()
             self.proc.wait(timeout=5)
         except Exception:
-            self.proc.kill()
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass

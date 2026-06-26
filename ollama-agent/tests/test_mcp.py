@@ -82,6 +82,38 @@ def test_result_text_falls_back_to_raw():
     assert _result_text({"weird": 1}) == {"weird": 1}
 
 
+def test_result_text_empty_content_falls_back_to_raw():
+    assert _result_text({"content": []}) == {"content": []}
+
+
+class QueueTransport:
+    """Returns pre-scripted frames in order (for id-correlation tests)."""
+
+    def __init__(self, frames):
+        self.frames = list(frames)
+        self.sent = []
+
+    def send(self, obj):
+        self.sent.append(obj)
+
+    def recv(self):
+        return self.frames.pop(0)
+
+
+def test_rpc_skips_notification_frame_before_response():
+    t = QueueTransport([
+        {"jsonrpc": "2.0", "method": "notifications/log", "params": {}},  # no id — skipped
+        {"jsonrpc": "2.0", "id": 1, "result": {"tools": [{"name": "echo"}]}},
+    ])
+    assert MCPClient(t).list_tools()[0]["name"] == "echo"
+
+
+def test_rpc_mismatched_id_raises():
+    t = QueueTransport([{"jsonrpc": "2.0", "id": 999, "result": {}}])
+    with pytest.raises(MCPError, match="!= request"):
+        MCPClient(t).list_tools()
+
+
 def test_mcp_tools_to_ollama_prefixes_and_maps():
     schemas, name_map = mcp_tools_to_ollama(
         [{"name": "read_file", "description": "d", "inputSchema": {"type": "object", "properties": {"p": {}}}}])
@@ -176,4 +208,36 @@ def test_stdio_transport_recv_on_dead_server_raises(tmp_path):
     transport = StdioMCPTransport([sys.executable, str(server)])
     with pytest.raises(MCPError, match="closed stdout"):
         transport.recv()
+    transport.close()
+
+
+def test_stdio_transport_recv_times_out_on_silent_server(tmp_path):
+    # A server that is alive but never writes must surface as a timeout, not a hang.
+    server = tmp_path / "silent.py"
+    server.write_text("import time; time.sleep(30)")
+    transport = StdioMCPTransport([sys.executable, str(server)], timeout=1)
+    transport.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    try:
+        with pytest.raises(MCPError, match="did not respond within"):
+            transport.recv()
+    finally:
+        transport.close()
+
+
+def test_stdio_transport_close_reaps_and_is_idempotent(tmp_path):
+    server = tmp_path / "idle.py"
+    server.write_text("import sys\nfor line in sys.stdin:\n    pass\n")
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    transport.close()
+    assert transport.proc.poll() is not None   # reaped
+    transport.close()                            # second close must not raise
+
+
+def test_stdio_transport_send_on_none_stdin_raises(tmp_path):
+    server = tmp_path / "idle.py"
+    server.write_text("import sys\nfor line in sys.stdin:\n    pass\n")
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    transport.proc.stdin = None
+    with pytest.raises(MCPError, match="stdin closed"):
+        transport.send({"x": 1})
     transport.close()
