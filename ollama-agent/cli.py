@@ -9,8 +9,9 @@ import argparse
 import json
 import sys
 
-from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, compose_system,
-                          load_skill_index, ollama_transport, render_catalog, run_agent)
+from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, StdioMCPTransport,
+                          compose_system, load_skill_index, mcp_tools_to_ollama,
+                          ollama_transport, render_catalog, run_agent)
 
 DEFAULT_SYSTEM = (
     "You are a local engineering agent operating inside a single working directory. "
@@ -39,6 +40,9 @@ def main(argv=None):
     p.add_argument("--skills-dir", default="~/.claude/skills",
                    help="Directory of skill dirs (each with a SKILL.md).")
     p.add_argument("--no-skills", action="store_true", help="Skip skill discovery entirely.")
+    p.add_argument("--mcp", default=None,
+                   help="Command to spawn an MCP server whose tools are bridged in (e.g. "
+                        "'npx -y @modelcontextprotocol/server-filesystem /path').")
     p.add_argument("--json", action="store_true", help="Print the full record as JSON.")
     a = p.parse_args(argv)
 
@@ -60,13 +64,32 @@ def main(argv=None):
         print(f"skills: {len(skills)} available (use_skill enabled)", file=sys.stderr)
     tools = TOOLS + ([USE_SKILL_TOOL] if skills else [])
 
-    toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills)
+    mcp_transport, mcp_client, mcp_names = None, None, {}
+    if a.mcp:
+        try:
+            mcp_transport = StdioMCPTransport(a.mcp, cwd=a.cwd)
+            mcp_client = MCPClient(mcp_transport)
+            mcp_client.initialize()
+            schemas, mcp_names = mcp_tools_to_ollama(mcp_client.list_tools())
+            tools = tools + schemas
+            print(f"mcp: {len(schemas)} tools from {a.mcp!r}", file=sys.stderr)
+        except Exception as e:
+            if mcp_transport:
+                mcp_transport.close()
+            print(f"mcp bridge failed: {e}", file=sys.stderr)
+            return 1
+
+    toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
+                      mcp_client=mcp_client, mcp_names=mcp_names)
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature, num_ctx=a.num_ctx)
     try:
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap)
     except RuntimeError as e:
         print(f"agent failed: {e}", file=sys.stderr)
         return 1
+    finally:
+        if mcp_transport:
+            mcp_transport.close()
 
     if a.json:
         print(json.dumps(rec, indent=2))
