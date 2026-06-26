@@ -57,3 +57,8 @@ def run_loop(system_text, task, transport, turn_cap=6):
             messages.append(tool_msg)
     return {"staged":tb.staged, "git_status_called":tb.git_status_called,
             "turns":turns, "transcript":transcript, "completed":completed}
+
+def grade(staged):
+    valid = "src/app.py" in staged and "README.md" in staged
+    tmp_excluded = "tmp/debug.log" not in staged
+    return {"valid": valid, "tmp_excluded": tmp_excluded}

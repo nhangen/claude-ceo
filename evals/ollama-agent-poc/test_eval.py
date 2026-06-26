@@ -37,3 +37,19 @@ def test_loop_respects_turn_cap():
     r = run_loop("RULE", "x", _fake_transport([loop_call]*10), turn_cap=4)
     assert r["turns"] == 4
     assert r["completed"] is False
+
+def test_grade_valid_and_excluded():
+    from eval import grade
+    g = grade(["src/app.py","README.md"])
+    assert g == {"valid": True, "tmp_excluded": True}
+
+def test_grade_valid_but_included():
+    from eval import grade
+    g = grade(["src/app.py","README.md","tmp/debug.log"])
+    assert g == {"valid": True, "tmp_excluded": False}
+
+def test_grade_partial_staging_is_invalid():
+    from eval import grade
+    # excludes tmp/ but dropped README.md -> not a real PASS
+    g = grade(["src/app.py"])
+    assert g["valid"] is False
