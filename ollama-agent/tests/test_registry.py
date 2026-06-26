@@ -7,11 +7,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ollama_agent.registry import (  # noqa: E402
     RegistryError, TaskSpec, filter_tools, gate, load_registry,
+    load_scores, normalize_model, score_for,
+)
+
+SCORES_TSV = (
+    "# generated_at=2026-06-26T00:00:00Z\n"
+    "task\tmodel\tcorrect\ttotal\tratio\n"
+    "think-02-prioritization\tgpt-oss.20b\t9\t10\t0.9000\n"
+    "think-02-prioritization\tgemma4.12b-it-qat\t3\t10\t0.3000\n"
+    "think-03-contradiction\tgpt-oss.20b\t2\t10\t0.2000\n"
+    "think-04-temporal\tgpt-oss.20b\t0\t0\t\n"   # total=0 → omitted (blank ratio)
 )
 
 
 def _reg(**tasks):
     return {"tasks": tasks}
+
+
+def _scored():
+    return load_scores(SCORES_TSV)[0]
 
 
 def test_load_valid_registry():
@@ -94,3 +108,94 @@ def test_filter_tools_empty_allowlist_yields_nothing():
 def test_load_bad_json_raises_valueerror():
     with pytest.raises(ValueError):
         load_registry("{not valid json")
+
+
+# --- Slice B: min_score delegation gate (#200) ---
+
+def test_normalize_model_colon_and_slash():
+    assert normalize_model("gpt-oss:20b") == "gpt-oss.20b"
+    assert normalize_model("library/foo:1b") == "library-foo.1b"
+    # a legitimate version dot must survive (only ':'/'/' are transformed)
+    assert normalize_model("mistral-small3.2:24b") == "mistral-small3.2.24b"
+
+
+def test_load_scores_parses_and_captures_generated_at():
+    scores, gen = load_scores(SCORES_TSV)
+    assert gen == "2026-06-26T00:00:00Z"
+    assert scores[("think-02-prioritization", "gpt-oss.20b")] == 0.9
+    assert scores[("think-03-contradiction", "gpt-oss.20b")] == 0.2
+
+
+def test_load_scores_omits_total_zero_rows():
+    scores, _ = load_scores(SCORES_TSV)
+    assert ("think-04-temporal", "gpt-oss.20b") not in scores
+
+
+def test_score_for_pinned_task():
+    assert score_for(_scored(), "think-02-prioritization", "gpt-oss.20b") == 0.9
+    assert score_for(_scored(), "think-02-prioritization", "gemma4.12b-it-qat") == 0.3
+
+
+def test_score_for_missing_is_none():
+    assert score_for(_scored(), "think-99-nonexistent", "gpt-oss.20b") is None
+
+
+def test_score_for_aggregate_star_is_mean():
+    # gpt-oss.20b has 0.9 and 0.2 (the total=0 row is omitted) → mean 0.55
+    assert score_for(_scored(), "*", "gpt-oss.20b") == pytest.approx(0.55)
+
+
+def test_min_score_without_eval_task_is_config_error():
+    with pytest.raises(RegistryError, match="min_score requires eval_task"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "min_score": 0.8}))
+
+
+def test_min_score_non_number_is_config_error():
+    with pytest.raises(RegistryError, match="min_score must be a number"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "min_score": "high", "eval_task": "think-02-prioritization"}))
+
+
+def test_gate_passes_when_score_meets_threshold():
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.8, eval_task="think-02-prioritization")
+    ok, reason = gate(spec, _scored())
+    assert ok and reason == "ok"
+
+
+def test_gate_refuses_when_score_below_threshold():
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.8, eval_task="think-03-contradiction")  # 0.2 < 0.8
+    ok, reason = gate(spec, _scored())
+    assert not ok and "below min_score" in reason
+
+
+def test_gate_refuses_when_score_missing():
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.5, eval_task="think-99-nonexistent")
+    ok, reason = gate(spec, _scored())
+    assert not ok and "cannot confirm competence" in reason
+
+
+def test_gate_refuses_when_no_scores_supplied():
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.5, eval_task="think-02-prioritization")
+    ok, reason = gate(spec, None)
+    assert not ok and "no eval scores available" in reason
+
+
+def test_gate_eval_model_override():
+    # run model is gpt-oss:20b but competence is checked against gemma (0.3 < 0.8)
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.8, eval_task="think-02-prioritization",
+                    eval_model="gemma4:12b-it-qat")
+    ok, reason = gate(spec, _scored())
+    assert not ok and "below min_score" in reason
+
+
+def test_gate_no_min_score_ignores_scores():
+    # absent min_score = no gate (explicit pass-through, not a 0-threshold)
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic")
+    ok, _ = gate(spec, None)
+    assert ok
