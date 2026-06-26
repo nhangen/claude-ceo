@@ -224,6 +224,13 @@ GRADERS = {
 }
 
 
+def _resolve_generated_at():
+    """Timestamp for the scores.tsv header. `CEO_SCORES_GENERATED_AT` overrides
+    (deterministic CI / test output); otherwise current UTC."""
+    return os.environ.get("CEO_SCORES_GENERATED_AT") \
+        or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def write_scores_tsv(scores, models, out_dir, generated_at, task_order=None):
     """Persist per-(task, model) correctness as a stable, machine-readable
     contract for downstream consumers (the CEO min_score delegation gate),
@@ -233,25 +240,36 @@ def write_scores_tsv(scores, models, out_dir, generated_at, task_order=None):
     output or an ERR/infra failure) is omitted — the gate treats a missing
     score as "refuse", so it must not appear as a row. A total of 0 yields a
     blank ratio (never a div-by-zero). The write is atomic (temp + rename) so a
-    reader mid-grade never observes a partial file. Models are written in the
-    filename/dot form they already carry (e.g. `gpt-oss.20b`); the gate maps a
-    registry model id to this form by replacing `:` with `.`."""
+    reader mid-grade never observes a partial file.
+
+    The `model` column is written in the filename/dot form the outputs already
+    carry (e.g. `gpt-oss.20b`) — run.sh derives filenames via `tr ':/' '.-'`, so
+    a `:` becomes `.` AND a `/` becomes `-`. This intentionally differs from the
+    sibling stats.tsv, whose `model` column keeps the registry form
+    (`gpt-oss:20b`); do not join the two on `model` without normalizing. The
+    gate maps a registry id to this form with the same `tr ':/' '.-'`."""
     out_dir = Path(out_dir)
     tasks = task_order if task_order is not None else sorted({t for m in scores for t in scores[m]})
     tmp = out_dir / "scores.tsv.tmp"
     final = out_dir / "scores.tsv"
-    with tmp.open("w") as fh:
-        fh.write(f"# generated_at={generated_at}\n")
-        fh.write("task\tmodel\tcorrect\ttotal\tratio\n")
-        for task in tasks:
-            for m in models:
-                s = scores.get(m, {}).get(task)
-                if s is None:
-                    continue
-                got, tot = s
-                ratio = f"{got / tot:.4f}" if tot else ""
-                fh.write(f"{task}\t{m}\t{got}\t{tot}\t{ratio}\n")
-    os.replace(tmp, final)
+    try:
+        with tmp.open("w") as fh:
+            fh.write(f"# generated_at={generated_at}\n")
+            fh.write("task\tmodel\tcorrect\ttotal\tratio\n")
+            for task in tasks:
+                for m in models:
+                    s = scores.get(m, {}).get(task)
+                    if s is None:
+                        continue
+                    got, tot = s
+                    ratio = f"{got / tot:.4f}" if tot else ""
+                    fh.write(f"{task}\t{m}\t{got}\t{tot}\t{ratio}\n")
+        os.replace(tmp, final)
+    finally:
+        # A mid-write exception leaves a partial temp; remove it so it can't
+        # linger (it's gitignored, but don't rely on the next run truncating it).
+        if tmp.exists():
+            tmp.unlink()
     return final
 
 
@@ -327,6 +345,27 @@ def _selftest():
                 fails += 1
                 print(f"SELFTEST FAIL: write_scores_tsv — {_desc}")
 
+    # _resolve_generated_at: env override wins; default is a UTC ...Z timestamp.
+    _prev = os.environ.get("CEO_SCORES_GENERATED_AT")
+    try:
+        os.environ["CEO_SCORES_GENERATED_AT"] = "2030-09-09T09:09:09Z"
+        _gen_checks = [
+            (_resolve_generated_at() == "2030-09-09T09:09:09Z", "env override wins"),
+        ]
+        os.environ.pop("CEO_SCORES_GENERATED_AT", None)
+        _default = _resolve_generated_at()
+        _gen_checks.append((re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", _default) is not None,
+                            f"default is UTC ...Z (got {_default!r})"))
+        for _ok, _desc in _gen_checks:
+            if not _ok:
+                fails += 1
+                print(f"SELFTEST FAIL: _resolve_generated_at — {_desc}")
+    finally:
+        if _prev is not None:
+            os.environ["CEO_SCORES_GENERATED_AT"] = _prev
+        else:
+            os.environ.pop("CEO_SCORES_GENERATED_AT", None)
+
     print("selftest: OK" if not fails else f"selftest: {fails} FAILED")
     sys.exit(1 if fails else 0)
 
@@ -383,7 +422,5 @@ for m in models:
     note = f"  [{errs} task(s) ERR, excluded]" if errs else ""
     print(f"  {m:<24} {got}/{tot}  ({pct:.0f}%){note}")
 
-generated_at = os.environ.get("CEO_SCORES_GENERATED_AT") \
-    or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-scores_path = write_scores_tsv(scores, models, OUT, generated_at, task_order=list(KEYS))
+scores_path = write_scores_tsv(scores, models, OUT, _resolve_generated_at(), task_order=list(KEYS))
 print(f"\nwrote {scores_path}")
