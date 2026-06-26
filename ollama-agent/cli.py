@@ -93,10 +93,20 @@ def main(argv=None):
         if spec.min_score is not None:
             scores_path = a.scores or str(
                 Path(__file__).resolve().parent.parent / "evals/ollama-matrix/out/scores.tsv")
+            # An absent file is a configuration error, surfaced distinctly — not
+            # folded into the gate's generic "model not evaluated" refusal.
+            # (load_scores treats a non-existent path as inline text, so the
+            # check must happen here, before the call.)
+            if not Path(scores_path).is_file():
+                print(f"REJECTED task {a.task_name!r}: eval scores file not found at "
+                      f"{scores_path} (min_score gate requires it)", file=sys.stderr)
+                return 3
             try:
                 scores, generated_at = load_scores(scores_path)
-            except OSError:
-                scores, generated_at = None, None  # gate refuses on a missing score set
+            except (OSError, UnicodeDecodeError) as e:
+                print(f"REJECTED task {a.task_name!r}: cannot read eval scores "
+                      f"({scores_path}: {e})", file=sys.stderr)
+                return 3
             if generated_at:
                 _warn_if_stale_scores(generated_at, a.scores_stale_days)
         ok, reason = gate(spec, scores)

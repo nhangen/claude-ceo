@@ -8,6 +8,7 @@ loudly, not silently fall through to a default path). A high-stakes task can
 never be delegated to a local model regardless of what the entry says.
 """
 import json
+import math
 from pathlib import Path
 
 RUNNERS = {"ollama"}                       # who may execute a registered task
@@ -72,9 +73,12 @@ def load_scores(source):
         if ratio.strip() == "":          # total=0 → no usable score
             continue
         try:
-            scores[(task, model)] = float(ratio)
+            val = float(ratio)
         except ValueError:
             continue
+        if not math.isfinite(val):       # nan/inf is not a usable score — a
+            continue                     # corrupt value must not slip past the
+        scores[(task, model)] = val      # threshold (nan < x is always False)
     return scores, generated_at
 
 

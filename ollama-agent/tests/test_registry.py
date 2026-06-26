@@ -199,3 +199,70 @@ def test_gate_no_min_score_ignores_scores():
     spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic")
     ok, _ = gate(spec, None)
     assert ok
+
+
+def test_load_scores_omits_non_finite_ratio():
+    # A corrupt nan/inf must not slip past the threshold (nan < x is False).
+    tsv = ("# generated_at=2026-06-26T00:00:00Z\n"
+           "task\tmodel\tcorrect\ttotal\tratio\n"
+           "t\tm\t1\t1\tnan\n"
+           "t2\tm\t1\t1\tinf\n")
+    scores, _ = load_scores(tsv)
+    assert scores == {}
+
+
+def test_gate_refuses_nan_score_fail_open_guard():
+    tsv = ("task\tmodel\tcorrect\ttotal\tratio\n"
+           "think-x\tm\t1\t1\tnan\n")
+    scores, _ = load_scores(tsv)
+    spec = TaskSpec("t", "ollama", "m", "deterministic", min_score=0.5, eval_task="think-x")
+    ok, reason = gate(spec, scores)
+    assert not ok and "cannot confirm competence" in reason
+
+
+def test_gate_refuses_total_zero_row_via_behavior():
+    # total=0 row (blank ratio) is omitted → gate refuses. Asserts the refusal
+    # behavior, not mere dict absence, so it fails if a future change leaked a 0.0.
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.0, eval_task="think-04-temporal")
+    ok, reason = gate(spec, _scored())
+    assert not ok and "cannot confirm competence" in reason
+
+
+def test_gate_score_exactly_at_threshold_passes():
+    # boundary: score == min_score must pass (>=, not >)
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.9, eval_task="think-02-prioritization")  # exactly 0.9
+    ok, _ = gate(spec, _scored())
+    assert ok
+
+
+def test_gate_aggregate_star_through_gate():
+    # gpt-oss.20b mean = 0.55 → passes 0.5, refuses 0.6
+    passes, _ = gate(TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                              min_score=0.5, eval_task="*"), _scored())
+    refused, reason = gate(TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                                    min_score=0.6, eval_task="*"), _scored())
+    assert passes and not refused and "below min_score" in reason
+
+
+def test_gate_eval_model_override_passing_redirect():
+    # run model (gemma, 0.3) would fail, but eval_model redirects to gpt-oss (0.9) → passes
+    spec = TaskSpec("t", "ollama", "gemma4:12b-it-qat", "deterministic",
+                    min_score=0.8, eval_task="think-02-prioritization",
+                    eval_model="gpt-oss:20b")
+    ok, _ = gate(spec, _scored())
+    assert ok
+
+
+def test_gate_min_score_zero_is_a_real_threshold():
+    # min_score=0.0 still requires a present score (not no-gate); a 0.2 score passes
+    spec = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.0, eval_task="think-03-contradiction")
+    ok, _ = gate(spec, _scored())
+    assert ok
+    # but a missing score still refuses even at threshold 0.0
+    miss = TaskSpec("t", "ollama", "gpt-oss:20b", "deterministic",
+                    min_score=0.0, eval_task="think-99")
+    ok2, _ = gate(miss, _scored())
+    assert not ok2
