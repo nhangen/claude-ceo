@@ -9,8 +9,9 @@ import argparse
 import json
 import sys
 
-from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, StdioMCPTransport,
-                          compose_system, load_skill_index, mcp_tools_to_ollama,
+from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryError,
+                          StdioMCPTransport, compose_system, filter_tools, gate,
+                          load_registry, load_skill_index, mcp_tools_to_ollama,
                           ollama_transport, render_catalog, run_agent)
 
 DEFAULT_SYSTEM = (
@@ -43,8 +44,37 @@ def main(argv=None):
     p.add_argument("--mcp", default=None,
                    help="Command to spawn an MCP server whose tools are bridged in (e.g. "
                         "'npx -y @modelcontextprotocol/server-filesystem /path').")
+    p.add_argument("--registry", default=None, help="Path/JSON of a task registry.")
+    p.add_argument("--task-name", default=None,
+                   help="Run a registered task by name (applies its model/tier/tools/rules).")
     p.add_argument("--json", action="store_true", help="Print the full record as JSON.")
     a = p.parse_args(argv)
+
+    # Governance: a registered task is gated before any model call. A non-delegable
+    # tier (high-stakes) or unknown runner/tier is refused here — never run.
+    spec = None
+    if a.task_name:
+        if not a.registry:
+            print("--task-name requires --registry", file=sys.stderr)
+            return 2
+        try:
+            specs = load_registry(a.registry)
+        except (RegistryError, ValueError, OSError) as e:
+            print(f"registry error: {e}", file=sys.stderr)
+            return 2
+        spec = specs.get(a.task_name)
+        if spec is None:
+            print(f"no registered task {a.task_name!r} (known: {sorted(specs)})", file=sys.stderr)
+            return 2
+        ok, reason = gate(spec)
+        if not ok:
+            print(f"REJECTED task {a.task_name!r}: {reason}", file=sys.stderr)
+            return 3
+        a.model = spec.model
+        a.no_rules = a.no_rules or not spec.rules
+        a.no_skills = a.no_skills or not spec.skills
+        print(f"task {a.task_name!r}: runner={spec.runner} tier={spec.tier} model={spec.model}",
+              file=sys.stderr)
 
     system = a.system
     if not a.no_rules:
@@ -78,6 +108,12 @@ def main(argv=None):
                 mcp_transport.close()
             print(f"mcp bridge failed for {a.mcp!r}: {e}", file=sys.stderr)
             return 1
+
+    if spec is not None:
+        tools = filter_tools(tools, spec.tools)
+        if spec.tools != "*":
+            print(f"tools restricted to: {', '.join(t['function']['name'] for t in tools)}",
+                  file=sys.stderr)
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names)
