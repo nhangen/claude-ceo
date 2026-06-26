@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -153,3 +154,90 @@ def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, caps
     assert rc == 1
     assert "mcp bridge failed for 'broken-server'" in capsys.readouterr().err
     assert closed["v"] is True
+
+
+def _registry(tmp_path, **tasks):
+    f = tmp_path / "reg.json"
+    f.write_text(json.dumps({"tasks": tasks}))
+    return str(f)
+
+
+def test_cli_registered_deterministic_task_applies_model_and_runs(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, triage={"runner": "ollama", "model": "registry-model:7b",
+                                       "tier": "deterministic", "tools": ["run_shell", "git"]})
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do triage", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "triage"])
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"run_shell", "git"}   # restricted to allowlist
+    err = capsys.readouterr().err
+    assert "model=registry-model:7b" in err and "tools restricted to:" in err
+
+
+def test_cli_high_stakes_task_is_rejected_before_any_run(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, payout={"runner": "ollama", "model": "m", "tier": "high-stakes"})
+    captured = {}
+
+    def must_not_run(*a, **k):
+        raise AssertionError("run_agent must not be called for a rejected task")
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "run_agent", must_not_run)
+    rc = cli.main(["--task", "pay the invoice", "--cwd", str(tmp_path),
+                   "--registry", reg, "--task-name", "payout"])
+    assert rc == 3
+    assert "REJECTED task 'payout'" in capsys.readouterr().err
+
+
+def test_cli_unknown_registered_task_returns_2(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, triage={"runner": "ollama", "model": "m", "tier": "deterministic"})
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--registry", reg, "--task-name", "nope"])
+    assert rc == 2
+    assert "no registered task 'nope'" in capsys.readouterr().err
+
+
+def test_cli_bad_registry_runner_returns_2(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, x={"runner": "scrpt", "model": "m", "tier": "deterministic"})
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--registry", reg, "--task-name", "x"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "registry error" in err and "unknown runner" in err
+
+
+def test_cli_task_name_without_registry_returns_2(tmp_path, monkeypatch, capsys):
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--task-name", "t"])
+    assert rc == 2
+    assert "requires --registry" in capsys.readouterr().err
+
+
+def test_cli_registry_tool_typo_is_warned_not_silent(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                 "tools": ["read-file", "git"]})  # 'read-file' is a typo
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "t"])
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"git"}   # only the valid name survives
+    assert "not available (ignored): read-file" in capsys.readouterr().err
+
+
+def test_cli_registry_rules_skills_propagation(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                 "rules": False, "skills": False})
+    captured = {}
+    _stub(monkeypatch, captured)
+    # rules-dir/skills-dir point at fixtures, but the spec forces them off
+    rules = _fixture_rules(tmp_path)
+    skills = _fixture_skills(tmp_path)
+    rc = cli.main(["--task", "stage the tmp log files", "--cwd", str(tmp_path),
+                   "--rules-dir", str(rules), "--skills-dir", str(skills),
+                   "--registry", reg, "--task-name", "t"])
+    assert rc == 0
+    assert "no-commit-tmp-logs" not in captured["system"]   # rules:false honored
+    assert "use_skill" not in _tool_names(captured["tools"])  # skills:false honored
+    err = capsys.readouterr().err
+    assert "rules:" not in err and "skills:" not in err
