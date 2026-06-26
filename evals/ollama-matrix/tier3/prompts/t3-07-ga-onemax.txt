@@ -1,0 +1,22 @@
+Implement the following experiment as a single self-contained Python script using ONLY the standard library (you may use the `random` module; do NOT use numpy, matplotlib, or any third-party package).
+
+One-max genetic algorithm:
+- Genome: a 10-bit binary string. Fitness = the number of 1-bits. The global optimum is all ones (fitness 10).
+- Population: 50 individuals, initialized as uniformly random 10-bit strings. The initial random population is generation 0.
+- Selection: fitness-proportionate (roulette-wheel) — the probability of selecting an individual is proportional to its fitness.
+- Reproduction to form the next generation (size 50): repeatedly select a pair of parents by the rule above. With probability pc apply single-point crossover (choose a cut point uniformly among the internal positions 1..9 and exchange the parents' tails to produce two children); otherwise the two children are exact copies of the parents. Then mutate EVERY bit of each child independently with probability pm = 0.001.
+- Termination: a run ends at the generation in which the optimum (all ones) first appears anywhere in the population; record that generation number. Add a safety cap of 100000 generations.
+- Conditions (30 independent, randomly seeded runs each):
+    Condition A — crossover:       pc = 0.7
+    Condition B — mutation-only:   pc = 0.0
+- For each condition, compute the MEAN discovery generation over its 30 runs.
+
+The script, when run, must print EXACTLY these two lines (in this format) as its final output:
+CROSSOVER_MEAN: <number>
+MUTATION_MEAN: <number>
+
+Output ONLY a single fenced Python code block containing the complete runnable script. No prose, no explanation outside the code block.
+
+```python
+# your complete script
+```

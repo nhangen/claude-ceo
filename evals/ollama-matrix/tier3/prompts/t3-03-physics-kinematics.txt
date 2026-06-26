@@ -1,0 +1,8 @@
+Solve this physics problem. Use g = 10 m/s^2. Neglect air resistance. The answer is a single integer number of meters.
+
+At time t = 0, ball A is released from rest at a height of 80 m directly above a point on the ground. At the same instant t = 0, ball B is thrown straight up from that same point on the ground with an initial speed of 40 m/s. The two balls move along the same vertical line.
+
+At the height (measured in meters above the ground) at which the two balls are at the same position, what is that height?
+
+Output exactly one line and nothing else:
+ANSWER: <integer>

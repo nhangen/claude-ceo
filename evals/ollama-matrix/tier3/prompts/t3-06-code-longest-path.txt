@@ -1,0 +1,17 @@
+Write a Python function with this exact signature:
+
+    def longest_increasing_path(matrix: list[list[int]]) -> int
+
+Given an m x n grid of integers, return the length (number of cells) of the longest strictly increasing path. From a cell you may move to an adjacent cell up, down, left, or right (no diagonals) only if the neighbor's value is strictly greater than the current cell's value. You may start and end anywhere. A single cell counts as a path of length 1. If the grid is empty, return 0.
+
+Examples:
+- longest_increasing_path([[9,9,4],[6,6,8],[2,1,1]]) -> 4   (the path 1 -> 2 -> 6 -> 9)
+- longest_increasing_path([[3,4,5],[3,2,6],[2,2,1]]) -> 4   (the path 3 -> 4 -> 5 -> 6)
+- longest_increasing_path([[1]]) -> 1
+
+Output ONLY a single fenced Python code block containing the complete function (and any helpers it needs). No prose, no explanation, no test code.
+
+```python
+def longest_increasing_path(matrix: list[list[int]]) -> int:
+    ...
+```

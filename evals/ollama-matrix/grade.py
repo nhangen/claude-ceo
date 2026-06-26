@@ -10,13 +10,15 @@ judging — every task has a deterministic correct answer.
     python3 grade.py --verbose  # also print each wrong item
 """
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-KEYS = json.loads((HERE / "keys.json").read_text())["tasks"]
-OUT = HERE / "out"
+KEYS = json.loads(Path(os.environ.get("CEO_EVAL_KEYS", HERE / "keys.json")).read_text())["tasks"]
+OUT = Path(os.environ.get("CEO_EVAL_OUT", HERE / "out"))
 VERBOSE = "--verbose" in sys.argv
 
 
@@ -114,9 +116,86 @@ def grade_yesno(text, key):
     return int(ok), 1, [] if ok else [("ANSWER", key["expect"], got or "(no ANSWER line)")]
 
 
+def _extract_code(text):
+    # Take the last fenced ```python/``` block (models explain, then give the
+    # final function). Fall back to the whole body if there are no fences.
+    blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    return blocks[-1] if blocks else text
+
+
+def grade_code(text, key):
+    # Run the model's function against a hidden battery of assert tests in an
+    # isolated subprocess (per-test, for partial credit). A test passes iff the
+    # script exits 0; a crash, wrong answer, or timeout fails that test only.
+    code = _extract_code(text)
+    tests = key["tests"]
+    timeout = key.get("timeout", 10)
+    # Grade under a modern interpreter so standard 3.10+ syntax (PEP 604 `X | None`
+    # annotations, etc.) isn't scored as a failure. Override with CEO_EVAL_PYTHON;
+    # falls back to the interpreter running grade.py.
+    py = os.environ.get("CEO_EVAL_PYTHON", sys.executable)
+    passed, wrong = 0, []
+    for i, t in enumerate(tests, 1):
+        script = f"{code}\n\n{t}\n"
+        try:
+            p = subprocess.run([py, "-I", "-"], input=script,
+                               capture_output=True, text=True, timeout=timeout)
+            ok = p.returncode == 0
+            err = (p.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        except subprocess.TimeoutExpired:
+            ok, err = False, f"timeout>{timeout}s"
+        if ok:
+            passed += 1
+        else:
+            wrong.append((f"test{i}", "pass", err[:90]))
+    return passed, len(tests), wrong
+
+
+def grade_script(text, key):
+    # Run the model's full script standalone, capture stdout, parse named numeric
+    # values out of it, and score each boolean check (built from those values).
+    # For stochastic/applied tasks where the contract is the program's OUTPUT, not
+    # a fixed function signature.
+    #
+    # SAFETY: the eval() below executes ONLY the check expressions authored in
+    # keys.json (trusted, version-controlled) — never model output. Model output
+    # reaches eval solely as pre-parsed float values bound in `vals`; builtins are
+    # disabled ({"__builtins__": {}}) so a check can't call anything. The model's
+    # own code is run as a separate sandboxed subprocess (-I), not via this eval.
+    code = _extract_code(text)
+    py = os.environ.get("CEO_EVAL_PYTHON", sys.executable)
+    timeout = key.get("timeout", 60)
+    try:
+        p = subprocess.run([py, "-I", "-"], input=f"{code}\n", capture_output=True,
+                           text=True, timeout=timeout)
+        out = p.stdout
+    except subprocess.TimeoutExpired:
+        out = ""
+    vals = {}
+    for name, pat in key["parse"].items():
+        m = re.search(pat, out, re.IGNORECASE)
+        try:
+            vals[name] = float(m.group(1)) if m else None
+        except (TypeError, ValueError):
+            vals[name] = None
+    checks = key["checks"]
+    passed, wrong = 0, []
+    for i, expr in enumerate(checks, 1):
+        try:
+            ok = None not in vals.values() and bool(eval(expr, {"__builtins__": {}}, vals))
+        except Exception:
+            ok = False
+        if ok:
+            passed += 1
+        else:
+            wrong.append((f"check{i}", expr, str(vals)[:80]))
+    return passed, len(checks), wrong
+
+
 GRADERS = {
     "reconcile": grade_reconcile, "order": grade_order, "pair": grade_pair,
     "kv": grade_kv, "abstain": grade_abstain, "yesno": grade_yesno,
+    "code": grade_code, "script": grade_script,
 }
 
 
@@ -135,6 +214,14 @@ def _selftest():
         (grade_pair, {"expect": "S3,S4"}, "PAIR: S1,S2", 0),
         (grade_kv, {"expect": {"NEXT": "2026-06-09 09:00"}}, "NEXT: 2026-06-09 at 9:00", 1),
         (grade_yesno, {"expect": "YES"}, "ANSWER: NO", 0),
+        (grade_code, {"tests": ["assert f(2) == 4"]}, "```python\ndef f(x): return x*2\n```", 1),
+        (grade_code, {"tests": ["assert f(2) == 5"]}, "```python\ndef f(x): return x*2\n```", 0),
+        (grade_code, {"tests": ["assert f(2) == 4"]}, "prose then\n```\ndef f(x): return x*2\n```\n", 1),
+        (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)", "y": r"Y:\s*([0-9.]+)"},
+                        "checks": ["x < y", "y > 2*x"]},
+         "```python\nprint('X: 6.3'); print('Y: 65.0')\n```", 2),
+        (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)"}, "checks": ["x < 5"]},
+         "```python\nprint('X: 9.9')\n```", 0),
     ]
     fails = 0
     for fn, key, text, want in cases:

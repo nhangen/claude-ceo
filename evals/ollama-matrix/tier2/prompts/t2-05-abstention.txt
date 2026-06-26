@@ -1,0 +1,23 @@
+Answer each question using ONLY the facts below. If the facts are sufficient to answer, give the answer. If the facts do not contain enough information to answer, respond with exactly INSUFFICIENT — do not guess or assume anything not stated. Some questions are deliberately answerable only by combining or comparing facts; others ask for something the facts simply do not contain.
+
+Output exactly one line per question and nothing else:
+Q1: <answer or INSUFFICIENT>
+Q2: <answer or INSUFFICIENT>
+Q3: <answer or INSUFFICIENT>
+Q4: <answer or INSUFFICIENT>
+Q5: <answer or INSUFFICIENT>
+
+## Facts
+- On the tier-1 eval, gpt-oss:20b scored 18 out of 18.
+- On the tier-1 eval, deepseek-r1:70b scored 18 out of 18.
+- On the tier-1 eval, qwen2.5:72b scored 17 out of 18.
+- gpt-oss:20b ran at 105 tokens/sec; deepseek-r1:70b ran at 10 tokens/sec.
+- The memory footprint when loaded is 13GB for gpt-oss:20b and 42GB for deepseek-r1:70b.
+- The MacBook has 64GB of RAM.
+
+## Questions
+Q1: Of the two models that scored a perfect 18 out of 18 on tier-1, which one runs faster?
+Q2: On the tier-1 eval, did gpt-oss:20b score higher than qwen2.5:72b?
+Q3: On the tier-2 eval, which is more accurate: gpt-oss:20b or deepseek-r1:70b?
+Q4: What is gpt-oss:120b's token/sec throughput on the MacBook?
+Q5: Do the combined loaded memory footprints of gpt-oss:20b and deepseek-r1:70b fit within the MacBook's RAM?

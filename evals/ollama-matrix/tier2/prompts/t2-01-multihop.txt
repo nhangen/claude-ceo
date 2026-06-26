@@ -1,0 +1,19 @@
+Reason over the facts below to answer one question. Track the state of each module through every change in order. Some facts are distractors. Output exactly one line and nothing else:
+ANSWER: YES
+or
+ANSWER: NO
+
+## Facts
+- Feature A is functional only if BOTH module B and module C are currently enabled.
+- Module B was disabled by PR #300 (merged).
+- PR #300 was fully reverted by PR #310 (merged after #300).
+- PR #315 (merged after #310) again disabled module B.
+- Module C was enabled by PR #320 (merged).
+- PR #320 was reverted by PR #325 (merged after #320).
+- PR #325 was itself reverted by PR #330 (merged after #325).
+- No change other than those listed has touched module B or module C.
+- PR #399 is open but not merged; it would disable module C.
+- Feature E is unrelated to Feature A and is currently broken.
+
+## Question
+With respect to modules B and C, is Feature A currently functional?
