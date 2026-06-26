@@ -8,10 +8,12 @@ Slice 2 (#187): real shell/fs/git tools + task-relevant rule injection.
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryError,
                           StdioMCPTransport, compose_system, filter_tools, gate,
-                          load_registry, load_skill_index, mcp_tools_to_ollama,
+                          load_registry, load_scores, load_skill_index, mcp_tools_to_ollama,
                           ollama_transport, render_catalog, run_agent)
 
 DEFAULT_SYSTEM = (
@@ -19,6 +21,22 @@ DEFAULT_SYSTEM = (
     "Use the provided tools to inspect and modify files and run commands. "
     "When the task is done, reply with a short summary and no further tool calls."
 )
+
+
+def _warn_if_stale_scores(generated_at, stale_days):
+    """Eval-score staleness logs a warning but never refuses (a re-pulled model
+    against an old eval is a soft signal, not a hard governance failure)."""
+    try:
+        gen = datetime.strptime(generated_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        print(f"warning: eval scores have an unparseable generated_at {generated_at!r}",
+              file=sys.stderr)
+        return
+    age_days = (datetime.now(timezone.utc) - gen).days
+    if age_days > stale_days:
+        print(f"warning: eval scores are {age_days}d old (generated_at {generated_at}, "
+              f"stale after {stale_days}d) — gating on possibly outdated competence data",
+              file=sys.stderr)
 
 
 def main(argv=None):
@@ -47,6 +65,11 @@ def main(argv=None):
     p.add_argument("--registry", default=None, help="Path/JSON of a task registry.")
     p.add_argument("--task-name", default=None,
                    help="Run a registered task by name (applies its model/tier/tools/rules).")
+    p.add_argument("--scores", default=None,
+                   help="Path to ollama-matrix scores.tsv for the min_score gate "
+                        "(default: <repo>/evals/ollama-matrix/out/scores.tsv).")
+    p.add_argument("--scores-stale-days", type=int, default=30,
+                   help="Warn (do not refuse) if the eval scores are older than this.")
     p.add_argument("--json", action="store_true", help="Print the full record as JSON.")
     a = p.parse_args(argv)
 
@@ -66,7 +89,27 @@ def main(argv=None):
         if spec is None:
             print(f"no registered task {a.task_name!r} (known: {sorted(specs)})", file=sys.stderr)
             return 2
-        ok, reason = gate(spec)
+        scores = None
+        if spec.min_score is not None:
+            scores_path = a.scores or str(
+                Path(__file__).resolve().parent.parent / "evals/ollama-matrix/out/scores.tsv")
+            # An absent file is a configuration error, surfaced distinctly — not
+            # folded into the gate's generic "model not evaluated" refusal.
+            # (load_scores treats a non-existent path as inline text, so the
+            # check must happen here, before the call.)
+            if not Path(scores_path).is_file():
+                print(f"REJECTED task {a.task_name!r}: eval scores file not found at "
+                      f"{scores_path} (min_score gate requires it)", file=sys.stderr)
+                return 3
+            try:
+                scores, generated_at = load_scores(scores_path)
+            except (OSError, UnicodeDecodeError) as e:
+                print(f"REJECTED task {a.task_name!r}: cannot read eval scores "
+                      f"({scores_path}: {e})", file=sys.stderr)
+                return 3
+            if generated_at:
+                _warn_if_stale_scores(generated_at, a.scores_stale_days)
+        ok, reason = gate(spec, scores)
         if not ok:
             print(f"REJECTED task {a.task_name!r}: {reason}", file=sys.stderr)
             return 3

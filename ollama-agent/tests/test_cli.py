@@ -241,3 +241,57 @@ def test_cli_registry_rules_skills_propagation(tmp_path, monkeypatch, capsys):
     assert "use_skill" not in _tool_names(captured["tools"])  # skills:false honored
     err = capsys.readouterr().err
     assert "rules:" not in err and "skills:" not in err
+
+
+def _scores_file(tmp_path, body):
+    f = tmp_path / "scores.tsv"
+    f.write_text(body)
+    return str(f)
+
+
+def test_cli_min_score_missing_scores_file_rejects(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "gpt-oss:20b",
+                                 "tier": "deterministic", "min_score": 0.8,
+                                 "eval_task": "think-02"})
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "t",
+                   "--scores", str(tmp_path / "nope.tsv")])
+    assert rc == 3
+    assert "eval scores file not found" in capsys.readouterr().err
+
+
+def test_cli_min_score_below_threshold_rejects(tmp_path, monkeypatch, capsys):
+    sc = _scores_file(tmp_path, "task\tmodel\tcorrect\ttotal\tratio\nthink-02\tgpt-oss.20b\t2\t10\t0.2000\n")
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "gpt-oss:20b",
+                                 "tier": "deterministic", "min_score": 0.8,
+                                 "eval_task": "think-02"})
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "t", "--scores", sc])
+    assert rc == 3
+    assert "below min_score" in capsys.readouterr().err
+
+
+def test_cli_min_score_passing_with_stale_scores_warns_but_runs(tmp_path, monkeypatch, capsys):
+    sc = _scores_file(tmp_path, "# generated_at=2000-01-01T00:00:00Z\n"
+                                "task\tmodel\tcorrect\ttotal\tratio\nthink-02\tgpt-oss.20b\t9\t10\t0.9000\n")
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "gpt-oss:20b",
+                                 "tier": "deterministic", "min_score": 0.8,
+                                 "eval_task": "think-02"})
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "t", "--scores", sc])
+    assert rc == 0
+    assert "stale" in capsys.readouterr().err   # warned, but did not refuse
+
+
+def test_warn_if_stale_scores_branches(capsys):
+    cli._warn_if_stale_scores("2000-01-01T00:00:00Z", 30)
+    assert "eval scores are" in capsys.readouterr().err          # old → warns
+    cli._warn_if_stale_scores("not-a-timestamp", 30)
+    assert "unparseable generated_at" in capsys.readouterr().err  # bad format → warns
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cli._warn_if_stale_scores(fresh, 30)
+    assert capsys.readouterr().err == ""                          # fresh → silent
