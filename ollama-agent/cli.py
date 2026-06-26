@@ -9,7 +9,8 @@ import argparse
 import json
 import sys
 
-from ollama_agent import ToolBox, TOOLS, compose_system, ollama_transport, run_agent
+from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, compose_system,
+                          load_skill_index, ollama_transport, render_catalog, run_agent)
 
 DEFAULT_SYSTEM = (
     "You are a local engineering agent operating inside a single working directory. "
@@ -35,6 +36,9 @@ def main(argv=None):
     p.add_argument("--rules-budget", type=int, default=24000,
                    help="Max chars of rule text to inject.")
     p.add_argument("--no-rules", action="store_true", help="Skip rule injection entirely.")
+    p.add_argument("--skills-dir", default="~/.claude/skills",
+                   help="Directory of skill dirs (each with a SKILL.md).")
+    p.add_argument("--no-skills", action="store_true", help="Skip skill discovery entirely.")
     p.add_argument("--json", action="store_true", help="Print the full record as JSON.")
     a = p.parse_args(argv)
 
@@ -50,10 +54,16 @@ def main(argv=None):
         for r, reason in sel.dropped:
             print(f"  dropped {r.name}: {reason}", file=sys.stderr)
 
-    toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout)
+    skills = [] if a.no_skills else load_skill_index(a.skills_dir)
+    if skills:
+        system = f"{render_catalog(skills)}\n\n{system}"
+        print(f"skills: {len(skills)} available (use_skill enabled)", file=sys.stderr)
+    tools = TOOLS + ([USE_SKILL_TOOL] if skills else [])
+
+    toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills)
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature, num_ctx=a.num_ctx)
     try:
-        rec = run_agent(a.task, system, transport, toolbox, TOOLS, turn_cap=a.turn_cap)
+        rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap)
     except RuntimeError as e:
         print(f"agent failed: {e}", file=sys.stderr)
         return 1
