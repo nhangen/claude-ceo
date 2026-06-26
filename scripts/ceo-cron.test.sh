@@ -4272,4 +4272,140 @@ test_dry_run_depth_preflight_skips_model_call() {
   assert_contains "$(cat "$(_preview_file dr-pre)" 2>/dev/null)" "preflight" "preview must note it stopped at preflight depth"
 }
 
+# --- runner:ollama-agent (bridge) dispatch — epic #197 slice A (#199) ---
+
+# Stub for the bridge CLI. Per stub-cli-argv-validation it pattern-matches the
+# exact argv production uses and exits non-zero on any other shape; on a match
+# it records the invocation and emits the caller-supplied JSON on stdout.
+_make_agent_stub() {
+  local json="$1"
+  cat > "$HOME/.bun/bin/agent-stub" << STUB
+#!/bin/bash
+case " \$* " in
+  *" --task-name "*" --registry "*" --json "*) : ;;
+  *) echo "agent stub: unexpected argv: \$*" >&2; exit 97 ;;
+esac
+echo invoked >> "\$HOME/agent-invoked.txt"
+cat << 'AGENTJSON'
+$json
+AGENTJSON
+STUB
+  chmod +x "$HOME/.bun/bin/agent-stub"
+  export CEO_OLLAMA_AGENT_CMD="$HOME/.bun/bin/agent-stub"
+}
+
+_register_agent_pb() {
+  local name="$1" tier="$2"
+  printf '{"tasks":{}}' > "$CEO_DIR/bridge-registry.json"
+  cat > "$CEO_DIR/playbooks/$name.md" << PB
+---
+name: $name
+description: ollama-agent bridge dispatch test
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: $tier
+status: active
+runner: ollama-agent
+registry: $CEO_DIR/bridge-registry.json
+---
+# body
+PB
+}
+
+test_runner_ollama_agent_success() {
+  _register_agent_pb agent-ok low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 2, "calls": [], "unknown_calls": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-ok >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ollama-agent success must exit 0"
+  [ -f "$HOME/agent-invoked.txt" ] || { printf '  FAIL [%s] bridge must be invoked on success\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null)" "agent-ok completed" "success must record to cron-runs.log"
+}
+
+test_runner_ollama_agent_high_stakes_refused_before_dispatch() {
+  _register_agent_pb agent-hs high-stakes
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-hs >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] high-stakes ollama-agent must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [ -f "$HOME/agent-invoked.txt" ]; then
+    printf '  FAIL [%s] high-stakes must NOT invoke the bridge (gate is cron-side)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "may not run high-stakes" "refusal reason must be logged"
+}
+
+test_runner_ollama_agent_hallucinated_calls_is_failure() {
+  _register_agent_pb agent-halluc low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": [{"name": "bogus_tool"}]}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-halluc >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] a run with unknown_calls must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unknown tool call" "hallucinated call must be recorded as failure"
+}
+
+test_runner_ollama_agent_incomplete_is_failure() {
+  _register_agent_pb agent-incomplete low-stakes-write
+  _make_agent_stub '{"completed": false, "turns": 8, "calls": [], "unknown_calls": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-incomplete >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] completed:false must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "did not complete" "incomplete run must be recorded as failure"
+}
+
+test_runner_ollama_agent_tier_drift_normalized() {
+  # The live registry carries "low-stakes write" (space); the canonical form is
+  # hyphenated. The boundary normalization must accept the space variant.
+  _register_agent_pb agent-drift "low-stakes write"
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-drift >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "space-variant tier must normalize and run (got rc=$rc)"
+  [ -f "$HOME/agent-invoked.txt" ] || { printf '  FAIL [%s] normalized tier must reach the bridge\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
+}
+
+test_runner_ollama_agent_missing_registry_is_failure() {
+  cat > "$CEO_DIR/playbooks/agent-noreg.md" << 'PB'
+---
+name: agent-noreg
+description: ollama-agent with no registry field
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes-write
+status: active
+runner: ollama-agent
+---
+# body
+PB
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-noreg >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] missing registry must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  if [ -f "$HOME/agent-invoked.txt" ]; then
+    printf '  FAIL [%s] missing registry must fail before invoking the bridge\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "no 'registry' field" "missing-registry error must be logged"
+}
+
 run_tests
