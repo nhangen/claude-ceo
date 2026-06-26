@@ -12,6 +12,7 @@ judging — every task has a deterministic correct answer.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,37 @@ HERE = Path(__file__).resolve().parent
 KEYS = json.loads(Path(os.environ.get("CEO_EVAL_KEYS", HERE / "keys.json")).read_text())["tasks"]
 OUT = Path(os.environ.get("CEO_EVAL_OUT", HERE / "out"))
 VERBOSE = "--verbose" in sys.argv
+
+
+class EvalInfraError(Exception):
+    """A grading failure caused by infrastructure, not model quality (interpreter
+    won't launch, etc.). Routed to ERR + excluded from the summary, never a 0."""
+
+
+def _resolve_python():
+    py = os.environ.get("CEO_EVAL_PYTHON", sys.executable)
+    if not py:
+        sys.exit("CEO_EVAL_PYTHON is set but empty — unset it or point it at a python3 binary")
+    if py != sys.executable and not (shutil.which(py) or os.path.exists(py)):
+        sys.exit(f"CEO_EVAL_PYTHON={py!r} is not an executable; grading would crash mid-matrix")
+    return py
+
+
+def _run_script(script, timeout):
+    """Execute a model script in an isolated interpreter. Raise EvalInfraError if
+    the interpreter itself can't be launched (config error → ERR, not a model 0).
+    Return (returncode, stdout, last_stderr); returncode is None on timeout."""
+    try:
+        p = subprocess.run([PYTHON, "-I", "-"], input=script,
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "", f"timeout>{timeout}s"
+    except OSError as e:
+        raise EvalInfraError(f"cannot launch {PYTHON!r}: {e}") from e
+    return p.returncode, p.stdout, (p.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+
+
+PYTHON = _resolve_python()
 
 
 def norm(s):
@@ -130,21 +162,10 @@ def grade_code(text, key):
     code = _extract_code(text)
     tests = key["tests"]
     timeout = key.get("timeout", 10)
-    # Grade under a modern interpreter so standard 3.10+ syntax (PEP 604 `X | None`
-    # annotations, etc.) isn't scored as a failure. Override with CEO_EVAL_PYTHON;
-    # falls back to the interpreter running grade.py.
-    py = os.environ.get("CEO_EVAL_PYTHON", sys.executable)
     passed, wrong = 0, []
     for i, t in enumerate(tests, 1):
-        script = f"{code}\n\n{t}\n"
-        try:
-            p = subprocess.run([py, "-I", "-"], input=script,
-                               capture_output=True, text=True, timeout=timeout)
-            ok = p.returncode == 0
-            err = (p.stderr.strip().splitlines() or ["(no stderr)"])[-1]
-        except subprocess.TimeoutExpired:
-            ok, err = False, f"timeout>{timeout}s"
-        if ok:
+        rc, _out, err = _run_script(f"{code}\n\n{t}\n", timeout)
+        if rc == 0:
             passed += 1
         else:
             wrong.append((f"test{i}", "pass", err[:90]))
@@ -163,14 +184,8 @@ def grade_script(text, key):
     # disabled ({"__builtins__": {}}) so a check can't call anything. The model's
     # own code is run as a separate sandboxed subprocess (-I), not via this eval.
     code = _extract_code(text)
-    py = os.environ.get("CEO_EVAL_PYTHON", sys.executable)
     timeout = key.get("timeout", 60)
-    try:
-        p = subprocess.run([py, "-I", "-"], input=f"{code}\n", capture_output=True,
-                           text=True, timeout=timeout)
-        out = p.stdout
-    except subprocess.TimeoutExpired:
-        out = ""
+    rc, out, _err = _run_script(f"{code}\n", timeout)
     vals = {}
     for name, pat in key["parse"].items():
         m = re.search(pat, out, re.IGNORECASE)
@@ -181,14 +196,23 @@ def grade_script(text, key):
     checks = key["checks"]
     passed, wrong = 0, []
     for i, expr in enumerate(checks, 1):
-        try:
-            ok = None not in vals.values() and bool(eval(expr, {"__builtins__": {}}, vals))
-        except Exception:
+        if None in vals.values():
+            # A value the model never printed (crashed/timed-out/wrong output) is a
+            # model failure, not a check to evaluate. rc surfaces why in the note.
             ok = False
+        else:
+            try:
+                ok = bool(eval(expr, {"__builtins__": {}}, vals))
+            except (NameError, SyntaxError) as e:
+                # A typo'd/malformed check expression is a keys.json authoring bug,
+                # not a model failure — fail loud rather than scoring it 0.
+                sys.exit(f"KEY ERROR: check {expr!r} in keys.json is malformed: {e}")
+            except Exception:
+                ok = False
         if ok:
             passed += 1
         else:
-            wrong.append((f"check{i}", expr, str(vals)[:80]))
+            wrong.append((f"check{i}", expr, f"rc={rc} {str(vals)[:72]}"))
     return passed, len(checks), wrong
 
 
@@ -210,18 +234,35 @@ def _selftest():
         (grade_reconcile, {"items": {"T1": "CLOSE:165"}}, "1. T1 | CLOSE #165 | retry", 1),
         (grade_reconcile, {"items": {"T1": "CLOSE:165"}}, "T1 | CLOSE #999 | wrong pr", 0),
         (grade_reconcile, {"items": {"T8": "KEEP"}}, "T8 | CLOSE #169 | proposed", 0),
+        # KEEP and CLOSE in the same verdict field must fail (exercises `and not CLOSE`).
+        (grade_reconcile, {"items": {"T8": "KEEP"}}, "T8 | KEEP CLOSE #169 | hedging", 0),
+        (grade_order, {"expect": "B,A,C"}, "ORDER: B, A, C", 1),
+        (grade_order, {"expect": "B,A,C"}, "ORDER: A, B, C", 0),
         (grade_pair, {"expect": "S3,S4"}, "PAIR: S3 and S4", 1),
         (grade_pair, {"expect": "S3,S4"}, "PAIR: S1,S2", 0),
         (grade_kv, {"expect": {"NEXT": "2026-06-09 09:00"}}, "NEXT: 2026-06-09 at 9:00", 1),
+        (grade_abstain, {"items": {"Q1": "INSUFFICIENT"}}, "Q1: INSUFFICIENT — not enough data", 1),
+        (grade_abstain, {"items": {"Q1": "INSUFFICIENT"}}, "Q1: The answer is 42", 0),
+        (grade_abstain, {"items": {"Q2": "ANSWER"}, "answerable_contains": {"Q2": "42"}},
+         "Q2: The answer is 42", 1),
+        (grade_abstain, {"items": {"Q2": "ANSWER"}, "answerable_contains": {"Q2": "42"}},
+         "Q2: INSUFFICIENT", 0),
         (grade_yesno, {"expect": "YES"}, "ANSWER: NO", 0),
         (grade_code, {"tests": ["assert f(2) == 4"]}, "```python\ndef f(x): return x*2\n```", 1),
         (grade_code, {"tests": ["assert f(2) == 5"]}, "```python\ndef f(x): return x*2\n```", 0),
         (grade_code, {"tests": ["assert f(2) == 4"]}, "prose then\n```\ndef f(x): return x*2\n```\n", 1),
+        # First block wrong, last block correct: exercises "take the LAST fenced block".
+        (grade_code, {"tests": ["assert f(2) == 4"]},
+         "```python\ndef f(x): return x*99\n```\nfixed:\n```python\ndef f(x): return x*2\n```", 1),
         (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)", "y": r"Y:\s*([0-9.]+)"},
                         "checks": ["x < y", "y > 2*x"]},
          "```python\nprint('X: 6.3'); print('Y: 65.0')\n```", 2),
         (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)"}, "checks": ["x < 5"]},
          "```python\nprint('X: 9.9')\n```", 0),
+        # y never printed → None-guard fails the check that references only x.
+        (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)", "y": r"Y:\s*([0-9.]+)"},
+                        "checks": ["x < 5"]},
+         "```python\nprint('X: 1.0')\n```", 0),
     ]
     fails = 0
     for fn, key, text, want in cases:
@@ -261,7 +302,13 @@ for task, key in KEYS.items():
             row += f"{'ERR':<22} "
             scores[m][task] = None
             continue
-        got, total, wrong = grader(raw, key)
+        try:
+            got, total, wrong = grader(raw, key)
+        except EvalInfraError as e:
+            row += f"{'ERR':<22} "
+            scores[m][task] = None
+            print(f"    [{m}] {task}: INFRA {e}", file=sys.stderr)
+            continue
         scores[m][task] = (got, total)
         row += f"{f'{got}/{total}':<22} "
         if VERBOSE and wrong:
