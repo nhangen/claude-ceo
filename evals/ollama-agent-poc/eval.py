@@ -118,3 +118,41 @@ def run_arm(name, system_text, model, n, temperature, num_ctx):
                         "completed":r["completed"], "turns":r["turns"], "rule_hash":rule_hash,
                         "transcript":r["transcript"]})
     return records
+
+def _ollama_version():
+    try:
+        return subprocess.run(["ollama","--version"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception as e:
+        return f"unknown ({e})"
+
+def main():
+    import argparse, json
+    p = argparse.ArgumentParser()
+    p.add_argument("--model", default="gpt-oss:20b")
+    p.add_argument("-n", type=int, default=5)
+    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--num-ctx", type=int, default=16384)
+    a = p.parse_args()
+    meta = {"model":a.model, "ollama_version":_ollama_version(),
+            "temperature":a.temperature, "num_ctx":a.num_ctx, "n":a.n}
+    all_records, rates = [], {}
+    for name, text in arms().items():
+        recs = run_arm(name, text, a.model, a.n, a.temperature, a.num_ctx)
+        all_records += recs
+        valid = [r for r in recs if r["valid"]]
+        excl = sum(1 for r in valid if r["tmp_excluded"])
+        rates[name] = {"valid":len(valid), "n":a.n, "tmp_excluded":excl,
+                       "exclude_rate": (excl/len(valid)) if valid else None}
+    os.makedirs("out", exist_ok=True)
+    with open("out/records.json","w") as f:
+        json.dump({"meta":meta, "records":all_records, "rates":rates}, f, indent=2)
+    print(f"meta: {meta}")
+    for name, r in rates.items():
+        print(f"  {name:14} valid {r['valid']}/{r['n']}  tmp_excluded {r['tmp_excluded']}/{r['valid'] or 0}  rate={r['exclude_rate']}")
+    a_rate = rates['A_relevant']['exclude_rate']; b_rate = rates['B_unrelated']['exclude_rate']
+    c_rate = rates['C_contrarian']['exclude_rate']
+    print(f"CONTRAST A-vs-B (relevant rule moves exclusion above prior): A={a_rate} B(prior)={b_rate}")
+    print(f"CONTRAST C-vs-B (contrarian rule should LOWER exclusion / raise inclusion): C={c_rate} B={b_rate}")
+
+if __name__ == "__main__":
+    main()
