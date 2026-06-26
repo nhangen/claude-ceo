@@ -68,7 +68,47 @@ def test_select_max_rules_cap_logs_dropped(rules_dir):
     task = "commit the stripe billing css changes and the tmp logs"
     sel = select_rules(task, load_rule_index(rules_dir), max_rules=1, budget_chars=10**9)
     assert len(sel.selected) == 1
-    assert sel.dropped and all("max_rules" in reason for _, reason in sel.dropped)
+    assert len(sel.dropped) == 2  # exactly the other two matched rules, not a partial drop
+    assert all("max_rules" in reason for _, reason in sel.dropped)
+
+
+def test_selection_reports_considered_and_matched(rules_dir):
+    sel = select_rules("commit tmp logs", load_rule_index(rules_dir))
+    assert sel.considered == 3       # all rules in the index
+    assert sel.matched == 1          # only no-commit-tmp-logs scored > 0
+    assert len(sel.selected) == 1
+
+
+def test_non_utf8_rule_body_does_not_crash_render(tmp_path):
+    d = tmp_path / "rules"
+    d.mkdir()
+    (d / "weird.md").write_bytes(
+        b"---\ndescription: handle the weird commit case\n---\n\n# Weird\n\n\xff\xfe bad bytes\n")
+    sel = select_rules("weird commit case", load_rule_index(d))
+    assert sel.selected[0].name == "weird"
+    block = sel.render()  # must not raise UnicodeDecodeError
+    assert "## Rule: weird" in block
+
+
+def test_unreadable_selected_rule_is_dropped_not_crash(tmp_path, monkeypatch):
+    d = tmp_path / "rules"
+    d.mkdir()
+    _rule(d, "no-commit-tmp-logs", "Never commit tmp log files", "tmp")
+    idx = load_rule_index(d)
+    monkeypatch.setattr(type(idx[0]), "read_body",
+                        lambda self: (_ for _ in ()).throw(OSError("gone")))
+    sel = select_rules("commit tmp logs", idx)
+    assert sel.selected == []
+    assert sel.dropped and "unreadable" in sel.dropped[0][1]
+
+
+def test_title_taken_after_frontmatter_not_body_hash(tmp_path):
+    d = tmp_path / "rules"
+    d.mkdir()
+    (d / "r.md").write_text(
+        "---\ndescription: a rule\n---\n\n# Real Title\n\n```\n# fake heading in code\n```\n")
+    title = load_rule_index(d)[0].title
+    assert title == "Real Title"
 
 
 def test_select_budget_drop_is_logged_not_silent(rules_dir):

@@ -3,7 +3,7 @@
 
     python cli.py --task "summarize the README" --model gpt-oss:20b --cwd /repo
 
-Slice 1 (#186): real shell/fs/git tools, no rule/skill loading yet.
+Slice 2 (#187): real shell/fs/git tools + task-relevant rule injection.
 """
 import argparse
 import json
@@ -42,9 +42,13 @@ def main(argv=None):
     if not a.no_rules:
         system, sel = compose_system(a.system, a.task, a.rules_dir, a.max_rules, a.rules_budget)
         injected = ", ".join(r.name for r in sel.selected) or "(none matched)"
-        print(f"rules injected: {injected}", file=sys.stderr)
+        # Counts make a zero-match a visible selection decision, not an apparent
+        # load failure: "matched 0 of 64" reads differently than "rules dir empty".
+        print(f"rules: considered {sel.considered}, matched {sel.matched}, "
+              f"injected {len(sel.selected)} ({injected}), dropped {len(sel.dropped)}",
+              file=sys.stderr)
         for r, reason in sel.dropped:
-            print(f"rule dropped: {r.name} — {reason}", file=sys.stderr)
+            print(f"  dropped {r.name}: {reason}", file=sys.stderr)
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout)
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature, num_ctx=a.num_ctx)

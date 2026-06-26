@@ -28,15 +28,19 @@ def _parse_frontmatter(text):
     come back as empty strings rather than raising — a rule without frontmatter is
     still usable, just less selectable."""
     desc, globs, title = "", "", ""
+    body_start = 0
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end != -1:
+            body_start = end + 4
             for line in text[3:end].splitlines():
                 if line.startswith("description:"):
                     desc = line.split(":", 1)[1].strip()
                 elif line.startswith("globs:"):
                     globs = line.split(":", 1)[1].strip()
-    m = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+    # Match the first heading after the frontmatter only — a `#` line inside the
+    # body (e.g. a shell comment in a code block) is not the rule's title.
+    m = re.search(r"^#\s+(.+)$", text[body_start:], re.MULTILINE)
     if m:
         title = m.group(1).strip()
     return desc, globs, title
@@ -48,27 +52,34 @@ class Rule:
         self.path = path
         self.description = description
         self.title = title
-        self.size = size            # body char count (full file)
+        self.size = size            # full-file char count (what the budget accounts against)
+        self.cached_body = None     # set when the rule is selected (read once, errors-tolerant)
         self._tokens = _tokens(f"{name.replace('-', ' ')} {title} {description}")
 
     def score(self, task_tokens):
         return len(self._tokens & task_tokens)
 
-    def body(self):
-        return Path(self.path).read_text()
+    def read_body(self):
+        # errors="replace" mirrors load_rule_index: a non-UTF-8 byte must not crash
+        # injection on a file the index already admitted. OSError (file deleted/
+        # unreadable after indexing) is left to the caller to route to `dropped`.
+        return Path(self.path).read_text(errors="replace")
 
 
 class Selection:
-    def __init__(self, selected, dropped):
-        self.selected = selected            # [Rule], in score order
-        self.dropped = dropped              # [(Rule, reason)] for matched-but-excluded
+    def __init__(self, selected, dropped, considered=0, matched=0):
+        self.selected = selected            # [Rule], in score order, bodies cached
+        self.dropped = dropped              # [(Rule, reason)] matched-but-excluded
+        self.considered = considered        # rules in the index
+        self.matched = matched              # rules with score > 0
 
     def render(self):
         if not self.selected:
             return ""
         parts = ["# Applicable rules (follow these — they override default behavior)\n"]
         for r in self.selected:
-            parts.append(f"## Rule: {r.name}\n{r.body().strip()}\n")
+            body = r.cached_body if r.cached_body is not None else r.read_body()
+            parts.append(f"## Rule: {r.name}\n{body.strip()}\n")
         return "\n".join(parts)
 
 
@@ -112,6 +123,11 @@ def select_rules(task, index, max_rules=6, budget_chars=24000):
         if used + r.size > budget_chars:
             dropped.append((r, f"budget {budget_chars} exhausted (used {used}, +{r.size})"))
             continue
+        try:
+            r.cached_body = r.read_body()
+        except OSError as e:
+            dropped.append((r, f"unreadable: {type(e).__name__}"))
+            continue
         selected.append(r)
         used += r.size
-    return Selection(selected, dropped)
+    return Selection(selected, dropped, considered=len(index), matched=len(candidates))
