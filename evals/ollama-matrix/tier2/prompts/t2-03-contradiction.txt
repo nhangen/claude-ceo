@@ -1,0 +1,14 @@
+Below are 8 statements about a model-deployment setup. Exactly one pair of statements directly contradicts each other (they cannot both be true). Several other statements look like they might conflict but are actually consistent. Find the one contradicting pair.
+
+Output exactly one line and nothing else:
+PAIR: S<n>,S<n>
+
+## Statements
+S1: Every think-tier playbook uses a model whose memory footprint is at least 40GB.
+S2: The reconcile playbook is a think-tier playbook, and it uses gpt-oss:20b, which has a 13GB memory footprint.
+S3: The MacBook has 64GB of RAM.
+S4: gpt-oss:120b has a 65GB memory footprint, so it does not fit within the MacBook's RAM.
+S5: The summarize playbook runs on ML-1 and is not a think-tier playbook.
+S6: The token-intake playbook runs once per hour.
+S7: Most playbooks are scheduled to run in the morning.
+S8: deepseek-r1:70b has a larger memory footprint than gpt-oss:20b.

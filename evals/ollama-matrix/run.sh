@@ -10,8 +10,8 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROMPTS="$HERE/prompts"
-OUT="$HERE/out"
+PROMPTS="${CEO_EVAL_PROMPTS:-$HERE/prompts}"
+OUT="${CEO_EVAL_OUT:-$HERE/out}"
 HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 MODELS="${1:-${MODELS:-gemma4:12b-it-qat gpt-oss:20b}}"
 # Cap output so a degenerate runaway (observed: gemma4 once emitted 65k tokens /

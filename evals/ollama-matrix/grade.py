@@ -10,14 +10,48 @@ judging — every task has a deterministic correct answer.
     python3 grade.py --verbose  # also print each wrong item
 """
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-KEYS = json.loads((HERE / "keys.json").read_text())["tasks"]
-OUT = HERE / "out"
+KEYS = json.loads(Path(os.environ.get("CEO_EVAL_KEYS", HERE / "keys.json")).read_text())["tasks"]
+OUT = Path(os.environ.get("CEO_EVAL_OUT", HERE / "out"))
 VERBOSE = "--verbose" in sys.argv
+
+
+class EvalInfraError(Exception):
+    """A grading failure caused by infrastructure, not model quality (interpreter
+    won't launch, etc.). Routed to ERR + excluded from the summary, never a 0."""
+
+
+def _resolve_python():
+    py = os.environ.get("CEO_EVAL_PYTHON", sys.executable)
+    if not py:
+        sys.exit("CEO_EVAL_PYTHON is set but empty — unset it or point it at a python3 binary")
+    if py != sys.executable and not (shutil.which(py) or os.path.exists(py)):
+        sys.exit(f"CEO_EVAL_PYTHON={py!r} is not an executable; grading would crash mid-matrix")
+    return py
+
+
+def _run_script(script, timeout):
+    """Execute a model script in an isolated interpreter. Raise EvalInfraError if
+    the interpreter itself can't be launched (config error → ERR, not a model 0).
+    Return (returncode, stdout, last_stderr); returncode is None on timeout."""
+    try:
+        p = subprocess.run([PYTHON, "-I", "-"], input=script,
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "", f"timeout>{timeout}s"
+    except OSError as e:
+        raise EvalInfraError(f"cannot launch {PYTHON!r}: {e}") from e
+    return p.returncode, p.stdout, (p.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+
+
+PYTHON = _resolve_python()
 
 
 def norm(s):
@@ -114,9 +148,78 @@ def grade_yesno(text, key):
     return int(ok), 1, [] if ok else [("ANSWER", key["expect"], got or "(no ANSWER line)")]
 
 
+def _extract_code(text):
+    # Take the last fenced ```python/``` block (models explain, then give the
+    # final function). Fall back to the whole body if there are no fences.
+    blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    return blocks[-1] if blocks else text
+
+
+def grade_code(text, key):
+    # Run the model's function against a hidden battery of assert tests in an
+    # isolated subprocess (per-test, for partial credit). A test passes iff the
+    # script exits 0; a crash, wrong answer, or timeout fails that test only.
+    code = _extract_code(text)
+    tests = key["tests"]
+    timeout = key.get("timeout", 10)
+    passed, wrong = 0, []
+    for i, t in enumerate(tests, 1):
+        rc, _out, err = _run_script(f"{code}\n\n{t}\n", timeout)
+        if rc == 0:
+            passed += 1
+        else:
+            wrong.append((f"test{i}", "pass", err[:90]))
+    return passed, len(tests), wrong
+
+
+def grade_script(text, key):
+    # Run the model's full script standalone, capture stdout, parse named numeric
+    # values out of it, and score each boolean check (built from those values).
+    # For stochastic/applied tasks where the contract is the program's OUTPUT, not
+    # a fixed function signature.
+    #
+    # SAFETY: the eval() below executes ONLY the check expressions authored in
+    # keys.json (trusted, version-controlled) — never model output. Model output
+    # reaches eval solely as pre-parsed float values bound in `vals`; builtins are
+    # disabled ({"__builtins__": {}}) so a check can't call anything. The model's
+    # own code is run as a separate sandboxed subprocess (-I), not via this eval.
+    code = _extract_code(text)
+    timeout = key.get("timeout", 60)
+    rc, out, _err = _run_script(f"{code}\n", timeout)
+    vals = {}
+    for name, pat in key["parse"].items():
+        m = re.search(pat, out, re.IGNORECASE)
+        try:
+            vals[name] = float(m.group(1)) if m else None
+        except (TypeError, ValueError):
+            vals[name] = None
+    checks = key["checks"]
+    passed, wrong = 0, []
+    for i, expr in enumerate(checks, 1):
+        if None in vals.values():
+            # A value the model never printed (crashed/timed-out/wrong output) is a
+            # model failure, not a check to evaluate. rc surfaces why in the note.
+            ok = False
+        else:
+            try:
+                ok = bool(eval(expr, {"__builtins__": {}}, vals))
+            except (NameError, SyntaxError) as e:
+                # A typo'd/malformed check expression is a keys.json authoring bug,
+                # not a model failure — fail loud rather than scoring it 0.
+                sys.exit(f"KEY ERROR: check {expr!r} in keys.json is malformed: {e}")
+            except Exception:
+                ok = False
+        if ok:
+            passed += 1
+        else:
+            wrong.append((f"check{i}", expr, f"rc={rc} {str(vals)[:72]}"))
+    return passed, len(checks), wrong
+
+
 GRADERS = {
     "reconcile": grade_reconcile, "order": grade_order, "pair": grade_pair,
     "kv": grade_kv, "abstain": grade_abstain, "yesno": grade_yesno,
+    "code": grade_code, "script": grade_script,
 }
 
 
@@ -131,10 +234,35 @@ def _selftest():
         (grade_reconcile, {"items": {"T1": "CLOSE:165"}}, "1. T1 | CLOSE #165 | retry", 1),
         (grade_reconcile, {"items": {"T1": "CLOSE:165"}}, "T1 | CLOSE #999 | wrong pr", 0),
         (grade_reconcile, {"items": {"T8": "KEEP"}}, "T8 | CLOSE #169 | proposed", 0),
+        # KEEP and CLOSE in the same verdict field must fail (exercises `and not CLOSE`).
+        (grade_reconcile, {"items": {"T8": "KEEP"}}, "T8 | KEEP CLOSE #169 | hedging", 0),
+        (grade_order, {"expect": "B,A,C"}, "ORDER: B, A, C", 1),
+        (grade_order, {"expect": "B,A,C"}, "ORDER: A, B, C", 0),
         (grade_pair, {"expect": "S3,S4"}, "PAIR: S3 and S4", 1),
         (grade_pair, {"expect": "S3,S4"}, "PAIR: S1,S2", 0),
         (grade_kv, {"expect": {"NEXT": "2026-06-09 09:00"}}, "NEXT: 2026-06-09 at 9:00", 1),
+        (grade_abstain, {"items": {"Q1": "INSUFFICIENT"}}, "Q1: INSUFFICIENT — not enough data", 1),
+        (grade_abstain, {"items": {"Q1": "INSUFFICIENT"}}, "Q1: The answer is 42", 0),
+        (grade_abstain, {"items": {"Q2": "ANSWER"}, "answerable_contains": {"Q2": "42"}},
+         "Q2: The answer is 42", 1),
+        (grade_abstain, {"items": {"Q2": "ANSWER"}, "answerable_contains": {"Q2": "42"}},
+         "Q2: INSUFFICIENT", 0),
         (grade_yesno, {"expect": "YES"}, "ANSWER: NO", 0),
+        (grade_code, {"tests": ["assert f(2) == 4"]}, "```python\ndef f(x): return x*2\n```", 1),
+        (grade_code, {"tests": ["assert f(2) == 5"]}, "```python\ndef f(x): return x*2\n```", 0),
+        (grade_code, {"tests": ["assert f(2) == 4"]}, "prose then\n```\ndef f(x): return x*2\n```\n", 1),
+        # First block wrong, last block correct: exercises "take the LAST fenced block".
+        (grade_code, {"tests": ["assert f(2) == 4"]},
+         "```python\ndef f(x): return x*99\n```\nfixed:\n```python\ndef f(x): return x*2\n```", 1),
+        (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)", "y": r"Y:\s*([0-9.]+)"},
+                        "checks": ["x < y", "y > 2*x"]},
+         "```python\nprint('X: 6.3'); print('Y: 65.0')\n```", 2),
+        (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)"}, "checks": ["x < 5"]},
+         "```python\nprint('X: 9.9')\n```", 0),
+        # y never printed → None-guard fails the check that references only x.
+        (grade_script, {"parse": {"x": r"X:\s*([0-9.]+)", "y": r"Y:\s*([0-9.]+)"},
+                        "checks": ["x < 5"]},
+         "```python\nprint('X: 1.0')\n```", 0),
     ]
     fails = 0
     for fn, key, text, want in cases:
@@ -174,7 +302,13 @@ for task, key in KEYS.items():
             row += f"{'ERR':<22} "
             scores[m][task] = None
             continue
-        got, total, wrong = grader(raw, key)
+        try:
+            got, total, wrong = grader(raw, key)
+        except EvalInfraError as e:
+            row += f"{'ERR':<22} "
+            scores[m][task] = None
+            print(f"    [{m}] {task}: INFRA {e}", file=sys.stderr)
+            continue
         scores[m][task] = (got, total)
         row += f"{f'{got}/{total}':<22} "
         if VERBOSE and wrong:
