@@ -1171,7 +1171,7 @@ cmd_playbook_scan() {
     local from_repo=0
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
-    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual scope
+    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual scope agent_task agent_registry
     name=$(_fm_scalar name "$f")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -1225,6 +1225,9 @@ cmd_playbook_scan() {
     runner=$(_fm_scalar runner "$f")
     script=$(_fm_scalar script "$f")
     skill=$(_fm_scalar skill "$f")
+    # runner:ollama-agent bridge dispatch fields (epic #197).
+    agent_task=$(_fm_scalar task "$f")
+    agent_registry=$(_fm_scalar registry "$f")
     out_pattern=$(_fm_scalar out_pattern "$f")
     artifact=$(_fm_scalar artifact "$f")
     # Validate at parse time per enum-config-typo-fallback: an artifact
@@ -1396,6 +1399,8 @@ cmd_playbook_scan() {
       --arg runner "$runner" \
       --arg script "$script" \
       --arg skill "$skill" \
+      --arg task "$agent_task" \
+      --arg registry "$agent_registry" \
       --arg out_pattern "$out_pattern" \
       --arg artifact "$artifact" \
       --arg scope "$scope" \
@@ -1403,7 +1408,7 @@ cmd_playbook_scan() {
       --argjson requires "$requires" \
       --argjson hosts "$hosts" \
       --arg file "$entry_file" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, out_pattern:$out_pattern, artifact:$artifact, scope:$scope, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, task:$task, registry:$registry, out_pattern:$out_pattern, artifact:$artifact, scope:$scope, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))

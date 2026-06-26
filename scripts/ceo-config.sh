@@ -464,7 +464,7 @@ _swarm_set_owner() {
   return 0
 }
 # shellcheck disable=SC2034
-CEO_VALID_RUNNERS=(claude script ollama ollama-think skill)
+CEO_VALID_RUNNERS=(claude script ollama ollama-think ollama-agent skill)
 # shellcheck disable=SC2034
 CEO_VALID_STATUSES=(active draft disabled)
 # Per-playbook fan-out scope. `single` runs the playbook once; `each` fans it

@@ -1008,6 +1008,10 @@ if [ "$_runner_valid" -eq 0 ]; then
   exit 1
 fi
 SCRIPT_PATH=$(echo "$ENTRY" | jq -r '.script // ""')
+# runner:ollama-agent dispatch fields. `task` = the bridge task-registry entry
+# name (defaults to the trigger); `registry` = path to the bridge task registry.
+AGENT_TASK=$(echo "$ENTRY" | jq -r '.task // ""')
+AGENT_REGISTRY=$(echo "$ENTRY" | jq -r '.registry // ""')
 # Per-playbook input filtering. INPUTS_JSON is the raw JSON value from the
 # registry: `null` (absent → all keys), `[]` (none), or `["key", …]`.
 # `_inputs_includes <key>` returns 0 if the key should be injected.
@@ -1099,6 +1103,102 @@ safe_read() {
     head -c "$max" "$file"
   fi
 }
+
+# Normalize a tier string to the canonical CEO set. Absorbs the live-registry
+# "low-stakes write" (space) vs canonical "low-stakes-write" (hyphen) drift at a
+# single point. An unrecognized tier is returned unchanged so the caller's case
+# rejects it — never coerced to a default (enum-config-typo-fallback).
+_normalize_tier() {
+  case "$1" in
+    read) echo "read" ;;
+    low-stakes-write|"low-stakes write") echo "low-stakes-write" ;;
+    high-stakes) echo "high-stakes" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# --- Ollama-agent (bridge) runner: tool-using local agent on a bounded task ---
+# Distinct from the raw read-only `ollama`/`ollama-think` runners: this shells to
+# the ollama-agent bridge (cli.py), which runs a governed tool-using loop. The
+# CEO tier gate here is the OUTER authority — high-stakes is refused before the
+# bridge process starts; the bridge's own registry.gate() is defense-in-depth.
+# At low-stakes-write the bridge's own loop is the execution model; it does NOT
+# enter the PLAN→FILTER→EXECUTE pipeline (deliberate, not a silent bypass).
+if [ "$RUNNER" = "ollama-agent" ]; then
+  export CEO_MODEL="$MODEL"
+  export CEO_MODEL_SOURCE="declared"
+  export CEO_RUNNER_ARTIFACT="$AGENT_REGISTRY"
+
+  _ceo_tier=$(_normalize_tier "$TIER")
+  case "$_ceo_tier" in
+    read|low-stakes-write) ;;
+    high-stakes)
+      _record_failure "runner:ollama-agent may not run high-stakes tier ($TRIGGER) — refused before any bridge call"
+      exit 1 ;;
+    *)
+      _record_failure "runner:ollama-agent unknown tier '$TIER' for $TRIGGER"
+      exit 1 ;;
+  esac
+
+  if [ -z "$AGENT_REGISTRY" ]; then
+    _record_failure "Playbook '$TRIGGER' has runner:ollama-agent but no 'registry' field"
+    exit 1
+  fi
+  [ -z "$AGENT_TASK" ] && AGENT_TASK="$TRIGGER"
+
+  # The bridge CLI requires --task (the natural-language instruction); --task-name
+  # only selects the registry entry's model/tier/tools. The playbook body (the
+  # markdown after the frontmatter) is that instruction.
+  AGENT_PROMPT=$(awk 'fence>=2{print} /^---[[:space:]]*$/{fence++}' "$PLAYBOOK_FILE")
+  [ -z "${AGENT_PROMPT//[[:space:]]/}" ] && AGENT_PROMPT="Run the $TRIGGER playbook."
+
+  if [ "${CEO_DRY_RUN:-}" = "1" ]; then
+    _preview "runner:ollama-agent — would run bridge task '$AGENT_TASK' (registry $AGENT_REGISTRY) at tier:$_ceo_tier (skipped: dry-run)."
+    exit 0
+  fi
+
+  if [ -n "${CEO_OLLAMA_AGENT_CMD:-}" ]; then
+    read -r -a _agent_cmd <<< "$CEO_OLLAMA_AGENT_CMD"
+  else
+    CEO_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    _agent_cmd=(python3 "$CEO_REPO_ROOT/ollama-agent/cli.py")
+  fi
+
+  _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier)"
+  AGENT_RC=0
+  AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
+    --registry "$AGENT_REGISTRY" --json 2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
+
+  if [ "$AGENT_RC" -ne 0 ]; then
+    _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"
+    exit 1
+  fi
+
+  # Success is explicit, not the mere absence of a non-zero exit
+  # (non-throwing-client-success-check): a run that did not complete, OR that
+  # emitted any unknown/hallucinated tool call, is a failure — not a success.
+  # Validate parseability first: a 0-exit bridge that emits non-JSON (truncated
+  # stream, a stray stdout line, a traceback) would otherwise trip `set -e` on
+  # the jq pipeline and abort the script *before* recording the failure.
+  if ! printf '%s' "$AGENT_OUT" | jq -e . >/dev/null 2>&1; then
+    _record_failure "ollama-agent task '$AGENT_TASK' emitted unparseable output for $TRIGGER"
+    exit 1
+  fi
+  _agent_completed=$(printf '%s' "$AGENT_OUT" | jq -r '.completed // false')
+  _agent_unknown=$(printf '%s' "$AGENT_OUT" | jq -r '(.unknown_calls // []) | length')
+
+  if [ "$_agent_completed" != "true" ]; then
+    _record_failure "ollama-agent task '$AGENT_TASK' did not complete for $TRIGGER"
+    exit 1
+  fi
+  if [ "$_agent_unknown" -gt 0 ]; then
+    _record_failure "ollama-agent task '$AGENT_TASK' emitted $_agent_unknown unknown tool call(s) for $TRIGGER"
+    exit 1
+  fi
+
+  _record_success
+  exit 0
+fi
 
 # --- Script-runner branch: exec named script, skip claude --print ---
 if [ "$RUNNER" = "script" ]; then
