@@ -109,11 +109,18 @@ def main(argv=None):
             print(f"mcp bridge failed for {a.mcp!r}: {e}", file=sys.stderr)
             return 1
 
-    if spec is not None:
-        tools = filter_tools(tools, spec.tools)
-        if spec.tools != "*":
-            print(f"tools restricted to: {', '.join(t['function']['name'] for t in tools)}",
+    if spec is not None and spec.tools != "*":
+        available = {t["function"]["name"] for t in tools}
+        unknown = [n for n in spec.tools if n not in available]
+        if unknown:
+            # A typo'd allowlist name would otherwise silently shrink the tool set
+            # with no signal — surface it (enum-config-typo-fallback). Note: MCP
+            # tools match their bridged 'mcp__<name>' form here, not the raw name.
+            print(f"warning: registry tools not available (ignored): {', '.join(unknown)}",
                   file=sys.stderr)
+        tools = filter_tools(tools, spec.tools)
+        print(f"tools restricted to: {', '.join(t['function']['name'] for t in tools) or '(none)'}",
+              file=sys.stderr)
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names)

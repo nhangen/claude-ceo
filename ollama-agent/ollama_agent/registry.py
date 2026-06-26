@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 RUNNERS = {"ollama"}                       # who may execute a registered task
+# Ordered low→high stakes; the order is used verbatim in the "known: …" diagnostic.
 TIERS = ["deterministic", "low-stakes-write", "high-stakes"]
 # A local model may take deterministic + low-stakes-write work. high-stakes
 # (billing, credentials, multi-tenant writes, anything irreversible) is never

@@ -204,3 +204,40 @@ def test_cli_bad_registry_runner_returns_2(tmp_path, monkeypatch, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "registry error" in err and "unknown runner" in err
+
+
+def test_cli_task_name_without_registry_returns_2(tmp_path, monkeypatch, capsys):
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--task-name", "t"])
+    assert rc == 2
+    assert "requires --registry" in capsys.readouterr().err
+
+
+def test_cli_registry_tool_typo_is_warned_not_silent(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                 "tools": ["read-file", "git"]})  # 'read-file' is a typo
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "t"])
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"git"}   # only the valid name survives
+    assert "not available (ignored): read-file" in capsys.readouterr().err
+
+
+def test_cli_registry_rules_skills_propagation(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                 "rules": False, "skills": False})
+    captured = {}
+    _stub(monkeypatch, captured)
+    # rules-dir/skills-dir point at fixtures, but the spec forces them off
+    rules = _fixture_rules(tmp_path)
+    skills = _fixture_skills(tmp_path)
+    rc = cli.main(["--task", "stage the tmp log files", "--cwd", str(tmp_path),
+                   "--rules-dir", str(rules), "--skills-dir", str(skills),
+                   "--registry", reg, "--task-name", "t"])
+    assert rc == 0
+    assert "no-commit-tmp-logs" not in captured["system"]   # rules:false honored
+    assert "use_skill" not in _tool_names(captured["tools"])  # skills:false honored
+    err = capsys.readouterr().err
+    assert "rules:" not in err and "skills:" not in err

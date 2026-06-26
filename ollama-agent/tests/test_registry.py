@@ -84,3 +84,13 @@ def test_filter_tools_restricts_to_allowlist():
              {"function": {"name": "write_file"}}]
     kept = {t["function"]["name"] for t in filter_tools(tools, ["git", "read_file"])}
     assert kept == {"git"}
+
+
+def test_filter_tools_empty_allowlist_yields_nothing():
+    tools = [{"function": {"name": "run_shell"}}]
+    assert filter_tools(tools, []) == []
+
+
+def test_load_bad_json_raises_valueerror():
+    with pytest.raises(ValueError):
+        load_registry("{not valid json")
