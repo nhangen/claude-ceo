@@ -1146,6 +1146,12 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   fi
   [ -z "$AGENT_TASK" ] && AGENT_TASK="$TRIGGER"
 
+  # The bridge CLI requires --task (the natural-language instruction); --task-name
+  # only selects the registry entry's model/tier/tools. The playbook body (the
+  # markdown after the frontmatter) is that instruction.
+  AGENT_PROMPT=$(awk 'fence>=2{print} /^---[[:space:]]*$/{fence++}' "$PLAYBOOK_FILE")
+  [ -z "${AGENT_PROMPT//[[:space:]]/}" ] && AGENT_PROMPT="Run the $TRIGGER playbook."
+
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
     _preview "runner:ollama-agent — would run bridge task '$AGENT_TASK' (registry $AGENT_REGISTRY) at tier:$_ceo_tier (skipped: dry-run)."
     exit 0
@@ -1160,8 +1166,8 @@ if [ "$RUNNER" = "ollama-agent" ]; then
 
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier)"
   AGENT_RC=0
-  AGENT_OUT=$("${_agent_cmd[@]}" --task-name "$AGENT_TASK" --registry "$AGENT_REGISTRY" --json \
-    2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
+  AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
+    --registry "$AGENT_REGISTRY" --json 2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"
@@ -1171,9 +1177,15 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # Success is explicit, not the mere absence of a non-zero exit
   # (non-throwing-client-success-check): a run that did not complete, OR that
   # emitted any unknown/hallucinated tool call, is a failure — not a success.
-  _agent_completed=$(printf '%s' "$AGENT_OUT" | jq -r '.completed // false' 2>/dev/null)
-  _agent_unknown=$(printf '%s' "$AGENT_OUT" | jq -r '(.unknown_calls // []) | length' 2>/dev/null)
-  [ -z "$_agent_unknown" ] && _agent_unknown=0
+  # Validate parseability first: a 0-exit bridge that emits non-JSON (truncated
+  # stream, a stray stdout line, a traceback) would otherwise trip `set -e` on
+  # the jq pipeline and abort the script *before* recording the failure.
+  if ! printf '%s' "$AGENT_OUT" | jq -e . >/dev/null 2>&1; then
+    _record_failure "ollama-agent task '$AGENT_TASK' emitted unparseable output for $TRIGGER"
+    exit 1
+  fi
+  _agent_completed=$(printf '%s' "$AGENT_OUT" | jq -r '.completed // false')
+  _agent_unknown=$(printf '%s' "$AGENT_OUT" | jq -r '(.unknown_calls // []) | length')
 
   if [ "$_agent_completed" != "true" ]; then
     _record_failure "ollama-agent task '$AGENT_TASK' did not complete for $TRIGGER"

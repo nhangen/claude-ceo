@@ -4282,8 +4282,8 @@ _make_agent_stub() {
   cat > "$HOME/.bun/bin/agent-stub" << STUB
 #!/bin/bash
 case " \$* " in
-  *" --task-name "*" --registry "*" --json "*) : ;;
-  *) echo "agent stub: unexpected argv: \$*" >&2; exit 97 ;;
+  *" --task "*" --task-name "*" --registry "*" --json "*) : ;;
+  *) echo "agent stub: unexpected argv (missing --task?): \$*" >&2; exit 97 ;;
 esac
 echo invoked >> "\$HOME/agent-invoked.txt"
 cat << 'AGENTJSON'
@@ -4406,6 +4406,43 @@ PB
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "no 'registry' field" "missing-registry error must be logged"
+}
+
+test_runner_ollama_agent_malformed_output_is_failure() {
+  # A 0-exit bridge that emits non-JSON must be recorded as a failure, not crash
+  # ceo-cron.sh on the jq pipeline under set -euo pipefail (non-throwing-client-
+  # success-check): the parse-validity guard must route it through _record_failure.
+  _register_agent_pb agent-garbage low-stakes-write
+  cat > "$HOME/.bun/bin/agent-stub" << 'STUB'
+#!/bin/bash
+echo invoked >> "$HOME/agent-invoked.txt"
+echo "not json at all"
+STUB
+  chmod +x "$HOME/.bun/bin/agent-stub"
+  export CEO_OLLAMA_AGENT_CMD="$HOME/.bun/bin/agent-stub"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-garbage >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] malformed bridge output must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  # The failure must be RECORDED (fail-count incremented), not a bare set -e crash.
+  assert_eq "$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null)" "1" "malformed output must increment the fail count (not crash before recording)"
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unparseable output" "parse failure reason must be logged"
+}
+
+test_runner_ollama_agent_missing_bridge_command_is_failure() {
+  _register_agent_pb agent-nocmd low-stakes-write
+  export CEO_OLLAMA_AGENT_CMD="$HOME/.bun/bin/does-not-exist-agent"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-nocmd >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] a missing bridge command must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "bridge exited" "missing bridge command must be recorded as a failure"
 }
 
 run_tests
