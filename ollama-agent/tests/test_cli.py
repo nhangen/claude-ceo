@@ -282,6 +282,39 @@ def test_cli_min_score_missing_scores_file_rejects(tmp_path, monkeypatch, capsys
     assert "eval scores file not found" in capsys.readouterr().err
 
 
+def test_cli_min_score_default_scores_path_resolves(tmp_path, monkeypatch):
+    # Locks the default --scores repoint: with no explicit --scores, the gate must
+    # resolve ~/.claude/skills/model-matrix/scripts/out/scores.tsv. Reverting the
+    # default path string in cli.py fails this test (the old evals/ path won't
+    # exist under the patched home).
+    out = tmp_path / ".claude/skills/model-matrix/scripts/out"
+    out.mkdir(parents=True)
+    (out / "scores.tsv").write_text(
+        "task\tmodel\tcorrect\ttotal\tratio\nthink-02\tgpt-oss.20b\t9\t10\t0.9000\n")
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "gpt-oss:20b",
+                                 "tier": "deterministic", "min_score": 0.8,
+                                 "eval_task": "think-02"})
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "t"])
+    assert rc == 0
+
+
+def test_cli_min_score_default_scores_absent_rejects(tmp_path, monkeypatch, capsys):
+    # The likely production failure: the model-matrix skill isn't installed, so the
+    # default scores path doesn't exist → refuse (exit 3), never a silent pass.
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "gpt-oss:20b",
+                                 "tier": "deterministic", "min_score": 0.8,
+                                 "eval_task": "think-02"})
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "t"])
+    assert rc == 3
+    assert "eval scores file not found" in capsys.readouterr().err
+
+
 def test_cli_min_score_below_threshold_rejects(tmp_path, monkeypatch, capsys):
     sc = _scores_file(tmp_path, "task\tmodel\tcorrect\ttotal\tratio\nthink-02\tgpt-oss.20b\t2\t10\t0.2000\n")
     reg = _registry(tmp_path, t={"runner": "ollama", "model": "gpt-oss:20b",

@@ -1,6 +1,0 @@
-Solve this exactly. The answer is a single non-negative integer.
-
-How many ordered pairs of integers (x, y) with 1 <= x <= 100 and 1 <= y <= 100 satisfy the condition that x^2 + y^2 is divisible by 5?
-
-Output exactly one line and nothing else:
-ANSWER: <integer>

@@ -54,7 +54,7 @@ def normalize_model(model):
 
 
 def load_scores(source):
-    """Parse a scores.tsv (emitted by evals/ollama-matrix/grade.py). Returns
+    """Parse a scores.tsv (emitted by the model-matrix skill's grade.py). Returns
     (scores, generated_at) where scores is {(task, model): ratio} for rows with
     a non-empty ratio (total>0). A blank ratio (total=0) is omitted — the gate
     treats it as missing → refuse. `source` is a path or the tsv text itself."""

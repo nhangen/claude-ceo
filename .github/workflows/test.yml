@@ -33,8 +33,10 @@ jobs:
           done
           [ "$count" -ge 1 ] || { echo "no tests ran"; exit 1; }
           exit "$fail"
-      - name: ollama-matrix grader selftest
-        run: python3 evals/ollama-matrix/grade.py --selftest
+      - name: ollama-agent pytest
+        run: |
+          python3 -m pip install --quiet pytest
+          cd ollama-agent && python3 -m pytest -q
   scheduler:
     runs-on: ubuntu-latest
     timeout-minutes: 5

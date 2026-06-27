@@ -1,6 +1,0 @@
-Solve this counting problem exactly. Work carefully; the answer is a single non-negative integer.
-
-Count the number of triples of positive integers (a, b, c) with a <= b <= c and a + b + c = 60 that can be the side lengths of a valid (non-degenerate) triangle — that is, the strict triangle inequality a + b > c holds.
-
-Output exactly one line and nothing else:
-ANSWER: <integer>
