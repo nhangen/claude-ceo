@@ -27,7 +27,7 @@ Flags: `--model`, `--cwd` (the directory tools operate in), `--host`, `--tempera
 `--num-ctx`, `--turn-cap`, `--shell-timeout`, `--json` (full record), `--system` (override the system prompt).
 
 Governance flags: `--registry` + `--task-name` run a registered task (its model/tier/tools/rules
-apply, gated before any model call); `--scores` points at an ollama-matrix `scores.tsv` for the
+apply, gated before any model call); `--scores` points at a model-matrix `scores.tsv` for the
 `min_score` gate (`--scores-stale-days` warns on old scores).
 
 ## Governance (registry + delegation gate)
@@ -37,7 +37,7 @@ A registered task (`--registry reg.json --task-name <name>`) is gated **before a
 - `tier: high-stakes` is never delegated to a local model (refused, exit 3); only `deterministic`
   and `low-stakes-write` run. Unknown `runner`/`tier` is rejected, never defaulted.
 - `min_score` (optional) refuses delegation unless the model's measured ratio on a pinned
-  `eval_task` (from ollama-matrix `scores.tsv`) meets the threshold. `eval_task` is **required**
+  `eval_task` (from model-matrix `scores.tsv`) meets the threshold. `eval_task` is **required**
   when `min_score` is set — use `eval_task: "*"` to opt into the cross-task mean; an aggregate
   default would let a model that fails the task that matters pass on unrelated tasks. A missing
   score is a refusal, not a silent pass. `eval_model` overrides which model's score is checked.

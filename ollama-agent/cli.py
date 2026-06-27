@@ -66,8 +66,8 @@ def main(argv=None):
     p.add_argument("--task-name", default=None,
                    help="Run a registered task by name (applies its model/tier/tools/rules).")
     p.add_argument("--scores", default=None,
-                   help="Path to ollama-matrix scores.tsv for the min_score gate "
-                        "(default: <repo>/evals/ollama-matrix/out/scores.tsv).")
+                   help="Path to a model-matrix scores.tsv for the min_score gate "
+                        "(default: ~/.claude/skills/model-matrix/scripts/out/scores.tsv).")
     p.add_argument("--scores-stale-days", type=int, default=30,
                    help="Warn (do not refuse) if the eval scores are older than this.")
     p.add_argument("--json", action="store_true", help="Print the full record as JSON.")
@@ -92,7 +92,7 @@ def main(argv=None):
         scores = None
         if spec.min_score is not None:
             scores_path = a.scores or str(
-                Path(__file__).resolve().parent.parent / "evals/ollama-matrix/out/scores.tsv")
+                Path.home() / ".claude/skills/model-matrix/scripts/out/scores.tsv")
             # An absent file is a configuration error, surfaced distinctly — not
             # folded into the gate's generic "model not evaluated" refusal.
             # (load_scores treats a non-existent path as inline text, so the
