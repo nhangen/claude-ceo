@@ -4327,7 +4327,7 @@ db=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --db) db="$2"; shift 2 ;;
-    *) shift ;;
+    *) echo "pt-stub: unexpected argv: $1" >&2; exit 99 ;;
   esac
 done
 [ -z "$db" ] && { echo "pt-stub: missing --db" >&2; exit 99; }
@@ -4372,9 +4372,59 @@ test_runner_ollama_agent_ingest_idempotent_across_reingest() {
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" agent-idem >/dev/null 2>&1 || true
   assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "3" "3 calls (one name repeated) must be 3 distinct findings via index"
-  bash "$CRON" agent-idem >/dev/null 2>&1 || true
+  # CEO_FORCE=1 bypasses the per-trigger "last run too recent" guard so the
+  # second run genuinely re-executes and re-ingests — otherwise this assertion
+  # is vacuous (the run would be skipped, not deduped).
+  CEO_FORCE=1 bash "$CRON" agent-idem >/dev/null 2>&1 || true
   assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "3" "re-ingesting the same run must not double-insert (idempotent on run_id+index)"
   unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_ingests_even_when_incomplete() {
+  # The ingest runs BEFORE the completion gate, so a hallucinating-but-incomplete
+  # run still records its findings. Move the ingest call below the incomplete gate
+  # and this assertion drops to 0 rows.
+  _register_agent_pb agent-inchal low-stakes-write
+  _make_agent_stub '{"completed": false, "turns": 8, "calls": [], "unknown_calls": ["bogus_tool"]}'
+  _make_pt_stub
+  export CEO_AGENT_RUN_ID="run-inchal-1"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-inchal >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] an incomplete run must still exit non-zero\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "1" "a hallucinating-but-incomplete run must still ingest the finding (ingest precedes the gate exit)"
+  unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_ingests_null_unknown_call() {
+  # agent.py appends None for a malformed tool-call envelope (no function name),
+  # so unknown_calls can contain null. It must still ingest, rendered (unnamed).
+  _register_agent_pb agent-null low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": [null, "teleport"]}'
+  _make_pt_stub
+  export CEO_AGENT_RUN_ID="run-null-1"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-null >/dev/null 2>&1 || true
+  assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "2" "a null (malformed-envelope) unknown_call must still ingest as a finding"
+  assert_contains "$(cat "$PT_STUB_DB" 2>/dev/null)" "hallucinated tool call: (unnamed)" "a null name must render as (unnamed)"
+  unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_distinct_runs_not_deduped() {
+  # The run_id half of the dedup key: two DIFFERENT runs with identical call
+  # names/indices must NOT collide. Drop run_id from pr_url and this drops to 2.
+  _register_agent_pb agent-tworun low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": ["make_coffee", "teleport"]}'
+  _make_pt_stub
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  # CEO_FORCE=1 on the second run bypasses the per-trigger interval guard so both
+  # runs actually execute (same trigger, back-to-back).
+  CEO_AGENT_RUN_ID="run-A" bash "$CRON" agent-tworun >/dev/null 2>&1 || true
+  CEO_FORCE=1 CEO_AGENT_RUN_ID="run-B" bash "$CRON" agent-tworun >/dev/null 2>&1 || true
+  assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "4" "two distinct runs with identical calls must produce 4 findings (run_id half of the dedup key)"
 }
 
 test_runner_ollama_agent_clean_run_ingests_nothing() {
