@@ -70,6 +70,9 @@ def main(argv=None):
                         "(default: <repo>/evals/ollama-matrix/out/scores.tsv).")
     p.add_argument("--scores-stale-days", type=int, default=30,
                    help="Warn (do not refuse) if the eval scores are older than this.")
+    p.add_argument("--run-id", default=None,
+                   help="Caller-minted run identifier, echoed in the record so a "
+                        "downstream ingestion pass can dedup this run's findings.")
     p.add_argument("--json", action="store_true", help="Print the full record as JSON.")
     a = p.parse_args(argv)
 
@@ -169,7 +172,8 @@ def main(argv=None):
                       mcp_client=mcp_client, mcp_names=mcp_names)
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature, num_ctx=a.num_ctx)
     try:
-        rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap)
+        rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
+                        run_id=a.run_id)
     except RuntimeError as e:
         print(f"agent failed: {e}", file=sys.stderr)
         return 1

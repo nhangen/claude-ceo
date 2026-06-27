@@ -259,6 +259,65 @@ ALERTEOF
   fi
 }
 
+# Ingest the bridge's hallucinated (unknown) tool calls into pattern-tracker's
+# findings taxonomy, so local-model behavior joins the same failure corpus the
+# PR-review panel feeds. A hallucinated call IS a real finding (category
+# hallucinated_tool_use) whether or not the run completed, so this runs before
+# the completion/gate checks.
+#
+# Idempotent: the finding_id pattern-tracker derives from (pr_url, file_path,
+# line_no, summary) embeds the run id (pr_url) and the call's index (line_no),
+# so re-ingesting the same run record never double-inserts and two distinct
+# calls never collapse. Reverting either half of that key breaks the idempotency
+# / distinctness tests.
+#
+# Never blocks the run: pattern-tracker is absent or erroring → skip with a
+# notice to cron-skips.log (it needs Python 3.10+ the host may not have). Mirrors
+# the panel's Phase-3.5 skip semantics.
+_ingest_hallucinated_calls() {
+  local run_id="$1" task_label="$2" unknown_json="$3"
+  local jsonl jq_rc=0
+  jsonl=$(printf '%s' "$unknown_json" | jq -c \
+    --arg rid "$run_id" --arg task "$task_label" '
+      to_entries[] | {
+        pr_url: ("local-run://" + $rid),
+        severity: "MEDIUM",
+        summary: ("hallucinated tool call: " + ((.value // "(unnamed)") | tostring)),
+        category: "hallucinated_tool_use",
+        file_path: $task,
+        line_no: .key,
+        panel_variant: "local-agent",
+        source: "ollama-agent"
+      }' 2>>"$LOG_DIR/cron-stderr.log") || jq_rc=$?
+  # The caller only invokes this when unknown_calls is non-empty, so an empty or
+  # failed construction means the findings were LOST — surface it (skip-WITH-
+  # notice), never conflate a jq error with "nothing to ingest".
+  if [ "$jq_rc" -ne 0 ] || [ -z "$jsonl" ]; then
+    echo "$(date): NOTICE — hallucinated-call finding construction failed (jq rc=$jq_rc) for $TRIGGER; finding(s) NOT persisted" >> "$LOG_DIR/cron-skips.log"
+    return 0
+  fi
+
+  local pt_rc=0
+  if [ -n "${CEO_PT_FINDING_CMD:-}" ]; then
+    local _pt_cmd
+    read -r -a _pt_cmd <<< "$CEO_PT_FINDING_CMD"
+    printf '%s\n' "$jsonl" | "${_pt_cmd[@]}" >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
+  else
+    local pt_repo="${CEO_PT_REPO:-$HOME/ML-AI/claude/pattern-tracker}"
+    if [ ! -d "$pt_repo" ]; then
+      echo "$(date): NOTICE — pattern-tracker absent at $pt_repo; skipped ingesting hallucinated-call finding(s) for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+      return 0
+    fi
+    local pt_db="${CEO_PT_DB:-$pt_repo/data/events.db}"
+    printf '%s\n' "$jsonl" \
+      | ( cd "$pt_repo" && python3 -m lib.pt_cli finding-add --db "$pt_db" ) \
+        >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
+  fi
+  if [ "$pt_rc" -ne 0 ]; then
+    echo "$(date): NOTICE — pattern-tracker ingest failed (rc=$pt_rc) for $TRIGGER; hallucinated-call finding(s) NOT persisted" >> "$LOG_DIR/cron-skips.log"
+  fi
+}
+
 _release_lock() {
   if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
     exec 200>&- 2>/dev/null || true
@@ -1164,10 +1223,15 @@ if [ "$RUNNER" = "ollama-agent" ]; then
     _agent_cmd=(python3 "$CEO_REPO_ROOT/ollama-agent/cli.py")
   fi
 
-  _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier)"
+  # Cron mints the run id and threads it to the bridge (the bridge has no clock
+  # of its own and leaves run_id None on a standalone run). It is the dedup
+  # anchor for the post-run findings ingestion below. Overridable for tests.
+  AGENT_RUN_ID="${CEO_AGENT_RUN_ID:-${TRIGGER}-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+
+  _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
-    --registry "$AGENT_REGISTRY" --json 2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
+    --registry "$AGENT_REGISTRY" --run-id "$AGENT_RUN_ID" --json 2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"
@@ -1185,7 +1249,18 @@ if [ "$RUNNER" = "ollama-agent" ]; then
     exit 1
   fi
   _agent_completed=$(printf '%s' "$AGENT_OUT" | jq -r '.completed // false')
-  _agent_unknown=$(printf '%s' "$AGENT_OUT" | jq -r '(.unknown_calls // []) | length')
+  _agent_unknown_json=$(printf '%s' "$AGENT_OUT" | jq -c '.unknown_calls // []')
+  _agent_unknown=$(printf '%s' "$_agent_unknown_json" | jq -r 'length')
+
+  # A hallucinated call is a finding whether or not the run completed — ingest
+  # before the completion/gate exits so a failed-but-hallucinating run is still
+  # recorded into the failure taxonomy.
+  if [ "$_agent_unknown" -gt 0 ]; then
+    # `|| true`: ingestion is observability — it must never alter the run's
+    # pass/fail verdict, even if the helper itself hits an unwritable log under
+    # set -e. The gate checks below are the sole authority on the run's outcome.
+    _ingest_hallucinated_calls "$AGENT_RUN_ID" "$AGENT_TASK" "$_agent_unknown_json" || true
+  fi
 
   if [ "$_agent_completed" != "true" ]; then
     _record_failure "ollama-agent task '$AGENT_TASK' did not complete for $TRIGGER"
