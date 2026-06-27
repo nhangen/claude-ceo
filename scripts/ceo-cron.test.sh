@@ -4282,8 +4282,8 @@ _make_agent_stub() {
   cat > "$HOME/.bun/bin/agent-stub" << STUB
 #!/bin/bash
 case " \$* " in
-  *" --task "*" --task-name "*" --registry "*" --json "*) : ;;
-  *) echo "agent stub: unexpected argv (missing --task?): \$*" >&2; exit 97 ;;
+  *" --task "*" --task-name "*" --registry "*" --run-id "*" --json "*) : ;;
+  *) echo "agent stub: unexpected argv (missing --task/--run-id?): \$*" >&2; exit 97 ;;
 esac
 echo invoked >> "\$HOME/agent-invoked.txt"
 cat << 'AGENTJSON'
@@ -4311,6 +4311,117 @@ registry: $CEO_DIR/bridge-registry.json
 ---
 # body
 PB
+}
+
+# Faithful reproduction of pattern-tracker finding-add's dedup CONTRACT: one row
+# per distinct (pr_url|file_path|line_no|summary). pt hashes that 4-tuple into a
+# finding_id and INSERTs only on a new id; the stub stores the raw 4-tuple key —
+# the dedup behavior is identical, without coupling the test to sha1 internals.
+# Argv-validates --db (stub-cli-argv-validation). The "db" is a flat file, one
+# unique key per line, so the test just counts lines.
+_make_pt_stub() {
+  PT_STUB_DB="$HOME/pt-stub-db.txt"
+  cat > "$HOME/.bun/bin/pt-stub" << 'STUB'
+#!/bin/bash
+db=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --db) db="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -z "$db" ] && { echo "pt-stub: missing --db" >&2; exit 99; }
+touch "$db"
+ins=0; dup=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  key=$(printf '%s' "$line" | jq -r '[.pr_url, .file_path, (.line_no|tostring), .summary] | join("|")')
+  if grep -qxF "$key" "$db" 2>/dev/null; then
+    dup=$((dup + 1))
+  else
+    printf '%s\n' "$key" >> "$db"
+    ins=$((ins + 1))
+  fi
+done
+echo "inserted=$ins skipped_dup=$dup"
+STUB
+  chmod +x "$HOME/.bun/bin/pt-stub"
+  export CEO_PT_FINDING_CMD="$HOME/.bun/bin/pt-stub --db $PT_STUB_DB"
+}
+
+test_runner_ollama_agent_ingests_hallucinated_calls() {
+  _register_agent_pb agent-ingest low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": ["make_coffee", "teleport"]}'
+  _make_pt_stub
+  export CEO_AGENT_RUN_ID="run-ingest-1"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-ingest >/dev/null 2>&1 || true
+  assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "2" "both hallucinated calls must be ingested as findings"
+  assert_contains "$(cat "$PT_STUB_DB" 2>/dev/null)" "local-run://run-ingest-1|agent-ingest|0|hallucinated tool call: make_coffee" "finding must embed run id (pr_url) + call index (line_no) + name"
+  unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_ingest_idempotent_across_reingest() {
+  # Dedup key = run_id (pr_url) + call index (line_no). Re-ingesting the SAME run
+  # must not double-insert, and two calls with the SAME name must stay distinct
+  # via their index. Revert either half of the key and this assertion fails.
+  _register_agent_pb agent-idem low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": ["make_coffee", "make_coffee", "teleport"]}'
+  _make_pt_stub
+  export CEO_AGENT_RUN_ID="run-idem-1"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-idem >/dev/null 2>&1 || true
+  assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "3" "3 calls (one name repeated) must be 3 distinct findings via index"
+  bash "$CRON" agent-idem >/dev/null 2>&1 || true
+  assert_eq "$(wc -l < "$PT_STUB_DB" 2>/dev/null | tr -d ' ')" "3" "re-ingesting the same run must not double-insert (idempotent on run_id+index)"
+  unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_clean_run_ingests_nothing() {
+  _register_agent_pb agent-clean low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 2, "calls": [], "unknown_calls": []}'
+  _make_pt_stub
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-clean >/dev/null 2>&1 || true
+  local _rows
+  _rows=$([ -f "$PT_STUB_DB" ] && wc -l < "$PT_STUB_DB" | tr -d ' ' || echo 0)
+  assert_eq "$_rows" "0" "a clean run (no unknown_calls) must ingest nothing"
+}
+
+test_runner_ollama_agent_ingest_skips_when_pt_absent() {
+  # pattern-tracker absent must never block the run — skip with a notice. The run
+  # still fails its gate (unknown_calls), but on the gate, not on a missing pt.
+  _register_agent_pb agent-noptt low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": ["bogus_tool"]}'
+  unset CEO_PT_FINDING_CMD
+  export CEO_PT_REPO="$HOME/no-such-pattern-tracker"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-noptt >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] hallucinated run must still fail its gate even when pt is absent\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "pattern-tracker absent" "pt-absent must log a skip notice"
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unknown tool call" "the gate failure must still be recorded"
+  unset CEO_PT_REPO
+}
+
+test_runner_ollama_agent_ingest_skips_on_pt_failure() {
+  _register_agent_pb agent-ptfail low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": ["bogus_tool"]}'
+  cat > "$HOME/.bun/bin/pt-fail" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "pt boom" >&2
+exit 1
+STUB
+  chmod +x "$HOME/.bun/bin/pt-fail"
+  export CEO_PT_FINDING_CMD="$HOME/.bun/bin/pt-fail --db /tmp/x"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-ptfail >/dev/null 2>&1 || true
+  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "ingest failed" "a pt ingest failure must log a notice, never crash the run"
+  unset CEO_PT_FINDING_CMD
 }
 
 test_runner_ollama_agent_success() {
@@ -4343,7 +4454,7 @@ test_runner_ollama_agent_high_stakes_refused_before_dispatch() {
 
 test_runner_ollama_agent_hallucinated_calls_is_failure() {
   _register_agent_pb agent-halluc low-stakes-write
-  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": [{"name": "bogus_tool"}]}'
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": ["bogus_tool"]}'
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   local rc=0
   bash "$CRON" agent-halluc >/dev/null 2>&1 || rc=$?

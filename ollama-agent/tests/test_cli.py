@@ -23,10 +23,12 @@ def _stub(monkeypatch, captured):
     # run_agent receives so the test can assert what rule text was injected.
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: {"role": "assistant", "content": "ok"}))
 
-    def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8):
+    def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
         captured["system"] = system
         captured["tools"] = tools
-        return {"completed": True, "turns": 1, "transcript": [{"role": "assistant", "content": "done"}],
+        captured["run_id"] = run_id
+        return {"completed": True, "turns": 1, "run_id": run_id,
+                "transcript": [{"role": "assistant", "content": "done"}],
                 "calls": [], "unknown_calls": []}
     monkeypatch.setattr(cli, "run_agent", fake_run_agent)
 
@@ -45,6 +47,25 @@ def test_cli_injects_matching_rule(tmp_path, monkeypatch, capsys):
     assert "no-commit-tmp-logs" in captured["system"]
     err = capsys.readouterr().err
     assert "matched 1" in err and "no-commit-tmp-logs" in err
+
+
+def test_cli_threads_run_id_into_record(tmp_path, monkeypatch, capsys):
+    import json
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--run-id", "run-xyz", "--json"])
+    assert rc == 0
+    assert captured["run_id"] == "run-xyz"
+    assert json.loads(capsys.readouterr().out)["run_id"] == "run-xyz"
+
+
+def test_cli_run_id_defaults_none(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
+    assert rc == 0
+    assert captured["run_id"] is None
 
 
 def test_cli_no_rules_skips_injection(tmp_path, monkeypatch, capsys):
@@ -71,7 +92,7 @@ def test_cli_no_match_reports_zero(tmp_path, monkeypatch, capsys):
 def test_cli_transport_failure_returns_1(tmp_path, monkeypatch, capsys):
     rules = _fixture_rules(tmp_path)
 
-    def boom(task, system, transport, toolbox, tools, turn_cap=8):
+    def boom(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
         raise RuntimeError("ollama unreachable")
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: None)
     monkeypatch.setattr(cli, "run_agent", boom)

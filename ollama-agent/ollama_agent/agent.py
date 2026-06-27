@@ -17,12 +17,16 @@ def _normalize_args(raw):
     return {}
 
 
-def run_agent(task, system, transport, toolbox, tools, turn_cap=8):
+def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
     """Run one task to completion (a turn with no tool calls) or the turn cap.
 
     Returns a record: completed, turns, the full transcript, and the toolbox's
     call log + unknown-tool list so a hallucinated tool reads as a hallucination,
     not a silent capability loss.
+
+    `run_id` is an optional caller-minted identifier echoed back in the record so
+    a downstream ingestion pass can dedup this run's findings (the bridge itself
+    does not mint one — a standalone run leaves it None). Additive.
     """
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": task}]
@@ -56,6 +60,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8):
     return {
         "completed": completed,
         "turns": turns,
+        "run_id": run_id,
         "transcript": transcript,
         "calls": toolbox.calls,
         "unknown_calls": toolbox.unknown_calls,

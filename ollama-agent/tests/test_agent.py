@@ -108,6 +108,18 @@ def test_loop_dispatches_tools_then_finishes(tmp_path):
     assert rec["unknown_calls"] == []
 
 
+def test_run_id_echoed_in_record(tmp_path):
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, run_id="run-abc")
+    assert rec["run_id"] == "run-abc"
+
+
+def test_run_id_defaults_none(tmp_path):
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS)
+    assert rec["run_id"] is None
+
+
 def test_loop_respects_turn_cap(tmp_path):
     # Transport always asks for another tool call; a broken cap fails on the
     # turns assertion (not by running out of scripted responses).
