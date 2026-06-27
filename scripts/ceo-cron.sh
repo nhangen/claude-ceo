@@ -276,7 +276,7 @@ ALERTEOF
 # the panel's Phase-3.5 skip semantics.
 _ingest_hallucinated_calls() {
   local run_id="$1" task_label="$2" unknown_json="$3"
-  local jsonl
+  local jsonl jq_rc=0
   jsonl=$(printf '%s' "$unknown_json" | jq -c \
     --arg rid "$run_id" --arg task "$task_label" '
       to_entries[] | {
@@ -288,8 +288,14 @@ _ingest_hallucinated_calls() {
         line_no: .key,
         panel_variant: "local-agent",
         source: "ollama-agent"
-      }' 2>/dev/null)
-  [ -z "$jsonl" ] && return 0
+      }' 2>>"$LOG_DIR/cron-stderr.log") || jq_rc=$?
+  # The caller only invokes this when unknown_calls is non-empty, so an empty or
+  # failed construction means the findings were LOST — surface it (skip-WITH-
+  # notice), never conflate a jq error with "nothing to ingest".
+  if [ "$jq_rc" -ne 0 ] || [ -z "$jsonl" ]; then
+    echo "$(date): NOTICE — hallucinated-call finding construction failed (jq rc=$jq_rc) for $TRIGGER; finding(s) NOT persisted" >> "$LOG_DIR/cron-skips.log"
+    return 0
+  fi
 
   local pt_rc=0
   if [ -n "${CEO_PT_FINDING_CMD:-}" ]; then
@@ -1250,7 +1256,10 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # before the completion/gate exits so a failed-but-hallucinating run is still
   # recorded into the failure taxonomy.
   if [ "$_agent_unknown" -gt 0 ]; then
-    _ingest_hallucinated_calls "$AGENT_RUN_ID" "$AGENT_TASK" "$_agent_unknown_json"
+    # `|| true`: ingestion is observability — it must never alter the run's
+    # pass/fail verdict, even if the helper itself hits an unwritable log under
+    # set -e. The gate checks below are the sole authority on the run's outcome.
+    _ingest_hallucinated_calls "$AGENT_RUN_ID" "$AGENT_TASK" "$_agent_unknown_json" || true
   fi
 
   if [ "$_agent_completed" != "true" ]; then
