@@ -34,7 +34,9 @@ jobs:
           [ "$count" -ge 1 ] || { echo "no tests ran"; exit 1; }
           exit "$fail"
       - name: ollama-agent pytest
-        run: cd ollama-agent && python3 -m pytest -q
+        run: |
+          python3 -m pip install --quiet pytest
+          cd ollama-agent && python3 -m pytest -q
   scheduler:
     runs-on: ubuntu-latest
     timeout-minutes: 5
