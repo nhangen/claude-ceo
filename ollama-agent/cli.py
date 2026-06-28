@@ -127,13 +127,17 @@ def main(argv=None):
     # rules_loaded_hash: a stable fingerprint of the EXACT injected rule block
     # (sel.render() is the names + bodies + order that go into the system prompt),
     # so a downstream correlation pass (epic #197 slice D) can ask which injected
-    # rule set changed local-model behavior. "none" when no rules are injected —
-    # distinct from a hash, so a rules-off run is its own bucket.
+    # rule set changed local-model behavior. Three distinct buckets, never folded:
+    # "none" — rules disabled (--no-rules); "no-match" — rules active but zero
+    # scored against the task (a selector-coverage signal, NOT the same condition
+    # as rules-off); a 16-hex hash — the specific rule set that was injected.
     rules_loaded_hash = "none"
     if not a.no_rules:
         system, sel = compose_system(a.system, a.task, a.rules_dir, a.max_rules, a.rules_budget)
         if sel.selected:
             rules_loaded_hash = hashlib.sha256(sel.render().encode()).hexdigest()[:16]
+        else:
+            rules_loaded_hash = "no-match"
         injected = ", ".join(r.name for r in sel.selected) or "(none matched)"
         # Counts make a zero-match a visible selection decision, not an apparent
         # load failure: "matched 0 of 64" reads differently than "rules dir empty".

@@ -131,6 +131,18 @@ def test_cli_no_match_reports_zero(tmp_path, monkeypatch, capsys):
     assert "matched 0" in err and "(none matched)" in err
 
 
+def test_cli_rules_loaded_hash_no_match_distinct_from_none(tmp_path, monkeypatch, capsys):
+    # Rules active but zero matched is "no-match", NOT "none" (--no-rules). The
+    # slice-D correlation pass must tell a selector-coverage gap apart from a
+    # rules-off run. Revert the `else: "no-match"` branch and this reads "none".
+    rules = _fixture_rules(tmp_path)
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "paint the fence blue", "--cwd", str(tmp_path),
+                   "--rules-dir", str(rules), "--no-skills", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["rules_loaded_hash"] == "no-match"
+
+
 def test_cli_transport_failure_returns_1(tmp_path, monkeypatch, capsys):
     rules = _fixture_rules(tmp_path)
 
