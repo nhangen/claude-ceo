@@ -4526,6 +4526,9 @@ test_runner_ollama_agent_emits_run_event() {
   assert_contains "$row" "\"session_id\":\"run-evt-1\"" "session_id must be the run id"
   assert_contains "$row" "\"rules_loaded_hash\":\"abc123def4567890\"" "rules_loaded_hash must pass through from the bridge record"
   assert_contains "$row" "\"exit_code\":0" "exit_code must be 0 — completion lives in error_tail, not exit_code"
+  assert_contains "$row" "\"event_id\":\"run-evt-1\"" "event_id must equal the run id — the INSERT OR IGNORE idempotency key (drop event_id: \$rid and this fails)"
+  assert_contains "$row" 'completed\":true' "error_tail must record completion"
+  assert_contains "$row" 'calls\":2' "error_tail must carry the tool-call count"
   unset CEO_AGENT_RUN_ID
 }
 
@@ -4540,8 +4543,31 @@ test_runner_ollama_agent_emits_event_even_on_non_completion() {
   bash "$CRON" agent-evt2 >/dev/null 2>&1 || true
   local row; row=$(cat "$PT_EVENT_DB" 2>/dev/null)
   assert_contains "$row" "\"session_id\":\"run-evt-2\"" "a non-completing run must still emit its event"
-  assert_contains "$row" "completed" "error_tail must carry the completion flag"
+  assert_contains "$row" 'completed\":false' "error_tail must record completed=false for a non-completing run (revert .completed // false and this fails)"
+  assert_contains "$row" 'turns\":8' "error_tail must carry the non-completing run's turn count"
   unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_breadcrumb_on_event_add_failure() {
+  # A failed event-add must leave a grep-able NOTICE in cron-skips.log, not vanish
+  # into cron-stderr.log noise — a permanently-broken emit path must be detectable
+  # (the disk-monitor incident class). Revert the `|| pt_rc=$?` + NOTICE in
+  # _emit_run_event and this fails.
+  _register_agent_pb agent-evt3 low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": []}'
+  cat > "$HOME/.bun/bin/pt-event-failstub" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+exit 7
+STUB
+  chmod +x "$HOME/.bun/bin/pt-event-failstub"
+  export CEO_PT_EVENT_CMD="$HOME/.bun/bin/pt-event-failstub"
+  export CEO_AGENT_RUN_ID="run-evt-3"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-evt3 >/dev/null 2>&1 || true
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)
+  assert_contains "$skips" "event-add failed (rc=7)" "a failed event-add must write a NOTICE to cron-skips.log"
+  unset CEO_AGENT_RUN_ID CEO_PT_EVENT_CMD
 }
 
 test_runner_ollama_agent_dispatches_with_cwd_in_vault() {

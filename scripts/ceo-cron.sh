@@ -332,7 +332,7 @@ _ingest_hallucinated_calls() {
 # real grouping dimension.
 _emit_run_event() {
   local run_id="$1" task_label="$2" model="$3" agent_out="$4"
-  local branch row
+  local branch row pt_rc=0
   branch=$(cd "$SCRIPT_DIR/.." 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
   row=$(printf '%s' "$agent_out" | jq -c \
     --arg rid "$run_id" --arg task "$task_label" --arg model "$model" \
@@ -353,7 +353,7 @@ _emit_run_event() {
   if [ -n "${CEO_PT_EVENT_CMD:-}" ]; then
     local _pt_cmd
     read -r -a _pt_cmd <<< "$CEO_PT_EVENT_CMD"
-    printf '%s\n' "$row" | "${_pt_cmd[@]}" >>"$LOG_DIR/cron-stderr.log" 2>&1 || true
+    printf '%s\n' "$row" | "${_pt_cmd[@]}" >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
   else
     local pt_repo="${CEO_PT_REPO:-$HOME/ML-AI/claude/pattern-tracker}"
     if [ ! -d "$pt_repo" ]; then
@@ -363,7 +363,10 @@ _emit_run_event() {
     local pt_db="${CEO_PT_DB:-$pt_repo/data/events.db}"
     printf '%s\n' "$row" \
       | ( cd "$pt_repo" && python3 -m lib.pt_cli event-add --db "$pt_db" ) \
-        >>"$LOG_DIR/cron-stderr.log" 2>&1 || true
+        >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
+  fi
+  if [ "$pt_rc" -ne 0 ]; then
+    echo "$(date): NOTICE — pattern-tracker event-add failed (rc=$pt_rc) for $TRIGGER; run event NOT persisted" >> "$LOG_DIR/cron-skips.log"
   fi
 }
 
