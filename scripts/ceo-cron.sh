@@ -1231,7 +1231,7 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
-    --registry "$AGENT_REGISTRY" --run-id "$AGENT_RUN_ID" --json 2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
+    --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"

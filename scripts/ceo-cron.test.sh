@@ -4282,9 +4282,11 @@ _make_agent_stub() {
   cat > "$HOME/.bun/bin/agent-stub" << STUB
 #!/bin/bash
 case " \$* " in
-  *" --task "*" --task-name "*" --registry "*" --run-id "*" --json "*) : ;;
-  *) echo "agent stub: unexpected argv (missing --task/--run-id?): \$*" >&2; exit 97 ;;
+  *" --task "*" --task-name "*" --registry "*" --cwd "*" --run-id "*" --json "*) : ;;
+  *) echo "agent stub: unexpected argv (missing --task/--cwd/--run-id?): \$*" >&2; exit 97 ;;
 esac
+printf '%s\n' "\$*" > "\$HOME/agent-argv.txt"
+env | grep '^CEO_' | sort > "\$HOME/agent-env.txt"
 echo invoked >> "\$HOME/agent-invoked.txt"
 cat << 'AGENTJSON'
 $json
@@ -4483,6 +4485,20 @@ test_runner_ollama_agent_success() {
   assert_eq "$rc" "0" "ollama-agent success must exit 0"
   [ -f "$HOME/agent-invoked.txt" ] || { printf '  FAIL [%s] bridge must be invoked on success\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
   assert_contains "$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null)" "agent-ok completed" "success must record to cron-runs.log"
+}
+
+test_runner_ollama_agent_dispatches_with_cwd_in_vault() {
+  # The bridge takes no --cwd of its own, so a write-tier playbook's relative
+  # reads/writes would resolve against an undefined cwd. The dispatch must run
+  # the bridge with --cwd "$CEO_DIR" so a task reads (log/…) and writes
+  # (reports/…) relative to the vault's CEO dir. Revert the `--cwd "$CEO_DIR"`
+  # arg in ceo-cron.sh and the stub's argv gate (exit 97) fails this; the value
+  # assertion additionally pins it to $CEO_DIR (not some other dir).
+  _register_agent_pb agent-cwd low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-cwd >/dev/null 2>&1 || true
+  assert_contains "$(cat "$HOME/agent-argv.txt" 2>/dev/null)" "--cwd $CEO_DIR" "bridge must be invoked with --cwd \$CEO_DIR"
 }
 
 test_runner_ollama_agent_high_stakes_refused_before_dispatch() {
