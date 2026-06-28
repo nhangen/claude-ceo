@@ -6,6 +6,7 @@ schedule: "45 8 * * 1-5"
 preflight: none
 tier: read
 status: active
+scope: each
 runner: script
 script: ceo-token-intake.sh
 artifact: CEO/reports/token/{TODAY}-{HOST}.md
