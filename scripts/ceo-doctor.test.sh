@@ -120,6 +120,28 @@ test_doctor_flags_completed_but_missing_artifact() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_doctor_flags_completed_but_missing_artifact_for_ollama_agent() {
+  # The artifact cross-check must cover runner:ollama-agent, not just
+  # runner:script — the bridge reports completed when the model stops, so a
+  # failed write_file is otherwise a silent success. Revert the ceo
+  # `case "$p_runner" in script|ollama-agent)` filter back to `= "script"` and
+  # this fails: the ollama-agent playbook is skipped and its artifact never
+  # checked, so doctor stays clean on a missing report.
+  jq '.playbooks += [{"name":"cron-failure-digest","runner":"ollama-agent","status":"active","artifact":"CEO/reports/cron-failures/{TODAY}-{HOST}.md"}]' \
+    "$REGISTRY_FILE" > "$REGISTRY_FILE.tmp" && mv "$REGISTRY_FILE.tmp" "$REGISTRY_FILE"
+  _log_completed_today cron-failure-digest
+  # No artifact written.
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "cron-failure-digest" "doctor must name the offending ollama-agent playbook"
+  assert_contains "$output" "artifact missing or empty" "doctor must flag the missing ollama-agent artifact"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero for a missing ollama-agent artifact (got rc=0)\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_doctor_passes_when_artifact_present() {
   _log_completed_today value-tracker
   local today

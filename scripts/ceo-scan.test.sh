@@ -186,4 +186,29 @@ test_scan_output_omits_crontab_install_message() {
 
 _load_ceo_helpers
 
+test_scan_registers_real_cron_failure_digest_with_inline_registry() {
+  # Guards fixture drift (test-reproduces-production-conditions): the synthetic
+  # agent fixtures in ceo-cron.test.sh use a path-string `registry` with no
+  # model/task/artifact, whereas the SHIPPED cron-failure-digest playbook uses an
+  # inline-JSON `registry` object. Scan the real file and assert it registers as
+  # runner:ollama-agent and the inline JSON survives scan as a string that
+  # re-parses to the bridge task spec.
+  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
+  assert_file_exists "$real" "the shipped cron-failure-digest playbook must exist"
+  cp "$real" "$CEO_DIR/playbooks/cron-failure-digest.md"
+  export CEO_OLLAMA_SKIP_PROBE=1
+  _run_scan
+  unset CEO_OLLAMA_SKIP_PROBE
+  local reg="$HOME/.ceo/registry.json"
+  assert_eq "$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").runner' "$reg")" \
+    "ollama-agent" "real playbook must register with runner=ollama-agent"
+  assert_eq "$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").task' "$reg")" \
+    "cron-failure-digest" "task field must round-trip through scan"
+  local inline tier
+  inline=$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").registry' "$reg")
+  tier=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].tier' 2>/dev/null)
+  assert_eq "$tier" "low-stakes-write" \
+    "inline-JSON registry must survive scan and re-parse to the bridge task tier"
+}
+
 run_tests

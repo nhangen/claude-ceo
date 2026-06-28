@@ -330,11 +330,14 @@ cmd_doctor() {
     } > "$alert_file"
   fi
 
-  # Completed-but-no-output cross-check — for every active runner:script
-  # playbook with a declared `artifact:`, if today's cron-runs.log says it
-  # completed, verify the artifact exists. This catches the #88 / #89 shape
-  # where the dispatcher records 'completed' but the script produced no
-  # visible side-effect.
+  # Completed-but-no-output cross-check — for every active runner:script or
+  # runner:ollama-agent playbook with a declared `artifact:`, if today's
+  # cron-runs.log says it completed, verify the artifact exists. This catches the
+  # #88 / #89 shape where the dispatcher records 'completed' but the runner
+  # produced no visible side-effect. For ollama-agent this is the load-bearing
+  # backstop: the bridge reports completed when the model stops, independent of
+  # whether its write_file actually landed, so a failed report write would
+  # otherwise be a silent success.
   if [ ! -f "$registry_file" ]; then
     echo "  ⚠ doctor artifact cross-check skipped: registry.json not found (run: ceo playbook scan)"
     warn=$((warn + 1))
@@ -361,7 +364,7 @@ cmd_doctor() {
       p_artifact=$(echo "$row" | jq -r '.artifact // ""')
       p_runner=$(echo "$row" | jq -r '.runner // ""')
       p_status=$(echo "$row" | jq -r '.status // ""')
-      [ "$p_runner" = "script" ] || continue
+      case "$p_runner" in script|ollama-agent) ;; *) continue ;; esac
       [ "$p_status" = "active" ] || continue
       [ -n "$p_artifact" ] || continue
       LC_TIME=C grep -F -- "$_date_prefix" "$CEO_DIR/log/cron-runs.log" 2>/dev/null \
