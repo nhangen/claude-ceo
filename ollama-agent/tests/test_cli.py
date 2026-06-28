@@ -81,6 +81,35 @@ def test_cli_run_id_defaults_none(tmp_path, monkeypatch, capsys):
     assert captured["run_id"] is None
 
 
+def test_cli_rules_loaded_hash_none_when_rules_off(tmp_path, monkeypatch, capsys):
+    _stub(monkeypatch, {})
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["rules_loaded_hash"] == "none"
+
+
+def test_cli_rules_loaded_hash_stable_and_content_sensitive(tmp_path, monkeypatch, capsys):
+    # The hash fingerprints the exact injected rule block (epic #197 slice D), so
+    # it must be a stable 16-hex digest for a fixed rule set and CHANGE when a
+    # selected rule's body changes — otherwise it can't attribute a behavior shift.
+    rules = _fixture_rules(tmp_path)
+    args = ["--task", "stage the tmp log files for a commit", "--cwd", str(tmp_path),
+            "--rules-dir", str(rules), "--no-skills", "--json"]
+
+    _stub(monkeypatch, {})
+    cli.main(args); h1 = json.loads(capsys.readouterr().out)["rules_loaded_hash"]
+    assert len(h1) == 16 and all(c in "0123456789abcdef" for c in h1)
+
+    cli.main(args); h2 = json.loads(capsys.readouterr().out)["rules_loaded_hash"]
+    assert h1 == h2, "same rule set must yield the same hash"
+
+    # Change the selected rule's body → hash must differ.
+    (rules / "no-commit-tmp-logs.md").write_text(
+        "---\ndescription: never commit tmp log files\nglobs:\n---\n\n# no-commit-tmp-logs\n\nDIFFERENT body\n")
+    cli.main(args); h3 = json.loads(capsys.readouterr().out)["rules_loaded_hash"]
+    assert h3 != h1, "editing a selected rule's body must change the hash"
+
+
 def test_cli_no_rules_skips_injection(tmp_path, monkeypatch, capsys):
     rules = _fixture_rules(tmp_path)
     captured = {}
