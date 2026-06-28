@@ -16,6 +16,7 @@ test_inputs_includes_reads_inputs_json() {
 }
 
 test_inputs_includes_defaults_all_when_null() {
+  # shellcheck disable=SC2034  # read by the sourced lib's module-scope functions
   INPUTS_JSON="null"
   _inputs_includes anything && r=0 || r=1
   assert_eq "$r" "0" "null inputs → default-all (returns 0)"

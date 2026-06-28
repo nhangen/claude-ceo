@@ -9,6 +9,7 @@ test_pregathered_emits_new_signals_when_inputs_list_them() {
   # _inputs_includes reads the module-scope INPUTS_JSON; set it directly.
   # shellcheck source=/dev/null
   source "$SCRIPT_DIR/ceo-cron-lib.sh"
+  # shellcheck disable=SC2034  # read by the sourced lib's module-scope functions
   INPUTS_JSON='["current_sprint","yesterday_merged","ledger_recent"]'
   export CURRENT_SPRINT_ITEMS='[{"number":7,"repo":"o/r","title":"S"}]'
   export CURRENT_SPRINT_COUNT=1

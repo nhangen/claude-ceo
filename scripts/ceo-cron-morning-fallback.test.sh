@@ -8,8 +8,12 @@ test_raw_digest_helper_emits_signals_when_synthesis_empty() {
   # Source the LIB (Task 0), not ceo-cron.sh.
   # shellcheck source=/dev/null
   source "$SCRIPT_DIR/ceo-cron-lib.sh"
+  # shellcheck disable=SC2034  # all three read by the sourced lib's module-scope functions
   CURRENT_SPRINT_ITEMS='[{"number":7,"repo":"o/r","title":"Sprint Y"}]'
-  PR_REVIEW_REQUESTED='[]'; DAILY_NOTE_TOP3="Write spec"
+  # shellcheck disable=SC2034
+  PR_REVIEW_REQUESTED='[]'
+  # shellcheck disable=SC2034
+  DAILY_NOTE_TOP3="Write spec"
   out=$(ceo_morning_raw_digest)
   assert_contains "$out" "Sprint Y" "digest includes sprint item"
   assert_contains "$out" "Write spec" "digest includes Top 3"
