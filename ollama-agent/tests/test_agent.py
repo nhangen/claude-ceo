@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ollama_agent import ToolBox, TOOLS, run_agent  # noqa: E402
 from ollama_agent.agent import _normalize_args  # noqa: E402
+from ollama_agent.tools import _clip, MAX_OUTPUT, MAX_READ  # noqa: E402
 from ollama_agent.transport import parse_chat_response  # noqa: E402
 
 
@@ -27,10 +28,67 @@ def test_run_shell_nonzero_returncode_surfaced(tmp_path):
     assert out["returncode"] == 3
 
 
-def test_run_shell_timeout(tmp_path):
+def test_run_shell_timeout(tmp_path, monkeypatch):
+    # Deterministic + instant: stub subprocess.run to raise the timeout rather
+    # than sleeping a real wall-clock second, so the test reliably exercises the
+    # except branch mapping a timeout to returncode None + a "timeout>Ns" error.
+    def raise_timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="sleep", timeout=1)
+    monkeypatch.setattr(subprocess, "run", raise_timeout)
     tb = ToolBox(cwd=tmp_path, timeout=1)
     out = json.loads(tb.run_shell("sleep 5"))
-    assert out["returncode"] is None and "timeout" in out["error"]
+    assert out["returncode"] is None and out["error"] == "timeout>1s"
+
+
+def test_clip_under_limit_is_unchanged():
+    assert _clip("abc", 10) == "abc"
+    assert _clip("x" * 10, 10) == "x" * 10   # exactly at limit, no suffix
+    assert _clip("", 10) == ""
+    assert _clip(None, 10) == ""
+
+
+def test_clip_over_limit_truncates_with_count_suffix():
+    out = _clip("x" * 50, 10)
+    assert out == "x" * 10 + "\n…[truncated 40 chars]"
+
+
+def test_read_file_truncates_at_max_read(tmp_path):
+    tb = ToolBox(cwd=tmp_path)
+    tb.write_file("big.txt", "a" * (MAX_READ + 100))
+    out = json.loads(tb.read_file("big.txt"))
+    assert out["content"] == "a" * MAX_READ + "\n…[truncated 100 chars]"
+
+
+def test_run_shell_truncates_stdout_at_max_output(tmp_path):
+    tb = ToolBox(cwd=tmp_path)
+    n = MAX_OUTPUT + 50
+    out = json.loads(tb.run_shell(f"python3 -c \"print('a'*{n}, end='')\""))
+    assert out["stdout"] == "a" * MAX_OUTPUT + "\n…[truncated 50 chars]"
+
+
+def test_git_accepts_string_args_via_split(tmp_path):
+    # The non-list branch (`str(args).split()`): a model that passes args as a
+    # space-joined string instead of a list still drives git correctly.
+    tb = ToolBox(cwd=tmp_path, timeout=10)
+    tb.git(["init"])
+    out = json.loads(tb.git("rev-parse --is-inside-work-tree"))
+    assert out["returncode"] == 0 and out["stdout"].strip() == "true"
+
+
+def test_resolve_absolute_path_escapes_cwd_no_jail(tmp_path):
+    # Characterizes the INTENTIONAL absence of a path jail (the #190 governance
+    # boundary): _resolve passes an absolute path through unchanged, so a write
+    # can land outside cwd. If a jail is ever added, this test must be changed
+    # deliberately — it is the explicit record that escape is currently allowed.
+    cwd = tmp_path / "work"; cwd.mkdir()
+    outside = tmp_path / "outside"; outside.mkdir()
+    target = outside / "escaped.txt"
+    tb = ToolBox(cwd=cwd)
+    wr = json.loads(tb.write_file(str(target), "I escaped cwd"))
+    assert wr["path"] == str(target)
+    assert target.read_text() == "I escaped cwd"          # wrote outside cwd
+    rd = json.loads(tb.read_file(str(target)))
+    assert rd["content"] == "I escaped cwd"               # and read it back
 
 
 def test_write_then_read_file_roundtrip(tmp_path):
