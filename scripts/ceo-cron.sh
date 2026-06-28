@@ -318,6 +318,55 @@ _ingest_hallucinated_calls() {
   fi
 }
 
+# Emit one pattern-tracker `events` row per ollama-agent run (epic #197 slice D).
+# Observability only — every caller wraps it in `|| true`; it must never change a
+# run's verdict. Mapping onto the fixed events columns (per an audit):
+#   event_id/session_id = run_id (deterministic → INSERT OR IGNORE idempotent),
+#   tool_name = "ollama-agent:<task>" (namespaced so consumers can include/exclude
+#     the synthetic class via LIKE 'ollama-agent:%' and per-task grouping survives),
+#   rules_loaded_hash = the bridge's hash (// "none" — forward-compatible before the
+#     bridge ships it), exit_code = 0 ALWAYS (completion lives in error_tail, NOT
+#     exit_code, so these rows don't inflate `pt summary`'s headline error count),
+#   error_tail = compact JSON {run_id,model,completed,turns,calls,unknown}.
+# `plugin_or_skill` is left empty — overloading it with the model would corrupt a
+# real grouping dimension.
+_emit_run_event() {
+  local run_id="$1" task_label="$2" model="$3" agent_out="$4"
+  local branch row
+  branch=$(cd "$SCRIPT_DIR/.." 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  row=$(printf '%s' "$agent_out" | jq -c \
+    --arg rid "$run_id" --arg task "$task_label" --arg model "$model" \
+    --arg cwd "$CEO_DIR" --arg branch "$branch" '
+    {
+      event_id: $rid,
+      session_id: $rid,
+      tool_name: ("ollama-agent:" + $task),
+      rules_loaded_hash: (.rules_loaded_hash // "none"),
+      exit_code: 0,
+      cwd: $cwd,
+      branch: $branch,
+      error_tail: ({run_id: $rid, model: $model, completed: (.completed // false),
+                    turns: (.turns // 0), calls: ((.calls // []) | length),
+                    unknown: ((.unknown_calls // []) | length)} | tojson)
+    }' 2>>"$LOG_DIR/cron-stderr.log") || return 0
+  [ -z "$row" ] && return 0
+  if [ -n "${CEO_PT_EVENT_CMD:-}" ]; then
+    local _pt_cmd
+    read -r -a _pt_cmd <<< "$CEO_PT_EVENT_CMD"
+    printf '%s\n' "$row" | "${_pt_cmd[@]}" >>"$LOG_DIR/cron-stderr.log" 2>&1 || true
+  else
+    local pt_repo="${CEO_PT_REPO:-$HOME/ML-AI/claude/pattern-tracker}"
+    if [ ! -d "$pt_repo" ]; then
+      echo "$(date): NOTICE — pattern-tracker absent at $pt_repo; skipped event-add for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+      return 0
+    fi
+    local pt_db="${CEO_PT_DB:-$pt_repo/data/events.db}"
+    printf '%s\n' "$row" \
+      | ( cd "$pt_repo" && python3 -m lib.pt_cli event-add --db "$pt_db" ) \
+        >>"$LOG_DIR/cron-stderr.log" 2>&1 || true
+  fi
+}
+
 _release_lock() {
   if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
     exec 200>&- 2>/dev/null || true
@@ -1251,6 +1300,12 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _agent_completed=$(printf '%s' "$AGENT_OUT" | jq -r '.completed // false')
   _agent_unknown_json=$(printf '%s' "$AGENT_OUT" | jq -c '.unknown_calls // []')
   _agent_unknown=$(printf '%s' "$_agent_unknown_json" | jq -r 'length')
+
+  # Record one events row per run (epic #197 slice D) so a downstream pass can
+  # correlate the injected rule set (rules_loaded_hash) with completion. Fires on
+  # every parseable run — completed or not — and like the ingest below is pure
+  # observability: `|| true` so it never alters the run's pass/fail verdict.
+  _emit_run_event "$AGENT_RUN_ID" "$AGENT_TASK" "$MODEL" "$AGENT_OUT" || true
 
   # A hallucinated call is a finding whether or not the run completed — ingest
   # before the completion/gate exits so a failed-but-hallucinating run is still
