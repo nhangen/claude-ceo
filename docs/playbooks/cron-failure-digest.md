@@ -17,9 +17,9 @@ artifact: CEO/reports/cron-failures/{TODAY}-{HOST}.md
 ---
 You are summarizing recent CEO cron failures. Your working directory is the vault's CEO directory, so every path below is relative to it. Do exactly these steps, then stop:
 
-1. Read the recent run and skip logs (either may be large or absent):
-   run_shell: tail -n 200 log/cron-runs.log 2>/dev/null; echo "===SKIPS==="; tail -n 200 log/cron-skips.log 2>/dev/null
-2. Find the failure and skip lines. IGNORE every line about the `cron-failure-digest` playbook itself — that is this run; never report on yourself.
+1. Read the recent run and skip logs, pre-filtered to drop this digest's own lines (either log may be large or absent):
+   run_shell: { tail -n 200 log/cron-runs.log 2>/dev/null; echo "===SKIPS==="; tail -n 200 log/cron-skips.log 2>/dev/null; } | grep -v cron-failure-digest
+2. Find the failure and skip lines in that output (self-lines are already removed).
 3. Compute the output path:
    run_shell: echo "reports/cron-failures/$(date +%F)-$(hostname -s).md"
 4. Make the directory:

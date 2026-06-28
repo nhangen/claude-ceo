@@ -4279,6 +4279,9 @@ test_dry_run_depth_preflight_skips_model_call() {
 # it records the invocation and emits the caller-supplied JSON on stdout.
 _make_agent_stub() {
   local json="$1"
+  # The argv gate is order-coupled: it matches the flag sequence the dispatch
+  # emits (ceo-cron.sh). Reordering flags in production reddens every agent test
+  # (fails safe, never silently green); a missing flag exits 97.
   cat > "$HOME/.bun/bin/agent-stub" << STUB
 #!/bin/bash
 case " \$* " in
@@ -4286,7 +4289,6 @@ case " \$* " in
   *) echo "agent stub: unexpected argv (missing --task/--cwd/--run-id?): \$*" >&2; exit 97 ;;
 esac
 printf '%s\n' "\$*" > "\$HOME/agent-argv.txt"
-env | grep '^CEO_' | sort > "\$HOME/agent-env.txt"
 echo invoked >> "\$HOME/agent-invoked.txt"
 cat << 'AGENTJSON'
 $json
