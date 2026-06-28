@@ -4353,6 +4353,28 @@ STUB
   export CEO_PT_FINDING_CMD="$HOME/.bun/bin/pt-stub --db $PT_STUB_DB"
 }
 
+# Stub for `pt event-add` (slice D run-event emit). Argv-validates --db
+# (stub-cli-argv-validation) and appends each emitted JSONL row verbatim so a
+# test can assert the row shape the cron dispatch built.
+_make_pt_event_stub() {
+  PT_EVENT_DB="$HOME/pt-event-db.txt"
+  cat > "$HOME/.bun/bin/pt-event-stub" << 'STUB'
+#!/bin/bash
+db=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --db) db="$2"; shift 2 ;;
+    *) echo "pt-event-stub: unexpected argv: $1" >&2; exit 99 ;;
+  esac
+done
+[ -z "$db" ] && { echo "pt-event-stub: missing --db" >&2; exit 99; }
+cat >> "$db"
+echo "inserted=1 skipped_dup=0 invalid=0"
+STUB
+  chmod +x "$HOME/.bun/bin/pt-event-stub"
+  export CEO_PT_EVENT_CMD="$HOME/.bun/bin/pt-event-stub --db $PT_EVENT_DB"
+}
+
 test_runner_ollama_agent_ingests_hallucinated_calls() {
   _register_agent_pb agent-ingest low-stakes-write
   _make_agent_stub '{"completed": true, "turns": 3, "calls": [], "unknown_calls": ["make_coffee", "teleport"]}'
@@ -4487,6 +4509,65 @@ test_runner_ollama_agent_success() {
   assert_eq "$rc" "0" "ollama-agent success must exit 0"
   [ -f "$HOME/agent-invoked.txt" ] || { printf '  FAIL [%s] bridge must be invoked on success\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
   assert_contains "$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null)" "agent-ok completed" "success must record to cron-runs.log"
+}
+
+test_runner_ollama_agent_emits_run_event() {
+  # Slice D: every run emits one events row via pt event-add carrying the run id,
+  # namespaced tool_name, rules_loaded_hash, and a compact error_tail JSON.
+  # Revert the `_emit_run_event` call in ceo-cron.sh and this fails (no row).
+  _register_agent_pb agent-evt low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 3, "calls": [["run_shell",{}],["write_file",{}]], "unknown_calls": [], "rules_loaded_hash": "abc123def4567890"}'
+  _make_pt_event_stub
+  export CEO_AGENT_RUN_ID="run-evt-1"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-evt >/dev/null 2>&1 || true
+  local row; row=$(cat "$PT_EVENT_DB" 2>/dev/null)
+  assert_contains "$row" "\"tool_name\":\"ollama-agent:agent-evt\"" "tool_name must be namespaced ollama-agent:<task>"
+  assert_contains "$row" "\"session_id\":\"run-evt-1\"" "session_id must be the run id"
+  assert_contains "$row" "\"rules_loaded_hash\":\"abc123def4567890\"" "rules_loaded_hash must pass through from the bridge record"
+  assert_contains "$row" "\"exit_code\":0" "exit_code must be 0 — completion lives in error_tail, not exit_code"
+  assert_contains "$row" "\"event_id\":\"run-evt-1\"" "event_id must equal the run id — the INSERT OR IGNORE idempotency key (drop event_id: \$rid and this fails)"
+  assert_contains "$row" 'completed\":true' "error_tail must record completion"
+  assert_contains "$row" 'calls\":2' "error_tail must carry the tool-call count"
+  unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_emits_event_even_on_non_completion() {
+  # The event must record runs that did NOT complete (that is the signal slice D
+  # correlates), even though the run itself is recorded as a failure.
+  _register_agent_pb agent-evt2 low-stakes-write
+  _make_agent_stub '{"completed": false, "turns": 8, "calls": [], "unknown_calls": []}'
+  _make_pt_event_stub
+  export CEO_AGENT_RUN_ID="run-evt-2"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-evt2 >/dev/null 2>&1 || true
+  local row; row=$(cat "$PT_EVENT_DB" 2>/dev/null)
+  assert_contains "$row" "\"session_id\":\"run-evt-2\"" "a non-completing run must still emit its event"
+  assert_contains "$row" 'completed\":false' "error_tail must record completed=false for a non-completing run (revert .completed // false and this fails)"
+  assert_contains "$row" 'turns\":8' "error_tail must carry the non-completing run's turn count"
+  unset CEO_AGENT_RUN_ID
+}
+
+test_runner_ollama_agent_breadcrumb_on_event_add_failure() {
+  # A failed event-add must leave a grep-able NOTICE in cron-skips.log, not vanish
+  # into cron-stderr.log noise — a permanently-broken emit path must be detectable
+  # (the disk-monitor incident class). Revert the `|| pt_rc=$?` + NOTICE in
+  # _emit_run_event and this fails.
+  _register_agent_pb agent-evt3 low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": []}'
+  cat > "$HOME/.bun/bin/pt-event-failstub" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+exit 7
+STUB
+  chmod +x "$HOME/.bun/bin/pt-event-failstub"
+  export CEO_PT_EVENT_CMD="$HOME/.bun/bin/pt-event-failstub"
+  export CEO_AGENT_RUN_ID="run-evt-3"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" agent-evt3 >/dev/null 2>&1 || true
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)
+  assert_contains "$skips" "event-add failed (rc=7)" "a failed event-add must write a NOTICE to cron-skips.log"
+  unset CEO_AGENT_RUN_ID CEO_PT_EVENT_CMD
 }
 
 test_runner_ollama_agent_dispatches_with_cwd_in_vault() {
