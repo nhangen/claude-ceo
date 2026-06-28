@@ -65,9 +65,9 @@ The bridge is one of three ways to put a local ollama model behind a harness:
 
 | Command | Harness | Tools | Use for |
 |---------|---------|-------|---------|
-| `oll "task"` | the bridge (this dir) | 6 native + skills + 1 MCP (`--mcp`) | autonomous bounded local work; broad MCP via `--mcp` |
+| `oll "task"` | the bridge (this dir) | 5 native + `use_skill` + 1 MCP (`--mcp`) | autonomous bounded local work; broad MCP via `--mcp` |
 | `oll` | codex REPL | codex's | interactive read/explore |
-| `oll-code` | **real Claude Code** via [claude-code-router](https://github.com/musistudio/claude-code-router) → ollama | curated always-loaded set (~24) | the full Claude harness on a local model |
+| `oll-code` | **real Claude Code** via [claude-code-router](https://github.com/musistudio/claude-code-router) → ollama | curated always-loaded set (capped below the ~25 ceiling) | the full Claude harness on a local model |
 
 `oll-code` routes Claude Code's Anthropic API through ccr to ollama's OpenAI
 endpoint. ccr needs the `ollama-compat` transformer (`use: ["openai",

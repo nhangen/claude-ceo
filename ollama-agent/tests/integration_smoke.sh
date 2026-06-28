@@ -10,12 +10,18 @@
 #   OLL_MODEL=gpt-oss:20b bash ollama-agent/tests/integration_smoke.sh
 set -uo pipefail
 
+# Required harness tooling. A missing one is a distinct error (exit 2), NOT an
+# all-SKIP green run that would hide that nothing was exercised.
+for t in curl mktemp python3; do
+  command -v "$t" >/dev/null 2>&1 || { echo "missing required tool: $t" >&2; exit 2; }
+done
+
 MODEL="${OLL_MODEL:-gpt-oss:20b}"
 OLLAMA="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 CCR="${CCR_URL:-http://127.0.0.1:3456}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRIDGE="$REPO_ROOT/ollama-agent/cli.py"
-PY="${OLL_PY:-/opt/anaconda3/bin/python}"
+PY="${OLL_PY:-$(command -v python3 || command -v python)}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -27,13 +33,25 @@ section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 ollama_up() { curl -s -m 5 "$OLLAMA/api/tags" 2>/dev/null | grep -q '"models"'; }
-model_present() { curl -s -m 5 "$OLLAMA/api/tags" 2>/dev/null | grep -q "\"$MODEL\""; }
+model_present() { curl -s -m 5 "$OLLAMA/api/tags" 2>/dev/null | grep -q "\"name\":\"$MODEL\""; }
 ccr_up() { curl -s -m 5 "$CCR/" >/dev/null 2>&1 || curl -s -m 5 "$CCR/v1/messages" -X POST -d '{}' >/dev/null 2>&1; }
 
-anthropic_msg() { # $1=json body -> response body on stdout
+anthropic_msg() { # $1=json body -> raw response body on stdout (incl. transport errors)
   curl -s -m 120 "$CCR/v1/messages" \
     -H 'content-type: application/json' -H 'x-api-key: test' \
     -H 'anthropic-version: 2023-06-01' -d "$1" 2>&1
+}
+
+# Extract only the assistant's content text from an Anthropic response. Asserting
+# against this (not the raw body) prevents a false-green when an error envelope
+# echoes the request prompt back — only a real completion populates content[].text.
+msg_text() {
+  python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(''.join(b.get('text','') for b in d.get('content',[]) if isinstance(b,dict)))
+except Exception:
+    pass" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -53,10 +71,10 @@ elif [ ! -x "$PY" ]; then
   skip "bridge edit" "python not at $PY (set OLL_PY)"
 else
   printf 'alpha\nbeta\ngamma\n' > "$WORK/b.txt"
-  "$PY" "$BRIDGE" --model "$MODEL" --cwd "$WORK" --no-rules --no-skills --turn-cap 6 \
-    --task "Edit b.txt: change 'beta' to 'BETA-OK'. Read it then write it back." >/dev/null 2>&1
+  BOUT=$("$PY" "$BRIDGE" --model "$MODEL" --cwd "$WORK" --no-rules --no-skills --turn-cap 6 \
+    --task "Edit b.txt: change 'beta' to 'BETA-OK'. Read it then write it back." 2>&1)
   if grep -q "BETA-OK" "$WORK/b.txt"; then pass "bridge edited a file via native tools"; else
-    fail "bridge edit did not land (b.txt unchanged)"; fi
+    fail "bridge edit did not land ($(printf '%s' "$BOUT" | tail -c 140))"; fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -70,14 +88,14 @@ else
   # reasoning before the visible answer, so the cap must be generous or the
   # response truncates (stop_reason=max_tokens, empty content) before "PONG".
   R=$(anthropic_msg "{\"model\":\"ollama,$MODEL\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: PONG\"}]}")
-  if echo "$R" | grep -qi "PONG"; then pass "ccr chat round-trip"; else
+  if printf '%s' "$R" | msg_text | grep -qi "PONG"; then pass "ccr chat round-trip"; else
     fail "ccr chat round-trip ($(echo "$R" | head -c 140))"; fi
 
   # thinking field must not 400
   R=$(anthropic_msg "{\"model\":\"ollama,$MODEL\",\"max_tokens\":1024,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: PONG\"}]}")
   if echo "$R" | grep -qi "does not support thinking"; then
     fail "thinking-strip: ollama 400'd on thinking field"
-  elif echo "$R" | grep -qi "PONG"; then pass "ccr thinking-strip (no 400)"; else
+  elif printf '%s' "$R" | msg_text | grep -qi "PONG"; then pass "ccr thinking-strip (no 400)"; else
     fail "thinking-strip: unexpected ($(echo "$R" | head -c 140))"; fi
 
   # tool round-trip via real claude -p (single tool call = deterministic plumbing)
