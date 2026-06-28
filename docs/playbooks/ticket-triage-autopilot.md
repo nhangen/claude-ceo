@@ -31,7 +31,7 @@ v1 polled merged PRs every 30 minutes, spawned `claude --print /ticket-triage`, 
 
 | File | Mode | When |
 |---|---|---|
-| `CEO/alerts/triage-autopilot-<host>.md` | overwrite | Every run. Frontmatter: `status: firing\|clear`, `since:`, `last_check:`, `host:`, `events_total:`, `incomplete:`, `failed_owners:`, `last_error:`. |
+| `CEO/alerts/triage-autopilot-<host>.md` | overwrite | Every run. Frontmatter: `status: firing\|clear`, `since:`, `last_check:`, `host:`, `events_total:`, `incomplete:`, `consec_failures:`, `failed_owners:`, `last_error:`. |
 | `CEO/log/triage-autopilot/YYYY-MM.md` | append | Every run. One line. |
 | `CEO/inbox.md` | append `- [ ]` lines | One line per newly-surfaced high-priority ticket; one per-owner-per-day line if a closed-set priority source reports unrecognized values. Idempotent via `<!-- triage-surface:... -->` markers. |
 
@@ -40,7 +40,10 @@ v1 polled merged PRs every 30 minutes, spawned `claude --print /ticket-triage`, 
 - **No new high-priority ticket**: status `clear`, state + log only, no inbox write.
 - **One or more newly-surfaced**: status `firing`, one inbox line each (deduped), `--mark` consumes the transition. `since` resets only on a real `clear → firing` transition.
 - **Skill not installed** (`triage_update.py`/`triage_surface.py` absent at `CEO_TRIAGE_SKILL_DIR`): config error, not a transition — `last_error: skill_not_found:<dir>` on the state file, log line, exit 0 (scheduler not wedged).
-- **`update` incomplete / `surface` or `mark` fails for an owner**: recorded in `incomplete` / `failed_owners` / `last_error`; other owners still processed. The skill's own failure-aware staleness (`last_error` on a repo entry) is surfaced by the reader.
+- **`update` incomplete (exit 1)**: recorded in `incomplete`; the cache is still read, but `--mark` is **skipped** for that owner so the surfaced snapshot never advances past tickets a partial reconcile didn't fetch (they'd be dropped permanently otherwise).
+- **`surface` returns malformed/unparseable output on a 0 exit**: routed to the failure path (`failed_owners`, `last_error: surface_or_mark_failed`), **not** consumed — a 0-exit with garbage must never read as "no transitions" and silently advance the cursor (non-throwing-client-success-check).
+- **`surface` / `mark` fails for an owner**: recorded; other owners still processed. After `MAX_FAILS` (3) consecutive failing runs the adapter escalates one self-deduping `<!-- triage-autopilot:giveup:<date> -->` inbox line (restored from v1 — logs alone can go unwatched). `consec_failures` resets to 0 on any clean run.
+- **Consume ordering**: `--mark` runs only after the inbox append succeeded, so a failed append is retried next tick (deduped by the marker) rather than lost. Preview and `--mark` are two surfacer invocations; a single cron tick runs them sequentially in one process with nothing mutating the cache between them, and the skill takes an advisory lock around a run, so the read→consume window is not a concurrency hazard at this schedule.
 - **Closed-set priority unknowns** (ZenHub/Projects seam): the skill reports them under `unknown` rather than silently mis-tiering; the adapter escalates one inbox line per owner per day (enum-config-typo-fallback).
 
 ## Idempotency

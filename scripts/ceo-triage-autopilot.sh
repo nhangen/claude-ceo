@@ -79,6 +79,10 @@ if [ ! -f "$UPDATER" ] || [ ! -f "$SURFACER" ]; then
   exit 0
 fi
 
+PRIOR_FAILS=$(ceo_read_alert_field "$STATE_FILE" consec_failures 2>/dev/null) || PRIOR_FAILS=""
+[[ "$PRIOR_FAILS" =~ ^[0-9]+$ ]] || PRIOR_FAILS=0
+MAX_FAILS=3
+
 EVENTS_TOTAL=0
 FAILED_OWNERS=""
 INCOMPLETE=0
@@ -86,14 +90,22 @@ INCOMPLETE=0
 for owner in $OWNERS; do
   # 1. Refresh the cache silently. Exit 1 = incomplete reconcile (cursor held by
   #    the skill); record it but still read whatever the cache has.
+  owner_incomplete=0
   if ! "$PY" "$UPDATER" "$owner" >/dev/null 2>>"$LOG_FILE"; then
-    INCOMPLETE=1; _log "WARN update incomplete for $owner"
+    INCOMPLETE=1; owner_incomplete=1; _log "WARN update incomplete for $owner"
   fi
 
   # 2. Read transitions WITHOUT consuming (preview). Consume only after the
   #    inbox write succeeds, so a failed append is retried next tick rather than
   #    lost (the inbox dedup marker prevents a double-append meanwhile).
   surf=$("$PY" "$SURFACER" "$owner" 2>>"$LOG_FILE") || { FAILED_OWNERS="$FAILED_OWNERS $owner"; _log "ERROR surface failed for $owner"; continue; }
+  # Non-throwing boundary: a 0-exit with unparseable output must NOT read as
+  # "no transitions" (jq would yield an empty stream and the tick would look
+  # clear while real events are dropped and then consumed). Route it to the
+  # failure path and never --mark it. (non-throwing-client-success-check)
+  if ! printf '%s' "$surf" | jq empty >/dev/null 2>&1; then
+    FAILED_OWNERS="$FAILED_OWNERS $owner"; _log "ERROR malformed surface JSON for $owner"; continue
+  fi
 
   appended_ok=1
   while IFS=$'\t' read -r slug number title labels url; do
@@ -111,7 +123,8 @@ for owner in $OWNERS; do
   # Closed-set priority sources (zenhub/projects) report unrecognized values
   # instead of silently mis-tiering them; escalate once per owner per day.
   unk=$(printf '%s' "$surf" | jq -r '.unknown // [] | length' 2>/dev/null || echo 0)
-  if [ "${unk:-0}" -gt 0 ]; then
+  case "$unk" in (''|*[!0-9]*) unk=0 ;; esac
+  if [ "$unk" -gt 0 ]; then
     um="<!-- triage-surface:unknown:$owner:$(date +%Y-%m-%d) -->"
     if ! grep -qF -- "$um" "$INBOX_FILE" 2>/dev/null; then
       printf -- '- [ ] **Triage:** %s ticket(s) with an unrecognized priority value for %s — check the priority source mapping %s\n' \
@@ -119,11 +132,24 @@ for owner in $OWNERS; do
     fi
   fi
 
-  # 3. Consume the transition only after the durable write succeeded.
-  if [ "$appended_ok" -eq 1 ]; then
+  # 3. Consume the transition only after the durable write succeeded, and never
+  #    on a known-incomplete cache — advancing the surfaced snapshot past tickets
+  #    a partial reconcile didn't fetch would drop them permanently.
+  if [ "$appended_ok" -eq 1 ] && [ "$owner_incomplete" -eq 0 ]; then
     "$PY" "$SURFACER" "$owner" --mark >/dev/null 2>>"$LOG_FILE" || { FAILED_OWNERS="$FAILED_OWNERS $owner"; _log "ERROR mark failed for $owner"; }
   fi
 done
+
+# Consecutive-failure escalation (restored from v1): logs can go unwatched, so a
+# persistently failing run must reach the inbox. Reset to 0 on any clean run.
+if [ -n "${FAILED_OWNERS// }" ]; then CONSEC_FAILS=$((PRIOR_FAILS + 1)); LASTERR="surface_or_mark_failed"; else CONSEC_FAILS=0; LASTERR="none"; fi
+if [ "$CONSEC_FAILS" -ge "$MAX_FAILS" ]; then
+  gm="<!-- triage-autopilot:giveup:$(date +%Y-%m-%d) -->"
+  if ! grep -qF -- "$gm" "$INBOX_FILE" 2>/dev/null; then
+    printf -- '- [ ] **Triage autopilot:** %d consecutive failing runs (owners:%s) — check %s %s\n' \
+      "$CONSEC_FAILS" "$FAILED_OWNERS" "$LOG_FILE" "$gm" >> "$INBOX_FILE" || true
+  fi
+fi
 
 if [ "$EVENTS_TOTAL" -gt 0 ]; then STATUS="firing"; else STATUS="clear"; fi
 # SINCE resets only on a real transition into firing.
@@ -133,8 +159,9 @@ if [ "$STATUS" = "firing" ] && [ "$PRIOR_STATUS" = "firing" ] && [ -n "$PRIOR_SI
 _write_state "$STATUS" "$SINCE" \
   "events_total=$EVENTS_TOTAL" \
   "incomplete=$INCOMPLETE" \
+  "consec_failures=$CONSEC_FAILS" \
   "failed_owners=${FAILED_OWNERS:-none}" \
-  "last_error=${FAILED_OWNERS:+surface_or_mark_failed}" || exit 1
+  "last_error=$LASTERR" || exit 1
 
-_log "status=$STATUS events_total=$EVENTS_TOTAL incomplete=$INCOMPLETE failed=${FAILED_OWNERS:-none}"
+_log "status=$STATUS events_total=$EVENTS_TOTAL incomplete=$INCOMPLETE consec_failures=$CONSEC_FAILS failed=${FAILED_OWNERS:-none}"
 exit 0
