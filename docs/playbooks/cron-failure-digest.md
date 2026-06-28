@@ -15,14 +15,10 @@ task: cron-failure-digest
 registry: {"tasks":{"cron-failure-digest":{"runner":"ollama","model":"gpt-oss:20b","tier":"low-stakes-write","tools":["read_file","run_shell","write_file","list_dir"],"rules":false,"skills":false}}}
 artifact: CEO/reports/cron-failures/{TODAY}-{HOST}.md
 ---
-You are summarizing recent CEO cron failures. Your working directory is the vault's CEO directory, so every path below is relative to it. Do exactly these steps, then stop:
+You are writing a digest of recent CEO cron failures. Your working directory is the vault's CEO directory. Make EXACTLY two tool calls, then stop with a one-line summary — do NOT run extra searches, greps, or re-reads (over-exploring is what makes this task fail to finish).
 
-1. Read the recent run and skip logs, pre-filtered to drop this digest's own lines (either log may be large or absent):
-   run_shell: { tail -n 200 log/cron-runs.log 2>/dev/null; echo "===SKIPS==="; tail -n 200 log/cron-skips.log 2>/dev/null; } | grep -v cron-failure-digest
-2. Find the failure and skip lines in that output (self-lines are already removed).
-3. Compute the output path:
-   run_shell: echo "reports/cron-failures/$(date +%F)-$(hostname -s).md"
-4. Make the directory:
-   run_shell: mkdir -p reports/cron-failures
-5. write_file the report to that path. It must start with a `# Cron failures <date>` heading, then one bullet per distinct failing or skipped playbook with its most recent timestamp and reason. If there were no failures or skips, the body must be exactly: `No cron failures or skips in the recent logs.`
-6. Reply with a one-line summary (e.g. "Wrote digest: N playbooks with failures") and make no further tool calls.
+1. ONE `run_shell`. Run only this command — it prints the output path, creates the directory, and emits all relevant log content with this digest's own lines removed:
+   echo "OUTPATH=reports/cron-failures/$(date +%F)-$(hostname -s).md"; mkdir -p reports/cron-failures; { tail -n 200 log/cron-runs.log 2>/dev/null; echo "===SKIPS==="; tail -n 200 log/cron-skips.log 2>/dev/null; } | grep -v cron-failure-digest
+2. ONE `write_file` to the OUTPATH printed in step 1. Write a `# Cron failures <date>` heading, then one bullet per distinct playbook that **failed or errored** (lines containing `ERROR`, `failed`, or `did not complete`) with its latest timestamp and reason. **Ignore routine "last run too recent" cooldown skips — those are benign, not failures.** If nothing failed, the body must be exactly: `No cron failures in the recent logs.`
+
+Then reply with a one-line summary (e.g. "Wrote digest: N failing playbooks") and make NO further tool calls.
