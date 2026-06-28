@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourceable pure-function library for ceo-cron.sh. NO top-level side effects —
 # safe to `source` from tests. Functions read the caller's module-scope globals.
 

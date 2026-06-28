@@ -2,7 +2,7 @@
 name: ticket-triage-autopilot
 description: Refresh the portable ticket-triage cache per owner, then escalate newly-appeared high-priority tickets to inbox as one line each (transition-gated). Silent on no transition — no top-N append on a clock.
 trigger: cron
-schedule: "0 9,13,17 * * 1-5"
+schedule: "*/30 * * * *"
 preflight: none
 tier: low-stakes write
 status: active
@@ -21,7 +21,7 @@ Per owner (default `nhangen`), each tick:
 2. **`triage_surface.py <owner>`** (preview) — reads the high-priority tickets that have *newly appeared* since the last surface. One inbox line per new ticket (deduped by a `<!-- triage-surface:<slug>#<num> -->` marker).
 3. **`triage_surface.py <owner> --mark`** — consumes the transition, but **only after** the inbox write succeeded, so a failed append is retried next tick rather than lost (credential-rotation-atomicity ordering).
 
-State machine, not signal generator. A tick with no new high-priority transition writes only the state file + a log line. This is the anti-nag contract: surfacing fires on a transition (a high-priority ticket landing), never on a clock — the every-30-min v1 poller is gone.
+State machine, not signal generator. A tick with no new high-priority transition writes only the state file + a log line. This is the anti-nag contract: surfacing fires on a transition (a high-priority ticket landing), never on a clock. The detector still ticks often (every 30 min) to keep the cache fresh — frequent activity is fine because it is **silent**; what v1 got wrong was *appending to inbox on every merge*, not ticking often. The detector tick is a cheap `gh search` that exits when nothing is new; the agent recompute fires only for repos with real events.
 
 ## v1 → v2
 
