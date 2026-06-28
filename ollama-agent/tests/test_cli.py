@@ -49,6 +49,19 @@ def test_cli_injects_matching_rule(tmp_path, monkeypatch, capsys):
     assert "matched 1" in err and "no-commit-tmp-logs" in err
 
 
+def test_cli_human_output_prints_summary_and_final_message(tmp_path, monkeypatch, capsys):
+    # The non-`--json` branch (cli.py:186-191): prints the completed/turns/calls
+    # summary line plus the final assistant message. test_cli_threads_run_id
+    # covers the `--json` branch; this covers its human-readable counterpart.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "completed=True turns=1 calls=0 unknown=[]" in out
+    assert "--- final message ---" in out and "done" in out
+
+
 def test_cli_threads_run_id_into_record(tmp_path, monkeypatch, capsys):
     import json
     captured = {}
