@@ -39,7 +39,7 @@ Skills under `skills/ceo/agents/` define six specialized subagents the CEO can d
 | `code-reviewer` | read + draft (post is high-stakes) | Awesome Motive, any code repo | PR review — diff analysis, CI check, draft comments |
 | `implementer` | read + low-stakes write | Awesome Motive, any code repo | Bug fix — branch, commit, test; push/PR returned as recommendation |
 | `ops-manager` | read + low-stakes write | NRX Research | Inventory, hiring pipeline, SOP execution, runbook compliance |
-| `researcher` | read only | Academics, Career, NRX Research, any | Vault / web / claude-mem / academic source investigation |
+| `researcher` | read only | Academics, Career, NRX Research, any | Vault / web / academic source investigation |
 | `writer` | read + draft | Career, Academics, NRX Research, Personal | LinkedIn posts, cover letters, emails, academic writing, docs |
 
 ## Playbooks
