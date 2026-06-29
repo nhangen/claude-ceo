@@ -5,16 +5,20 @@
   ONE keep-alive agent runs the Bun daemon, which owns cron matching and reads
   CEO/registry.json directly — replacing the retired per-playbook plist backend.
 
-  This is a TEMPLATE: edit the three absolute paths below, then install as a
-  user agent (no root). It has NOT been smoke-tested on a long-running host;
-  the loop/guard/heartbeat are covered by lib/scheduler tests and a throwaway
-  bootstrap smoke.
+  This is a TEMPLATE: edit the absolute paths and host id below, then install as
+  a user agent (no root). The loop/guard/heartbeat are covered by lib/scheduler
+  tests; the same daemon runs live on ML-1 (WSL) under the sibling systemd unit.
+
+  REQUIRED before installing — create node_modules (the croner dependency), or
+  the daemon crash-loops on a `croner` ENOENT and KeepAlive tight-loops it:
+
+    ( cd ~/code/claude-ceo/lib/scheduler && bun install )
 
   Install (user scope, logged-in GUI session required — this is a LaunchAgent,
   not a headless LaunchDaemon, because it must read the user's synced vault):
 
     cp com.ceo.schedulerd.plist ~/Library/LaunchAgents/
-    # edit the absolute paths in the copy
+    # edit the copy: ProgramArguments paths, WorkingDirectory, CEO_VAULT, CEO_HOSTNAME
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist
     launchctl kickstart -p gui/$(id -u)/com.ceo.schedulerd   # verify it starts
     launchctl print gui/$(id -u)/com.ceo.schedulerd          # inspect state
@@ -42,11 +46,29 @@
     <string>/Users/CHANGEME/code/claude-ceo/lib/scheduler/src/main.ts</string>
   </array>
 
+  <!-- EDIT: this repo's lib/scheduler dir. REQUIRED — the daemon resolves its
+       `@/*` tsconfig path alias (and node_modules) relative to the working
+       directory; without it `bun run` cannot resolve `@/cron` and the agent
+       crash-loops. -->
+  <key>WorkingDirectory</key>
+  <string>/Users/CHANGEME/code/claude-ceo/lib/scheduler</string>
+
   <key>EnvironmentVariables</key>
   <dict>
     <!-- EDIT: the synced Obsidian vault root that contains CEO/registry.json. -->
     <key>CEO_VAULT</key>
     <string>/Users/CHANGEME/Documents/Obsidian</string>
+    <!-- REQUIRED: this host's unique CEO id (install.md §2). launchd does NOT
+         source ~/.ceo/config, so the daemon reads CEO_HOSTNAME only from here.
+         Left as the CHANGEME sentinel, the host registers literally as
+         "CHANGEME" — it does NOT fall back; remove this key/string pair to fall
+         back to `hostname -s`. -->
+    <key>CEO_HOSTNAME</key>
+    <string>CHANGEME</string>
+    <!-- EDIT (optional): pin the dispatch binary if ceo-cron.sh is not on PATH.
+    <key>CEO_CRON_BIN</key>
+    <string>/Users/CHANGEME/code/claude-ceo/scripts/ceo-cron.sh</string>
+    -->
   </dict>
 
   <!-- Start at load and keep alive, but only respawn on a non-zero (crash) exit

@@ -115,16 +115,26 @@ used instead.
 
 ### Run / keep-alive
 
+First install dependencies (creates `node_modules/croner`) — **required** on
+every host, or the daemon crash-loops on a `croner` ENOENT:
+
 ```bash
+bun install                                          # in lib/scheduler (once per host)
 CEO_VAULT=~/Documents/Obsidian bun run src/main.ts   # foreground (either OS)
 ```
+
+Run the daemon **from `lib/scheduler`** (or set the agent's working directory
+there): it resolves the `@/*` tsconfig path alias relative to the working
+directory, so `bun run` from elsewhere fails to resolve `@/cron`. The deploy
+templates pin `WorkingDirectory` for exactly this reason.
 
 One OS-level agent keeps the daemon alive; the daemon does all scheduling.
 
 - **Linux/WSL:** install the systemd **user** unit template at
-  `deploy/ceo-schedulerd.service` (see its header comments). **Not smoke-tested on
-  a live always-on host** (ML-1 GPU-down) — only `Restart=always` is
-  hardware-unverified; the loop/guard/heartbeat are covered by fake-clock tests.
+  `deploy/ceo-schedulerd.service` (see its header comments). Smoke-tested live on
+  ML-1 (WSL) 2026-06-28 — comes up healthy and heartbeats with `bun install` run
+  and `WorkingDirectory` set; the loop/guard/heartbeat are also covered by
+  fake-clock tests.
 - **macOS (#144):** install the launchd **LaunchAgent** template at
   `deploy/com.ceo.schedulerd.plist` (see its header). It needs a logged-in GUI
   session (it's a LaunchAgent, not a headless LaunchDaemon, because it reads the
