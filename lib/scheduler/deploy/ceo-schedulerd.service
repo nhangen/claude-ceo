@@ -1,13 +1,15 @@
 # ceo-schedulerd — systemd USER unit template (Linux/WSL keep-alive, #142).
 #
-# This is a TEMPLATE: edit the three paths below, then install as a user unit.
-# It has NOT been smoke-tested on a live always-on Linux host (ML-1 is GPU-down
-# as of 2026-06-07); the Restart=always semantics are unverified on hardware.
+# This is a TEMPLATE: edit the paths and host id below, then install as a user
+# unit. Smoke-tested live on ML-1 (WSL) 2026-06-28: with `bun install` run and
+# WorkingDirectory set, the daemon comes up healthy and heartbeats; the
+# Restart=always respawn floor is now exercised on hardware.
 #
 # Install (user scope, no root):
+#   ( cd ~/code/claude-ceo/lib/scheduler && bun install )  # REQUIRED: creates node_modules (croner); without it the daemon crash-loops on ENOENT
 #   mkdir -p ~/.config/systemd/user
 #   cp ceo-schedulerd.service ~/.config/systemd/user/
-#   # edit the paths in the copy
+#   # edit the copy: ExecStart, WorkingDirectory, CEO_VAULT, CEO_HOSTNAME
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now ceo-schedulerd.service
 #   loginctl enable-linger "$USER"   # keep it running when you're logged out
@@ -26,10 +28,18 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
+# EDIT: this repo's lib/scheduler dir. REQUIRED — the daemon resolves its `@/*`
+# tsconfig path alias (and node_modules) relative to the working directory; run
+# from elsewhere, `bun run` cannot resolve `@/cron` and the unit crash-loops.
+WorkingDirectory=%h/code/claude-ceo/lib/scheduler
 # EDIT: absolute path to bun and to this repo's lib/scheduler/src/main.ts.
 ExecStart=%h/.bun/bin/bun run %h/code/claude-ceo/lib/scheduler/src/main.ts
 # EDIT: the synced Obsidian vault root that contains CEO/registry.json.
 Environment=CEO_VAULT=%h/Documents/Obsidian
+# EDIT: this host's unique CEO id (install.md §2). systemd does NOT source
+# ~/.ceo/config, so the daemon cannot read CEO_HOSTNAME from there — set it here
+# or host identity silently falls back to `hostname -s`.
+Environment=CEO_HOSTNAME=CHANGEME
 # EDIT (optional): pin the dispatch binary if ceo-cron.sh is not on PATH.
 # Environment=CEO_CRON_BIN=%h/code/claude-ceo/scripts/ceo-cron.sh
 Restart=always
