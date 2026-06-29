@@ -27,44 +27,49 @@ The user's framing: *"the cron app should be its own thing not just ceo based."*
 | Dispatch contract | **Shell command** (argv template), language-agnostic | The real "not just CEO" test — any project in any language can drive it; CEO's `ceo-cron.sh` becomes one such command |
 | v1 scope | **Full machinery** — cron-match + select + double-fire guard + heartbeat/multi-host (topology owners, `scope: each`/`single`, liveness) | Already built and tested (~1230 lines of tests); excluding it would discard working code. Single-host consumers simply omit a topology provider. |
 | Name | `perch` | Short, evocative (the daemon perches and fires on schedule), unclaimed |
-| Distribution | **Private** repo, consumed by claude-ceo via git/path dependency; clean publish path to npm/jsr deferred | Avoids license/support/namespace obligations now; additive design means going public later is a cheap, separate decision |
+| Distribution | **Private** repo, consumed by claude-ceo via a **path dependency** (`perch` checked out side-by-side with `claude-ceo` on each daemon host + CI); npm/jsr publish deferred | Avoids private-git auth on every host (ML-1, MacBook) and in CI — the single most likely thing to break the live daemons. Going public later is a cheap, separate decision. |
+| Packaging | **One package** (`perch`) with subpath exports (`perch/core`, `perch/cli`) for v1 | One consumer (CEO, itself an adapter) doesn't justify dual-package publish + version coupling. Splitting into two packages later is a cheap move (same logic as deferring npm). |
+| Deploy label | CEO adapter keeps the existing `com.ceo.schedulerd` launchd label **byte-for-byte** in v1 | A label rename means bootout+bootstrap on live ML-1/MacBook daemons mid-migration — avoided entirely. |
 
 ## Tech Stack
 
 - Bun runtime, TypeScript (matches the existing daemon).
-- `croner` ^9 for cron matching (the one runtime dependency the engine needs).
-- No product dependencies in the core package.
+- `croner` ^9 — declared in the `perch` package's **runtime** dependencies (not a root devDep), so consumers never hit the missing-croner crash-loop.
+- No product dependencies in the package; the `core` subpath has zero deps beyond croner, the `cli` subpath adds only Node/Bun built-ins.
+- The new repo gets its own `tsconfig.json`; migrated source's `@/*` path aliases are rewritten to package-relative imports (trivial within a single package).
 
 ---
 
 ## Architecture
 
-Two packages in the new `perch` repo:
+One package in the new `perch` repo, with two subpath exports — `perch/core` (the engine) and `perch/cli` (the generic file-config runner):
 
 ```
 perch/                            (new repo: nhangen/perch)
-  packages/core/                  @perch/core — the engine, zero product deps
-    src/
+  src/
+    core/                         exported as `perch/core` — engine, zero product deps
       types.ts                    Job<T>, Topology, Heartbeat, interfaces
       cron.ts                     croner wrapper (CronMatcher)
       select.ts                   selectRunnable / dueAt / nextWake (pure)
       catchup.ts                  missed-slot detection, cadence-derived look-back
       daemon.ts                   runScheduler<T>(deps) — the tick loop + guard
-    tests/                        migrated from lib/scheduler/tests (clock/fs/spawn injected)
-  packages/cli/                   @perch/cli — generic file-config runner
-    src/
+    cli/                          exported as `perch/cli` — generic runner
       config.ts                   parse + validate perch.config.json
       providers.ts                file-based JobProvider (registry/enabled/topology JSON)
       shell-dispatcher.ts         ShellDispatcher (argv template → spawn)
       heartbeat-file.ts           file HeartbeatStore (+ optional synced dual-write)
       main.ts                     wire config → providers → dispatcher → runScheduler
+  tests/                          migrated from lib/scheduler/tests (clock/fs/spawn injected)
   deploy/
     perch.plist.template          launchd (parameterized label/paths)
     perch.service.template        systemd user unit
+  package.json                    "exports": { "./core": ..., "./cli": ... }; croner in deps
+  tsconfig.json                   own config; no @/* aliases (package-relative imports)
   README.md
+  .github/workflows/ci.yml        runs the migrated test suite + typecheck on push
 ```
 
-`claude-ceo/lib/scheduler/` does **not** disappear — it shrinks to a thin CEO **adapter** that depends on `@perch/core` (and reuses `@perch/cli`'s file providers + shell dispatcher where they fit). The CEO-specific pieces that remain:
+`claude-ceo/lib/scheduler/` does **not** disappear — it shrinks to a thin CEO **adapter** that imports from `perch/core` (and reuses `perch/cli`'s file providers + shell dispatcher where they fit). CEO declares `perch` as a **path dependency** (`"perch": "file:../perch"` or workspace link), so both repos sit side-by-side on every daemon host. The CEO-specific pieces that remain:
 
 - Mapping `CEO_VAULT` / `CEO_HOSTNAME` / `CEO_CRON_BIN` env → a generic config object.
 - The registry/enabled/swarm file paths under `~/.ceo/` and the vault.
@@ -130,7 +135,7 @@ export async function runScheduler<T>(
 ): Promise<void>;
 ```
 
-A non-TS project gets a fully working daemon with **zero code**: install `@perch/cli`, write a `perch.config.json` pointing at a registry JSON and a dispatch command, and run it under launchd/systemd. The default `ShellDispatcher` spawns `<dispatchCommand> <jobName> <...configuredArgs>`.
+A non-TS project gets a fully working daemon with **zero code**: install `perch`, write a `perch.config.json` pointing at a registry JSON and a dispatch command, and run it via `perch/cli` under launchd/systemd. The default `ShellDispatcher` spawns `<dispatchCommand> <jobName> <...configuredArgs>`.
 
 ### Generic config (replaces CEO_* env coupling)
 
@@ -138,7 +143,7 @@ A non-TS project gets a fully working daemon with **zero code**: install `@perch
 
 ```json
 {
-  "hostname": "auto",
+  "hostname": "auto",                          // "auto" → `hostname -s`; CEO adapter passes CEO_HOSTNAME
   "registryPath": "~/.perch/registry.json",
   "enabledPath": "~/.perch/enabled.json",
   "topologyPath": null,
@@ -180,26 +185,25 @@ Catch-up replays only the **newest** missed slot per job (no replay storm) withi
 | Unreadable enabled file | empty set → nothing `each`-enabled (safe default) |
 | One malformed job in registry | skip + warn; the rest of the registry still loads |
 | Dispatch spawn error | log + skip the job; loop never crashes |
-| Missing croner dependency | documented crash-loop; deploy templates note `bun install` requirement |
+| Missing croner dependency | `croner` is in the `perch` package's runtime deps; deploy templates note the `bun install` requirement |
 | Missing/corrupt heartbeat | treated as no prior guard; first tick initializes (no false double-fire) |
 
 ## Testing & migration
 
-- The existing ~1230 lines of tests (`daemon`, `registry`→provider, `select`, `cron`, `catchup`, `heartbeat-store`, `enabled`, `swarm`→topology, `runtime`) move into `@perch/core` and `@perch/cli` largely as-is — they already inject clock, filesystem, and spawn.
+- The existing ~1230 lines of tests (`daemon`, `registry`→provider, `select`, `cron`, `catchup`, `heartbeat-store`, `enabled`, `swarm`→topology, `runtime`) move into the `perch` package largely as-is — they already inject clock, filesystem, and spawn. CI (`.github/workflows/ci.yml`) runs them + typecheck on every push; green CI is the gate for migration steps 1–2.
 - **New tests:**
   - `ShellDispatcher` argv-contract test: assert the spawned argv matches `<command> <job> <templatedArgs>` exactly, and that a dispatch error is caught (not thrown) — per the `stub-cli-argv-validation` and `non-throwing-client-success-check` rules.
-  - CEO-adapter round-trip test: feed CEO env (`CEO_VAULT`, `CEO_HOSTNAME`, `CEO_CRON_BIN`) through the adapter and assert the resolved config produces **today's exact paths and dispatch argv** — the regression guard that the extraction changed nothing observable for CEO.
+  - CEO-adapter round-trip test: feed CEO env (`CEO_VAULT`, `CEO_HOSTNAME`, `CEO_CRON_BIN`) through the adapter and assert the resolved config produces **today's exact paths, dispatch argv, resolved hostname, and launchd label (`com.ceo.schedulerd`)** — the regression guard that the extraction changed nothing observable for CEO. This test imports the adapter, which imports **only** from `perch/core` (never a local copy), so it exercises the real cutover path.
 - **README** ships with the `perch` repo at creation (required-README rule): engine overview, config reference, single-host quickstart, multi-host/topology section, deploy templates.
 
 ### Migration sequence (staged, each step independently verifiable)
 
-1. Create `nhangen/perch` with `@perch/core` built from the current generic modules + migrated tests. Green test suite is the gate.
-2. Add `@perch/cli` (file providers, ShellDispatcher, file heartbeat, config) + its tests.
-3. Point `claude-ceo/lib/scheduler` at `@perch/core` as an adapter (CEO env → config). Run the adapter round-trip test.
-4. Verify the live daemon on ML-1 and the MacBook: `ceo doctor` heartbeat fresh, a scheduled playbook fires, double-fire guard intact across ticks.
-5. Delete the now-duplicated generic modules from `claude-ceo/lib/scheduler` (they live in `@perch/core` now). Confirm no remaining duplicate-source drift.
+1. Create `nhangen/perch` (single package, `perch/core` + `perch/cli` exports, croner in deps, own tsconfig with `@/*` aliases rewritten to relative) built from the current generic modules + migrated tests. Green CI is the gate.
+2. Add the `perch/cli` runner (file providers, ShellDispatcher, file heartbeat, config parser) + its tests, including the `ShellDispatcher` argv-contract test.
+3. **Atomic cutover (one commit):** in `claude-ceo/lib/scheduler`, (a) add the path dependency on `perch`, (b) delete the now-duplicated generic modules locally, (c) rewrite the adapter to import them from `perch/core`, and (d) land the round-trip test. Because the local copies are gone in the same commit, there is no two-copies window and no later "deletion flips behavior" step — the round-trip test runs against the package, so reverting the import would fail it. CEO's env, on-disk paths, dispatch argv, and the `com.ceo.schedulerd` label are unchanged by construction.
+4. Verify the live daemon on ML-1 and the MacBook (both have `perch` checked out side-by-side per the path dep): `ceo doctor` heartbeat fresh, a scheduled playbook fires, double-fire guard intact across ticks, label still `com.ceo.schedulerd` (no bootout/bootstrap performed).
 
-Each migration step is its own PR-sized unit. claude-ceo is never in a broken intermediate state because the adapter swap (step 3) is behavior-preserving by construction and guarded by the round-trip test.
+Each migration step is its own PR-sized unit. claude-ceo is never in a broken intermediate state: the adapter swap in step 3 is behavior-preserving by construction, the deletion happens **in the same commit** as the import rewrite (so the round-trip test gates the actual cutover, not a separate untested deletion), and the launchd label is never renamed.
 
 ## Out of scope (v1)
 
