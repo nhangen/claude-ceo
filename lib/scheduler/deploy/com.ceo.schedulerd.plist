@@ -58,9 +58,11 @@
     <!-- EDIT: the synced Obsidian vault root that contains CEO/registry.json. -->
     <key>CEO_VAULT</key>
     <string>/Users/CHANGEME/Documents/Obsidian</string>
-    <!-- EDIT: this host's unique CEO id (install.md §2). launchd does NOT source
-         ~/.ceo/config, so the daemon cannot read CEO_HOSTNAME from there — set it
-         here or host identity silently falls back to `hostname -s`. -->
+    <!-- REQUIRED: this host's unique CEO id (install.md §2). launchd does NOT
+         source ~/.ceo/config, so the daemon reads CEO_HOSTNAME only from here.
+         Left as the CHANGEME sentinel, the host registers literally as
+         "CHANGEME" — it does NOT fall back; remove this key/string pair to fall
+         back to `hostname -s`. -->
     <key>CEO_HOSTNAME</key>
     <string>CHANGEME</string>
     <!-- EDIT (optional): pin the dispatch binary if ceo-cron.sh is not on PATH.

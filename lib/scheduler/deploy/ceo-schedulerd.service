@@ -36,9 +36,10 @@ WorkingDirectory=%h/code/claude-ceo/lib/scheduler
 ExecStart=%h/.bun/bin/bun run %h/code/claude-ceo/lib/scheduler/src/main.ts
 # EDIT: the synced Obsidian vault root that contains CEO/registry.json.
 Environment=CEO_VAULT=%h/Documents/Obsidian
-# EDIT: this host's unique CEO id (install.md §2). systemd does NOT source
-# ~/.ceo/config, so the daemon cannot read CEO_HOSTNAME from there — set it here
-# or host identity silently falls back to `hostname -s`.
+# REQUIRED: this host's unique CEO id (install.md §2). systemd does NOT source
+# ~/.ceo/config, so the daemon reads CEO_HOSTNAME only from here. Left as the
+# CHANGEME sentinel, the host registers literally as "CHANGEME" — it does NOT
+# fall back; delete this line entirely to fall back to `hostname -s`.
 Environment=CEO_HOSTNAME=CHANGEME
 # EDIT (optional): pin the dispatch binary if ceo-cron.sh is not on PATH.
 # Environment=CEO_CRON_BIN=%h/code/claude-ceo/scripts/ceo-cron.sh
