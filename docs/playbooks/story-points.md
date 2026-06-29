@@ -9,7 +9,7 @@ status: active
 runner: skill
 skill: story-points
 out_pattern: Awesome Motive/reports/story-points/${TODAY}-backlog-pr-story-points.md
-requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]
+requires: [GH_PROJECT_TOKEN]
 ---
 
 # Story Points
@@ -32,9 +32,12 @@ manual captures live). Built as a CEO playbook rather than a hand-rolled cron so
 
 ## Credentials
 
-`requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]` — ceo-cron sources
-`~/.config/ceo/credentials.env` and validates both are set before exec. GitHub auth is
-resolved by the skill via `gh auth token -u nhangenam` (awesomemotive org access).
+`requires: [GH_PROJECT_TOKEN]` — ceo-cron sources `~/.config/ceo/credentials.env` and
+validates it is set before exec. `GH_PROJECT_TOKEN` must carry the `project` scope: story
+points are read from the org GitHub Projects boards (projects 72–75), not ZenHub. GitHub
+PR/issue auth is resolved by the skill via `gh auth token -u nhangenam` (awesomemotive org
+access); if that token already has `project` scope, the skill falls back to it for the
+board read, but the playbook requires an explicit `GH_PROJECT_TOKEN` for unattended runs.
 
 ## Outputs
 
@@ -50,11 +53,13 @@ filename carries the date, not the quarter).
 Run `ceo playbook scan` **on ML-1 only** (the `ceo-scan-only-on-ml1` rule). The skill
 lives in llm-tools at `home/.claude/skills/story-points/`; ML-1 must have that pulled.
 
-## ZenHub → GitHub Projects migration
+## ZenHub → GitHub Projects migration (complete)
 
-The skill bundles a copy of the ZenHub analyzer. When optin-monster-app moves ZH → GitHub
-Projects, swap the bundled `analyzer/` for a GH-Projects equivalent; this playbook is
-unchanged.
+The ZenHub cutover is done: the bundled `analyzer/` reads story points from the org
+GitHub Projects boards (projects 72–75) via `ghp-estimates.js`. The playbook contract is
+unchanged apart from `requires:` (now `GH_PROJECT_TOKEN` instead of the ZenHub vars).
+Before the next `ceo playbook scan` on ML-1, add `GH_PROJECT_TOKEN` (project scope) to
+ML-1's `~/.config/ceo/credentials.env` or the preflight will fail.
 
 ## Disable
 
