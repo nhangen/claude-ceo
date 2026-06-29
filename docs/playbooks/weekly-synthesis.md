@@ -13,7 +13,7 @@ skill: weekly-synthesis
 
 # Weekly Synthesis
 
-Produces a 600–900 word candid memo over the past 7 days. Loads the Synthesist identity (separate voice from the CEO), gathers data across GitHub, local git, Obsidian daily notes, new rules, and claude-mem observations, then synthesizes themes / new ideas / drift / rule patterns / flagged items.
+Produces a 600–900 word candid memo over the past 7 days. Loads the Synthesist identity (separate voice from the CEO), gathers data across GitHub, local git, Obsidian daily notes, and new rules, then synthesizes themes / new ideas / drift / rule patterns / flagged items.
 
 ## Origin
 
@@ -37,7 +37,6 @@ Loads `CEO/agents/synthesist.md`. Distinct voice from `CEO/IDENTITY.md` — dire
 - `git log --author=nhangen --since=-7d` across every repo in `~/.config/branch-cleanup/repos.md`
 - `~/Documents/Obsidian/Daily/*.md` for the 7-day window (cause-checking for day-job gap)
 - `~/.claude/rules/*.md` with mtime in window (new rule = incident)
-- `mcp__plugin_claude-mem_mcp-search__timeline` + `observation_search` for the window
 - `gh issue list --author nhangen --state open` (drift / aging idle epics)
 
 ## Synthesis Rules (enforced by skill)
@@ -49,7 +48,6 @@ Loads `CEO/agents/synthesist.md`. Distinct voice from `CEO/IDENTITY.md` — dire
 
 ## Documented Gaps
 
-- **Graph layer not exercised.** As of 2026-05-30 the claude-mem MCP runs in `worker` mode. `memory_context` (relationship-aware graph retrieval) is unavailable to the cron shell; only static reads of repos / daily notes / rules are gathered. If `CLAUDE_MEM_RUNTIME=server-beta` becomes available and a CLI surface exists, extend `run-report.sh` to include claude-mem idea-cluster context.
 - **Skill distribution.** Source lives at `~/Code/llm-tools/home/.claude/skills/weekly-synthesis/` (canonical, git-tracked in llm-tools, sibling to `workload-report`). Installed at `~/.claude/skills/weekly-synthesis/` on each host via the llm-tools sync mechanism. NOT shipped via the `nhangen-tools/ceo` plugin — the `runner: skill` ceo-cron field references CEO-skill names under `~/.claude/skills/`, distinct from Claude Code plugin skills.
 - **No retry / failure routing.** If the synthesis run fails mid-flight, no alert lands in `CEO/inbox/`. Add a `CEO/alerts/weekly-synthesis.md` state file with `last_run_status` if this becomes load-bearing.
 

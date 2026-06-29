@@ -38,7 +38,7 @@ const HEADER = ["tool".padEnd(16), "n".padStart(4), "used".padStart(5), "?".padS
 function emptyResultBanner(): string[] {
   return [
     "Note: this report covers Claude Code session JSONLs only.",
-    "Cursor SQLite (cursorDiskKV bubbles), claude-mem observations, and",
+    "Cursor SQLite (cursorDiskKV bubbles) and",
     "non-Bash CLI usage are not yet ingested. A 0-call result here does",
     "not mean the server is unused — see",
     "docs/superpowers/findings/2026-05-10-v1-blind-spots.md.",
