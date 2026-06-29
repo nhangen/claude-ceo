@@ -50,8 +50,8 @@ SINCE=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d 'yesterday' +%Y-%m-%d 2>/dev
 : "${SINCE:?SINCE computation failed; neither BSD nor GNU date resolved (check cron PATH)}"
 
 NOTE_DIR="$CEO_DIR/reports/value-tracker"
-NOTE_FILE="$NOTE_DIR/$TODAY.md"
-WIKILINK="[[CEO/reports/value-tracker/$TODAY]]"
+NOTE_FILE="$NOTE_DIR/$TODAY-$HOST.md"
+WIKILINK="[[CEO/reports/value-tracker/$TODAY-$HOST]]"
 INBOX_LINE="- [ ] Review daily value-tracker report $WIKILINK"
 
 mkdir -p "$INBOX_DIR" "$NOTE_DIR"
@@ -60,7 +60,8 @@ mkdir -p "$INBOX_DIR" "$NOTE_DIR"
 # but pass it explicitly so non-default vault paths work via $CEO_VAULT.
 bun "$ENTRY" \
   --since "$SINCE" \
-  --obsidian-vault "$VAULT"
+  --obsidian-vault "$VAULT" \
+  --host "$HOST"
 
 # Fail-closed: bun can exit 0 without writing the daily note (zero sessions
 # found, wrong write path, silent error). That's the shape behind #88 where
