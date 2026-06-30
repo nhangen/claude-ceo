@@ -39,7 +39,9 @@ done
 if [ -n "$vault" ]; then
   note_dir="$vault/CEO/reports/value-tracker"
   mkdir -p "$note_dir"
-  printf -- '---\ndate: %s\n---\n\n# value-tracker — %s\n\nstub body\n' "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
+  note="$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
+  printf -- '---\ndate: %s\n---\n\n# value-tracker — %s\n\nstub body\n' "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" > "$note"
+  echo "Obsidian note: $note"
 fi
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
@@ -256,7 +258,9 @@ while [ $# -gt 0 ]; do
 done
 note_dir="$vault/CEO/reports/value-tracker"
 mkdir -p "$note_dir"
-: > "$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
+note="$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
+: > "$note"
+echo "Obsidian note: $note"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
 
@@ -287,7 +291,9 @@ while [ $# -gt 0 ]; do
 done
 note_dir="$vault/CEO/reports/value-tracker"
 mkdir -p "$note_dir"
-printf -- '---\ndate: %s\n---\n\nno h1 here\n' "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
+note="$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
+printf -- '---\ndate: %s\n---\n\nno h1 here\n' "$(date +%Y-%m-%d)" > "$note"
+echo "Obsidian note: $note"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
 
@@ -298,6 +304,53 @@ STUB
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$stderr" "no '# value-tracker' h1" "stderr must name the sentinel failure (got: $stderr)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_asserts_on_analyzer_reported_path_not_local_date() {
+  # Repro of #227: the analyzer dates the note filename by its OWN clock (UTC,
+  # `new Date().toISOString()`), which can differ from the wrapper's local
+  # `date +%Y-%m-%d` across the UTC-midnight boundary. The wrapper must key its
+  # fail-closed check and inbox wikilink off the path the analyzer REPORTS
+  # (`Obsidian note: <path>`), never a path it reconstructs from a second date.
+  local divergent="2099-01-01"
+  cat > "$TEST_HOME/.bun/bin/bun" << STUB
+#!/bin/bash
+vault=""
+host=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --obsidian-vault) vault="\$2"; shift 2 ;;
+    --host) host="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+note_dir="\$vault/CEO/reports/value-tracker"
+mkdir -p "\$note_dir"
+note="\$note_dir/$divergent\${host:+-\$host}.md"
+printf -- '---\ndate: %s\n---\n\n# value-tracker — %s\n\nstub body\n' "$divergent" "$divergent" > "\$note"
+echo "Obsidian note: \$note"
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/bun"
+
+  local rc=0 stderr
+  stderr=$(bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "0" "wrapper must succeed when the analyzer's date differs from the wrapper's local date (got rc=$rc; stderr: $stderr)"
+
+  local inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  local divergent_link="$WIKILINK_PREFIX/$divergent-$CEO_HOSTNAME]]"
+  local got
+  got=$(grep -c -F -- "$divergent_link" "$inbox" 2>/dev/null || true)
+  assert_eq "$got" "1" "inbox wikilink must point to the analyzer-reported note path"
+
+  local today
+  today=$(date +%Y-%m-%d)
+  if [ "$today" != "$divergent" ]; then
+    local local_link="$WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]"
+    local bad
+    bad=$(grep -c -F -- "$local_link" "$inbox" 2>/dev/null || true)
+    assert_eq "$bad" "0" "inbox must not contain a wrapper-reconstructed local-date wikilink"
+  fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
