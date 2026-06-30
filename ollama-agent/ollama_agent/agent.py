@@ -64,4 +64,5 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
         "transcript": transcript,
         "calls": toolbox.calls,
         "unknown_calls": toolbox.unknown_calls,
+        "tool_errors": toolbox.tool_errors,
     }
