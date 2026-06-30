@@ -15,6 +15,13 @@ from .skills import MAX_SKILL_BODY
 MAX_OUTPUT = 4000      # chars of stdout/stderr returned to the model per call
 MAX_READ = 20000       # chars returned by read_file
 
+# Tools whose error result signals an operational failure the cron gate should
+# fail the run on. A read_file/list_dir "error" is a benign path probe, and a
+# run_shell non-zero returncode (grep no-match, [ -f x ]) is not an error key —
+# only a run_shell timeout/exception sets one. unknown tools/skills are gated
+# separately via .unknown_calls.
+ERROR_RELEVANT_TOOLS = {"write_file", "git", "run_shell"}
+
 
 def _clip(s, n):
     s = s or ""
@@ -30,6 +37,7 @@ class ToolBox:
         self.mcp_names = dict(mcp_names) if mcp_names else {}  # prefixed_name -> real MCP tool name
         self.calls = []            # (name, args) of every dispatched call
         self.unknown_calls = []    # tool/skill names the model hallucinated
+        self.tool_errors = []      # {tool, error} for mutating-tool failures (#215)
 
     def _resolve(self, path):
         p = Path(path)
@@ -107,12 +115,27 @@ class ToolBox:
             self.unknown_calls.append(name)
             return json.dumps({"error": f"unknown tool: {name}"})
         try:
-            return handler(args)
+            result = handler(args)
         except Exception as e:
             # A tool that raises (PermissionError, ENOSPC, UnicodeError, cwd
             # deleted, …) must return a recorded error to the model, never abort
             # the run — keep the loop and transcript alive (safety-invariant-scope).
-            return json.dumps({"error": f"{name} failed: {type(e).__name__}: {e}"})
+            result = json.dumps({"error": f"{name} failed: {type(e).__name__}: {e}"})
+        self._note_tool_error(name, result)
+        return result
+
+    def _note_tool_error(self, name, result):
+        """Record a mutating-tool failure so the dispatcher (cron) can fail a
+        completed-but-errored run (#215). Inspects the result's "error" key —
+        absence-of-throw is not success (non-throwing-client-success-check)."""
+        if name not in ERROR_RELEVANT_TOOLS:
+            return
+        try:
+            parsed = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if isinstance(parsed, dict) and parsed.get("error"):
+            self.tool_errors.append({"tool": name, "error": parsed["error"]})
 
 
 TOOLS = [

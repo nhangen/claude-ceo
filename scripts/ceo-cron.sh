@@ -1328,6 +1328,19 @@ if [ "$RUNNER" = "ollama-agent" ]; then
     exit 1
   fi
 
+  # completed != write-success: the bridge sets completed=true on a turn with no
+  # tool calls, regardless of whether a write_file/git/run_shell errored. The
+  # bridge records mutating-tool failures in .tool_errors (read/list probes and
+  # benign non-zero shell exits are excluded there), so a completed run whose
+  # report write failed surfaces here at dispatch time rather than only on the
+  # next `ceo doctor` artifact cross-check (#215, non-throwing-client-success-check).
+  _agent_tool_errors=$(printf '%s' "$AGENT_OUT" | jq -r '.tool_errors // [] | length')
+  if [ "$_agent_tool_errors" -gt 0 ]; then
+    _agent_tool_err_detail=$(printf '%s' "$AGENT_OUT" | jq -r '[.tool_errors[] | "\(.tool): \(.error)"] | join("; ")')
+    _record_failure "ollama-agent task '$AGENT_TASK' completed but hit $_agent_tool_errors tool error(s) for $TRIGGER: $_agent_tool_err_detail"
+    exit 1
+  fi
+
   _record_success
   exit 0
 fi

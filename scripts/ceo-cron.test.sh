@@ -4425,6 +4425,41 @@ test_runner_ollama_agent_ingests_even_when_incomplete() {
   unset CEO_AGENT_RUN_ID
 }
 
+test_runner_ollama_agent_tool_error_records_failure() {
+  # A completed run whose bridge .tool_errors[] carries a mutating-tool failure
+  # (e.g. a write_file that errored) must record a FAILURE, not success — the
+  # report write silently failed. Reverting the dispatch-side tool_errors gate
+  # makes this run record success (exit 0), so the assertions flip.
+  _register_agent_pb agent-toolerr low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 2, "calls": [["write_file", {"path": "report.md"}]], "unknown_calls": [], "tool_errors": [{"tool": "write_file", "error": "write_file failed: PermissionError: [Errno 13]"}]}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-toolerr >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] a completed run with a tool error must exit non-zero\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "tool error" "cron-skips.log must record the tool-error failure reason"
+  assert_contains "$skips_log" "write_file" "the failure reason must name the failing tool"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_runner_ollama_agent_clean_completed_run_succeeds() {
+  # Guards acceptance #2: a genuine no-op / clean completion (empty tool_errors,
+  # no writes) must NOT false-positive as a failure. A run_shell that exited
+  # non-zero benignly never reaches tool_errors (no "error" key), so the bridge
+  # reports tool_errors:[] and the run succeeds.
+  _register_agent_pb agent-clean low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-clean >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "a completed run with no tool errors must succeed (no false-positive on the no-op path)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_runner_ollama_agent_ingests_null_unknown_call() {
   # agent.py appends None for a malformed tool-call envelope (no function name),
   # so unknown_calls can contain null. It must still ingest, rendered (unnamed).
