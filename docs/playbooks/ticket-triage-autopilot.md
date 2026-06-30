@@ -17,7 +17,7 @@ Shell-only adapter over the portable `ticket-triage` skill (nhangen/llm-tools, `
 
 Per owner (default `nhangen`), each tick:
 
-1. **`triage_update.py <owner>`** — silently refreshes the skill's per-host event-sourced cache. The skill owns its own cursor, change detection, and per-repo recompute (gitnexus + claude-mem-graph structural adjacency). Exit 1 means an incomplete reconcile (the skill held its cursor); recorded, not fatal.
+1. **`triage_update.py <owner>`** — silently refreshes the skill's per-host event-sourced cache. The skill owns its own cursor, change detection, and per-repo recompute (gitnexus structural adjacency). Exit 1 means an incomplete reconcile (the skill held its cursor); recorded, not fatal.
 2. **`triage_surface.py <owner>`** (preview) — reads the high-priority tickets that have *newly appeared* since the last surface. One inbox line per new ticket (deduped by a `<!-- triage-surface:<slug>#<num> -->` marker).
 3. **`triage_surface.py <owner> --mark`** — consumes the transition, but **only after** the inbox write succeeded, so a failed append is retried next tick rather than lost (credential-rotation-atomicity ordering).
 
