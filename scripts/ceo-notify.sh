@@ -21,7 +21,7 @@ set -euo pipefail
 #                          harness drives no model itself)
 #     $CEO_RUNNER_ARTIFACT script file / skill name the harness executed
 #   Rendering:
-#     claude/ollama (invoked)  -> "claude (opus-4.8)", "ollama (gemma4:12b-it-qat)"
+#     claude/ollama (invoked)  -> "claude (opus-4.8)", "ollama (glm4:latest)"
 #     script/skill (declared)  -> "script: ticket-triage-autopilot.sh (opus, declared)",
 #                                 "skill: weekly-synthesis (opus, declared)"
 #     script/skill, no model   -> "script: disk-monitor.sh", "skill: workload-report"

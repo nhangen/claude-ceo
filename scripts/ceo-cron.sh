@@ -569,7 +569,7 @@ _ollama_host() {
 #  1. `ollama run` exposes no way to set num_ctx, so it uses the server default
 #     (~4096 tokens). Our prompts run 27–50 KB (well past that), so the CLI path
 #     silently truncated them. The API takes options.num_ctx — set it to the
-#     model's real window (gemma4:12b-it-qat holds 256K; we use 32K, override
+#     model's real window (glm4:latest holds 128K; we use 32K, override
 #     via CEO_OLLAMA_NUM_CTX) so the whole prompt is actually ingested.
 #  2. curl --max-time bounds wall-clock natively, so a degenerate runaway (a 12B
 #     model emitting 65k tokens over ~18 min) can't hang a cron slot — no
@@ -1706,7 +1706,7 @@ END_LOG_ENTRY"
     # playbooks still honor `model:` for explicit ollama-model overrides.
     if [ -z "$MODEL_FROM_FRONTMATTER" ] || [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ]; then
       case "$RUNNER" in
-        ollama)       OLLAMA_MODEL="gemma4:12b-it-qat" ;;
+        ollama)       OLLAMA_MODEL="glm4:latest" ;;
         ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
       esac
     else

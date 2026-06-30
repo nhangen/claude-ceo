@@ -4,7 +4,7 @@ description: Scan vault for overnight changes, new notes, unresolved items, carr
 trigger: cron
 schedule: "50 8 * * 1-5"
 runner: ollama
-model: gemma4:12b-it-qat
+model: glm4:latest
 preflight: none
 tier: read
 status: disabled

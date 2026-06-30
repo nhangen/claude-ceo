@@ -910,7 +910,7 @@ PB
 
   local model got_source numctx
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_eq "$model" "gemma4:12b-it-qat" "runner:ollama default must be gemma4:12b-it-qat"
+  assert_eq "$model" "glm4:latest" "runner:ollama default must be glm4:latest"
   got_source=$(cat "$HOME/ollama-model-source.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$got_source" "invoked" "ollama runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
   # The headline fix: the request must carry the model's real context window, not
@@ -1170,7 +1170,7 @@ PB
 
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_eq "$model" "sonnet" "explicit model:sonnet on runner:ollama must pass literally (not silently coerce to gemma4 default)"
+  assert_eq "$model" "sonnet" "explicit model:sonnet on runner:ollama must pass literally (not silently coerce to glm4 default)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -2006,7 +2006,7 @@ test_production_morning_brief_registers_with_ollama_runner() {
   model=$(jq -r '.playbooks[] | select(.name=="morning-brief") | .model' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$runner" "ollama" "production morning-brief.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-brief.md must declare tier: read"
-  assert_eq "$model" "gemma4:12b-it-qat" "production morning-brief.md must declare model: gemma4:12b-it-qat"
+  assert_eq "$model" "glm4:latest" "production morning-brief.md must declare model: glm4:latest"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -2028,7 +2028,7 @@ test_production_morning_scan_registers_with_ollama_runner() {
   model=$(jq -r '.playbooks[] | select(.name=="morning-scan") | .model' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$runner" "ollama" "production morning-scan.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-scan.md must declare tier: read"
-  assert_eq "$model" "gemma4:12b-it-qat" "production morning-scan.md must declare model: gemma4:12b-it-qat"
+  assert_eq "$model" "glm4:latest" "production morning-scan.md must declare model: glm4:latest"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -3134,7 +3134,7 @@ STUB
   
   local ollama_invoked
   ollama_invoked=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_contains "$ollama_invoked" "gemma4" "ollama must be invoked with default model during fallback"
+  assert_contains "$ollama_invoked" "glm4" "ollama must be invoked with default model during fallback"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
@@ -3172,7 +3172,7 @@ STUB
 
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_eq "$model" "gemma4:12b-it-qat" "fallback must use the runner-default ollama model, not the Claude-tier frontmatter name"
+  assert_eq "$model" "glm4:latest" "fallback must use the runner-default ollama model, not the Claude-tier frontmatter name"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
