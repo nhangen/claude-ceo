@@ -59,8 +59,32 @@ There is no command allowlist or path jail yet; per-task tool restriction and
 safe-delegation tiering arrive in the governance slice (#190). Until then, treat this
 as a deliberately-invoked local tool: you choose `--cwd` and the model you trust.
 
+## Driving a local model three ways
+
+The bridge is one of three ways to put a local ollama model behind a harness:
+
+| Command | Harness | Tools | Use for |
+|---------|---------|-------|---------|
+| `oll "task"` | the bridge (this dir) | 5 native + `use_skill` + 1 MCP (`--mcp`) | autonomous bounded local work; broad MCP via `--mcp` |
+| `oll` | codex REPL | codex's | interactive read/explore |
+| `oll-code` | **real Claude Code** via [claude-code-router](https://github.com/musistudio/claude-code-router) → ollama | curated always-loaded set (capped below the ~25 ceiling) | the full Claude harness on a local model |
+
+`oll-code` routes Claude Code's Anthropic API through ccr to ollama's OpenAI
+endpoint. ccr needs the `ollama-compat` transformer (`use: ["openai",
+"ollama-compat", ["maxtoken", …]]`): the `openai` transformer carries the tools
+array (a bare custom transformer list makes ccr drop it), and `ollama-compat`
+strips `thinking`/`reasoning` and caps the tool count.
+
+**Tool ceiling (measured):** Claude Code exposes 100+ tools; past ~25 a local
+model stops emitting structured `tool_calls` and dumps the call into `content`
+as text, breaking the loop. Native tool-search (deferring tools behind a
+`ToolSearch` tool) wires all tools but **no installed local model drives it** —
+gpt-oss:20b refuses, deepseek-r1:70b hallucinates calls. So `oll-code` defaults
+to a curated always-loaded set; for broad MCP with a local model, use the bridge.
+
 ## Tests
 
 ```bash
-python -m pytest ollama-agent/tests -q   # logic tests, no daemon needed
+python -m pytest ollama-agent/tests -q          # logic tests, no daemon needed
+bash ollama-agent/tests/integration_smoke.sh    # live stack: bridge + ccr + oll-code (guarded, self-skips)
 ```
