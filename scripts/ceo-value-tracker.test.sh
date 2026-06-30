@@ -28,16 +28,18 @@ setup() {
 #!/bin/bash
 echo "bun-stub: $*"
 vault=""
+host=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --obsidian-vault) vault="$2"; shift 2 ;;
+    --host) host="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 if [ -n "$vault" ]; then
   note_dir="$vault/CEO/reports/value-tracker"
   mkdir -p "$note_dir"
-  printf -- '---\ndate: %s\n---\n\n# value-tracker — %s\n\nstub body\n' "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d).md"
+  printf -- '---\ndate: %s\n---\n\n# value-tracker — %s\n\nstub body\n' "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
 fi
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
@@ -77,7 +79,7 @@ test_appends_inbox_line_and_invokes_bun() {
   local today inbox
   today=$(date +%Y-%m-%d)
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
-  local wikilink="$WIKILINK_PREFIX/$today]]"
+  local wikilink="$WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]"
   local expected_line="- [ ] Review daily value-tracker report $wikilink"
 
   assert_file_exists "$inbox" "per-host inbox shadow file must be created"
@@ -101,7 +103,7 @@ test_idempotent_inbox_append() {
   today=$(date +%Y-%m-%d)
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
 
-  count=$(grep -c -F "$WIKILINK_PREFIX/$today]]" "$inbox" || true)
+  count=$(grep -c -F "$WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox" || true)
   assert_eq "$count" "1" "two runs must leave exactly one inbox line"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -119,8 +121,8 @@ test_idempotent_preserves_checked_off_line() {
   bash "$TRACKER" >/dev/null 2>&1
 
   local checked unchecked
-  checked=$(grep -c -F -- "- [x] Review daily value-tracker report $WIKILINK_PREFIX/$today]]" "$inbox" || true)
-  unchecked=$(grep -c -F -- "- [ ] Review daily value-tracker report $WIKILINK_PREFIX/$today]]" "$inbox" || true)
+  checked=$(grep -c -F -- "- [x] Review daily value-tracker report $WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox" || true)
+  unchecked=$(grep -c -F -- "- [ ] Review daily value-tracker report $WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox" || true)
   assert_eq "$checked" "1" "checked-off line must survive re-run"
   assert_eq "$unchecked" "0" "must not re-append an unchecked line"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -201,8 +203,8 @@ test_two_hosts_write_to_disjoint_files() {
   assert_file_exists "$CEO_DIR/inbox/otherhost.md" "host2 inbox must exist"
 
   local h1 h2
-  h1=$(grep -c -F "$WIKILINK_PREFIX/$today]]" "$CEO_DIR/inbox/testhost.md" || true)
-  h2=$(grep -c -F "$WIKILINK_PREFIX/$today]]" "$CEO_DIR/inbox/otherhost.md" || true)
+  h1=$(grep -c -F "$WIKILINK_PREFIX/$today-testhost]]" "$CEO_DIR/inbox/testhost.md" || true)
+  h2=$(grep -c -F "$WIKILINK_PREFIX/$today-otherhost]]" "$CEO_DIR/inbox/otherhost.md" || true)
   assert_eq "$h1" "1" "host1 must have its own line"
   assert_eq "$h2" "1" "host2 must have its own line"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -231,7 +233,7 @@ STUB
   local today inbox
   today=$(date +%Y-%m-%d)
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
-  if [ -f "$inbox" ] && grep -qF "$WIKILINK_PREFIX/$today]]" "$inbox"; then
+  if [ -f "$inbox" ] && grep -qF "$WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox"; then
     printf '  FAIL [%s] inbox must NOT have a line when no note was written\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
@@ -244,15 +246,17 @@ test_fails_when_bun_writes_empty_note() {
   cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
 #!/bin/bash
 vault=""
+host=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --obsidian-vault) vault="$2"; shift 2 ;;
+    --host) host="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 note_dir="$vault/CEO/reports/value-tracker"
 mkdir -p "$note_dir"
-: > "$note_dir/$(date +%Y-%m-%d).md"
+: > "$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
 
@@ -273,15 +277,17 @@ test_fails_when_note_has_no_h1() {
   cat > "$TEST_HOME/.bun/bin/bun" << 'STUB'
 #!/bin/bash
 vault=""
+host=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --obsidian-vault) vault="$2"; shift 2 ;;
+    --host) host="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 note_dir="$vault/CEO/reports/value-tracker"
 mkdir -p "$note_dir"
-printf -- '---\ndate: %s\n---\n\nno h1 here\n' "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d).md"
+printf -- '---\ndate: %s\n---\n\nno h1 here\n' "$(date +%Y-%m-%d)" > "$note_dir/$(date +%Y-%m-%d)${host:+-$host}.md"
 STUB
   chmod +x "$TEST_HOME/.bun/bin/bun"
 

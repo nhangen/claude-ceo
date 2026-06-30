@@ -16,6 +16,7 @@ interface Args {
   session: string | null;
   sessionFile: string | null;
   obsidianVault: string | null;
+  host: string | null;
   noSnapshot: boolean;
   dryRun: boolean;
   help: boolean;
@@ -30,6 +31,7 @@ function parseArgs(argv: string[]): Args {
     obsidianVault: existsSync(join(homedir(), "Documents", "Obsidian"))
       ? join(homedir(), "Documents", "Obsidian")
       : null,
+    host: null,
     noSnapshot: false,
     dryRun: false,
     help: false,
@@ -62,6 +64,10 @@ function parseArgs(argv: string[]): Args {
         a.obsidianVault = v!;
         i++;
         break;
+      case "--host":
+        a.host = v!;
+        i++;
+        break;
       case "--no-snapshot":
         a.noSnapshot = true;
         break;
@@ -83,6 +89,7 @@ function usage(): string {
     "  --session <id>            analyse one session by id",
     "  --session-file <path>     analyse one JSONL file directly (testing)",
     "  --obsidian-vault <path>   override Obsidian vault path",
+    "  --host <id>               suffix the note filename with -<id> (per-host reports)",
     "  --no-snapshot             skip JSON snapshot write",
     "  --dry-run                 terminal output only, no files written",
     "  -h, --help                show this help",
@@ -153,7 +160,8 @@ async function main() {
   if (args.obsidianVault) {
     const noteDir = join(args.obsidianVault, "CEO", "reports", "value-tracker");
     mkdirSync(noteDir, { recursive: true });
-    const notePath = join(noteDir, `${snap.generatedAt.slice(0, 10)}.md`);
+    const suffix = args.host ? `-${args.host}` : "";
+    const notePath = join(noteDir, `${snap.generatedAt.slice(0, 10)}${suffix}.md`);
     writeFileSync(notePath, formatObsidian(snap));
     process.stdout.write(`Obsidian note: ${notePath}\n`);
   }
