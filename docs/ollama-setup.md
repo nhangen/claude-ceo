@@ -5,10 +5,10 @@ The CEO agent supports local inference via the `runner: ollama` and `runner: oll
 ## Default Models
 
 If a playbook uses an ollama runner but does not specify a `model:`, the system defaults to:
-- `runner: ollama`: `gemma4:12b-it-qat`
+- `runner: ollama`: `glm4:latest`
 - `runner: ollama-think`: `gpt-oss:20b`
 
-These models were chosen as the optimal balance between capability and speed for a local VRAM-constrained environment. `gemma4:12b-it-qat` (~7 GB) fits fully in 12 GB VRAM, avoiding the CPU spill that throttles larger 24B-class models to single-digit tokens/sec.
+These models were chosen as the optimal balance between capability and speed for a local VRAM-constrained environment. `glm4:latest` (GLM-4-9B, ~6 GB at Q4_0, 128K context) fits fully in 12 GB VRAM, avoiding the CPU spill that throttles larger 24B-class models to single-digit tokens/sec.
 
 ## Bootstrap Script
 
@@ -24,7 +24,7 @@ If you prefer to pull the models manually, or if you want to use custom models:
 
 ```bash
 # Pull the standard playbook runner (fast, capable)
-ollama pull gemma4:12b-it-qat
+ollama pull glm4:latest
 
 # Pull the thinking/reasoning runner (slower, methodical)
 ollama pull gpt-oss:20b
