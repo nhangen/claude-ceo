@@ -1707,7 +1707,7 @@ END_LOG_ENTRY"
     if [ -z "$MODEL_FROM_FRONTMATTER" ] || [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ]; then
       case "$RUNNER" in
         ollama)       OLLAMA_MODEL="glm4:latest" ;;
-        ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
+        ollama-think) OLLAMA_MODEL="glm4:latest" ;;
       esac
     else
       OLLAMA_MODEL="$MODEL_FROM_FRONTMATTER"
