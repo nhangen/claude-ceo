@@ -4,7 +4,7 @@ description: Generate a prioritized overview of the day's work
 trigger: cron
 schedule: "57 8 * * 1-5"
 runner: ollama
-model: gemma4:12b-it-qat
+model: glm4:latest
 preflight: none
 tier: read
 status: disabled

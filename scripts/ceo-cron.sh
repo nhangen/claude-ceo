@@ -1706,7 +1706,7 @@ END_LOG_ENTRY"
     # playbooks still honor `model:` for explicit ollama-model overrides.
     if [ -z "$MODEL_FROM_FRONTMATTER" ] || [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ]; then
       case "$RUNNER" in
-        ollama)       OLLAMA_MODEL="gemma4:12b-it-qat" ;;
+        ollama)       OLLAMA_MODEL="glm4:latest" ;;
         ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
       esac
     else
