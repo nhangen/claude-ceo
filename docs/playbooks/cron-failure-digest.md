@@ -10,9 +10,9 @@ preflight: none
 tier: read
 status: active
 runner: ollama-agent
-model: glm4:latest
+model: mistral-small3.2:24b
 task: cron-failure-digest
-registry: {"tasks":{"cron-failure-digest":{"runner":"ollama","model":"glm4:latest","tier":"low-stakes-write","tools":["read_file","run_shell","write_file","list_dir"],"rules":false,"skills":false}}}
+registry: {"tasks":{"cron-failure-digest":{"runner":"ollama","model":"mistral-small3.2:24b","tier":"low-stakes-write","tools":["read_file","run_shell","write_file","list_dir"],"rules":false,"skills":false}}}
 artifact: CEO/reports/cron-failures/{TODAY}-{HOST}.md
 ---
 You are writing a digest of recent CEO cron failures. Your working directory is the vault's CEO directory. Make EXACTLY two tool calls, then stop with a one-line summary — do NOT run extra searches, greps, or re-reads (over-exploring is what makes this task fail to finish).
