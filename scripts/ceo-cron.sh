@@ -1718,15 +1718,19 @@ END_LOG_ENTRY"
     # with "pull model manifest: file does not exist". Native runner:ollama
     # playbooks still honor `model:` for explicit ollama-model overrides.
     if [ -z "$MODEL_FROM_FRONTMATTER" ] || [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ]; then
-      # Model choice is gated by tool-use, not one model everywhere. Tool-using
-      # delegation (runner:ollama-agent) gates on the trust probes — glm4:latest
-      # passes, gpt-oss:20b fabricates tool results and is refused. The tool-free
-      # read-only runners below gate on capability instead: `ollama` carries
-      # summarize/light traffic (glm4 is adequate + fast + fits 12GB), while
-      # `ollama-think` is the reasoning tier where gpt-oss:20b is the clear
-      # model-matrix leader (glm4 scores 0 on the hard reasoning/code tasks).
-      # gpt-oss:20b is not currently installed — re-pull it before enabling any
-      # runner:ollama-think playbook.
+      # Model choice is gated by tool-use, not one model everywhere.
+      #   - Tool-using reason+act (runner:ollama-agent): gate on trust AND
+      #     capability. mistral-small3.2:24b is the pick — ties the trust lead,
+      #     reasons well, tops content-honesty. gpt-oss:20b is refused (fabricates
+      #     tool results, 44% trust). See cron-failure-digest.
+      #   - `ollama` (tool-free, summarize/light): glm4:latest — adequate + fast +
+      #     fits 12GB. Weak reasoner, but summarization doesn't need it.
+      #   - `ollama-think` (tool-free reasoning): gpt-oss:20b is the capability
+      #     leader (glm4 scores 0 on hard code). But the 2026-07-01 honesty tier
+      #     shows gpt-oss bails/fabricates on open prompts — when a real
+      #     ollama-think consumer lands, prefer mistral for honesty-sensitive
+      #     reasoning and pin gpt-oss only for hard, checkable code/math.
+      #     gpt-oss:20b is not installed on ML-1 — re-pull before enabling one.
       case "$RUNNER" in
         ollama)       OLLAMA_MODEL="glm4:latest" ;;
         ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
