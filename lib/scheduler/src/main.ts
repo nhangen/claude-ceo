@@ -109,12 +109,11 @@ function readIfExists(path: string): string {
 
 async function main(): Promise<void> {
   const vault = requireEnv("CEO_VAULT");
-  const _ = requireEnv("HOME"); // validated; actual value comes via resolveAdapterConfig
-  void _;
+  const home = requireEnv("HOME");
   const cfg = resolveAdapterConfig(process.env as Record<string, string | undefined>);
 
   const { registryPath: regPath, heartbeatPath: hbPath, swarmPath: swPath, syncedHeartbeatPath: syncedHbPath, host } = cfg;
-  const enPath = enabledPath(requireEnv("HOME"));
+  const enPath = enabledPath(home);
 
   let running = true;
   let wakeEarly: (() => void) | null = null;

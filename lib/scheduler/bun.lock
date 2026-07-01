@@ -5,7 +5,6 @@
     "": {
       "name": "ceo-scheduler",
       "dependencies": {
-        "croner": "9.1.0",
         "perch": "file:../../../perch",
       },
       "devDependencies": {
