@@ -13,16 +13,8 @@ export const MAX_SLEEP_MS = 60_000;
  */
 export const HEARTBEAT_STALE_MS = 600_000; // 10 minutes
 
-/**
- * Bounds for the per-schedule missed-slot catch-up look-back (#157). The daemon
- * derives each playbook's look-back from its own cadence and clamps it here: a
- * sub-floor cadence (e.g. 5-minutely) clamps up to the floor, a long cadence
- * (daily, weekly) clamps down to the cap. The floor covers a brief outage; the
- * cap keeps an hours-stale slot from running late at night. See
- * `lookbackForSchedule` in catchup.ts.
- */
-export const CATCHUP_LOOKBACK_FLOOR_MS = 3_600_000; // 1 hour
-export const CATCHUP_LOOKBACK_CAP_MS = 21_600_000; // 6 hours
+// Single source of truth — perch/core owns the catch-up look-back bounds.
+export { CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS } from "perch/core";
 
 /**
  * Optional per-host override (`CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS`) that pins a
