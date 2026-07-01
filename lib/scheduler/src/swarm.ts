@@ -8,13 +8,9 @@
  * input — never throws, never returns a half-parsed object — so the caller can fall
  * back to its last-good copy instead of acting on a torn read.
  */
+import type { Topology } from "cronbird/core";
 
-export interface Swarm {
-  hosts: string[];
-  owners: Record<string, string>;
-}
-
-export function parseSwarm(text: string): Swarm | null {
+export function parseSwarm(text: string): Topology | null {
   let doc: unknown;
   try {
     doc = JSON.parse(text);

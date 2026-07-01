@@ -19,40 +19,54 @@ const registry = (...playbooks: unknown[]) =>
 
 describe("parseRegistry", () => {
   test("maps the daemon-relevant fields from a well-formed entry", () => {
-    const { playbooks, warnings } = parseRegistry(registry(ENTRY));
+    const { jobs, warnings } = parseRegistry(registry(ENTRY));
     expect(warnings).toEqual([]);
-    expect(playbooks).toEqual([
-      { name: "morning-scan", schedule: "50 8 * * 1-5", status: "active", trigger: "cron", hosts: ["ml-1"], scope: "single" },
+    expect(jobs).toEqual([
+      {
+        name: "morning-scan",
+        cronSchedule: "50 8 * * 1-5",
+        isActive: true,
+        hosts: ["ml-1"],
+        scope: "single",
+        metadata: {
+          trigger: "cron",
+          model: "mistral-small3.2:24b",
+          tier: "read",
+          runner: "ollama",
+          file: "playbooks/morning-scan.md",
+          description: "scan inbox",
+        },
+      },
     ]);
   });
 
   test("projects scope, defaulting absent scope to 'single' (safe: off until owned)", () => {
-    const { playbooks, warnings } = parseRegistry(JSON.stringify({
+    const { jobs, warnings } = parseRegistry(JSON.stringify({
       playbooks: [
         { name: "a", schedule: "0 9 * * *", status: "active", trigger: "cron", scope: "each" },
         { name: "b", schedule: "0 9 * * *", status: "active", trigger: "cron" },
       ],
     }));
-    expect(playbooks.map((p) => [p.name, p.scope])).toEqual([["a", "each"], ["b", "single"]]);
+    expect(jobs.map((p) => [p.name, p.scope])).toEqual([["a", "each"], ["b", "single"]]);
     expect(warnings).toHaveLength(0);
   });
 
   test("an unknown scope value skips the entry (no silent default)", () => {
-    const { playbooks, warnings } = parseRegistry(JSON.stringify({
+    const { jobs, warnings } = parseRegistry(JSON.stringify({
       playbooks: [{ name: "bad", schedule: "0 9 * * *", status: "active", trigger: "cron", scope: "all" }],
     }));
-    expect(playbooks).toHaveLength(0);
+    expect(jobs).toHaveLength(0);
     expect(warnings[0]).toContain("scope");
   });
 
   test("tolerates unknown extra fields", () => {
-    const { playbooks } = parseRegistry(registry({ ...ENTRY, future_field: 42 }));
-    expect(playbooks).toHaveLength(1);
-    expect(playbooks[0]!.name).toBe("morning-scan");
+    const { jobs } = parseRegistry(registry({ ...ENTRY, future_field: 42 }));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.name).toBe("morning-scan");
   });
 
   test("missing playbooks key yields an empty list, no throw", () => {
-    expect(parseRegistry(JSON.stringify({ schema_version: 3 }))).toEqual({ playbooks: [], warnings: [] });
+    expect(parseRegistry(JSON.stringify({ schema_version: 3 }))).toEqual({ jobs: [], warnings: [] });
   });
 
   test("throws RegistryParseError on invalid JSON (loop keeps last-good)", () => {
@@ -66,8 +80,8 @@ describe("parseRegistry", () => {
   test("skips an entry missing a required field, keeps the rest, and warns", () => {
     const noSchedule = { ...ENTRY, name: "broken" };
     delete (noSchedule as Record<string, unknown>).schedule;
-    const { playbooks, warnings } = parseRegistry(registry(ENTRY, noSchedule));
-    expect(playbooks.map((p) => p.name)).toEqual(["morning-scan"]);
+    const { jobs, warnings } = parseRegistry(registry(ENTRY, noSchedule));
+    expect(jobs.map((p) => p.name)).toEqual(["morning-scan"]);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("broken");
   });
@@ -76,17 +90,29 @@ describe("parseRegistry", () => {
     const noHosts = { ...ENTRY, name: "a" };
     delete (noHosts as Record<string, unknown>).hosts;
     const nullHosts = { ...ENTRY, name: "b", hosts: null };
-    const { playbooks } = parseRegistry(registry(noHosts, nullHosts));
-    expect(playbooks[0]!.hosts).toEqual(["*"]);
-    expect(playbooks[1]!.hosts).toEqual(["*"]);
+    const { jobs } = parseRegistry(registry(noHosts, nullHosts));
+    expect(jobs[0]!.hosts).toEqual(["*"]);
+    expect(jobs[1]!.hosts).toEqual(["*"]);
   });
 
   test("malformed hosts (scalar / empty / blank element) normalizes to ['*'] with a warning", () => {
     const scalar = { ...ENTRY, name: "s", hosts: "ml-1" };
     const empty = { ...ENTRY, name: "e", hosts: [] };
     const blank = { ...ENTRY, name: "k", hosts: ["ml-1", "  "] };
-    const { playbooks, warnings } = parseRegistry(registry(scalar, empty, blank));
-    expect(playbooks.map((p) => p.hosts)).toEqual([["*"], ["*"], ["*"]]);
+    const { jobs, warnings } = parseRegistry(registry(scalar, empty, blank));
+    expect(jobs.map((p) => p.hosts)).toEqual([["*"], ["*"], ["*"]]);
     expect(warnings).toHaveLength(3);
+  });
+
+  test("inactive status maps to isActive: false", () => {
+    const { jobs } = parseRegistry(registry({ ...ENTRY, status: "draft" }));
+    expect(jobs[0]!.isActive).toBe(false);
+  });
+
+  test("non-cron trigger is silently excluded from jobs (no warning)", () => {
+    const manual = { ...ENTRY, name: "manual-task", trigger: "manual" };
+    const { jobs, warnings } = parseRegistry(registry(ENTRY, manual));
+    expect(jobs.map((j) => j.name)).toEqual(["morning-scan"]);
+    expect(warnings).toHaveLength(0);
   });
 });

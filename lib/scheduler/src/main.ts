@@ -12,33 +12,78 @@
  * Schedules evaluate in the host's local timezone (the matcher is created with
  * no timezone, matching `new Date()`); registry schedules carry no per-entry tz.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { hostname } from "node:os";
-import { createMatcher } from "@/cron";
-import { type DaemonDeps, runForever } from "@/daemon";
+import {
+  createMatcher,
+  runForever,
+  lookbackForSchedule,
+  CATCHUP_LOOKBACK_FLOOR_MS,
+  CATCHUP_LOOKBACK_CAP_MS,
+  MAX_SLEEP_MS,
+  type DaemonDeps,
+} from "cronbird/core";
 import {
   readHeartbeatFile,
   writeHeartbeatFile,
   writeHeartbeatWithSync,
   writeSyncedHeartbeat,
-} from "@/heartbeat-store";
+} from "cronbird/cli";
 import { parseRegistry } from "@/registry";
 import { parseEnabled } from "@/enabled";
 import { parseSwarm } from "@/swarm";
-import { lookbackForSchedule } from "@/catchup";
 import {
-  CATCHUP_LOOKBACK_CAP_MS,
-  CATCHUP_LOOKBACK_FLOOR_MS,
   dispatchArgv,
   enabledPath,
   heartbeatPath,
-  MAX_SLEEP_MS,
   registryPath,
   resolveFixedLookbackMs,
   resolveHost,
   swarmPath,
   syncedHeartbeatPath,
 } from "@/runtime";
+
+/** The launchd service label — must never change (plist is not regenerated on update). */
+const LAUNCHD_LABEL = "com.ceo.schedulerd";
+
+export interface AdapterConfig {
+  registryPath: string;
+  heartbeatPath: string;
+  swarmPath: string;
+  syncedHeartbeatPath: string;
+  /** Returns the argv for one scheduled dispatch given the playbook name. */
+  dispatchArgv(name: string): string[];
+  host: string;
+  launchdLabel: string;
+}
+
+/**
+ * Pure resolver for CEO's runtime paths, argv, host, and launchd label.
+ * Exported for the adapter round-trip test; `main()` calls this with `process.env`.
+ */
+export function resolveAdapterConfig(env: {
+  CEO_VAULT?: string;
+  HOME?: string;
+  CEO_HOSTNAME?: string;
+  CEO_CRON_BIN?: string;
+}): AdapterConfig {
+  const vault = env.CEO_VAULT ?? "";
+  const home = env.HOME ?? "";
+  const cronBin = env.CEO_CRON_BIN?.trim() || "ceo-cron.sh";
+  const host = resolveHost(
+    { CEO_HOSTNAME: env.CEO_HOSTNAME },
+    hostname().split(".")[0] ?? "unknown",
+  );
+  return {
+    registryPath: registryPath(home),
+    heartbeatPath: heartbeatPath(home),
+    swarmPath: swarmPath(vault),
+    syncedHeartbeatPath: syncedHeartbeatPath(vault, host),
+    dispatchArgv: (name: string) => dispatchArgv(cronBin, name),
+    host,
+    launchdLabel: LAUNCHD_LABEL,
+  };
+}
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -65,13 +110,10 @@ function readIfExists(path: string): string {
 async function main(): Promise<void> {
   const vault = requireEnv("CEO_VAULT");
   const home = requireEnv("HOME");
-  const cronBin = process.env.CEO_CRON_BIN?.trim() || "ceo-cron.sh";
-  const host = resolveHost({ CEO_HOSTNAME: process.env.CEO_HOSTNAME }, hostname().split(".")[0] ?? "unknown");
-  const regPath = registryPath(home);
-  const hbPath = heartbeatPath(home);
+  const cfg = resolveAdapterConfig(process.env as Record<string, string | undefined>);
+
+  const { registryPath: regPath, heartbeatPath: hbPath, swarmPath: swPath, syncedHeartbeatPath: syncedHbPath, host } = cfg;
   const enPath = enabledPath(home);
-  const swPath = swarmPath(vault);
-  const syncedHbPath = syncedHeartbeatPath(vault, host);
 
   let running = true;
   let wakeEarly: (() => void) | null = null;
@@ -108,14 +150,14 @@ async function main(): Promise<void> {
       }),
     loadRegistry: () => parseRegistry(readFileSync(regPath, "utf8")),
     loadEnabled: () => parseEnabled(readIfExists(enPath)),
-    loadSwarm: () => parseSwarm(readIfExists(swPath)),
+    loadTopology: () => parseSwarm(readIfExists(swPath)),
     dispatch: (name) => {
       // Bun.spawn throws synchronously on e.g. ENOENT (cronBin not on PATH).
       // Swallow + log so one bad dispatch can't crash-loop the daemon; the
       // guard is already persisted, so this playbook is simply skipped this
       // minute and fires again at its next slot.
       try {
-        const proc = Bun.spawn(dispatchArgv(cronBin, name), {
+        const proc = Bun.spawn(cfg.dispatchArgv(name), {
           env: { ...process.env, CEO_VAULT: vault },
           stdout: "ignore",
           stderr: "ignore",
@@ -147,7 +189,10 @@ async function main(): Promise<void> {
   log("stopped");
 }
 
-main().catch((err) => {
-  process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});
+// Only run when invoked directly (not when imported by tests).
+if (import.meta.main) {
+  main().catch((err) => {
+    process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}

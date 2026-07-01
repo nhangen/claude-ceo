@@ -5,7 +5,7 @@
     "": {
       "name": "ceo-scheduler",
       "dependencies": {
-        "croner": "9.1.0",
+        "cronbird": "file:../../../cronbird",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -19,6 +19,8 @@
     "@types/node": ["@types/node@25.9.2", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-G05zqtJhcDLb8uslf5EjCxXg9G1KQxiV8OS0R26IC//Eoyitzqe8z37I7cqvnZlrlSfgocQRfSn/AHBZJJFyGw=="],
 
     "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+
+    "cronbird": ["cronbird@file:../../../cronbird", { "dependencies": { "croner": "^9.1.0" }, "devDependencies": { "@types/bun": "latest", "typescript": "^5.4.0" } }],
 
     "croner": ["croner@9.1.0", "", {}, "sha512-p9nwwR4qyT5W996vBZhdvBCnMhicY5ytZkR4D1Xj0wuTDEiMnjwR57Q3RXYY/s0EpX6Ay3vgIcfaR+ewGHsi+g=="],
 
