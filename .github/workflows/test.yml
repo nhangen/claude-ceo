@@ -53,7 +53,12 @@ jobs:
       # the checkout dir. Clone it there so bun install can link it. cronbird is
       # public, so no credential is needed.
       - name: Check out cronbird (path dependency)
-        run: git clone --depth 1 https://github.com/nhangen/cronbird.git "${GITHUB_WORKSPACE}/../cronbird"
+        run: |
+          git clone --depth 1 https://github.com/nhangen/cronbird.git "${GITHUB_WORKSPACE}/../cronbird"
+          # cronbird needs its own node_modules (croner) so module resolution
+          # from its source resolves — bun links the package but hoists its deps
+          # into the consumer tree, which cronbird's own files can't reach.
+          ( cd "${GITHUB_WORKSPACE}/../cronbird" && bun install --frozen-lockfile )
       - name: scheduler lib — install, typecheck, test
         working-directory: lib/scheduler
         run: |
