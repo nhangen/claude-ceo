@@ -8,7 +8,7 @@
  * skipped with a warning rather than failing the whole load — one bad hand-edit
  * shouldn't take the scheduler down.
  */
-import type { Job } from "perch/core";
+import type { Job } from "cronbird/core";
 
 /** CEO-specific playbook metadata carried in each Job's `metadata` field. */
 export interface CeoMeta {

@@ -22,13 +22,13 @@ import {
   CATCHUP_LOOKBACK_CAP_MS,
   MAX_SLEEP_MS,
   type DaemonDeps,
-} from "perch/core";
+} from "cronbird/core";
 import {
   readHeartbeatFile,
   writeHeartbeatFile,
   writeHeartbeatWithSync,
   writeSyncedHeartbeat,
-} from "perch/cli";
+} from "cronbird/cli";
 import { parseRegistry } from "@/registry";
 import { parseEnabled } from "@/enabled";
 import { parseSwarm } from "@/swarm";

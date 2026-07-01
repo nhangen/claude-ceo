@@ -13,8 +13,8 @@ export const MAX_SLEEP_MS = 60_000;
  */
 export const HEARTBEAT_STALE_MS = 600_000; // 10 minutes
 
-// Single source of truth — perch/core owns the catch-up look-back bounds.
-export { CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS } from "perch/core";
+// Single source of truth — cronbird/core owns the catch-up look-back bounds.
+export { CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS } from "cronbird/core";
 
 /**
  * Optional per-host override (`CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS`) that pins a
