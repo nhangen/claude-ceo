@@ -3,9 +3,6 @@
  * without touching the filesystem. `main.ts` composes them with Bun's spawn/fs.
  */
 
-/** Cap on a single sleep: the loop re-reads the registry at least this often. */
-export const MAX_SLEEP_MS = 60_000;
-
 /**
  * How long without a heartbeat before `ceo doctor` reports the daemon stale.
  * Comfortably larger than {@link MAX_SLEEP_MS} so a single missed wake never
@@ -13,8 +10,10 @@ export const MAX_SLEEP_MS = 60_000;
  */
 export const HEARTBEAT_STALE_MS = 600_000; // 10 minutes
 
-// Single source of truth — cronbird/core owns the catch-up look-back bounds.
-export { CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS } from "cronbird/core";
+// Single source of truth — cronbird/core owns the wake cap and the catch-up
+// look-back bounds. The daemon uses these exact values, so the staleness
+// invariant (HEARTBEAT_STALE_MS >= 5 * MAX_SLEEP_MS) is checked against them.
+export { MAX_SLEEP_MS, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS } from "cronbird/core";
 
 /**
  * Optional per-host override (`CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS`) that pins a
