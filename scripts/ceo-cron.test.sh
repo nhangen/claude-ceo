@@ -972,7 +972,7 @@ PB
 
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
-  assert_eq "$model" "glm4:latest" "runner:ollama-think default must be glm4:latest"
+  assert_eq "$model" "gpt-oss:20b" "runner:ollama-think default must be gpt-oss:20b"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
