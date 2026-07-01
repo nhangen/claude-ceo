@@ -9,7 +9,8 @@
     "start": "bun run src/main.ts"
   },
   "dependencies": {
-    "croner": "9.1.0"
+    "croner": "9.1.0",
+    "perch": "file:../../../perch"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

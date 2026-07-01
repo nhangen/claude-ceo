@@ -8,19 +8,20 @@
  * skipped with a warning rather than failing the whole load — one bad hand-edit
  * shouldn't take the scheduler down.
  */
+import type { Job } from "perch/core";
 
-/** A playbook projected to the fields the daemon's scheduling logic consumes. */
-export interface Playbook {
-  name: string;
-  schedule: string;
-  status: string;
-  trigger: string;
-  hosts: string[];
-  scope: "each" | "single";
+/** CEO-specific playbook metadata carried in each Job's `metadata` field. */
+export interface CeoMeta {
+  model?: string;
+  tier?: string;
+  runner?: string;
+  file?: string;
+  description?: string;
+  trigger?: string;
 }
 
 export interface ParsedRegistry {
-  playbooks: Playbook[];
+  jobs: Job<CeoMeta>[];
   warnings: string[];
 }
 
@@ -63,12 +64,12 @@ export function parseRegistry(text: string): ParsedRegistry {
     throw new RegistryParseError("top-level value is not an object");
   }
   const rawPlaybooks = (doc as Record<string, unknown>).playbooks;
-  if (rawPlaybooks === undefined) return { playbooks: [], warnings: [] };
+  if (rawPlaybooks === undefined) return { jobs: [], warnings: [] };
   if (!Array.isArray(rawPlaybooks)) {
     throw new RegistryParseError("'playbooks' is not an array");
   }
 
-  const playbooks: Playbook[] = [];
+  const jobs: Job<CeoMeta>[] = [];
   const warnings: string[] = [];
   for (const entry of rawPlaybooks) {
     if (typeof entry !== "object" || entry === null) {
@@ -89,14 +90,21 @@ export function parseRegistry(text: string): ParsedRegistry {
     }
     const scope = normalizeScope(e.scope, name, warnings);
     if (scope === null) continue;
-    playbooks.push({
+    jobs.push({
       name,
-      schedule: e.schedule,
-      status: e.status,
-      trigger: e.trigger,
+      cronSchedule: e.schedule,
+      isActive: e.status === "active",
       hosts: normalizeHosts(e.hosts, name, warnings),
       scope,
+      metadata: {
+        trigger: e.trigger,
+        model: typeof e.model === "string" ? e.model : undefined,
+        tier: typeof e.tier === "string" ? e.tier : undefined,
+        runner: typeof e.runner === "string" ? e.runner : undefined,
+        file: typeof e.file === "string" ? e.file : undefined,
+        description: typeof e.description === "string" ? e.description : undefined,
+      },
     });
   }
-  return { playbooks, warnings };
+  return { jobs, warnings };
 }
