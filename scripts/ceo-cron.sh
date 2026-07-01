@@ -1718,9 +1718,18 @@ END_LOG_ENTRY"
     # with "pull model manifest: file does not exist". Native runner:ollama
     # playbooks still honor `model:` for explicit ollama-model overrides.
     if [ -z "$MODEL_FROM_FRONTMATTER" ] || [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" = "1" ]; then
+      # Model choice is gated by tool-use, not one model everywhere. Tool-using
+      # delegation (runner:ollama-agent) gates on the trust probes — glm4:latest
+      # passes, gpt-oss:20b fabricates tool results and is refused. The tool-free
+      # read-only runners below gate on capability instead: `ollama` carries
+      # summarize/light traffic (glm4 is adequate + fast + fits 12GB), while
+      # `ollama-think` is the reasoning tier where gpt-oss:20b is the clear
+      # model-matrix leader (glm4 scores 0 on the hard reasoning/code tasks).
+      # gpt-oss:20b is not currently installed — re-pull it before enabling any
+      # runner:ollama-think playbook.
       case "$RUNNER" in
         ollama)       OLLAMA_MODEL="glm4:latest" ;;
-        ollama-think) OLLAMA_MODEL="glm4:latest" ;;
+        ollama-think) OLLAMA_MODEL="gpt-oss:20b" ;;
       esac
     else
       OLLAMA_MODEL="$MODEL_FROM_FRONTMATTER"
