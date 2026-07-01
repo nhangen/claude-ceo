@@ -108,4 +108,11 @@ describe("parseRegistry", () => {
     const { jobs } = parseRegistry(registry({ ...ENTRY, status: "draft" }));
     expect(jobs[0]!.isActive).toBe(false);
   });
+
+  test("non-cron trigger is silently excluded from jobs (no warning)", () => {
+    const manual = { ...ENTRY, name: "manual-task", trigger: "manual" };
+    const { jobs, warnings } = parseRegistry(registry(ENTRY, manual));
+    expect(jobs.map((j) => j.name)).toEqual(["morning-scan"]);
+    expect(warnings).toHaveLength(0);
+  });
 });

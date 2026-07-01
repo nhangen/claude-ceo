@@ -88,6 +88,7 @@ export function parseRegistry(text: string): ParsedRegistry {
       warnings.push(`${label}: missing a required field (name/schedule/status/trigger) — skipped`);
       continue;
     }
+    if (e.trigger !== "cron") continue;
     const scope = normalizeScope(e.scope, name, warnings);
     if (scope === null) continue;
     jobs.push({
