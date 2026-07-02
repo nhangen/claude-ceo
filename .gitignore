@@ -2,3 +2,7 @@ node_modules/
 .DS_Store
 *.local.md
 next-steps.txt
+
+# Python bytecode (ollama-agent package)
+__pycache__/
+*.pyc
