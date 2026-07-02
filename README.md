@@ -27,7 +27,7 @@ Output: CEO/reports/YYYY-MM-DD.md
 State:  CEO/log/, CEO/approvals/, CEO/cache/
 ```
 
-Playbooks self-register: `ceo playbook scan` walks `CEO/playbooks/*.md`, extracts each frontmatter block via `yq`, and rewrites the host-local `~/.ceo/registry.json`. Scheduling is owned by the `ceo-schedulerd` daemon (which reads that registry) — scan does not touch the crontab.
+Playbooks self-register: `ceo playbook scan` walks `CEO/playbooks/*.md`, extracts each frontmatter block via `yq`, and rewrites the host-local `~/.ceo/registry.json`. Scheduling is owned by the `ceo-schedulerd` daemon (which reads that registry) — scan does not touch the crontab. `ceo-schedulerd` is a thin adapter over [**cronbird**](https://github.com/nhangen/cronbird), the standalone host-aware scheduler engine (cron matching, host/scope selection, missed-slot catch-up, at-most-once dispatch); CEO adds the playbook registry, tiers, and approvals on top.
 
 ## Subagents
 
@@ -159,7 +159,7 @@ ceo swarm doctor [--fix]          # detect/heal swarm.json sync-conflict copies
 ceo swarm owners-health           # flag single-scope owners whose heartbeat is stale (offline)
 ```
 
-Scheduling is owned by the `ceo-schedulerd` daemon (native crontab install is retired); its run predicate (`selectRunnable`) is exactly the intersection above.
+Scheduling is owned by the `ceo-schedulerd` daemon (native crontab install is retired); its run predicate (`selectRunnable`, from the [cronbird](https://github.com/nhangen/cronbird) engine) is exactly the intersection above.
 
 See [`docs/install.md`](docs/install.md) for fresh multi-machine setup, [`docs/playbooks/SCHEMA.md`](docs/playbooks/SCHEMA.md#swarm-selection-model) for the full selection model, and [`docs/migration.md`](docs/migration.md) for migrating an existing single-host install.
 
