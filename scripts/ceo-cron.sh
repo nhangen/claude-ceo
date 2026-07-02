@@ -219,7 +219,15 @@ _record_success() {
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
   echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
-  if [ "$TRIGGER" != "disk-monitor" ] && [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
+  # High-frequency/silent-by-design playbooks don't notify Discord on success —
+  # only on failure (handled in _record_failure). disk-monitor (every 6h) and
+  # ticket-triage-autopilot (every 30m, silent-by-design v2 cache adapter) would
+  # otherwise flood the notify webhook when notify_events="all".
+  case "$TRIGGER" in
+    disk-monitor|ticket-triage-autopilot) SUCCESS_NOTIFY=0 ;;
+    *) SUCCESS_NOTIFY=1 ;;
+  esac
+  if [ "$SUCCESS_NOTIFY" = "1" ] && [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
     "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || \
       echo "$(date): WARN — ceo-notify.sh success exited non-zero for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
   fi
