@@ -41,6 +41,34 @@ _dlog() {
     >> "$log" 2>/dev/null || true
 }
 
+# Resolve a boolean delivery flag for $TRIGGER from the host-local registry
+# ($HOME/.ceo/registry.json), written from playbook frontmatter by
+# `ceo playbook scan`. Echoes `true`, `false`, or `absent`. `absent` covers a
+# missing registry, a missing entry, or an entry that predates the flag field —
+# in all three the caller falls back to the settings.json allow-list. Making the
+# flag travel with the playbook is what stops a trigger rename from silently
+# orphaning delivery (settings.json is hand-maintained and never synced to names).
+_registry_report_flag() {
+  local field="$1"
+  local reg="${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
+  [ -f "$reg" ] || { echo absent; return; }
+  local val
+  # Deliberately avoid jq's `//` here: `false // "absent"` returns "absent"
+  # because jq treats false as empty, which would collapse an explicit
+  # discord_report:false into the settings fallback. Branch on array length and
+  # an explicit null check instead so false stays distinct from absent.
+  val=$(jq -r --arg t "$TRIGGER" --arg f "$field" \
+    '[.playbooks[]? | select(.name==$t) | .[$f]] as $v
+     | if ($v | length) == 0 then "absent"
+       elif ($v[0] == null) then "absent"
+       else ($v[0] | tostring) end' \
+    "$reg" 2>/dev/null)
+  case "$val" in
+    true|false) echo "$val" ;;
+    *) echo absent ;;
+  esac
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   _dlog "jq not on PATH, bailing 0"
   exit 0
@@ -51,13 +79,22 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 SETTINGS_FILE="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/settings.json"
-if [ -f "$SETTINGS_FILE" ]; then
-  enabled=$(jq -e --arg trig "$TRIGGER" \
-    '(.discord_report_triggers // ["morning-brief"]) | index($trig) != null' \
-    "$SETTINGS_FILE" >/dev/null 2>&1 && echo 1 || echo 0)
-else
-  [ "$TRIGGER" = "morning-brief" ] && enabled=1 || enabled=0
-fi
+report_flag=$(_registry_report_flag discord_report)
+case "$report_flag" in
+  true)  enabled=1; _dlog "delivery enabled by registry discord_report flag" ;;
+  false) enabled=0; _dlog "delivery disabled by registry discord_report flag" ;;
+  absent)
+    # Backward-compat fallback: no per-playbook flag in the registry, so honor
+    # the hand-maintained settings.json allow-list (default: morning-brief only).
+    if [ -f "$SETTINGS_FILE" ]; then
+      enabled=$(jq -e --arg trig "$TRIGGER" \
+        '(.discord_report_triggers // ["morning-brief"]) | index($trig) != null' \
+        "$SETTINGS_FILE" >/dev/null 2>&1 && echo 1 || echo 0)
+    else
+      [ "$TRIGGER" = "morning-brief" ] && enabled=1 || enabled=0
+    fi
+    ;;
+esac
 [ "$enabled" = "1" ] || {
   _dlog "trigger not enabled for full report delivery"
   exit 0
@@ -139,13 +176,20 @@ total=$((total + sent))
 # report keeps its existing front matter and is untouched; the complete prior-day
 # report is delivered here, on Discord only. Gate on its own allow-list so other
 # report triggers don't carry yesterday's report.
-if [ -f "$SETTINGS_FILE" ]; then
-  prior_enabled=$(jq -e --arg trig "$TRIGGER" \
-    '(.discord_prior_day_report_triggers // ["morning-brief"]) | index($trig) != null' \
-    "$SETTINGS_FILE" >/dev/null 2>&1 && echo 1 || echo 0)
-else
-  [ "$TRIGGER" = "morning-brief" ] && prior_enabled=1 || prior_enabled=0
-fi
+prior_flag=$(_registry_report_flag discord_prior_day_report)
+case "$prior_flag" in
+  true)  prior_enabled=1 ;;
+  false) prior_enabled=0 ;;
+  absent)
+    if [ -f "$SETTINGS_FILE" ]; then
+      prior_enabled=$(jq -e --arg trig "$TRIGGER" \
+        '(.discord_prior_day_report_triggers // ["morning-brief"]) | index($trig) != null' \
+        "$SETTINGS_FILE" >/dev/null 2>&1 && echo 1 || echo 0)
+    else
+      [ "$TRIGGER" = "morning-brief" ] && prior_enabled=1 || prior_enabled=0
+    fi
+    ;;
+esac
 
 if [ "$prior_enabled" = "1" ]; then
   report_dir="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/reports"

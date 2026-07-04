@@ -1173,7 +1173,7 @@ cmd_playbook_scan() {
     local from_repo=0
     [ "$d" = "$repo_playbook_dir" ] && from_repo=1
 
-    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual scope agent_task agent_registry
+    local name description trigger schedule model preflight tier status bin runner script inputs skill out_pattern requires artifact _artifact_residual scope agent_task agent_registry discord_report discord_prior_day_report
     name=$(_fm_scalar name "$f")
     if [ -z "$name" ]; then
       echo "  SKIP  $basename (no name in frontmatter)"
@@ -1380,6 +1380,31 @@ cmd_playbook_scan() {
       fi
     fi
 
+    # discord_report / discord_prior_day_report: opt-in booleans that carry the
+    # "post this playbook's report to Discord" intent from frontmatter into the
+    # registry, so ceo-discord-report.sh can gate on the playbook itself rather
+    # than a hand-maintained settings.json allow-list. Explicit true/false is
+    # authoritative; ABSENT is left null so delivery falls back to the settings
+    # allow-list (backward compat — an unflagged playbook must keep its old
+    # settings-driven behavior, not be silently blocked). A non true/false value
+    # is a typo — warn and leave null (fall back), never authoritatively block
+    # (enum-config-typo-fallback: validate at parse, don't silently coerce).
+    local discord_report_json="null" discord_prior_day_report_json="null"
+    discord_report=$(_fm_scalar discord_report "$f")
+    case "$discord_report" in
+      "true") discord_report_json="true" ;;
+      "false") discord_report_json="false" ;;
+      "") ;;
+      *) echo "  WARN  $basename: 'discord_report' must be true/false (got: $discord_report) — ignoring (delivery falls back to settings allow-list)" >&2 ;;
+    esac
+    discord_prior_day_report=$(_fm_scalar discord_prior_day_report "$f")
+    case "$discord_prior_day_report" in
+      "true") discord_prior_day_report_json="true" ;;
+      "false") discord_prior_day_report_json="false" ;;
+      "") ;;
+      *) echo "  WARN  $basename: 'discord_prior_day_report' must be true/false (got: $discord_prior_day_report) — ignoring (delivery falls back to settings allow-list)" >&2 ;;
+    esac
+
     local entry_file
     if [ "$from_repo" = "1" ]; then
       entry_file="$f"
@@ -1409,8 +1434,10 @@ cmd_playbook_scan() {
       --argjson inputs "$inputs" \
       --argjson requires "$requires" \
       --argjson hosts "$hosts" \
+      --argjson discord_report "$discord_report_json" \
+      --argjson discord_prior_day_report "$discord_prior_day_report_json" \
       --arg file "$entry_file" \
-      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, task:$task, registry:$registry, out_pattern:$out_pattern, artifact:$artifact, scope:$scope, inputs:$inputs, requires:$requires, hosts:$hosts, file:$file}')
+      '{name:$name, description:$description, trigger:$trigger, schedule:$schedule, model:$model, preflight:$preflight, tier:$tier, status:$status, bin:$bin, runner:$runner, script:$script, skill:$skill, task:$task, registry:$registry, out_pattern:$out_pattern, artifact:$artifact, scope:$scope, inputs:$inputs, requires:$requires, hosts:$hosts, discord_report:$discord_report, discord_prior_day_report:$discord_prior_day_report, file:$file}')
 
     new_registry=$(echo "$new_registry" | jq --argjson entry "$entry" '.playbooks += [$entry]')
     found=$((found + 1))
@@ -1451,6 +1478,26 @@ cmd_playbook_scan() {
 
   # Apply schedule overrides — registry should reflect effective schedules.
   new_registry=$(_playbook_apply_schedule_overrides "$new_registry")
+
+  # Surface stale Discord report allow-list entries: a name in settings.json's
+  # discord_report_triggers / discord_prior_day_report_triggers that matches no
+  # active playbook is almost always a leftover from a rename (the exact drift
+  # that silently orphaned morning-brief). The per-playbook discord_report flag
+  # is the fix going forward; this warn makes any residual allow-list rot loud
+  # at scan time instead of invisible in a /tmp debug log.
+  local _settings_file="$CEO_DIR/settings.json"
+  if [ -f "$_settings_file" ]; then
+    local _active_names _key _trig
+    _active_names=$(echo "$new_registry" | jq -r '.playbooks[] | select(.status=="active") | .name')
+    for _key in discord_report_triggers discord_prior_day_report_triggers; do
+      while IFS= read -r _trig; do
+        [ -z "$_trig" ] && continue
+        if ! grep -qxF "$_trig" <<< "$_active_names"; then
+          echo "  WARN  stale $_key entry: '$_trig' in settings.json has no matching active playbook (rename leftover?)" >&2
+        fi
+      done < <(jq -r --arg k "$_key" '(.[$k] // [])[]' "$_settings_file" 2>/dev/null)
+    done
+  fi
 
   if [ "$dry_run" -eq 1 ]; then
     echo ""

@@ -7,6 +7,7 @@ model: opus
 preflight: none
 tier: read
 status: active
+discord_report: true
 runner: skill
 skill: weekly-synthesis
 ---

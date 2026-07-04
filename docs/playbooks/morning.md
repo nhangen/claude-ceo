@@ -8,6 +8,8 @@ model: sonnet
 preflight: none
 tier: read
 status: active
+discord_report: true
+discord_prior_day_report: true
 inputs: [pr_data, pending_count, today_log, yesterday_log, daily_note, active_domains, pending_ask, current_sprint, yesterday_merged, ledger_recent]
 ---
 
