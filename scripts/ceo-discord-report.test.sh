@@ -195,4 +195,51 @@ test_empty_prior_day_allowlist_disables_append() {
   unset TODAY
 }
 
+# --- Registry-frontmatter gate (prevents trigger-rename allow-list drift) ---
+# The authoritative signal for "post this playbook's report to Discord" is the
+# discord_report flag carried in the host-local registry from playbook
+# frontmatter. settings.json's discord_report_triggers remains a backward-compat
+# fallback used only when the trigger's registry entry lacks the flag field.
+
+test_registry_flag_enables_report_without_settings_entry() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  # A renamed playbook: settings.json still lists the OLD name, not "morning".
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning","discord_report":true}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'orchestrated brief' | "$REPORT" morning >/dev/null 2>&1
+
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "orchestrated brief" \
+    "registry discord_report:true must post even when the trigger is absent from settings allow-list"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_registry_flag_false_blocks_report_despite_settings() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-scan"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-scan","discord_report":false}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'scan report' | "$REPORT" morning-scan >/dev/null 2>&1
+
+  assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
+    "registry discord_report:false must block delivery even when the trigger is in the settings allow-list"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_no_registry_flag_field_falls_back_to_settings() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["legacy-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  # Old registry: entry exists but carries no discord_report field.
+  echo '{"playbooks":[{"name":"legacy-brief"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'legacy body' | "$REPORT" legacy-brief >/dev/null 2>&1
+
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "legacy body" \
+    "an entry without a discord_report field must fall back to the settings allow-list (backward compat)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests

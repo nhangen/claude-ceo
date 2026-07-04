@@ -211,4 +211,36 @@ test_scan_registers_real_cron_failure_digest_with_inline_registry() {
     "inline-JSON registry must survive scan and re-parse to the bridge task tier"
 }
 
+test_discord_report_flags_carried_to_registry() {
+  {
+    echo "---"; echo "name: flagged"; echo "description: d"; echo "trigger: cron"
+    echo "schedule: \"0 9 * * *\""; echo "status: active"; echo "runner: claude"
+    echo "discord_report: true"; echo "discord_prior_day_report: true"
+    echo "---"; echo ""; echo "# flagged"
+  } > "$CEO_DIR/playbooks/flagged.md"
+  _run_scan
+  local reg="$HOME/.ceo/registry.json"
+  assert_eq "$(jq -r '.playbooks[]|select(.name=="flagged").discord_report' "$reg")" "true" \
+    "scan must carry discord_report:true from frontmatter into the registry entry"
+  assert_eq "$(jq -r '.playbooks[]|select(.name=="flagged").discord_prior_day_report' "$reg")" "true" \
+    "scan must carry discord_prior_day_report:true from frontmatter into the registry entry"
+}
+
+test_discord_report_flag_null_when_frontmatter_omits() {
+  _run_scan
+  local reg="$HOME/.ceo/registry.json"
+  assert_eq "$(jq -r '.playbooks[]|select(.name=="scope-absent").discord_report' "$reg")" "null" \
+    "a playbook with no discord_report frontmatter must leave the registry flag null so delivery falls back to the settings allow-list (backward compat)"
+}
+
+test_scan_warns_on_stale_discord_report_trigger() {
+  # scope-each is an active playbook this scan produces; no-such-playbook is stale.
+  echo '{"discord_report_triggers":["scope-each","no-such-playbook"]}' > "$CEO_DIR/settings.json"
+  _run_scan
+  assert_contains "$SCAN_OUT" "no-such-playbook" \
+    "scan must warn when a discord_report_triggers entry has no matching active playbook"
+  assert_not_contains "$SCAN_OUT" "WARN: stale discord_report_trigger: scope-each" \
+    "scan must not warn about an allow-list entry that IS an active playbook"
+}
+
 run_tests
