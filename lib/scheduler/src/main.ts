@@ -5,7 +5,8 @@
  * and shuts down cleanly on SIGINT/SIGTERM. All scheduling logic lives in the
  * unit-tested modules; this file is intentionally thin.
  *
- * Required env: `CEO_VAULT` (registry root), `HOME` (heartbeat dir).
+ * Required env: `CEO_VAULT` (swarm.json + synced-heartbeat root), `HOME`
+ * (host-local registry `~/.ceo/registry.json` + local heartbeat dir).
  * Optional env: `CEO_HOSTNAME` (host id override), `CEO_CRON_BIN` (dispatch
  * binary, default `ceo-cron.sh` on PATH).
  *
