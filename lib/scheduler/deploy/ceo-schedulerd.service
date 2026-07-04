@@ -34,7 +34,8 @@ Type=simple
 WorkingDirectory=%h/code/claude-ceo/lib/scheduler
 # EDIT: absolute path to bun and to this repo's lib/scheduler/src/main.ts.
 ExecStart=%h/.bun/bin/bun run %h/code/claude-ceo/lib/scheduler/src/main.ts
-# EDIT: the synced Obsidian vault root that contains CEO/registry.json.
+# EDIT: the synced Obsidian vault root (holds CEO/swarm.json + CEO/heartbeats/;
+# the registry itself is host-local at ~/.ceo/registry.json).
 Environment=CEO_VAULT=%h/Documents/Obsidian
 # REQUIRED: this host's unique CEO id (install.md §2). systemd does NOT source
 # ~/.ceo/config, so the daemon reads CEO_HOSTNAME only from here. Left as the

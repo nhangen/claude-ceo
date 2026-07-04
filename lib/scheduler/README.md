@@ -46,10 +46,12 @@ that zone (defaults to host-local). Invalid or non-5-field expressions throw
 
 ## The daemon (`ceo-schedulerd`, #142)
 
-`src/main.ts` is the long-lived daemon. Each tick it re-reads
-`$CEO_VAULT/CEO/registry.json`, selects the playbooks **this host** runs on a
-schedule, dispatches every due one, writes a heartbeat, and sleeps until the
-soonest next fire (capped at 60s so registry edits and clock skew self-heal).
+`src/main.ts` is the long-lived daemon. Each tick it re-reads the host-local
+`~/.ceo/registry.json` (written by `ceo playbook scan`; the synced vault holds
+only `CEO/swarm.json` and `CEO/heartbeats/`, not the registry), selects the
+playbooks **this host** runs on a schedule, dispatches every due one, writes a
+heartbeat, and sleeps until the soonest next fire (capped at 60s so registry
+edits and clock skew self-heal).
 
 Pipeline, all of it unit-tested behind injected side effects:
 

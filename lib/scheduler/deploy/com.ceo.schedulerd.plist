@@ -55,7 +55,7 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- EDIT: the synced Obsidian vault root that contains CEO/registry.json. -->
+    <!-- EDIT: the synced Obsidian vault root (holds CEO/swarm.json + CEO/heartbeats/; the registry itself is host-local at ~/.ceo/registry.json). -->
     <key>CEO_VAULT</key>
     <string>/Users/CHANGEME/Documents/Obsidian</string>
     <!-- REQUIRED: this host's unique CEO id (install.md §2). launchd does NOT
