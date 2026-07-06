@@ -266,4 +266,32 @@ test_all_active_skill_runner_playbooks_declare_out_pattern() {
     "every active runner:skill playbook must declare a non-empty out_pattern (ceo-cron.sh :1408 fails the run otherwise)"
 }
 
+test_scan_warns_when_vault_shadows_repo_with_differing_copy() {
+  # The silent-stale foot-gun: a vault playbook shadows a repo playbook of the
+  # same name AND the two differ, so scan used the (possibly stale) vault copy.
+  # Scan must emit an actionable warning pointing at `ceo playbook sync`.
+  local repo="$TMP/repo-playbooks"
+  mkdir -p "$repo"
+  export CEO_REPO_PLAYBOOK_DIR="$repo"
+  # vault copy of 'scope-each' already exists (setup); write a DIFFERING repo copy.
+  {
+    echo "---"; echo "name: scope-each"; echo "description: scope-each desc"
+    echo "trigger: chat"; echo "schedule: \"\""; echo "status: active"
+    echo "runner: claude"; echo "scope: each"
+    echo "---"; echo ""; echo "# scope-each"; echo "REPO-SIDE DIVERGENT BODY"
+  } > "$repo/scope-each.md"
+  _run_scan
+  assert_contains "$SCAN_OUT" "ceo playbook sync" \
+    "scan must tell the user to run 'ceo playbook sync' when a stale vault copy shadows a differing repo playbook"
+  assert_contains "$SCAN_OUT" "DIFFERING vault copy" \
+    "scan drift warning must name the differing-shadow condition"
+}
+
+test_scan_no_shadow_drift_warning_when_no_repo_dir() {
+  # Default setup has no repo dir → no shadow possible → no drift warning noise.
+  _run_scan
+  assert_not_contains "$SCAN_OUT" "ceo playbook sync" \
+    "scan must not emit the sync warning when there is no repo dir to shadow"
+}
+
 run_tests
