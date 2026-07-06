@@ -10,6 +10,7 @@ status: active
 discord_report: true
 runner: skill
 skill: weekly-synthesis
+out_pattern: CEO/reports/weekly-synthesis-${TODAY}.md
 ---
 
 # Weekly Synthesis

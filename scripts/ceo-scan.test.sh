@@ -243,4 +243,27 @@ test_scan_warns_on_stale_discord_report_trigger() {
     "scan must not warn about an allow-list entry that IS an active playbook"
 }
 
+test_all_active_skill_runner_playbooks_declare_out_pattern() {
+  # Invariant (ceo-cron.sh runner:skill branch, :1408): a runner:skill playbook
+  # with an empty out_pattern fails at cron time with "runner:skill but no
+  # 'out_pattern' field". weekly-synthesis shipped runner:skill without an
+  # out_pattern and failed silently every Sunday 08:00 until the CEO->Discord
+  # delivery fix surfaced it. Lint the real shipped docs so no skill-runner can
+  # ship without one again (test-expected-from-production-entry-point: reads the
+  # shipped files, does not rebuild the frontmatter).
+  local pdir="$SCRIPT_DIR/../docs/playbooks"
+  assert_file_exists "$pdir/weekly-synthesis.md" "shipped playbook docs must exist"
+  local f fm op offenders=""
+  for f in "$pdir"/*.md; do
+    [ -f "$f" ] || continue
+    fm=$(awk 'NR==1&&$0=="---"{f=1;next} f&&$0=="---"{exit} f{print}' "$f")
+    printf '%s\n' "$fm" | grep -qE '^runner:[[:space:]]*skill[[:space:]]*$' || continue
+    printf '%s\n' "$fm" | grep -qE '^status:[[:space:]]*(archived|disabled|retired)' && continue
+    op=$(printf '%s\n' "$fm" | grep -E '^out_pattern:' | head -1 | sed 's/^out_pattern:[[:space:]]*//')
+    [ -n "$op" ] || offenders="$offenders $(basename "$f")"
+  done
+  assert_eq "$offenders" "" \
+    "every active runner:skill playbook must declare a non-empty out_pattern (ceo-cron.sh :1408 fails the run otherwise)"
+}
+
 run_tests
