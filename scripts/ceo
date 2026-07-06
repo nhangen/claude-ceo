@@ -104,6 +104,64 @@ cmd_next() {
   fi
 }
 
+# Coarse staleness grace (seconds) for a cron schedule "min hour dom month dow".
+# Deliberately generous — the goal is catching a job DEAD FOR DAYS with zero false
+# positives, not precise cron math (which belongs in the daemon's croner). A
+# too-short threshold that false-flags trains the user to ignore doctor.
+_doctor_stale_grace() {
+  local sched="$1" dom dow
+  dom=$(printf '%s\n' "$sched" | awk '{print $3}')
+  dow=$(printf '%s\n' "$sched" | awk '{print $5}')
+  # monthly: a specific day-of-month with any weekday.
+  if [ -n "$dom" ] && [ "$dom" != "*" ] && [ "$dow" = "*" ]; then
+    echo $(( 35 * 86400 )); return
+  fi
+  # weekly: a single specific weekday (no range/list/step → fires once a week).
+  case "$dow" in
+    ''|'*') : ;;
+    *[-,/]*) : ;;
+    *) echo $(( 10 * 86400 )); return ;;
+  esac
+  # daily-ish: daily, sub-daily (*/Nh), or weekday ranges like 1-5. A 4-day grace
+  # clears the Fri→Mon weekend gap of a 1-5 job yet still catches a week-long death.
+  echo $(( 4 * 86400 ))
+}
+
+# Detect scheduled playbooks that silently stopped RUNNING or stopped DELIVERING
+# to Discord. Prints a "✗ ..." line per stale playbook and a trailing
+# "FRESH=<n> STALE=<n>" summary line. Absent signal files (never-run / never-
+# delivered) are treated as pending and NOT flagged, so a newly-enabled playbook
+# doesn't false-alarm. `now` (arg 3) is injectable for deterministic tests.
+_doctor_check_freshness() {
+  local reg="$1" logdir="$2" now="${3:-$(date +%s)}"
+  local fresh=0 stale=0
+  if [ ! -f "$reg" ]; then echo "FRESH=0 STALE=0"; return 0; fi
+  local name sched deliver grace t
+  while IFS='|' read -r name sched deliver; do
+    [ -n "$name" ] || continue
+    grace=$(_doctor_stale_grace "$sched")
+    if [ -f "$logdir/.last-run-$name" ]; then
+      t=$(cat "$logdir/.last-run-$name" 2>/dev/null)
+      case "$t" in ''|*[!0-9]*) t="" ;; esac
+      if [ -n "$t" ] && [ $(( now - t )) -gt "$grace" ]; then
+        echo "✗ playbook '$name' hasn't run in $(( (now - t) / 86400 ))d (schedule: $sched) — cron stopped?"
+        stale=$(( stale + 1 ))
+      elif [ -n "$t" ]; then
+        fresh=$(( fresh + 1 ))
+      fi
+    fi
+    if [ "$deliver" = "true" ] && [ -f "$logdir/.last-deliver-$name" ]; then
+      t=$(cat "$logdir/.last-deliver-$name" 2>/dev/null)
+      case "$t" in ''|*[!0-9]*) t="" ;; esac
+      if [ -n "$t" ] && [ $(( now - t )) -gt "$grace" ]; then
+        echo "✗ playbook '$name' ran but hasn't DELIVERED to Discord in $(( (now - t) / 86400 ))d — delivery gated/broken?"
+        stale=$(( stale + 1 ))
+      fi
+    fi
+  done < <(jq -r '.playbooks[]? | select(.status=="active") | select(.schedule != null and .schedule != "") | "\(.name)|\(.schedule)|\(.discord_report)"' "$reg" 2>/dev/null)
+  echo "FRESH=$fresh STALE=$stale"
+}
+
 cmd_doctor() {
   local ok=0
   local warn=0
@@ -450,6 +508,21 @@ cmd_doctor() {
         ok=$((ok + 1))
       fi
     fi
+  fi
+
+  # playbook run/delivery freshness — a scheduled playbook that silently stopped
+  # running, or (the morning-report bug) runs but silently stopped delivering to
+  # Discord. Complements the daemon-heartbeat check above: that catches the whole
+  # daemon dying; this catches one playbook wedged or gated while the daemon lives.
+  local _fresh_out _fr_stale
+  _fresh_out=$(_doctor_check_freshness "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}" "$CEO_DIR/log")
+  printf '%s\n' "$_fresh_out" | grep '^✗' | sed 's/^/  /'
+  _fr_stale=$(printf '%s\n' "$_fresh_out" | sed -n 's/.*STALE=\([0-9]*\).*/\1/p' | tail -1)
+  if [ "${_fr_stale:-0}" -gt 0 ]; then
+    fail=$(( fail + _fr_stale ))
+  else
+    echo "  ✓ playbook freshness: no scheduled playbook has silently stopped running or delivering"
+    ok=$(( ok + 1 ))
   fi
 
   echo ""
