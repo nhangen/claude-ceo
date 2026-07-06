@@ -582,6 +582,7 @@ cmd_playbook() {
     list) cmd_playbook_list ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
+    sync) cmd_playbook_sync "$@" ;;
     enable) cmd_playbook_enable "$@" ;;
     disable) cmd_playbook_disable "$@" ;;
     assign) cmd_playbook_assign "$@" ;;
@@ -593,6 +594,9 @@ cmd_playbook() {
       echo "  list               Show all registered playbooks with scope + state"
       echo "  info <name>        Show details for one playbook"
       echo "  diff [--quiet]     Detect drift between vault and repo playbooks"
+      echo "  sync [--check]     Reconcile vault playbooks from the repo (repo wins;"
+      echo "                     vault-only playbooks kept). --check: report + exit 1 on"
+      echo "                     drift, no writes."
       echo "  enable <name>      Run this each-scope playbook on THIS host"
       echo "  disable <name>     Stop running this each-scope playbook on THIS host"
       echo "  assign <name> <host>  Assign a single-scope playbook to an owner host"
@@ -1024,6 +1028,111 @@ cmd_playbook_diff() {
   fi
 }
 
+# Reconcile the syncthing vault playbook copies with the git repo. The repo
+# (git-reviewed) is the source of truth; scan reads the vault copy FIRST and
+# lets it shadow the repo, so a stale vault copy silently masks a merged repo
+# change (the weekly-synthesis incident). This is the fix `ceo playbook diff`
+# only diagnoses. One-way repo->vault: overwrite stale/missing vault copies,
+# never touch vault-only (intentional local) playbooks. Exit: 0 ok / 2 on
+# missing repo dir or copy failure; with --check, 1 signals drift (no writes).
+cmd_playbook_sync() {
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo playbook sync}"
+  local vault_dir="$CEO_DIR/playbooks"
+  local repo_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
+  local check=0
+  for arg in "$@"; do
+    case "$arg" in
+      --check|--dry-run) check=1 ;;
+    esac
+  done
+
+  if [ ! -d "$repo_dir" ]; then
+    echo "ERROR: Repo playbooks directory not found at $repo_dir" >&2
+    return 2
+  fi
+
+  # Multi-host safety (verify-master-parity-before-branch-work): the vault is
+  # syncthing-synced across hosts. Syncing from a repo clone that is BEHIND its
+  # upstream would copy stale playbooks into the vault and propagate them to
+  # every other host. Warn (don't hard-fail — a detached/CI clone may have no
+  # upstream, which is fine) before writing.
+  if [ "$check" -eq 0 ] && command -v git >/dev/null 2>&1 \
+     && git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$repo_dir" fetch -q 2>/dev/null || true
+    local _upstream _local _remote
+    _upstream=$(git -C "$repo_dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "")
+    if [ -n "$_upstream" ]; then
+      _local=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || echo "")
+      _remote=$(git -C "$repo_dir" rev-parse "$_upstream" 2>/dev/null || echo "")
+      if [ -n "$_local" ] && [ -n "$_remote" ] && [ "$_local" != "$_remote" ] \
+         && git -C "$repo_dir" merge-base --is-ancestor HEAD "$_remote" 2>/dev/null; then
+        echo "  WARN  repo clone is BEHIND $_upstream — syncing now may propagate stale playbooks to all synced hosts. Pull first." >&2
+      fi
+    fi
+  fi
+
+  mkdir -p "$vault_dir"
+
+  local nullglob_was_set=0
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -s nullglob
+
+  local synced=0 uptodate=0 vault_only="" rc=0
+  local f base dst tmp
+  # repo -> vault
+  for f in "$repo_dir"/*.md; do
+    base="${f##*/}"
+    case "$base" in *.sync-conflict-*) continue ;; esac
+    dst="$vault_dir/$base"
+    if [ -f "$dst" ] && cmp -s "$f" "$dst"; then
+      uptodate=$((uptodate + 1))
+      continue
+    fi
+    if [ "$check" -eq 1 ]; then
+      if [ -f "$dst" ]; then echo "Would update: $base"; else echo "Would create: $base"; fi
+      synced=$((synced + 1))
+      continue
+    fi
+    # Atomic within the vault fs: write a temp sibling, then rename. A crash
+    # mid-copy must never leave scan a half-written playbook to parse.
+    tmp=$(mktemp "$vault_dir/.sync.XXXXXX") || { echo "ERROR: mktemp failed in $vault_dir" >&2; rc=2; break; }
+    if cp "$f" "$tmp" && mv -f "$tmp" "$dst"; then
+      echo "Synced: $base"
+      synced=$((synced + 1))
+    else
+      rm -f "$tmp"
+      echo "ERROR: failed to sync $base" >&2
+      rc=2; break
+    fi
+  done
+
+  # Report vault-only playbooks (never delete): a repo playbook deleted upstream
+  # leaves a stale vault copy that keeps shadowing, and it is indistinguishable
+  # from an intentional local-only playbook — so surface, don't auto-prune.
+  for f in "$vault_dir"/*.md; do
+    base="${f##*/}"
+    case "$base" in *.sync-conflict-*) continue ;; esac
+    [ -f "$repo_dir/$base" ] && continue
+    vault_only="${vault_only} $base"
+  done
+
+  [ "$nullglob_was_set" -eq 0 ] && shopt -u nullglob
+
+  if [ -n "$vault_only" ]; then
+    echo "Vault-only (kept — review: intentional local playbook, or retired upstream?):$vault_only"
+  fi
+
+  [ "$rc" -ne 0 ] && return "$rc"
+
+  if [ "$check" -eq 1 ]; then
+    echo "Check: $uptodate up-to-date, $synced would change"
+    [ "$synced" -gt 0 ] && return 1
+    return 0
+  fi
+  echo "Sync: $synced synced, $uptodate up-to-date"
+  return 0
+}
+
 cmd_playbook_scan() {
   # Extract a scalar field from YAML frontmatter without requiring yq.
   # Handles quoted and unquoted values; returns empty string if absent.
@@ -1161,6 +1270,7 @@ cmd_playbook_scan() {
   local seen_names_vault=""
   local seen_names_repo=""
   local shadowed=0
+  local shadowed_drift=0
 
   local scan_dirs=( "$playbook_dir" )
   [ -d "$repo_playbook_dir" ] && scan_dirs+=( "$repo_playbook_dir" )
@@ -1193,6 +1303,12 @@ cmd_playbook_scan() {
       if [ "$from_repo" = "1" ]; then
         echo "  SHADOW $basename (vault override of repo playbook '$name')"
         shadowed=$((shadowed + 1))
+        # A shadow whose vault copy DIFFERS from the repo is the silent-stale
+        # foot-gun: scan used the (possibly outdated) vault version. Flag it so
+        # the fix is actionable rather than buried in a SHADOW line.
+        if [ ! -f "$playbook_dir/$basename" ] || ! cmp -s "$f" "$playbook_dir/$basename"; then
+          shadowed_drift=$((shadowed_drift + 1))
+        fi
       else
         echo "  DUP    $basename (duplicate name '$name')"
         skipped=$((skipped + 1))
@@ -1497,6 +1613,10 @@ cmd_playbook_scan() {
         fi
       done < <(jq -r --arg k "$_key" '(.[$k] // [])[]' "$_settings_file" 2>/dev/null)
     done
+  fi
+
+  if [ "$shadowed_drift" -gt 0 ]; then
+    echo "  WARN  $shadowed_drift repo playbook(s) shadowed by a DIFFERING vault copy — scan used the vault version, which may be stale. Run 'ceo playbook sync' to reconcile from the repo." >&2
   fi
 
   if [ "$dry_run" -eq 1 ]; then
