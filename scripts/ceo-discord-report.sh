@@ -172,6 +172,15 @@ total=0
 sent=$(_post_report "**CEO full report: ${TRIGGER} — ${TODAY} (${HOSTNAME_SHORT})**" "$CONTENT")
 total=$((total + sent))
 
+# Delivery-success signal for `ceo doctor`: we passed the enabled-gate and posted
+# the main report, so record when this trigger last DELIVERED. If the gate had
+# blocked us (the allow-list bug that silently killed the morning report for a
+# week), we'd have exited above and this timestamp would go stale — which is
+# exactly what doctor watches for.
+_deliver_dir="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/log"
+mkdir -p "$_deliver_dir" 2>/dev/null || true
+date +%s > "$_deliver_dir/.last-deliver-${TRIGGER}" 2>/dev/null || true
+
 # Prior-day full report append (morning-brief only by default). The Obsidian
 # report keeps its existing front matter and is untouched; the complete prior-day
 # report is delivered here, on Discord only. Gate on its own allow-list so other

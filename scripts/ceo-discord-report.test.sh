@@ -242,4 +242,28 @@ test_no_registry_flag_field_falls_back_to_settings() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_records_last_deliver_timestamp_on_successful_post() {
+  # The signal `ceo doctor` watches: a successful delivery writes a per-trigger
+  # timestamp. Its ABSENCE/staleness is how the watchdog detects a report that
+  # runs but silently stops posting.
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  printf 'full report body' | "$REPORT" morning-brief >/dev/null 2>&1
+  local f="$CEO_DIR/log/.last-deliver-morning-brief"
+  assert_eq "$([ -f "$f" ] && echo yes || echo no)" "yes" \
+    "a successful post must record .last-deliver-<trigger>"
+  assert_eq "$(cat "$f" 2>/dev/null | grep -cE '^[0-9]+$')" "1" \
+    ".last-deliver must hold a numeric epoch"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_no_last_deliver_when_gated_out() {
+  # The morning-report bug: trigger not in the allow-list → gated out → no post.
+  # No .last-deliver written → doctor sees it go stale (exactly the intent).
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  printf 'scan body' | "$REPORT" morning-scan >/dev/null 2>&1
+  assert_eq "$([ -f "$CEO_DIR/log/.last-deliver-morning-scan" ] && echo yes || echo no)" "no" \
+    "a gated-out trigger must NOT record a delivery (so its staleness surfaces)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
