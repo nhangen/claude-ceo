@@ -30,8 +30,12 @@ setup() {
 
   # LLM propose stub. Controlled by PROPOSE_QID / PROPOSE_CONF / PROPOSE_FAIL.
   mkdir -p "$TEST_HOME/stubs"
+  # The stub records every invocation to PROPOSE_INVOKED_LOG so a test can assert
+  # a bullet did NOT reach the LLM (discretion egress guard).
+  export PROPOSE_INVOKED_LOG="$TEST_HOME/propose-invoked"
   cat > "$TEST_HOME/stubs/propose-stub.sh" << 'STUB'
 #!/bin/bash
+[ -n "${PROPOSE_INVOKED_LOG:-}" ] && echo called >> "$PROPOSE_INVOKED_LOG"
 [ -n "${PROPOSE_FAIL:-}" ] && exit 1
 cat >/dev/null   # consume the open-questions list on stdin
 if [ -n "${PROPOSE_QID:-}" ]; then
@@ -44,6 +48,8 @@ STUB
   unset PROPOSE_QID PROPOSE_CONF PROPOSE_FAIL
 }
 
+proposer_was_invoked() { [ -f "$PROPOSE_INVOKED_LOG" ] && echo yes || echo no; }
+
 teardown() {
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
@@ -51,7 +57,7 @@ teardown() {
   unset CEO_VAULT CEO_DIR CEO_HOSTNAME TEST_HOME HOME_BACKUP PATH_BACKUP
   unset CEO_NATHAN_DROPBOX CEO_PENDING_FILE CEO_NATHAN_EXPIRY_DAYS
   unset CEO_NATHAN_CONFIDENCE_MIN CEO_NATHAN_NOW_EPOCH CEO_NATHAN_PROPOSE_CMD
-  unset PROPOSE_QID PROPOSE_CONF PROPOSE_FAIL
+  unset PROPOSE_QID PROPOSE_CONF PROPOSE_FAIL PROPOSE_INVOKED_LOG
 }
 
 # ---------- fixtures ----------
@@ -289,6 +295,82 @@ test_nothing_dropped_no_match() {
   run_ingest
 
   assert_contains "$(NEEDS_REVIEW)" "a bullet the model cannot place" "an unmatched candidate is never silently dropped"
+}
+
+# --- regression tests from the mini-panel review of PR #248 ---
+
+# Finding A: a multi-word proposer command (production default is "ceo llm-propose")
+# must be invoked as argv, not sought as one binary with an embedded space.
+test_multiword_proposer_command_is_invoked() {
+  export CEO_NATHAN_PROPOSE_CMD="bash $TEST_HOME/stubs/propose-stub.sh"
+  write_pending "- [ ] [ask] (qid: q-1) top goal"
+  write_dropbox "- an answer"
+  PROPOSE_QID="q-1" PROPOSE_CONF="0.9" run_ingest
+
+  assert_contains "$(PROPOSALS)" "q-1" "a multi-word proposer command must still stage a proposal"
+  assert_eq "$(proposer_was_invoked)" "yes" "the multi-word command must actually run"
+}
+
+# Finding C: the discretion guard on the CANDIDATE path (the default classification)
+# must hold — a flagged bullet must never reach the external LLM proposer.
+test_discretion_candidate_path_no_llm_egress() {
+  export CEO_DISCRETION_DENY="SecretClientCorp"
+  write_pending "- [ ] [ask] (qid: q-1) top goal"
+  write_dropbox "- the SecretClientCorp merger is my top priority"   # candidate path (no note:)
+  PROPOSE_QID="q-1" PROPOSE_CONF="0.9" run_ingest
+  unset CEO_DISCRETION_DENY
+
+  assert_eq       "$(proposer_was_invoked)" "no" "a flagged candidate must NOT reach the LLM proposer"
+  assert_not_contains "$(PROPOSALS)"  "SecretClientCorp" "flagged candidate not staged"
+  assert_not_contains "$(ARCHIVE)"    "SecretClientCorp" "flagged candidate content not archived"
+  assert_contains     "$(NEEDS_REVIEW)" "withheld" "flagged candidate surfaced, content withheld"
+}
+
+# Finding B: if the Pending.md commit write fails, the ok must NOT be reported as
+# committed (no confirm-line deletion, no profile write) and must surface.
+test_commit_write_failure_not_reported_committed() {
+  if [ "$(id -u)" = "0" ]; then assert_eq root root "perms test skipped as root"; return; fi
+  write_pending "- [ ] [ask] (qid: q-1) top goal"
+  write_dropbox "- an answer"
+  PROPOSE_QID="q-1" PROPOSE_CONF="0.9" run_ingest
+  local nb; nb=$(first_nb)
+  chmod 500 "$CEO_VAULT"                 # Pending.md's dir (vault root) unwritable → mv fails
+  write_dropbox "- an answer" "- ok $nb"
+  run_ingest
+  chmod 700 "$CEO_VAULT"                 # restore for teardown's rm -rf
+
+  assert_not_contains "$(PENDING)"      "[done]"        "a failed Pending write must not look committed"
+  assert_not_contains "$(PROFILE_INBOX)" "an answer"    "no profile answer staged when the commit failed"
+  assert_contains     "$(NEEDS_REVIEW)" "commit failed" "commit failure surfaced to needs-review"
+}
+
+# Finding E: discretion re-checked at commit time — a denylist term added AFTER a
+# bullet was staged must still block the answer from reaching Profile/_inbox.
+test_discretion_rechecked_on_confirm() {
+  write_pending "- [ ] [ask] (qid: q-1) top goal"
+  write_dropbox "- the Zephyr project is my focus"
+  PROPOSE_QID="q-1" PROPOSE_CONF="0.9" run_ingest      # no denylist yet → staged
+  local nb; nb=$(first_nb)
+  export CEO_DISCRETION_DENY="Zephyr"                  # term added after staging
+  write_dropbox "- the Zephyr project is my focus" "- ok $nb"
+  run_ingest
+  unset CEO_DISCRETION_DENY
+
+  assert_not_contains "$(PROFILE_INBOX)" "Zephyr" "a term added after staging must not leak on confirm"
+  assert_not_contains "$(PENDING)"       "[done]" "flagged-on-confirm answer is not committed"
+  assert_contains     "$(NEEDS_REVIEW)"  "withheld" "held with content withheld"
+}
+
+# L2: a sync conflict is surfaced once, not re-surfaced on every subsequent run.
+test_sync_conflict_surfaced_once() {
+  write_pending "- [ ] [ask] (qid: q-1) x"
+  write_dropbox "- note: primary"
+  { echo "## For the CEO"; echo "- note: conflicted"; } \
+    > "$CEO_DIR/from-nathan.sync-conflict-20260707-a.md"
+  run_ingest
+  run_ingest
+
+  assert_eq "$(NEEDS_REVIEW | grep -c 'sync conflict')" "1" "a sync conflict is surfaced once, not every run"
 }
 
 run_tests

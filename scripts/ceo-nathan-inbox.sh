@@ -143,8 +143,12 @@ _stage_proposal() {  # nb qid hash conf bullet
 
 _mark_proposal() {  # nb newstatus
   local nb="$1" st="$2" tmp
-  tmp="$(mktemp)"
-  awk -F'|' -v OFS='|' -v nb="$nb" -v st="$st" '$1==nb {$6=st} {print}' "$PROPOSALS" > "$tmp" && mv "$tmp" "$PROPOSALS"
+  tmp="$(mktemp)" || { echo "ERROR: mktemp for _mark_proposal" >&2; return 1; }
+  if awk -F'|' -v OFS='|' -v nb="$nb" -v st="$st" '$1==nb {$6=st} {print}' "$PROPOSALS" > "$tmp"; then
+    mv "$tmp" "$PROPOSALS"
+  else
+    rm -f "$tmp"; return 1
+  fi
 }
 
 _mint_nb() {
@@ -169,8 +173,19 @@ handle_confirm() {  # nb
     _needs_review "confirmation $nb changed since you saw it (binding drift) — re-propose"; return
   fi
   bullet="$(_b64dec "$(_prop_field "$line" 7)")"
+  if [ -z "$bullet" ]; then _needs_review "confirm $nb — answer empty/undecodable; re-issue \`ok $nb\`"; return; fi
+  # Re-check discretion at commit time: the denylist reloads each run, so a term
+  # added after the bullet was staged must still block the answer from egressing
+  # to the (synced) Profile/_inbox.
+  if _is_flagged "$bullet"; then
+    _needs_review "confirm $nb held — answer now matches the discretion denylist (content withheld)"; return
+  fi
   q="$(_question_for_qid "$qid")"
-  _commit_ask_done "$qid" "$(_date_ymd "$NOW_EPOCH")" "$bullet"
+  # Only tear down the proposal + stage the profile answer if the Pending.md
+  # commit actually succeeded — otherwise the explicit ok is silently lost.
+  if ! _commit_ask_done "$qid" "$(_date_ymd "$NOW_EPOCH")" "$bullet"; then
+    _needs_review "commit failed for $nb (could not write Pending.md) — re-issue \`ok $nb\` to retry"; return
+  fi
   _remove_confirm_line "$nb"
   _mark_proposal "$nb" committed
   printf -- '- (%s) answered "%s": %s\n' "$(_date_ymd "$NOW_EPOCH")" "$q" "$bullet" >> "$PROFILE_INBOX"
@@ -188,17 +203,26 @@ handle_correct() {  # nb action(note|dismiss)
   _mark_proposal "$nb" "$action"
   if [ "$action" = "note" ]; then
     bullet="$(_b64dec "$(_prop_field "$line" 7)")"
-    printf -- '- %s\n' "$bullet" >> "$CANDIDATES"
+    if _is_flagged "$bullet"; then
+      _needs_review "correction $nb → note held — content now matches the discretion denylist (withheld)"
+    else
+      printf -- '- %s\n' "$bullet" >> "$CANDIDATES"
+    fi
   fi
 }
 
 handle_candidate() {  # bullet
-  local bullet="$1" out qid conf nb hash q
+  local bullet="$1" out qid conf nb hash q prc
+  local -a pcmd
   if _is_flagged "$bullet"; then
     _needs_review "discretion-flagged candidate held (content withheld) — hash $(_hash "$bullet")"
     return
   fi
-  out="$(printf '%s' "$OPEN_Q_LIST" | "$PROPOSE_CMD" "$bullet" 2>/dev/null)"
+  # PROPOSE_CMD may be multi-word (the default is "ceo llm-propose"): split into
+  # argv so bash does not try to exec a single binary with an embedded space.
+  read -ra pcmd <<< "$PROPOSE_CMD"
+  out="$(printf '%s' "$OPEN_Q_LIST" | "${pcmd[@]}" "$bullet" 2>/dev/null)"; prc=$?
+  if [ "$prc" -ne 0 ]; then _needs_review "LLM proposer unavailable (exit $prc) — held: $bullet"; return; fi
   qid="$(printf '%s' "$out" | head -1 | cut -f1)"
   conf="$(printf '%s' "$out" | head -1 | cut -f2)"
   if [ -z "$qid" ]; then _needs_review "unmatched: $bullet"; return; fi
