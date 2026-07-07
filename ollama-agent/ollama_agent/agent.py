@@ -17,6 +17,43 @@ def _normalize_args(raw):
     return {}
 
 
+def _tool_calls_from_content(content):
+    """Recover tool calls a model serialized into `content` instead of the native
+    `tool_calls` field.
+
+    Some ollama chat templates (e.g. qwen2.5-coder) emit a correct
+    ``{"name": ..., "arguments": ...}`` object as assistant *text* while leaving
+    ``message.tool_calls`` empty, so the native read at the drop site loses the
+    call and the loop ends as if the model answered in prose. This parses that
+    object (optionally inside a ``` fence) back into the native envelope shape so
+    the dispatch loop handles it identically.
+
+    Returns [] when content is prose or JSON that isn't a tool call, so a
+    text-only model (e.g. glm, which narrates instead of calling) still completes
+    as a normal no-call turn rather than crashing. Requires both a non-empty
+    string ``name`` and an ``arguments`` key to avoid misreading an ordinary JSON
+    answer that merely happens to carry a ``name`` field as a call."""
+    if not isinstance(content, str):
+        return []
+    text = content.strip()
+    if text.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and a trailing fence.
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    items = parsed if isinstance(parsed, list) else [parsed]
+    calls = []
+    for it in items:
+        if isinstance(it, dict) and isinstance(it.get("name"), str) and it["name"] and "arguments" in it:
+            calls.append({"function": {"name": it["name"], "arguments": it["arguments"]}})
+    return calls
+
+
 def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
     """Run one task to completion (a turn with no tool calls) or the turn cap.
 
@@ -39,6 +76,11 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
         transcript.append(msg)
         messages.append(msg)
         calls = msg.get("tool_calls") or []
+        if not calls:
+            # Fallback: some templates serialize the call into content with an
+            # empty native tool_calls field — recover it before concluding the
+            # model answered in prose.
+            calls = _tool_calls_from_content(msg.get("content"))
         if not calls:
             completed = True
             break
