@@ -224,9 +224,20 @@ _record_success() {
   # ticket-triage-autopilot (every 30m, silent-by-design v2 cache adapter) would
   # otherwise flood the notify webhook when notify_events="all".
   case "$TRIGGER" in
-    disk-monitor|ticket-triage-autopilot) SUCCESS_NOTIFY=0 ;;
+    disk-monitor) SUCCESS_NOTIFY=0 ;;
     *) SUCCESS_NOTIFY=1 ;;
   esac
+  # A script-runner playbook may signal its outcome via CEO_RUNNER_OUTCOME_FILE
+  # so a heartbeat tick that did no work stays silent while a tick that did real
+  # work still notifies (#173): "fired" => notify, "noop" => silent. Absent or
+  # any other value leaves the per-trigger default above. This is the general
+  # mechanism that retires per-playbook hardcodes like the disk-monitor case.
+  if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ] && [ -f "$CEO_RUNNER_OUTCOME_FILE" ]; then
+    case "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" in
+      fired) SUCCESS_NOTIFY=1 ;;
+      noop)  SUCCESS_NOTIFY=0 ;;
+    esac
+  fi
   if [ "$SUCCESS_NOTIFY" = "1" ] && [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
     "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || \
       echo "$(date): WARN — ceo-notify.sh success exited non-zero for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
@@ -1379,15 +1390,23 @@ if [ "$RUNNER" = "script" ]; then
     exit 0
   fi
   _v "Runner: script — exec $SCRIPT_PATH"
-  export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
+  # Outcome channel (#173): a script may write "fired"/"noop" here to tell
+  # _record_success whether this tick did real work worth a success notify.
+  CEO_RUNNER_OUTCOME_FILE="$(mktemp)"
+  export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER CEO_RUNNER_OUTCOME_FILE
   SCRIPT_EXIT=0
   "$SCRIPT_FULL" >>"$LOG_DIR/cron-stdout.log" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
+  # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
+  # trap set earlier at the top of the run. rm before each exit instead so the
+  # per-tick outcome tmp file doesn't leak.
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
     _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit "$SCRIPT_EXIT"
   fi
   _record_success
+  rm -f "$CEO_RUNNER_OUTCOME_FILE"
   exit 0
 fi
 

@@ -52,13 +52,18 @@ print(json.dumps({"owner": args[0], "events": ev, "unknown": [], "since": None})
 PY
 
 # --- 1. Transition fires once; real consume means run 2 is silent ---
+# CEO_RUNNER_OUTCOME_FILE is the #173 channel: a firing tick writes "fired"
+# (cron notifies), a clear tick writes "noop" (silent). Assert both.
+export CEO_RUNNER_OUTCOME_FILE="$WORK/outcome"
 export STUB_CURRENT="nhangen/a#2"
 bash "$SCRIPT" >/dev/null 2>&1 || fail "run 1 exited non-zero"
 [ "$(grep -cF 'triage-surface:nhangen/a#2' "$INBOX" 2>/dev/null || echo 0)" -eq 1 ] || fail "run 1: expected 1 inbox line"
 grep -q '^status: firing' "$STATE" || fail "run 1: not firing"
+[ "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" = "fired" ] || fail "run 1 (firing) must write 'fired' outcome (#173)"
 bash "$SCRIPT" >/dev/null 2>&1 || fail "run 2 exited non-zero"
 [ "$(grep -cF 'triage-surface:nhangen/a#2' "$INBOX" 2>/dev/null || echo 0)" -eq 1 ] || fail "run 2: duplicate line"
 grep -q '^status: clear' "$STATE" || fail "run 2: not clear (real consume should have emptied events)"
+[ "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" = "noop" ] || fail "run 2 (clear) must write 'noop' outcome (#173)"
 
 # --- 2. Append failure must NOT consume the transition (catches mark-before-write) ---
 export STUB_CURRENT="nhangen/a#2,nhangen/a#3"   # #3 is new
@@ -90,6 +95,7 @@ rm -f "$STUB_MARK_FILE"; : > "$INBOX"
 export CEO_TRIAGE_SKILL_DIR="$WORK/nonexistent"
 bash "$SCRIPT" >/dev/null 2>&1 || fail "missing-skill run should exit 0"
 grep -q 'last_error: skill_not_found' "$STATE" || fail "missing skill not recorded"
+[ "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" = "noop" ] || fail "skill-not-found early exit must leave 'noop' outcome (#173 default covers every exit path)"
 export CEO_TRIAGE_SKILL_DIR="$SKILL"
 
 # --- 6. Unknown-priority (closed set): escalate once ---
