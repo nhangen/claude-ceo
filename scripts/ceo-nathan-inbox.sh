@@ -32,7 +32,11 @@ HOST="${CEO_HOSTNAME:-$(hostname -s)}"
 
 DROPBOX="${CEO_NATHAN_DROPBOX:-$CEO_DIR/from-nathan.md}"
 PENDING="${CEO_PENDING_FILE:-$VAULT/Pending.md}"
-PROPOSE_CMD="${CEO_NATHAN_PROPOSE_CMD:-ceo llm-propose}"
+# The matcher is the installed Claude Code harness, headless: `claude -p`. No
+# wrapper, no subprocess dressing — the harness IS the model. CEO_NATHAN_PROPOSE_CMD
+# overrides the command (tests point it at a stub).
+PROPOSE_MODEL="${CEO_MODEL:-sonnet}"
+PROPOSE_CMD="${CEO_NATHAN_PROPOSE_CMD:-claude -p --model $PROPOSE_MODEL}"
 CONF_MIN="${CEO_NATHAN_CONFIDENCE_MIN:-0.6}"
 EXPIRY_DAYS="${CEO_NATHAN_EXPIRY_DAYS:-7}"
 
@@ -212,20 +216,34 @@ handle_correct() {  # nb action(note|dismiss)
 }
 
 handle_candidate() {  # bullet
-  local bullet="$1" out qid conf nb hash q prc
+  local bullet="$1" out prc line qid conf nb hash q prompt
   local -a pcmd
   if _is_flagged "$bullet"; then
     _needs_review "discretion-flagged candidate held (content withheld) — hash $(_hash "$bullet")"
     return
   fi
-  # PROPOSE_CMD may be multi-word (the default is "ceo llm-propose"): split into
-  # argv so bash does not try to exec a single binary with an embedded space.
+  # Ask the harness which open question this bullet answers. It returns one line
+  # "<qid> <confidence>" (or NONE). qid-legitimacy and the confidence floor are
+  # validated below — the harness is not trusted to enforce them.
+  prompt="Match this note to at most one of the open questions it answers.
+
+NOTE:
+$bullet
+
+OPEN QUESTIONS (id<TAB>text):
+$OPEN_Q_LIST
+
+Reply with ONE line: the question id, a space, your confidence 0.0-1.0, using an
+id from the list. If none apply, reply with exactly: NONE. No other text."
+  # PROPOSE_CMD is multi-word (`claude -p --model …`): split into argv.
   read -ra pcmd <<< "$PROPOSE_CMD"
-  out="$(printf '%s' "$OPEN_Q_LIST" | "${pcmd[@]}" "$bullet" 2>/dev/null)"; prc=$?
-  if [ "$prc" -ne 0 ]; then _needs_review "LLM proposer unavailable (exit $prc) — held: $bullet"; return; fi
-  qid="$(printf '%s' "$out" | head -1 | cut -f1)"
-  conf="$(printf '%s' "$out" | head -1 | cut -f2)"
-  if [ -z "$qid" ]; then _needs_review "unmatched: $bullet"; return; fi
+  out="$(printf '%s' "$prompt" | "${pcmd[@]}" 2>/dev/null)"; prc=$?
+  if [ "$prc" -ne 0 ]; then _needs_review "LLM harness unavailable (exit $prc) — held: $bullet"; return; fi
+  line="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | head -1)"
+  # shellcheck disable=SC2086  # intentional split: fields are qid + confidence
+  set -- $line
+  case "${1:-}" in ""|NONE|none|None) _needs_review "unmatched: $bullet"; return ;; esac
+  qid="$1"; conf="${2:-0}"
   if ! _qid_is_open "$qid"; then _needs_review "proposed qid ($qid) not an open question — held: $bullet"; return; fi
   if ! awk -v c="$conf" -v m="$CONF_MIN" 'BEGIN{exit !((c+0) >= (m+0))}'; then
     _needs_review "low-confidence ($conf) match — held: $bullet"; return
