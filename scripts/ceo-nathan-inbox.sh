@@ -116,13 +116,28 @@ _pending_rewrite() {  # reads an awk program on $1, atomically rewrites Pending
 # egress, so no discretion concern. Runs before the open-question map is built.
 _autostamp_qids() {
   [ -f "$PENDING" ] || return 0
-  local tmp line qtext qid changed=0
+  local tmp line qtext base qid n used changed=0
   local ask_re='^- \[ \] \[ask\]'
   tmp="$(mktemp)" || { echo "ERROR: mktemp for qid autostamp" >&2; return 1; }
+  # qids already present in the file — never reuse. (Uniqueness is only required
+  # among currently-open questions, but seeding from every token is safe.)
+  used="$(grep -oE '\(qid: [^)]+\)' "$PENDING" 2>/dev/null | sed -E 's/^\(qid: (.+)\)$/\1/')"
   while IFS= read -r line || [ -n "$line" ]; do
     if [[ $line =~ $ask_re ]] && [[ $line != *'(qid:'* ]] && [[ $line != *'[confirm]'* ]]; then
       qtext="$(printf '%s' "$line" | sed -E 's/^- \[ \] \[ask\][[:space:]]*//')"
-      qid="q-$(_hash "$qtext" | cut -c1-6)"
+      base="$(_hash "$qtext")"
+      n=6; qid="q-$(printf '%s' "$base" | cut -c1-6)"
+      # Guarantee the minted qid is unique among open + already-assigned qids, so
+      # a later `ok` can never close two questions at once (confirm invariant).
+      # Distinct text diverges as the sha1 prefix lengthens; byte-identical
+      # questions exhaust the 40-char hash, then fall back to an -N suffix.
+      while printf '%s\n' "$used" | grep -qxF "$qid"; do
+        n=$((n + 1))
+        if [ "$n" -le 40 ]; then qid="q-$(printf '%s' "$base" | cut -c1-"$n")"
+        else qid="q-$base-$n"; fi
+      done
+      used="$used
+$qid"
       printf -- '- [ ] [ask] (qid: %s) %s\n' "$qid" "$qtext" >> "$tmp"
       changed=1
     else

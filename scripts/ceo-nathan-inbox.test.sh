@@ -422,6 +422,17 @@ test_autostamp_leaves_existing_qid_untouched() {
   assert_eq "$(PENDING | grep -o '(qid:' | wc -l | tr -d ' ')" "1" "no second qid added to an already-tagged line"
 }
 
+test_autostamp_disambiguates_identical_questions() {
+  # Two byte-identical open [ask] lines hash to the same value → must NOT share a
+  # qid, or a single `ok` would silently close both (confirm-before-commit invariant).
+  write_pending "- [ ] [ask] same question text" "- [ ] [ask] same question text"
+  write_dropbox
+  run_ingest
+  assert_eq "$(PENDING | grep -c '^- \[ \] \[ask\] (qid: q-')" "2" "both identical [ask] lines are stamped"
+  assert_eq "$(PENDING | grep -oE '\(qid: [^)]+\)' | sort -u | wc -l | tr -d ' ')" "2" \
+    "identical questions get DISTINCT qids — no collision, no silent double-close"
+}
+
 test_autostamp_skips_confirm_lines() {
   local confirm='- [ ] [ask] [confirm] "b" → answers "q"? Reply `ok nb-1` <!-- nathan-inbox nb:nb-1 qid:q-1 h:abc -->'
   write_pending "- [ ] [ask] (qid: q-1) real question" "$confirm"
