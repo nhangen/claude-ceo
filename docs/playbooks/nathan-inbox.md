@@ -102,12 +102,14 @@ supervision) are later subsystems. Design lives in Obsidian, not the repo.
 
 ## Documented gaps
 
-- The bounded LLM proposal (`CEO_NATHAN_PROPOSE_CMD`, default `ceo llm-propose`)
-  is the only non-deterministic step. If it fails or is unavailable, candidates
-  fall through to needs-review — no silent loss. Every other path is
-  deterministic bash and unit-tested. The `ceo llm-propose` CLI itself is not yet
-  implemented (follow-up); until then set `CEO_NATHAN_PROPOSE_CMD` to a working
-  proposer or every candidate lands in needs-review.
+- The match is the only non-deterministic step. It uses the **installed Claude
+  Code harness** directly — headless `claude -p` (override with
+  `CEO_NATHAN_PROPOSE_CMD`, default `claude -p --model $CEO_MODEL`) — not a
+  wrapper or a spawned CEO subprocess. The harness returns one line
+  `<qid> <confidence>` (or `NONE`); the ingest validates the qid against the open
+  set and applies the confidence floor. If the harness fails/unavailable, the
+  candidate falls through to needs-review — no silent loss. Every other path is
+  deterministic bash and unit-tested.
 - **No lock:** a cron run racing a manual `ceo cron nathan-inbox` could read the
   seen-set before either appends and double-propose one bullet. `scope: single`
   on one scheduler makes this rare; a `flock` guard is a follow-up.
