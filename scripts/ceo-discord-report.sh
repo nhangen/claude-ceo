@@ -148,12 +148,12 @@ _post_report() {
     }
     END { flush() }
   '
-  local sent=0 chunk_file chunk message payload
+  local sent=0 idx=0 chunk_file chunk message payload http_code
   for chunk_file in "$cdir"/chunk-*.txt; do
     [ -f "$chunk_file" ] || continue
     chunk=$(cat "$chunk_file")
-    sent=$((sent + 1))
-    if [ "$sent" -eq 1 ]; then
+    idx=$((idx + 1))
+    if [ "$idx" -eq 1 ]; then
       message="$title
 
 $chunk"
@@ -162,8 +162,13 @@ $chunk"
     fi
     payload=$(jq -n --arg content "$message" \
       '{username: "CEO Report", content: $content}')
-    curl -sS -o /dev/null -X POST -H "Content-Type: application/json" \
-      --max-time 10 -d "$payload" "$WEBHOOK" >/dev/null 2>&1 || true
+    http_code=$(curl -sS -X POST -H "Content-Type: application/json" \
+      --max-time 10 -w '%{http_code}' -o /dev/null -d "$payload" "$WEBHOOK" 2>/dev/null) || http_code=000
+    if [[ $http_code =~ ^2[0-9]{2}$ ]]; then
+      sent=$((sent + 1))
+    else
+      _dlog "post FAILED chunk=$idx status=$http_code"
+    fi
   done
   printf '%s' "$sent"
 }
@@ -179,7 +184,9 @@ total=$((total + sent))
 # exactly what doctor watches for.
 _deliver_dir="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/log"
 mkdir -p "$_deliver_dir" 2>/dev/null || true
+if [ "$total" -gt 0 ]; then
 date +%s > "$_deliver_dir/.last-deliver-${TRIGGER}" 2>/dev/null || true
+fi
 
 # Prior-day full report append (morning-brief only by default). The Obsidian
 # report keeps its existing front matter and is untouched; the complete prior-day
