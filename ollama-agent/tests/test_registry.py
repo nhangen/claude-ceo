@@ -272,11 +272,14 @@ def test_gate_min_score_zero_is_a_real_threshold():
     assert not ok2
 
 
-def test_committed_registry_parses():
-    # The shipped canonical registry must load without error, so a malformed
-    # hand-edit fails CI here rather than at first cron dispatch.
+def test_committed_registry_ships_empty():
+    # The shipped canonical registry must load without error AND be empty: it is
+    # governance scaffolding, not a place to register tasks. Asserting == {} (not
+    # just "is a dict") also catches a stray high-stakes entry, which the
+    # delegable-tier guard below would let slip. A malformed hand-edit fails here
+    # (load_registry raises) rather than at first cron dispatch.
     specs = load_registry(str(COMMITTED_REGISTRY))
-    assert isinstance(specs, dict)
+    assert specs == {}
 
 
 def test_committed_registry_enables_no_delegable_tier():

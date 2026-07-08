@@ -245,7 +245,7 @@ def test_cli_registered_deterministic_task_applies_model_and_runs(tmp_path, monk
                                        "tier": "deterministic", "tools": ["run_shell", "git"]})
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--ungated", "--task", "do triage", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--task", "do triage", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "triage"])
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"run_shell", "git"}   # restricted to allowlist
@@ -261,7 +261,7 @@ def test_cli_high_stakes_task_is_rejected_before_any_run(tmp_path, monkeypatch, 
         raise AssertionError("run_agent must not be called for a rejected task")
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: None)
     monkeypatch.setattr(cli, "run_agent", must_not_run)
-    rc = cli.main(["--ungated", "--task", "pay the invoice", "--cwd", str(tmp_path),
+    rc = cli.main(["--task", "pay the invoice", "--cwd", str(tmp_path),
                    "--registry", reg, "--task-name", "payout"])
     assert rc == 3
     assert "REJECTED task 'payout'" in capsys.readouterr().err
@@ -296,7 +296,7 @@ def test_cli_registry_tool_typo_is_warned_not_silent(tmp_path, monkeypatch, caps
                                  "tools": ["read-file", "git"]})  # 'read-file' is a typo
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t"])
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"git"}   # only the valid name survives
@@ -311,7 +311,7 @@ def test_cli_registry_rules_skills_propagation(tmp_path, monkeypatch, capsys):
     # rules-dir/skills-dir point at fixtures, but the spec forces them off
     rules = _fixture_rules(tmp_path)
     skills = _fixture_skills(tmp_path)
-    rc = cli.main(["--ungated", "--task", "stage the tmp log files", "--cwd", str(tmp_path),
+    rc = cli.main(["--task", "stage the tmp log files", "--cwd", str(tmp_path),
                    "--rules-dir", str(rules), "--skills-dir", str(skills),
                    "--registry", reg, "--task-name", "t"])
     assert rc == 0
@@ -332,7 +332,7 @@ def test_cli_min_score_missing_scores_file_rejects(tmp_path, monkeypatch, capsys
                                  "tier": "deterministic", "min_score": 0.8,
                                  "eval_task": "think-02"})
     _stub(monkeypatch, {})
-    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t",
                    "--scores", str(tmp_path / "nope.tsv")])
     assert rc == 3
@@ -353,7 +353,7 @@ def test_cli_min_score_default_scores_path_resolves(tmp_path, monkeypatch):
                                  "tier": "deterministic", "min_score": 0.8,
                                  "eval_task": "think-02"})
     _stub(monkeypatch, {})
-    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t"])
     assert rc == 0
 
@@ -366,7 +366,7 @@ def test_cli_min_score_default_scores_absent_rejects(tmp_path, monkeypatch, caps
                                  "tier": "deterministic", "min_score": 0.8,
                                  "eval_task": "think-02"})
     _stub(monkeypatch, {})
-    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t"])
     assert rc == 3
     assert "eval scores file not found" in capsys.readouterr().err
@@ -378,7 +378,7 @@ def test_cli_min_score_below_threshold_rejects(tmp_path, monkeypatch, capsys):
                                  "tier": "deterministic", "min_score": 0.8,
                                  "eval_task": "think-02"})
     _stub(monkeypatch, {})
-    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t", "--scores", sc])
     assert rc == 3
     assert "below min_score" in capsys.readouterr().err
@@ -391,7 +391,7 @@ def test_cli_min_score_passing_with_stale_scores_warns_but_runs(tmp_path, monkey
                                  "tier": "deterministic", "min_score": 0.8,
                                  "eval_task": "think-02"})
     _stub(monkeypatch, {})
-    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t", "--scores", sc])
     assert rc == 0
     assert "stale" in capsys.readouterr().err   # warned, but did not refuse
