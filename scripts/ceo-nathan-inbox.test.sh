@@ -155,7 +155,30 @@ test_llm_unavailable_candidate_to_needs_review_note_still_works() {
   PROPOSE_FAIL=1 run_ingest
 
   assert_contains "$(NEEDS_REVIEW)" "a candidate answer" "candidate falls through when LLM is down"
+  # Pin the exit-code route specifically: a failed harness call must be recorded as
+  # "harness unavailable", NOT silently collapsed into the empty-output "unmatched"
+  # path (which would pass even if the prc-check were reverted).
+  assert_contains "$(NEEDS_REVIEW)" "harness unavailable" "a non-zero harness exit is routed as unavailable, not unmatched"
   assert_contains "$(CANDIDATES)" "deterministic note" "deterministic note path works without the LLM"
+}
+
+test_none_token_is_treated_as_no_match() {
+  # The prompt instructs the harness to reply NONE when nothing matches; that must
+  # route to needs-review as unmatched (not fall through to qid-validation).
+  write_pending "- [ ] [ask] (qid: q-1) top goal"
+  write_dropbox "- an unrelated musing"
+  # Point the proposer at a stub that emits the literal NONE token.
+  CEO_NATHAN_PROPOSE_CMD="$TEST_HOME/stubs/none-stub.sh"
+  cat > "$TEST_HOME/stubs/none-stub.sh" <<'S'
+#!/bin/bash
+cat >/dev/null; printf 'NONE\n'
+S
+  chmod +x "$TEST_HOME/stubs/none-stub.sh"
+  run_ingest
+
+  assert_contains     "$(NEEDS_REVIEW)" "unmatched" "NONE is treated as no-match (unmatched), not a bad qid"
+  assert_not_contains "$(NEEDS_REVIEW)" "proposed qid (NONE)" "NONE must not reach qid-validation"
+  assert_not_contains "$(PROPOSALS)"    "an unrelated musing" "NONE stages no proposal"
 }
 
 test_unconfirmed_proposal_relisted_not_committed() {
@@ -299,7 +322,7 @@ test_nothing_dropped_no_match() {
 
 # --- regression tests from the mini-panel review of PR #248 ---
 
-# Finding A: a multi-word proposer command (production default is "ceo llm-propose")
+# Finding A: a multi-word proposer command (production default is "claude -p --model …")
 # must be invoked as argv, not sought as one binary with an embedded space.
 test_multiword_proposer_command_is_invoked() {
   export CEO_NATHAN_PROPOSE_CMD="bash $TEST_HOME/stubs/propose-stub.sh"

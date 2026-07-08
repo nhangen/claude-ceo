@@ -241,7 +241,7 @@ id from the list. If none apply, reply with exactly: NONE. No other text."
   if [ "$prc" -ne 0 ]; then _needs_review "LLM harness unavailable (exit $prc) — held: $bullet"; return; fi
   line="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | head -1)"
   # shellcheck disable=SC2086  # intentional split: fields are qid + confidence
-  set -- $line
+  set -f; set -- $line; set +f   # -f so a * / ? in model output can't glob the cwd
   case "${1:-}" in ""|NONE|none|None) _needs_review "unmatched: $bullet"; return ;; esac
   qid="$1"; conf="${2:-0}"
   if ! _qid_is_open "$qid"; then _needs_review "proposed qid ($qid) not an open question — held: $bullet"; return; fi
