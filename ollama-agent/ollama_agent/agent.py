@@ -54,7 +54,8 @@ def _tool_calls_from_content(content):
     return calls
 
 
-def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
+def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
+              verify_cmd=None):
     """Run one task to completion (a turn with no tool calls) or the turn cap.
 
     Returns a record: completed, turns, the full transcript, and the toolbox's
@@ -64,11 +65,19 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
     `run_id` is an optional caller-minted identifier echoed back in the record so
     a downstream ingestion pass can dedup this run's findings (the bridge itself
     does not mint one — a standalone run leaves it None). Additive.
+
+    `verify_cmd` is an optional shell command that gates completion: when the
+    model stops (a turn with no tool calls), the command runs in the toolbox's
+    cwd and the stop is accepted only if it exits 0. A non-zero exit feeds the
+    failure back and the loop continues, so the run drives to a green gate rather
+    than to the model's own say-so. `verified` is None when no gate is configured,
+    else the last check's pass/fail; the turn cap still bounds the loop.
     """
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": task}]
     transcript = list(messages)
     completed = False
+    verified = None
     turns = 0
     while turns < turn_cap:
         turns += 1
@@ -82,6 +91,22 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
             # model answered in prose.
             calls = _tool_calls_from_content(msg.get("content"))
         if not calls:
+            if verify_cmd:
+                res = json.loads(toolbox.run_shell(verify_cmd))
+                if res.get("returncode") == 0:
+                    verified = True
+                    completed = True
+                    break
+                verified = False
+                feedback = {"role": "user", "content": (
+                    "Verification command `%s` is not passing yet (returncode=%s). "
+                    "Fix the remaining failures and keep going — do not stop until "
+                    "it exits 0.\nstdout:\n%s\nstderr:\n%s" % (
+                        verify_cmd, res.get("returncode"),
+                        res.get("stdout", ""), res.get("stderr", "")))}
+                transcript.append(feedback)
+                messages.append(feedback)
+                continue
             completed = True
             break
         for c in calls:
@@ -101,6 +126,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
             messages.append(tool_msg)
     return {
         "completed": completed,
+        "verified": verified,
         "turns": turns,
         "run_id": run_id,
         "transcript": transcript,

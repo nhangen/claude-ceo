@@ -50,6 +50,9 @@ def main(argv=None):
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--num-ctx", type=int, default=16384)
     p.add_argument("--turn-cap", type=int, default=8)
+    p.add_argument("--verify-cmd", default=None,
+                   help="Shell command that gates completion: the agent keeps "
+                        "iterating until it exits 0 (drive-to-green). Runs in --cwd.")
     p.add_argument("--shell-timeout", type=int, default=30)
     p.add_argument("--rules-dir", default="~/.claude/rules",
                    help="Directory of rule .md files to select from.")
@@ -186,7 +189,7 @@ def main(argv=None):
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature, num_ctx=a.num_ctx)
     try:
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
-                        run_id=a.run_id)
+                        run_id=a.run_id, verify_cmd=a.verify_cmd)
     except RuntimeError as e:
         print(f"agent failed: {e}", file=sys.stderr)
         return 1
@@ -200,7 +203,7 @@ def main(argv=None):
         print(json.dumps(rec, indent=2))
     else:
         final = rec["transcript"][-1]
-        print(f"completed={rec['completed']} turns={rec['turns']} "
+        print(f"completed={rec['completed']} verified={rec['verified']} turns={rec['turns']} "
               f"calls={len(rec['calls'])} unknown={rec['unknown_calls']}")
         print("--- final message ---")
         print(final.get("content", "(no content)"))

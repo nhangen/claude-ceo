@@ -23,11 +23,13 @@ def _stub(monkeypatch, captured):
     # run_agent receives so the test can assert what rule text was injected.
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: {"role": "assistant", "content": "ok"}))
 
-    def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
+    def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
+                       verify_cmd=None):
         captured["system"] = system
         captured["tools"] = tools
         captured["run_id"] = run_id
-        return {"completed": True, "turns": 1, "run_id": run_id,
+        captured["verify_cmd"] = verify_cmd
+        return {"completed": True, "verified": None, "turns": 1, "run_id": run_id,
                 "transcript": [{"role": "assistant", "content": "done"}],
                 "calls": [], "unknown_calls": []}
     monkeypatch.setattr(cli, "run_agent", fake_run_agent)
@@ -58,7 +60,7 @@ def test_cli_human_output_prints_summary_and_final_message(tmp_path, monkeypatch
     rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "completed=True turns=1 calls=0 unknown=[]" in out
+    assert "completed=True verified=None turns=1 calls=0 unknown=[]" in out
     assert "--- final message ---" in out and "done" in out
 
 
@@ -146,7 +148,8 @@ def test_cli_rules_loaded_hash_no_match_distinct_from_none(tmp_path, monkeypatch
 def test_cli_transport_failure_returns_1(tmp_path, monkeypatch, capsys):
     rules = _fixture_rules(tmp_path)
 
-    def boom(task, system, transport, toolbox, tools, turn_cap=8, run_id=None):
+    def boom(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
+             verify_cmd=None):
         raise RuntimeError("ollama unreachable")
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: None)
     monkeypatch.setattr(cli, "run_agent", boom)
