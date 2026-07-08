@@ -1,0 +1,4 @@
+{
+  "_comment": "Canonical ollama-agent task registry. Intentionally ships with NO delegable entries: enabling a task that pins a local model in a delegable tier (deterministic/low-stakes-write) is gated behind the delegation spike (#255) and blast-radius routing policy (#254). Add entries there, not here, until the spike clears its go/no-go. Entry shape: tasks.<name> = {runner, model, tier, tools?, rules?, skills?, min_score?, eval_task?, eval_model?}. A min_score requires eval_task (use \"*\" for the cross-task mean). See ollama-agent/README.md.",
+  "tasks": {}
+}
