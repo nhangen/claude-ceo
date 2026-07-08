@@ -30,6 +30,9 @@ while [ "$#" -gt 0 ]; do
   esac
   shift || true
 done
+# Emit an HTTP status like real `curl -w '%{http_code}'`; tests force non-2xx
+# via CURL_STUB_STATUS. Default 200 keeps existing success-path tests green.
+printf '%s' "${CURL_STUB_STATUS:-200}"
 exit 0
 STUB
   chmod +x "$HOME/.bun/bin/curl"
@@ -263,6 +266,40 @@ test_no_last_deliver_when_gated_out() {
   printf 'scan body' | "$REPORT" morning-scan >/dev/null 2>&1
   assert_eq "$([ -f "$CEO_DIR/log/.last-deliver-morning-scan" ] && echo yes || echo no)" "no" \
     "a gated-out trigger must NOT record a delivery (so its staleness surfaces)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# --- #242: non-2xx Discord responses must be observable, not logged as posted ---
+test_non_2xx_not_counted_as_delivered() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  export CURL_STUB_STATUS=500
+  printf 'single chunk body' | "$REPORT" morning-brief >/dev/null 2>&1
+  unset CURL_STUB_STATUS
+  local log; log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)
+  assert_contains "$log" "posted chunks=0" \
+    "a 500 response must not be counted as a delivered chunk"
+  assert_no_match "$log" "posted chunks=1" \
+    "a dropped chunk must never be logged as posted"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_non_2xx_logs_a_failure_with_status() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  export CURL_STUB_STATUS=500
+  printf 'single chunk body' | "$REPORT" morning-brief >/dev/null 2>&1
+  unset CURL_STUB_STATUS
+  local log; log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)
+  assert_contains "$log" "500" \
+    "a failed post must log the HTTP status for observability"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_2xx_still_counts_as_delivered() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  printf 'single chunk body' | "$REPORT" morning-brief >/dev/null 2>&1
+  local log; log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)
+  assert_contains "$log" "posted chunks=1" \
+    "a 2xx response must still count as one delivered chunk"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
