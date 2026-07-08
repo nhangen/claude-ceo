@@ -144,7 +144,17 @@ $qid"
       printf '%s\n' "$line" >> "$tmp"
     fi
   done < "$PENDING"
-  if [ "$changed" = 1 ]; then mv "$tmp" "$PENDING"; else rm -f "$tmp"; fi
+  if [ "$changed" != 1 ]; then rm -f "$tmp"; return 0; fi
+  # Integrity guard: stamping is 1 line in → 1 line out, so the record counts
+  # must match. A mismatch means a mid-loop write failed (e.g. disk full) — do
+  # NOT clobber Pending.md with a truncated file.
+  if [ "$(awk 'END{print NR}' "$tmp")" = "$(awk 'END{print NR}' "$PENDING")" ]; then
+    mv "$tmp" "$PENDING"
+  else
+    rm -f "$tmp"
+    echo "ERROR: qid autostamp line-count mismatch; Pending.md left unchanged" >&2
+    return 1
+  fi
 }
 
 _append_confirm_line() {  # nb qid hash bullet question
