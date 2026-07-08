@@ -32,7 +32,10 @@ while [ "$#" -gt 0 ]; do
 done
 # Emit an HTTP status like real `curl -w '%{http_code}'`; tests force non-2xx
 # via CURL_STUB_STATUS. Default 200 keeps existing success-path tests green.
+# CURL_STUB_FAIL models a network failure: curl still prints the -w code (000)
+# but exits non-zero.
 printf '%s' "${CURL_STUB_STATUS:-200}"
+[ -n "${CURL_STUB_FAIL:-}" ] && exit 7
 exit 0
 STUB
   chmod +x "$HOME/.bun/bin/curl"
@@ -300,6 +303,29 @@ test_2xx_still_counts_as_delivered() {
   local log; log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)
   assert_contains "$log" "posted chunks=1" \
     "a 2xx response must still count as one delivered chunk"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_last_deliver_not_stamped_on_total_failure() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  export CURL_STUB_STATUS=500
+  printf 'single chunk body' | "$REPORT" morning-brief >/dev/null 2>&1
+  unset CURL_STUB_STATUS
+  assert_eq "$([ -f "$CEO_DIR/log/.last-deliver-morning-brief" ] && echo yes || echo no)" "no" \
+    "a 100%-failed delivery must NOT bump the .last-deliver freshness stamp (ceo doctor watches it)"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_network_failure_logs_single_clean_status() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  export CURL_STUB_STATUS=000 CURL_STUB_FAIL=1
+  printf 'single chunk body' | "$REPORT" morning-brief >/dev/null 2>&1
+  unset CURL_STUB_STATUS CURL_STUB_FAIL
+  local log; log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)
+  assert_contains "$log" "status=000" \
+    "a curl network failure logs the 000 sentinel status"
+  assert_no_match "$log" "status=0000" \
+    "the status must be a single clean 000, not a doubled 000000 from curl's -w plus the || fallback"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 

@@ -163,7 +163,7 @@ $chunk"
     payload=$(jq -n --arg content "$message" \
       '{username: "CEO Report", content: $content}')
     http_code=$(curl -sS -X POST -H "Content-Type: application/json" \
-      --max-time 10 -w '%{http_code}' -o /dev/null -d "$payload" "$WEBHOOK" 2>/dev/null || echo 000)
+      --max-time 10 -w '%{http_code}' -o /dev/null -d "$payload" "$WEBHOOK" 2>/dev/null) || http_code=000
     if [[ $http_code =~ ^2[0-9]{2}$ ]]; then
       sent=$((sent + 1))
     else
@@ -184,7 +184,9 @@ total=$((total + sent))
 # exactly what doctor watches for.
 _deliver_dir="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/log"
 mkdir -p "$_deliver_dir" 2>/dev/null || true
+if [ "$total" -gt 0 ]; then
 date +%s > "$_deliver_dir/.last-deliver-${TRIGGER}" 2>/dev/null || true
+fi
 
 # Prior-day full report append (morning-brief only by default). The Obsidian
 # report keeps its existing front matter and is untouched; the complete prior-day
