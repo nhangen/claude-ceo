@@ -1396,12 +1396,17 @@ if [ "$RUNNER" = "script" ]; then
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER CEO_RUNNER_OUTCOME_FILE
   SCRIPT_EXIT=0
   "$SCRIPT_FULL" >>"$LOG_DIR/cron-stdout.log" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
+  # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
+  # trap set earlier at the top of the run. rm before each exit instead so the
+  # per-tick outcome tmp file doesn't leak.
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
     _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit "$SCRIPT_EXIT"
   fi
   _record_success
+  rm -f "$CEO_RUNNER_OUTCOME_FILE"
   exit 0
 fi
 
