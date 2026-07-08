@@ -19,12 +19,14 @@ Part of the [local-agent bridge epic (#185)](https://github.com/nhangen/claude-c
 
 ```bash
 # requires a running ollama daemon with the model pulled
+# --ungated: an ad-hoc run applies no delegation gate, so it must opt in explicitly
 python ollama-agent/cli.py --task "summarize the README in 3 bullets" \
-  --model gpt-oss:20b --cwd /path/to/repo
+  --model gpt-oss:20b --cwd /path/to/repo --ungated
 ```
 
 Flags: `--model`, `--cwd` (the directory tools operate in), `--host`, `--temperature`,
-`--num-ctx`, `--turn-cap`, `--shell-timeout`, `--json` (full record), `--system` (override the system prompt).
+`--num-ctx`, `--turn-cap`, `--shell-timeout`, `--json` (full record), `--system` (override the system prompt),
+`--ungated` (opt into an ad-hoc, ungated run — required unless `--task-name` selects a gated registered task).
 
 Governance flags: `--registry` + `--task-name` run a registered task (its model/tier/tools/rules
 apply, gated before any model call); `--scores` points at a model-matrix `scores.tsv` for the
