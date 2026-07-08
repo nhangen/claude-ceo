@@ -714,6 +714,62 @@ SH
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# --- #173: script playbooks signal fired/noop so _record_success notifies only
+# on real work, not on every heartbeat tick. Contract: cron exports
+# CEO_RUNNER_OUTCOME_FILE; a script writes "fired" (notify) or "noop" (silent);
+# absent => the prior per-trigger default. ---
+
+_write_outcome_playbook() {  # $1=trigger  $2=outcome-to-write (empty = write nothing)
+  local trig="$1" outcome="$2"
+  cat > "$CEO_DIR/playbooks/$trig.md" << PB
+---
+name: $trig
+description: outcome-signal test
+trigger: cron
+schedule: "*/30 * * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: $trig-test.sh
+---
+PB
+  cat > "$SCRIPT_DIR/$trig-test.sh" << SH
+#!/bin/bash
+[ -n "$outcome" ] && [ -n "\$CEO_RUNNER_OUTCOME_FILE" ] && printf '%s' "$outcome" > "\$CEO_RUNNER_OUTCOME_FILE"
+exit 0
+SH
+  chmod +x "$SCRIPT_DIR/$trig-test.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+}
+
+test_script_outcome_noop_suppresses_success_notify() {
+  _write_outcome_playbook outcome-noop noop
+  CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" outcome-noop >/dev/null 2>&1 || true
+  local log; log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
+  assert_not_contains "$log" "[success/outcome-noop]" "a noop outcome must suppress the success notify"
+  rm -f "$SCRIPT_DIR/outcome-noop-test.sh"
+}
+
+test_autopilot_fired_outcome_notifies() {
+  # ticket-triage-autopilot is in the blanket hardcode today; a "fired" tick
+  # (real merges → tickets) must still ping once the outcome gate replaces it.
+  _write_outcome_playbook ticket-triage-autopilot fired
+  CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" ticket-triage-autopilot >/dev/null 2>&1 || true
+  local log; log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
+  assert_contains "$log" "[success/ticket-triage-autopilot]" "a fired autopilot tick must send the success notify"
+  rm -f "$SCRIPT_DIR/ticket-triage-autopilot-test.sh"
+}
+
+test_script_without_outcome_keeps_default_notify() {
+  # A plain script that writes no outcome preserves the prior behavior: notify.
+  _write_outcome_playbook outcome-default ""
+  CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" outcome-default >/dev/null 2>&1 || true
+  local log; log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
+  assert_contains "$log" "[success/outcome-default]" "a script writing no outcome must still notify (default preserved)"
+  rm -f "$SCRIPT_DIR/outcome-default-test.sh"
+}
+
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash

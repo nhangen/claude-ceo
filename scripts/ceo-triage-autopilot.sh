@@ -25,6 +25,11 @@ ceo_load_config || { echo "ERROR: CEO config not found" >&2; exit 1; }
 ceo_pin_home_or_warn || true
 ceo_augment_path
 
+# Default this tick to a silent "noop" for cron's #173 success-notify gate; a
+# real firing tick upgrades it to "fired" below. Set early so every exit path
+# (including the skill-not-found bail) leaves a correct outcome.
+[ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ] && printf 'noop' > "$CEO_RUNNER_OUTCOME_FILE"
+
 : "${HOME:?HOME must be set before ceo-triage-autopilot}"
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
@@ -152,6 +157,8 @@ if [ "$CONSEC_FAILS" -ge "$MAX_FAILS" ]; then
 fi
 
 if [ "$EVENTS_TOTAL" -gt 0 ]; then STATUS="firing"; else STATUS="clear"; fi
+# A firing tick did real work (new merges escalated) — tell cron to notify (#173).
+[ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ] && [ "$STATUS" = "firing" ] && printf 'fired' > "$CEO_RUNNER_OUTCOME_FILE"
 # SINCE resets only on a real transition into firing.
 if [ "$STATUS" = "firing" ] && [ "$PRIOR_STATUS" = "firing" ] && [ -n "$PRIOR_SINCE" ]; then
   SINCE="$PRIOR_SINCE"; else SINCE="$NOW"; fi
