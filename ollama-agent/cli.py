@@ -78,7 +78,22 @@ def main(argv=None):
                    help="Caller-minted run identifier, echoed in the record so a "
                         "downstream ingestion pass can dedup this run's findings.")
     p.add_argument("--json", action="store_true", help="Print the full record as JSON.")
+    p.add_argument("--ungated", action="store_true",
+                   help="Explicitly opt into an ad-hoc, ungated run (no registered "
+                        "task, no delegation gate). Without it, a run must select a "
+                        "registered task via --task-name.")
     a = p.parse_args(argv)
+
+    # The delegation gate (tier + min_score) only fires for a registered task
+    # (--task-name). A bare --task otherwise runs whatever --model says, ungated —
+    # making the gate theater for ad-hoc use. Require an explicit --ungated opt-in
+    # so the bypass is no longer the silent default. The cron bridge always passes
+    # --task-name (ceo-cron.sh) and is unaffected.
+    if not a.task_name and not a.ungated:
+        print("REFUSED: an ad-hoc run requires --ungated (it applies no delegation "
+              "gate). Use --task-name <name> --registry <path> to run a gated, "
+              "registered task instead.", file=sys.stderr)
+        return 2
 
     # Governance: a registered task is gated before any model call. A non-delegable
     # tier (high-stakes) or unknown runner/tier is refused here — never run.

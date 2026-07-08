@@ -6,9 +6,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ollama_agent.registry import (  # noqa: E402
-    RegistryError, TaskSpec, filter_tools, gate, load_registry,
+    DELEGABLE_TIERS, RegistryError, TaskSpec, filter_tools, gate, load_registry,
     load_scores, normalize_model, score_for,
 )
+
+# The committed canonical registry (ollama-agent/registry.json), resolved off the
+# same parents[1] that sys.path is anchored to above.
+COMMITTED_REGISTRY = Path(__file__).resolve().parents[1] / "registry.json"
 
 SCORES_TSV = (
     "# generated_at=2026-06-26T00:00:00Z\n"
@@ -266,3 +270,26 @@ def test_gate_min_score_zero_is_a_real_threshold():
                     min_score=0.0, eval_task="think-99")
     ok2, _ = gate(miss, _scored())
     assert not ok2
+
+
+def test_committed_registry_ships_empty():
+    # The shipped canonical registry must load without error AND be empty: it is
+    # governance scaffolding, not a place to register tasks. Asserting == {} (not
+    # just "is a dict") also catches a stray high-stakes entry, which the
+    # delegable-tier guard below would let slip. A malformed hand-edit fails here
+    # (load_registry raises) rather than at first cron dispatch.
+    specs = load_registry(str(COMMITTED_REGISTRY))
+    assert specs == {}
+
+
+def test_committed_registry_enables_no_delegable_tier():
+    # Governance guard: the committed registry ships the *mechanism*, not the
+    # bet. Enabling a task that pins a local model in a delegable tier is gated
+    # behind the delegation spike (#255) + routing policy (#254) and belongs in
+    # that work, not here. This fails the moment such an entry is added to
+    # registry.json, forcing the decision back through the gated issue.
+    specs = load_registry(str(COMMITTED_REGISTRY))
+    delegable = {name: s.tier for name, s in specs.items() if s.tier in DELEGABLE_TIERS}
+    assert not delegable, (
+        f"committed registry enables delegable tier(s): {delegable} — "
+        "delegable pins are gated behind #255/#254, add them there")

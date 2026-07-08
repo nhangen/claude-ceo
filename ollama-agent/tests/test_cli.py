@@ -43,7 +43,7 @@ def test_cli_injects_matching_rule(tmp_path, monkeypatch, capsys):
     rules = _fixture_rules(tmp_path)
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--task", "stage the tmp log files for a commit", "--cwd", str(tmp_path),
+    rc = cli.main(["--ungated", "--task", "stage the tmp log files for a commit", "--cwd", str(tmp_path),
                    "--rules-dir", str(rules), "--no-skills"])
     assert rc == 0
     assert "no-commit-tmp-logs" in captured["system"]
@@ -57,7 +57,7 @@ def test_cli_human_output_prints_summary_and_final_message(tmp_path, monkeypatch
     # covers the `--json` branch; this covers its human-readable counterpart.
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
+    rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "completed=True verified=None turns=1 calls=0 unknown=[]" in out
@@ -68,7 +68,7 @@ def test_cli_threads_run_id_into_record(tmp_path, monkeypatch, capsys):
     import json
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--run-id", "run-xyz", "--json"])
     assert rc == 0
     assert captured["run_id"] == "run-xyz"
@@ -78,14 +78,14 @@ def test_cli_threads_run_id_into_record(tmp_path, monkeypatch, capsys):
 def test_cli_run_id_defaults_none(tmp_path, monkeypatch, capsys):
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
+    rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
     assert rc == 0
     assert captured["run_id"] is None
 
 
 def test_cli_rules_loaded_hash_none_when_rules_off(tmp_path, monkeypatch, capsys):
     _stub(monkeypatch, {})
-    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills", "--json"])
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills", "--json"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["rules_loaded_hash"] == "none"
 
@@ -96,7 +96,7 @@ def test_cli_rules_loaded_hash_stable_and_content_sensitive(tmp_path, monkeypatc
     # selected rule's body changes — otherwise it can't attribute a behavior shift.
     rules = _fixture_rules(tmp_path)
     args = ["--task", "stage the tmp log files for a commit", "--cwd", str(tmp_path),
-            "--rules-dir", str(rules), "--no-skills", "--json"]
+            "--rules-dir", str(rules), "--no-skills", "--json", "--ungated"]
 
     _stub(monkeypatch, {})
     cli.main(args); h1 = json.loads(capsys.readouterr().out)["rules_loaded_hash"]
@@ -116,7 +116,7 @@ def test_cli_no_rules_skips_injection(tmp_path, monkeypatch, capsys):
     rules = _fixture_rules(tmp_path)
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--task", "stage the tmp log files", "--cwd", str(tmp_path),
+    rc = cli.main(["--ungated", "--task", "stage the tmp log files", "--cwd", str(tmp_path),
                    "--rules-dir", str(rules), "--no-rules", "--no-skills"])
     assert rc == 0
     assert "no-commit-tmp-logs" not in captured["system"]
@@ -126,7 +126,7 @@ def test_cli_no_rules_skips_injection(tmp_path, monkeypatch, capsys):
 def test_cli_no_match_reports_zero(tmp_path, monkeypatch, capsys):
     rules = _fixture_rules(tmp_path)
     _stub(monkeypatch, {})
-    rc = cli.main(["--task", "paint the fence blue", "--cwd", str(tmp_path),
+    rc = cli.main(["--ungated", "--task", "paint the fence blue", "--cwd", str(tmp_path),
                    "--rules-dir", str(rules), "--no-skills"])
     assert rc == 0
     err = capsys.readouterr().err
@@ -139,7 +139,7 @@ def test_cli_rules_loaded_hash_no_match_distinct_from_none(tmp_path, monkeypatch
     # rules-off run. Revert the `else: "no-match"` branch and this reads "none".
     rules = _fixture_rules(tmp_path)
     _stub(monkeypatch, {})
-    rc = cli.main(["--task", "paint the fence blue", "--cwd", str(tmp_path),
+    rc = cli.main(["--ungated", "--task", "paint the fence blue", "--cwd", str(tmp_path),
                    "--rules-dir", str(rules), "--no-skills", "--json"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["rules_loaded_hash"] == "no-match"
@@ -153,7 +153,7 @@ def test_cli_transport_failure_returns_1(tmp_path, monkeypatch, capsys):
         raise RuntimeError("ollama unreachable")
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: None)
     monkeypatch.setattr(cli, "run_agent", boom)
-    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--rules-dir", str(rules), "--no-rules", "--no-skills"])
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--rules-dir", str(rules), "--no-rules", "--no-skills"])
     assert rc == 1
     assert "agent failed" in capsys.readouterr().err
 
@@ -169,7 +169,7 @@ def test_cli_injects_skill_catalog_and_use_skill_tool(tmp_path, monkeypatch, cap
     skills = _fixture_skills(tmp_path)
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--task", "do a thing", "--cwd", str(tmp_path),
+    rc = cli.main(["--ungated", "--task", "do a thing", "--cwd", str(tmp_path),
                    "--no-rules", "--skills-dir", str(skills)])
     assert rc == 0
     assert "obsidian-save" in captured["system"] and "use_skill" in captured["system"]
@@ -181,7 +181,7 @@ def test_cli_no_skills_suppresses_catalog_and_tool(tmp_path, monkeypatch, capsys
     skills = _fixture_skills(tmp_path)
     captured = {}
     _stub(monkeypatch, captured)
-    rc = cli.main(["--task", "do a thing", "--cwd", str(tmp_path),
+    rc = cli.main(["--ungated", "--task", "do a thing", "--cwd", str(tmp_path),
                    "--no-rules", "--skills-dir", str(skills), "--no-skills"])
     assert rc == 0
     assert "obsidian-save" not in captured["system"]
@@ -215,7 +215,7 @@ def test_cli_mcp_bridges_tools_and_closes_transport(tmp_path, monkeypatch, capsy
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
     _stub_mcp(monkeypatch, closed)
-    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--mcp", "fake-server arg"])
     assert rc == 0
     assert "mcp__echo" in _tool_names(captured["tools"])
@@ -227,7 +227,7 @@ def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, caps
     closed = {"v": False}
     _stub(monkeypatch, {})
     _stub_mcp(monkeypatch, closed, init_raises=True)
-    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--mcp", "broken-server"])
     assert rc == 1
     assert "mcp bridge failed for 'broken-server'" in capsys.readouterr().err
@@ -406,3 +406,23 @@ def test_warn_if_stale_scores_branches(capsys):
     fresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     cli._warn_if_stale_scores(fresh, 30)
     assert capsys.readouterr().err == ""                          # fresh → silent
+
+
+def test_cli_bare_task_without_ungated_refuses(tmp_path, monkeypatch, capsys):
+    # The delegation-gate bypass is no longer the silent default: a bare --task
+    # (no --task-name, no --ungated) refuses BEFORE any model call.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
+    assert rc == 2
+    assert "REFUSED" in capsys.readouterr().err
+    assert "system" not in captured   # run_agent never reached
+
+
+def test_cli_ungated_opt_in_runs(tmp_path, monkeypatch, capsys):
+    # With the explicit opt-in, the ad-hoc run proceeds as before.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills", "--ungated"])
+    assert rc == 0
+    assert "system" in captured       # run_agent reached

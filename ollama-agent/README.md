@@ -19,12 +19,14 @@ Part of the [local-agent bridge epic (#185)](https://github.com/nhangen/claude-c
 
 ```bash
 # requires a running ollama daemon with the model pulled
+# --ungated: an ad-hoc run applies no delegation gate, so it must opt in explicitly
 python ollama-agent/cli.py --task "summarize the README in 3 bullets" \
-  --model gpt-oss:20b --cwd /path/to/repo
+  --model gpt-oss:20b --cwd /path/to/repo --ungated
 ```
 
 Flags: `--model`, `--cwd` (the directory tools operate in), `--host`, `--temperature`,
-`--num-ctx`, `--turn-cap`, `--shell-timeout`, `--json` (full record), `--system` (override the system prompt).
+`--num-ctx`, `--turn-cap`, `--shell-timeout`, `--json` (full record), `--system` (override the system prompt),
+`--ungated` (opt into an ad-hoc, ungated run — required unless `--task-name` selects a gated registered task).
 
 Governance flags: `--registry` + `--task-name` run a registered task (its model/tier/tools/rules
 apply, gated before any model call); `--scores` points at a model-matrix `scores.tsv` for the
@@ -32,7 +34,30 @@ apply, gated before any model call); `--scores` points at a model-matrix `scores
 
 ## Governance (registry + delegation gate)
 
-A registered task (`--registry reg.json --task-name <name>`) is gated **before any model call**:
+The canonical registry ships at [`ollama-agent/registry.json`](registry.json). It
+intentionally ships **empty** (no delegable entries): enabling a task that pins a
+local model in a delegable tier is gated behind the delegation spike ([#255](https://github.com/nhangen/claude-ceo/issues/255))
+and blast-radius routing policy ([#254](https://github.com/nhangen/claude-ceo/issues/254)).
+A CI guard (`test_committed_registry_enables_no_delegable_tier`) fails if a delegable
+entry is added here instead of through that gated work.
+
+Entry shape (`tasks.<name>`):
+
+```jsonc
+{
+  "runner": "ollama",          // required; only "ollama" is a known runner
+  "model": "gpt-oss:20b",      // required; the local model to run
+  "tier": "deterministic",     // required; deterministic | low-stakes-write | high-stakes
+  "tools": "*",                // optional; "*" or a list of allowed tool names
+  "rules": true,               // optional; inject relevance-selected rules (default true)
+  "skills": false,             // optional; expose the skill catalog (default false)
+  "min_score": 0.9,            // optional; refuse unless the model earned this on eval_task
+  "eval_task": "think-02",     // required WHEN min_score is set ("*" = cross-task mean)
+  "eval_model": null           // optional; override which model's score is checked
+}
+```
+
+A registered task (`--registry registry.json --task-name <name>`) is gated **before any model call**:
 
 - `tier: high-stakes` is never delegated to a local model (refused, exit 3); only `deterministic`
   and `low-stakes-write` run. Unknown `runner`/`tier` is rejected, never defaulted.
