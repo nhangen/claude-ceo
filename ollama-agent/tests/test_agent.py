@@ -166,6 +166,49 @@ def test_loop_dispatches_tools_then_finishes(tmp_path):
     assert rec["unknown_calls"] == []
 
 
+def test_verify_cmd_none_is_prior_behavior(tmp_path):
+    # No verify gate: the model stopping (no tool calls) completes immediately,
+    # and `verified` is None (feature not engaged).
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd=None)
+    assert rec["completed"] is True
+    assert rec["turns"] == 1
+    assert rec["verified"] is None
+
+
+def test_verify_cmd_passing_accepts_the_stop(tmp_path):
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="true")
+    assert rec["completed"] is True
+    assert rec["verified"] is True
+    assert rec["turns"] == 1
+
+
+def test_verify_cmd_keeps_going_until_green(tmp_path):
+    # The model tries to stop every turn, but the verify command fails the first
+    # time and passes the second. The loop must NOT accept the first stop — it
+    # re-prompts and only completes once verification is green.
+    counter = tmp_path / "cnt"
+    verify = f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; [ $n -ge 2 ]"
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS,
+                    turn_cap=8, verify_cmd=verify)
+    assert rec["completed"] is True
+    assert rec["verified"] is True
+    assert rec["turns"] == 2
+
+
+def test_verify_cmd_never_green_ends_unverified_at_cap(tmp_path):
+    # Verify never passes: the run exhausts the cap and reports verified False,
+    # completed False — a caller must see it did NOT reach green.
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS,
+                    turn_cap=3, verify_cmd="false")
+    assert rec["verified"] is False
+    assert rec["completed"] is False
+    assert rec["turns"] == 3
+
+
 def test_run_id_echoed_in_record(tmp_path):
     transport = _script({"role": "assistant", "content": "done"})
     rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, run_id="run-abc")
