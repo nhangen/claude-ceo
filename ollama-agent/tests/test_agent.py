@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ollama_agent import ToolBox, TOOLS, run_agent  # noqa: E402
-from ollama_agent.agent import _normalize_args  # noqa: E402
+from ollama_agent.agent import _normalize_args, _tool_calls_from_content  # noqa: E402
 from ollama_agent.tools import _clip, MAX_OUTPUT, MAX_READ  # noqa: E402
 from ollama_agent.transport import parse_chat_response  # noqa: E402
 
@@ -234,6 +234,56 @@ def test_loop_survives_tool_handler_exception(tmp_path):
 def test_write_file_reports_byte_length_not_char_count(tmp_path):
     out = json.loads(ToolBox(cwd=tmp_path).write_file("m.txt", "héllo"))
     assert out["bytes"] == 6  # 5 chars, 6 UTF-8 bytes
+
+
+# --- content-embedded tool-call recovery (qwen-class models) ---
+
+def test_content_fallback_parses_plain_json_object():
+    # The exact shape observed from qwen2.5-coder:14b: a {"name","arguments"}
+    # object serialized into content, native tool_calls empty.
+    calls = _tool_calls_from_content('{"name": "run_shell", "arguments": {"command": "echo hi"}}')
+    assert calls == [{"function": {"name": "run_shell", "arguments": {"command": "echo hi"}}}]
+
+
+def test_content_fallback_parses_fenced_json():
+    content = '```json\n{"name": "run_shell", "arguments": {"command": "echo hi"}}\n```'
+    calls = _tool_calls_from_content(content)
+    assert calls == [{"function": {"name": "run_shell", "arguments": {"command": "echo hi"}}}]
+
+
+def test_content_fallback_ignores_prose_and_non_call_json():
+    assert _tool_calls_from_content("I'll use the write_file tool to do this.") == []   # glm-style prose
+    assert _tool_calls_from_content('{"result": 42}') == []                              # JSON, but not a call
+    assert _tool_calls_from_content('{"name": "x"}') == []                               # name but no arguments
+    assert _tool_calls_from_content(None) == []
+    assert _tool_calls_from_content("") == []
+
+
+def test_loop_recovers_tool_call_embedded_in_content(tmp_path):
+    # qwen emits a correct call as JSON in content with an empty native
+    # tool_calls field; the loop must recover and dispatch it (the agent.py:41
+    # drop site). Drives the real run_agent + real ToolBox so the file write
+    # proves the recovered call actually executed.
+    transport = _script(
+        {"role": "assistant",
+         "content": json.dumps({"name": "write_file", "arguments": {"path": "f.txt", "content": "hi"}})},
+        {"role": "assistant", "content": "done"},
+    )
+    rec = run_agent("write a file", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, turn_cap=8)
+    assert rec["completed"] is True
+    assert rec["turns"] == 2
+    assert (tmp_path / "f.txt").read_text() == "hi"
+    assert rec["unknown_calls"] == []
+
+
+def test_loop_prose_content_still_completes_without_recovery(tmp_path):
+    # A text-only model (glm) whose content is prose must still complete as a
+    # normal no-tool-call turn — the fallback recovers nothing and does not crash.
+    transport = _script({"role": "assistant", "content": "Here is my answer in prose."})
+    rec = run_agent("answer", "sys", transport, ToolBox(cwd=tmp_path), TOOLS)
+    assert rec["completed"] is True
+    assert rec["turns"] == 1
+    assert rec["calls"] == []
 
 
 # --- transport error branches (the headline non-throwing-client claim) ---
