@@ -108,6 +108,30 @@ _pending_rewrite() {  # reads an awk program on $1, atomically rewrites Pending
   if awk "$prog" "$PENDING" > "$tmp"; then mv "$tmp" "$PENDING"; else rm -f "$tmp"; return 1; fi
 }
 
+# Auto-stamp a stable qid onto any open [ask] line lacking one, so nobody — not
+# Nathan (who never edits this file), not the authoring agent — ever hand-mints
+# an id. qid = q-<6-char sha1 of the question text>: reproducible and unique
+# among the currently-open set (all matching keys on it). Idempotent; [confirm]
+# lines and already-tagged lines pass through untouched. Local hash only, no LLM
+# egress, so no discretion concern. Runs before the open-question map is built.
+_autostamp_qids() {
+  [ -f "$PENDING" ] || return 0
+  local tmp line qtext qid changed=0
+  local ask_re='^- \[ \] \[ask\]'
+  tmp="$(mktemp)" || { echo "ERROR: mktemp for qid autostamp" >&2; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ $line =~ $ask_re ]] && [[ $line != *'(qid:'* ]] && [[ $line != *'[confirm]'* ]]; then
+      qtext="$(printf '%s' "$line" | sed -E 's/^- \[ \] \[ask\][[:space:]]*//')"
+      qid="q-$(_hash "$qtext" | cut -c1-6)"
+      printf -- '- [ ] [ask] (qid: %s) %s\n' "$qid" "$qtext" >> "$tmp"
+      changed=1
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done < "$PENDING"
+  if [ "$changed" = 1 ]; then mv "$tmp" "$PENDING"; else rm -f "$tmp"; fi
+}
+
 _append_confirm_line() {  # nb qid hash bullet question
   local nb="$1" qid="$2" hash="$3" bullet="$4" q="$5"
   printf -- '- [ ] [ask] [confirm] "%s" → answers "%s"? Reply `ok %s` <!-- nathan-inbox nb:%s qid:%s h:%s -->\n' \
@@ -269,6 +293,9 @@ for _c in "${DROPBOX%.md}".sync-conflict-*.md "${DROPBOX}".sync-conflict-*; do
   _needs_review "sync conflict on $(basename "$DROPBOX") — reconcile $_c into the primary, then delete the copy"
   _seen_add "$_key"
 done
+
+# ---------- 1.5 auto-stamp qids onto any un-tagged open [ask] lines ----------
+_autostamp_qids
 
 # ---------- 2. open-question map (for the LLM proposer + confirm-line text) ----------
 OPEN_Q_LIST="$(grep '^- \[ \] \[ask\]' "$PENDING" 2>/dev/null | grep -v '\[confirm\]' \

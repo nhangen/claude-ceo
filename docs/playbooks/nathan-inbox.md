@@ -61,13 +61,17 @@ binding-checked: the `ok` commits only if the frozen `(nb → qid, content-hash)
 still matches what was reported. Unconfirmed proposals expire to needs-review
 after `CEO_NATHAN_EXPIRY_DAYS` (default 7).
 
-## qid prerequisite
+## qid (auto-stamped)
 
-Every `Pending.md [ask]` line must carry an explicit `qid:` token, e.g.
-`- [ ] [ask] (qid: q-2026-07-06-01) top goal this quarter`. An `[ask]` line
-**without** a qid is not matchable → the un-tagged question is surfaced in
-needs-review rather than guessed at. Authoring qids on new questions is a
-one-line convention in whatever writes `Pending.md`.
+Every matchable `Pending.md [ask]` line carries a `qid:` token, e.g.
+`- [ ] [ask] (qid: q-80ffff) what is my top goal this quarter`. **Nobody mints
+these by hand** — not Nathan (who never edits `Pending.md`), not the authoring
+agent. Before building the open-question map each run, the ingest auto-stamps
+`(qid: q-<6-char sha1 of the question text>)` onto any open `[ask]` line missing
+one. The stamp is idempotent, stable (same text → same id), and skips `[confirm]`
+lines and already-tagged lines. Local hash only — no LLM egress, no discretion
+concern. A question authored without a qid is therefore matchable on the next
+run, not lost to needs-review.
 
 ## Outputs
 

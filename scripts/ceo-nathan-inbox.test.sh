@@ -396,4 +396,38 @@ test_sync_conflict_surfaced_once() {
   assert_eq "$(NEEDS_REVIEW | grep -c 'sync conflict')" "1" "a sync conflict is surfaced once, not every run"
 }
 
+test_bare_ask_line_gets_qid_autostamped() {
+  write_pending "- [ ] [ask] what is my top goal this quarter"
+  write_dropbox
+  run_ingest
+  assert_eq "$(PENDING | grep -c '^- \[ \] \[ask\] (qid: q-[0-9a-f]\{6\}) what is my top goal this quarter$')" "1" \
+    "a bare [ask] line is auto-stamped with a q-<6hex> qid (nobody hand-mints)"
+}
+
+test_autostamp_is_idempotent_and_stable() {
+  write_pending "- [ ] [ask] what is my top goal this quarter"
+  write_dropbox
+  run_ingest
+  local after1; after1="$(PENDING)"
+  run_ingest
+  assert_eq "$(PENDING)" "$after1" "second run does not re-stamp (idempotent + stable id)"
+  assert_eq "$(PENDING | grep -o '(qid:' | wc -l | tr -d ' ')" "1" "exactly one qid token — no double-stamp"
+}
+
+test_autostamp_leaves_existing_qid_untouched() {
+  write_pending "- [ ] [ask] (qid: q-custom) what is my top goal"
+  write_dropbox
+  run_ingest
+  assert_contains "$(PENDING)" "(qid: q-custom)" "an existing qid is never overwritten"
+  assert_eq "$(PENDING | grep -o '(qid:' | wc -l | tr -d ' ')" "1" "no second qid added to an already-tagged line"
+}
+
+test_autostamp_skips_confirm_lines() {
+  local confirm='- [ ] [ask] [confirm] "b" → answers "q"? Reply `ok nb-1` <!-- nathan-inbox nb:nb-1 qid:q-1 h:abc -->'
+  write_pending "- [ ] [ask] (qid: q-1) real question" "$confirm"
+  write_dropbox
+  run_ingest
+  assert_contains "$(PENDING)" "$confirm" "a [confirm] line passes through unchanged — never auto-stamped"
+}
+
 run_tests
