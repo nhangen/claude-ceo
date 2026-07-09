@@ -50,5 +50,8 @@ def append_run(rec, model, task_name, cwd, now=None, path=None):
         with open(p, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
         return str(p)
-    except OSError:
+    except Exception:
+        # Best-effort telemetry must never fail an otherwise-successful run, so
+        # this swallows any error (I/O, or a non-serializable field slipping in),
+        # honoring the "never raises" contract above.
         return None
