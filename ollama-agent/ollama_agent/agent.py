@@ -79,9 +79,13 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     completed = False
     verified = None
     turns = 0
+    ollama_input_tokens = 0
+    ollama_output_tokens = 0
     while turns < turn_cap:
         turns += 1
-        msg = transport(messages, tools)
+        msg, usage = transport(messages, tools)
+        ollama_input_tokens += usage.get("input", 0)
+        ollama_output_tokens += usage.get("output", 0)
         transcript.append(msg)
         messages.append(msg)
         calls = msg.get("tool_calls") or []
@@ -129,6 +133,8 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
         "verified": verified,
         "turns": turns,
         "run_id": run_id,
+        "ollama_input_tokens": ollama_input_tokens,
+        "ollama_output_tokens": ollama_output_tokens,
         "transcript": transcript,
         "calls": toolbox.calls,
         "unknown_calls": toolbox.unknown_calls,

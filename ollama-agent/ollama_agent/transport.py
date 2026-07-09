@@ -13,6 +13,10 @@ DEFAULT_HOST = "127.0.0.1:11434"
 
 
 def parse_chat_response(status, body):
+    """Return (message, usage). `usage` carries ollama's own token counts —
+    prompt_eval_count (input) and eval_count (output) — so a caller can attribute
+    local-model spend. Both default to 0 when the daemon omits them (older builds
+    or an interrupted stream), never None, so downstream sums stay numeric."""
     if status != 200:
         raise RuntimeError(f"ollama HTTP {status}: {body[:200]}")
     data = json.loads(body)
@@ -20,11 +24,15 @@ def parse_chat_response(status, body):
         raise RuntimeError(f"ollama error: {data['error']}")
     if "message" not in data:
         raise RuntimeError(f"ollama 200 with no message: {body[:200]}")
-    return data["message"]
+    usage = {
+        "input": int(data.get("prompt_eval_count") or 0),
+        "output": int(data.get("eval_count") or 0),
+    }
+    return data["message"], usage
 
 
 def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, timeout=600):
-    """Return a transport(messages, tools) -> assistant message dict.
+    """Return a transport(messages, tools) -> (assistant message dict, usage dict).
 
     Raises RuntimeError on any non-success response and re-raises URLError
     (daemon down) so the caller sees a failure rather than a silent hang.
