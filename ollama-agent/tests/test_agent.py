@@ -146,11 +146,32 @@ def test_normalize_args(raw, expected):
 # --- loop ---
 
 def _script(*responses):
+    """Build a transport from scripted responses. Each response is either a plain
+    assistant-message dict (paired with zero usage) or a (message, usage) tuple to
+    exercise token accounting. Transport returns (message, usage), matching the
+    real contract."""
     seq = iter(responses)
     last = responses[-1]
     def transport(messages, tools):
-        return next(seq, last)
+        r = next(seq, last)
+        if isinstance(r, tuple):
+            return r
+        return r, {"input": 0, "output": 0}
     return transport
+
+
+def test_records_ollama_token_usage_across_turns(tmp_path):
+    # Ground-truth local-model spend: eval_count/prompt_eval_count summed over
+    # every turn of the run (this is the data the savings estimate reads).
+    transport = _script(
+        ({"role": "assistant", "tool_calls": [
+            {"function": {"name": "write_file", "arguments": {"path": "f.txt", "content": "hi"}}}]},
+         {"input": 30, "output": 300}),
+        ({"role": "assistant", "content": "done"}, {"input": 15, "output": 150}),
+    )
+    rec = run_agent("write", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, turn_cap=8)
+    assert rec["ollama_input_tokens"] == 45
+    assert rec["ollama_output_tokens"] == 450
 
 
 def test_loop_dispatches_tools_then_finishes(tmp_path):
@@ -345,9 +366,12 @@ class _FakeResp:
 def test_transport_success(monkeypatch):
     import ollama_agent.transport as t
     monkeypatch.setattr(t.urllib.request, "urlopen",
-                        lambda req, timeout: _FakeResp(200, json.dumps({"message": {"role": "assistant", "content": "ok"}})))
-    msg = t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+                        lambda req, timeout: _FakeResp(200, json.dumps({
+                            "message": {"role": "assistant", "content": "ok"},
+                            "prompt_eval_count": 7, "eval_count": 11})))
+    msg, usage = t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
     assert msg["content"] == "ok"
+    assert usage == {"input": 7, "output": 11}
 
 
 def test_transport_httperror_routes_through_success_parser(monkeypatch):
@@ -374,8 +398,19 @@ def test_transport_urlerror_raises_unreachable(monkeypatch):
 # --- transport success check ---
 
 def test_parse_chat_response_ok():
-    assert parse_chat_response(200, json.dumps({"message": {"role": "assistant", "content": "hi"}})) \
-        == {"role": "assistant", "content": "hi"}
+    msg, usage = parse_chat_response(200, json.dumps({
+        "message": {"role": "assistant", "content": "hi"},
+        "prompt_eval_count": 12, "eval_count": 34}))
+    assert msg == {"role": "assistant", "content": "hi"}
+    assert usage == {"input": 12, "output": 34}
+
+
+def test_parse_chat_response_usage_defaults_zero_when_absent():
+    # Older ollama builds / interrupted streams may omit the counts — default to
+    # 0 (numeric), never None, so downstream sums don't break.
+    msg, usage = parse_chat_response(200, json.dumps({
+        "message": {"role": "assistant", "content": "hi"}}))
+    assert usage == {"input": 0, "output": 0}
 
 
 def test_parse_chat_response_non_200_raises():

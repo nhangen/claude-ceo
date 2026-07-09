@@ -30,9 +30,14 @@ def _stub(monkeypatch, captured):
         captured["run_id"] = run_id
         captured["verify_cmd"] = verify_cmd
         return {"completed": True, "verified": None, "turns": 1, "run_id": run_id,
+                "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
                 "calls": [], "unknown_calls": []}
     monkeypatch.setattr(cli, "run_agent", fake_run_agent)
+    # Neutralize the ledger write so cli tests never touch the real state dir;
+    # capture the args instead for the tests that assert on them.
+    monkeypatch.setattr(cli, "append_run",
+                        lambda rec, model, task_name, cwd: captured.setdefault("ledger", (model, task_name, cwd)) or "/dev/null/ledger")
 
 
 def _tool_names(tools):

@@ -16,6 +16,7 @@ from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryErr
                           StdioMCPTransport, compose_system, filter_tools, gate,
                           load_registry, load_scores, load_skill_index, mcp_tools_to_ollama,
                           ollama_transport, render_catalog, run_agent)
+from ollama_agent.ledger import append_run
 
 DEFAULT_SYSTEM = (
     "You are a local engineering agent operating inside a single working directory. "
@@ -213,6 +214,14 @@ def main(argv=None):
             mcp_transport.close()
 
     rec["rules_loaded_hash"] = rules_loaded_hash
+    rec["model"] = a.model
+
+    # Record the local model's token usage to the ledger so a consumer can
+    # attribute/estimate delegation savings. Best-effort: a ledger write failure
+    # warns but never fails the run.
+    led = append_run(rec, a.model, a.task_name, a.cwd)
+    if led is None:
+        print("warning: could not write ollama-agent ledger (run unaffected)", file=sys.stderr)
 
     if a.json:
         print(json.dumps(rec, indent=2))
@@ -220,6 +229,7 @@ def main(argv=None):
         final = rec["transcript"][-1]
         print(f"completed={rec['completed']} verified={rec['verified']} turns={rec['turns']} "
               f"calls={len(rec['calls'])} unknown={rec['unknown_calls']}")
+        print(f"ollama tokens: in={rec['ollama_input_tokens']} out={rec['ollama_output_tokens']}")
         print("--- final message ---")
         print(final.get("content", "(no content)"))
     return 0
