@@ -2,9 +2,9 @@
 
 Each completed run appends one JSON line recording the LOCAL model's token usage
 (ground truth from ollama's eval_count/prompt_eval_count) plus enough context to
-attribute it: the Claude session that spawned it (CLAUDE_SESSION_ID), the model,
-and the run outcome. A downstream consumer (token-scope) reads this by path to
-estimate delegation savings — it never reverse-parses transcripts.
+attribute it: the Claude session that spawned it (CLAUDE_CODE_SESSION_ID), the
+model, and the run outcome. A downstream consumer (token-scope) reads this by
+path to estimate delegation savings — it never reverse-parses transcripts.
 
 The bridge deliberately records only raw counts + model id here; it does NOT
 price the run or compute savings (it has no Claude pricing table and shouldn't
@@ -14,6 +14,16 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def session_id():
+    """The Claude session that spawned this run, for attribution downstream.
+
+    Claude Code exports ``CLAUDE_CODE_SESSION_ID`` to the environment of the
+    tool calls it makes (including the Bash call that runs this bridge). The
+    legacy ``CLAUDE_SESSION_ID`` is honored as a fallback for other harnesses /
+    manual runs. Returns None when neither is set (an unattributed run)."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID")
 
 
 def ledger_path():
@@ -35,7 +45,7 @@ def append_run(rec, model, task_name, cwd, now=None, path=None):
     entry = {
         "ts": stamp,
         "run_id": rec.get("run_id"),
-        "session_id": os.environ.get("CLAUDE_SESSION_ID"),
+        "session_id": session_id(),
         "model": model,
         "task_name": task_name,
         "cwd": cwd,
