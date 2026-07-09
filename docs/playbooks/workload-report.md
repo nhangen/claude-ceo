@@ -14,6 +14,13 @@ requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]
 
 # Workload Report
 
+> ⚠ **Non-functional since 2026-06-29.** This playbook reads from ZenHub (see
+> `requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]`), which was retired that day.
+> The underlying skill was **not** migrated to GitHub Projects (unlike
+> `story-points`), so it produces no usable report. The frontmatter still says
+> `status: active`; retire the playbook or migrate the skill to GitHub Projects
+> before relying on it again.
+
 Skill-backed playbook. The dispatcher invokes the `workload-report` skill directly via `runner: skill` — no LLM call.
 
 ## What it does
