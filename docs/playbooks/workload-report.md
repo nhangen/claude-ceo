@@ -5,7 +5,7 @@ trigger: cron
 schedule: "0 7 * * 1,3"
 preflight: none
 tier: read
-status: active
+status: disabled
 runner: skill
 skill: workload-report
 out_pattern: CEO/reports/workload/${TODAY}-${HOSTNAME}.md
@@ -17,9 +17,12 @@ requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]
 > ⚠ **Non-functional since 2026-06-29.** This playbook reads from ZenHub (see
 > `requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]`), which was retired that day.
 > The underlying skill was **not** migrated to GitHub Projects (unlike
-> `story-points`), so it produces no usable report. The frontmatter still says
-> `status: active`; retire the playbook or migrate the skill to GitHub Projects
-> before relying on it again.
+> `story-points`), so it produces no usable report. **Disabled 2026-07-08**
+> (`status: disabled`) so the scheduler stops firing a job that can only fail.
+> To restore it, migrate the skill to GitHub Projects (mirror `story-points`'s
+> `ghp-estimates.js` pattern) and flip `status` back to `active`. Applying the
+> disable requires `ceo playbook scan` **on ML-1** (per `ceo-scan-only-on-ml1`);
+> until then the installed scheduler line lingers on hosts that already scanned.
 
 Skill-backed playbook. The dispatcher invokes the `workload-report` skill directly via `runner: skill` — no LLM call.
 
