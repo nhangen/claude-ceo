@@ -16,6 +16,7 @@ def _rec(**over):
 
 def test_append_run_writes_expected_fields(tmp_path, monkeypatch):
     p = tmp_path / "runs.jsonl"
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-xyz")
     out = append_run(_rec(), "mistral-small3.2:24b", "code-fix", "/repo", path=str(p))
     assert out == str(p)
@@ -37,7 +38,26 @@ def test_append_run_is_append_only(tmp_path):
     assert len(p.read_text().strip().splitlines()) == 2
 
 
+def test_session_id_from_claude_code_env(tmp_path, monkeypatch):
+    # Claude Code exports CLAUDE_CODE_SESSION_ID (not CLAUDE_SESSION_ID) to bash
+    # tool calls — this is the var attribution must read.
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-code-1")
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(), "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["session_id"] == "sess-code-1"
+
+
+def test_claude_code_session_id_takes_precedence(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-code-1")
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-legacy")
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(), "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["session_id"] == "sess-code-1"
+
+
 def test_session_id_none_when_env_absent(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     p = tmp_path / "runs.jsonl"
     append_run(_rec(), "m", "t", "/c", path=str(p))
