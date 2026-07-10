@@ -12,11 +12,12 @@ never writes the code, never reads the code, and never hosts the orchestration
 turns. Canonizes the measured 2026-07-09 recipe (issue #266).
 
 **The economics this enforces:** the PM's cost is small and *fixed per task*
-(~$0.2–0.4 measured), while the local model's authoring and iteration are free.
-Savings therefore scale with authoring volume. The two ways to destroy the
-savings are (a) orchestrating from a fat main session ($0.10–0.90/turn in
-context replay — more than an entire small task) and (b) letting the PM read
-the implementations. This skill exists to make both impossible.
+($0.21–0.37 measured, 3-task batch ÷ its $0.63–1.10 PM cost), while the local
+model's authoring and iteration are free. Savings therefore scale with
+authoring volume. The two ways to destroy the savings are (a) orchestrating
+from a fat main session (measured 2026-07-09: $0.10–0.90/turn in context
+replay — more than an entire small task) and (b) letting the PM read the
+implementations. This skill exists to make both hard to do by accident.
 
 ## When NOT to use
 
@@ -72,7 +73,7 @@ prompt must contain, verbatim:
     --verify-cmd "python3 -m pytest -q" \
     --no-rules --no-skills --temperature 0 --turn-cap 10 \
     --ungated --run-id <batch-id>-<n> > <task-dir>/bridge.log 2>&1; \
-  tail -3 <task-dir>/bridge.log
+  grep -E '^(completed|verified)=' <task-dir>/bridge.log
   ```
 
   `--no-rules --no-skills` is load-bearing: omitting them injects rules/skills
@@ -85,8 +86,11 @@ prompt must contain, verbatim:
   read the last line. A red task is recorded and moved past — at most one
   re-fire, no hand-fixing.
 - **Data-only final report:** per task — run_id, verified, turns,
-  `ollama_input_tokens`/`ollama_output_tokens` (from `tail -1` of the ledger),
-  ground-truth pytest tail. Plus one line affirming no implementation was
+  `ollama_input_tokens`/`ollama_output_tokens`, read from the ledger by
+  **run_id match** (`grep '"run_id": "<batch-id>-<n>"' <ledger> | tail -1`),
+  never by file position — the default ledger is shared, and a concurrent
+  bridge run (e.g. a ceo-cron task) can append between fire and read. Plus
+  the ground-truth pytest tail and one line affirming no implementation was
   written or read. Nothing else.
 
 ### 3. Ground-truth and triage (main session, cheap)
