@@ -5,7 +5,7 @@
 # session routing — see docs/superpowers/specs/2026-07-10-tiered-model-delegation-design.md.
 set -euo pipefail
 
-if [ -n "${CEO_TIER_ROUTER_DISABLE:-}" ]; then
+if [ -n "${CEO_TIER_ROUTER_DISABLE:-}" ] || [ -n "${CEO_MODEL_OVERRIDE:-}" ]; then
   exit 0
 fi
 

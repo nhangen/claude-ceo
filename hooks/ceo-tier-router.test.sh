@@ -61,4 +61,11 @@ test_disable_flag_short_circuits() {
   assert_eq "$output" "" "CEO_TIER_ROUTER_DISABLE=1 skips the hook entirely"
 }
 
+test_model_override_short_circuits() {
+  local input output
+  input='{"tool_name": "Task", "tool_input": {"subagent_type": "general-purpose", "description": "find the config file"}}'
+  output=$(CEO_MODEL_OVERRIDE=opus bash -c "printf '%s' '$input' | bash '$SCRIPT_DIR/ceo-tier-router.sh'")
+  assert_eq "$output" "" "CEO_MODEL_OVERRIDE always wins over a tier-map match"
+}
+
 run_tests
