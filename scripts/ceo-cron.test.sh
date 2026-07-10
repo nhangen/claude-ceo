@@ -463,19 +463,13 @@ status: active
 # Body
 PB
 
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — morning-brief
-**Status:** completed
-**Playbook:** playbooks/morning-brief.md
-**Output:**
-Full morning body from the model.
-**Errors:**
-- none
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — morning-brief\n**Status:** completed\n**Playbook:** playbooks/morning-brief.md\n**Output:**\nFull morning body from the model.\n**Errors:**\n- none\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$HOME/.bun/bin/claude"
@@ -2013,19 +2007,13 @@ status: active
 # body
 PB
 
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — claude-selffail
-**Status:** failed
-**Playbook:** playbooks/claude-selffail.md
-**Output:**
-Simulated claude failure.
-**Errors:**
-- broken
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — claude-selffail\n**Status:** failed\n**Playbook:** playbooks/claude-selffail.md\n**Output:**\nSimulated claude failure.\n**Errors:**\n- broken\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$TEST_HOME/.bun/bin/claude"
@@ -2693,11 +2681,10 @@ JSON
 _stub_claude_log_entry() {
   local status="$1"
   local output="$2"
-  cat > "$TEST_HOME/.bun/bin/claude" << STUB
-#!/bin/bash
-cat >/dev/null
-cat <<'OUT'
-LOG_ENTRY:
+  # The read-tier single-call path (scripts/ceo-cron.sh) always invokes claude
+  # with --output-format json and extracts the body via `jq -r '.result'`, so
+  # the stub must emit a JSON envelope, not the raw LOG_ENTRY text.
+  local body="LOG_ENTRY:
 ## 12:00 - pending-drip
 **Status:** $status
 **Playbook:** pending-drip.md
@@ -2705,7 +2692,14 @@ LOG_ENTRY:
 $output
 **Errors:**
 - none
-END_LOG_ENTRY
+END_LOG_ENTRY"
+  local json
+  json=$(printf '%s' "$body" | jq -Rsc '{result: ., total_cost_usd: 0.001, session_id: "test"}')
+  cat > "$TEST_HOME/.bun/bin/claude" << STUB
+#!/bin/bash
+cat >/dev/null
+cat <<'OUT'
+$json
 OUT
 STUB
   chmod +x "$TEST_HOME/.bun/bin/claude"
@@ -3720,19 +3714,13 @@ tier: read
 status: active
 ---
 PB
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — dr-read
-**Status:** completed
-**Playbook:** playbooks/dr-read.md
-**Output:**
-Preview body from the read model.
-**Errors:**
-- none
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — dr-read\n**Status:** completed\n**Playbook:** playbooks/dr-read.md\n**Output:**\nPreview body from the read model.\n**Errors:**\n- none\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$HOME/.bun/bin/claude"
@@ -3905,19 +3893,13 @@ tier: read
 status: active
 ---
 PB
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — pending-drip
-**Status:** completed
-**Playbook:** playbooks/pending-drip.md
-**Output:**
-- A genuine pending question to surface.
-**Errors:**
-- none
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — pending-drip\n**Status:** completed\n**Playbook:** playbooks/pending-drip.md\n**Output:**\n- A genuine pending question to surface.\n**Errors:**\n- none\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$HOME/.bun/bin/claude"

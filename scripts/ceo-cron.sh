@@ -151,6 +151,10 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/ceo-cron-lib.sh"
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
+# shellcheck source=ceo-tier-lib.sh
+source "$SCRIPT_DIR/ceo-tier-lib.sh"
+# shellcheck source=ceo-model-ledger.sh
+source "$SCRIPT_DIR/ceo-model-ledger.sh"
 
 # Vault resolution delegated to ceo-config.sh
 ceo_require_vault
@@ -1821,23 +1825,44 @@ END_LOG_ENTRY"
   fi
 
   MODEL="${MODEL:-sonnet}"
+  if [ -z "${CEO_MODEL_OVERRIDE:-}" ] && [ -z "${CEO_TIER_ROUTER_DISABLE:-}" ]; then
+    _TIER_MATCH="$(ceo_tier_lookup "$TRIGGER" "general-purpose")"
+    if [ -n "$_TIER_MATCH" ]; then
+      MODEL="${_TIER_MATCH%%|*}"
+    fi
+  fi
   [ -n "${CEO_MODEL_OVERRIDE:-}" ] && MODEL="$CEO_MODEL_OVERRIDE"
   export CEO_MODEL="$MODEL"
   export CEO_MODEL_SOURCE="invoked"
   SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
 
   SINGLE_EXIT=0
-  SINGLE_OUTPUT=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
-    --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
+  SINGLE_RAW=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
+    --model "$MODEL" --disallowedTools "Bash,Write,Edit" --output-format json 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
+  # jq exits non-zero (parse error) when SINGLE_RAW isn't valid JSON — e.g. a
+  # session-limit banner printed instead of the JSON envelope. Under set -e
+  # that would kill the script here, before the rate-limit check below ever
+  # runs, so the `|| true` fallbacks keep the `// empty` / `// "null"` intent
+  # working when the CLI's stdout isn't parseable.
+  SINGLE_OUTPUT="$(printf '%s' "$SINGLE_RAW" | jq -r '.result // empty' 2>/dev/null || true)"
+  SINGLE_COST="$(printf '%s' "$SINGLE_RAW" | jq -r '.total_cost_usd // "null"' 2>/dev/null || echo "null")"
+  if [ -n "${_TIER_MATCH:-}" ]; then
+    ceo_ledger_write_entry "claude-tier" "$MODEL" "$TRIGGER" "$VAULT" "${SINGLE_COST:-null}" "true" > /dev/null
+  fi
 
   if [ $SINGLE_EXIT -ne 0 ]; then
-    _check_rate_limit "$SINGLE_OUTPUT" "single-call"
+    # Rate-limit / error text from the CLI is not guaranteed to be valid JSON
+    # even with --output-format json (e.g. a session-limit message printed to
+    # stdout before the CLI can emit its JSON envelope), so check the raw
+    # stdout here, not the jq-parsed .result (which would be empty on
+    # non-JSON input and silently defeat rate-limit detection).
+    _check_rate_limit "$SINGLE_RAW" "single-call"
     _v "FAILED (exit: $SINGLE_EXIT)"
     _report action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
 **Note:** Single-call execution failed (exit: $SINGLE_EXIT). Raw output saved to cron-raw.log."
     echo "$(date) [$TRIGGER] Single-call output:" >> "$LOG_DIR/cron-raw.log"
-    echo "$SINGLE_OUTPUT" >> "$LOG_DIR/cron-raw.log"
+    echo "$SINGLE_RAW" >> "$LOG_DIR/cron-raw.log"
     echo "---" >> "$LOG_DIR/cron-raw.log"
     _record_failure "Single-call execution failed for $TRIGGER (exit: $SINGLE_EXIT)"
     exit "$SINGLE_EXIT"
@@ -1849,6 +1874,13 @@ fi
 
 # --- Three-phase pipeline (low-stakes write and above) ---
 MODEL="${MODEL:-sonnet}"
+if [ -z "${CEO_MODEL_OVERRIDE:-}" ] && [ -z "${CEO_TIER_ROUTER_DISABLE:-}" ]; then
+  _TIER_MATCH="$(ceo_tier_lookup "$TRIGGER" "general-purpose")"
+  if [ -n "$_TIER_MATCH" ]; then
+    MODEL="${_TIER_MATCH%%|*}"
+    ceo_ledger_write_entry "claude-tier" "$MODEL" "$TRIGGER" "$VAULT" "null" "null" > /dev/null
+  fi
+fi
 [ -n "${CEO_MODEL_OVERRIDE:-}" ] && MODEL="$CEO_MODEL_OVERRIDE"
 export CEO_MODEL="$MODEL"
 export CEO_MODEL_SOURCE="invoked"
