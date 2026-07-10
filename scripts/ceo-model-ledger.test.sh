@@ -46,4 +46,18 @@ test_claude_tier_entry_coexists_with_ollama_agent_entry() {
   assert_eq "$claude_matches" "1" "the new claude-tier row is uniquely selectable by run_id"
 }
 
+test_ledger_write_entry_does_not_propagate_write_failures_under_set_e() {
+  local output exit_code
+  output=$( (
+    set -e
+    export OLLAMA_AGENT_LEDGER="/nonexistent_root_dir/cant/write/here.jsonl"
+    ceo_ledger_write_entry "claude-tier" "haiku" "test" "/tmp" "0.002" "true" > /dev/null 2>&1
+    echo "reached_end"
+  ) 2>&1 )
+  exit_code=$?
+
+  assert_eq "$exit_code" "0" "subshell must exit with 0 after failed ceo_ledger_write_entry under set -e"
+  assert_contains "$output" "reached_end" "line after failed ceo_ledger_write_entry must execute under set -e"
+}
+
 run_tests

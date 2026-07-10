@@ -34,7 +34,7 @@ ceo_ledger_write_entry() {
   ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
 
-  mkdir -p "$(dirname "$path")" 2>/dev/null
+  mkdir -p "$(dirname "$path")" 2>/dev/null || true
   jq -nc \
     --arg ts "$ts" --arg run_id "$run_id" --arg session_id "$session_id" \
     --arg writer "$writer" --arg model "$model" --arg task_name "$task_name" --arg cwd "$cwd" \
@@ -42,7 +42,7 @@ ceo_ledger_write_entry() {
     '{ts: $ts, run_id: $run_id, session_id: (if $session_id == "" then null else $session_id end),
       writer: $writer, model: $model, task_name: $task_name, cwd: $cwd,
       cost_usd: $cost_usd, completed: $completed}' \
-    >> "$path" 2>/dev/null
+    >> "$path" 2>/dev/null || true
 
   echo "$run_id"
 }
