@@ -84,6 +84,17 @@ There is no command allowlist or path jail yet; per-task tool restriction and
 safe-delegation tiering arrive in the governance slice (#190). Until then, treat this
 as a deliberately-invoked local tool: you choose `--cwd` and the model you trust.
 
+## Batch delegation (the recipe that saves money)
+
+The canonical consumer of this bridge is the **`ceo-ollama-batch` skill**
+(`skills/ceo/ollama-batch/SKILL.md`): a lean Haiku subagent PM writes pytest
+oracles, fires the bridge with `--verify-cmd` (drive-to-green — failures feed
+back to the local model automatically), and never reads the code. Claude's cost
+is small and fixed per task; the local model's iteration is free, so savings
+scale with authoring volume. Net is measured with
+`token-scope --savings --session <id> --pm-cost <measured>`. Measured basis:
+2026-07-09 batch, issue #266.
+
 ## Driving a local model three ways
 
 The bridge is one of three ways to put a local ollama model behind a harness:
