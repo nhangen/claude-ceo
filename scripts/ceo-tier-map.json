@@ -1,0 +1,11 @@
+{
+  "_comment": "Allowlist of pre-approved task shapes eligible for automatic downgrade to a cheaper model. A dispatch matches ONLY if its subagent_type is in allowed_subagent_types AND its label (a CEO playbook trigger name, or an Agent-tool description) matches match_pattern (case-insensitive regex). No match means no downgrade. This is a human-curated allowlist, not a classifier — add a shape only after reviewing that the task class is safe to run on the listed tier.",
+  "shapes": [
+    {
+      "name": "read-only-lookup",
+      "match_pattern": "^(find|locate|check|look ?up)\\b",
+      "allowed_subagent_types": ["general-purpose", "Explore"],
+      "tier": "haiku"
+    }
+  ]
+}

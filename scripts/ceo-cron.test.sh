@@ -463,19 +463,13 @@ status: active
 # Body
 PB
 
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — morning-brief
-**Status:** completed
-**Playbook:** playbooks/morning-brief.md
-**Output:**
-Full morning body from the model.
-**Errors:**
-- none
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — morning-brief\n**Status:** completed\n**Playbook:** playbooks/morning-brief.md\n**Output:**\nFull morning body from the model.\n**Errors:**\n- none\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$HOME/.bun/bin/claude"
@@ -805,6 +799,93 @@ PB
     FAILS=$((FAILS + 1))
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# Exercises the real tier-routing wiring in ceo-cron.sh (not a reimplemented
+# copy — see scripts/ceo-cron-tier-routing.test.sh, which tests a local helper
+# that never calls into this script). A trigger name matching the shipped
+# scripts/ceo-tier-map.json "read-only-lookup" shape (^(find|locate)\b) must
+# get downgraded to haiku and logged to the shared ledger as a claude-tier row.
+test_read_tier_downgrade_routes_through_real_script_and_logs_ledger() {
+  local body json
+  body="LOG_ENTRY:
+## 12:00 - find-config-lookup
+**Status:** completed
+**Playbook:** find-config-lookup.md
+**Output:**
+found it
+**Errors:**
+- none
+END_LOG_ENTRY"
+  json=$(printf '%s' "$body" | jq -Rsc '{result: ., total_cost_usd: 0.002, session_id: "test"}')
+  cat > "$TEST_HOME/.bun/bin/claude" << STUB
+#!/bin/bash
+cat >/dev/null
+cat <<'OUT'
+$json
+OUT
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  cat > "$CEO_DIR/playbooks/find-config-lookup.md" << 'PB'
+---
+name: find-config-lookup
+description: Read-tier playbook whose trigger name matches the read-only-lookup shape
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" find-config-lookup >/dev/null 2>&1 || true
+
+  local ledger_file
+  ledger_file="$HOME/.local/state/ollama-agent/runs.jsonl"
+  assert_file_exists "$ledger_file" "a matching trigger must write a claude-tier ledger row"
+  local model
+  model=$(jq -rc --arg tn "find-config-lookup" 'select(.writer == "claude-tier" and .task_name == $tn) | .model' "$ledger_file" 2>/dev/null | tail -1)
+  assert_eq "$model" "haiku" "a trigger matching the allowlist must dispatch on the downgraded tier, not the playbook's declared model"
+}
+
+# Regression test for the completed:true-on-failure bug: the read-tier ledger
+# write must not claim success when the underlying claude call actually failed.
+test_read_tier_downgrade_failure_does_not_log_completed_true() {
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "synthetic stderr from claude stub" >&2
+exit 2
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  cat > "$CEO_DIR/playbooks/find-config-lookup-fail.md" << 'PB'
+---
+name: find-config-lookup-fail
+description: Read-tier playbook matching the read-only-lookup shape, exercising the claude failure path
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" find-config-lookup-fail >/dev/null 2>&1 || true
+
+  local ledger_file
+  ledger_file="$HOME/.local/state/ollama-agent/runs.jsonl"
+  assert_file_exists "$ledger_file" "a matching trigger must still write a claude-tier ledger row even on failure"
+  local completed
+  completed=$(jq -rc --arg tn "find-config-lookup-fail" 'select(.writer == "claude-tier" and .task_name == $tn) | .completed' "$ledger_file" 2>/dev/null | tail -1)
+  assert_eq "$completed" "false" "a failed downgraded dispatch must not be logged as completed:true"
 }
 
 test_phase3_failure_does_not_log_completed() {
@@ -2013,19 +2094,13 @@ status: active
 # body
 PB
 
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — claude-selffail
-**Status:** failed
-**Playbook:** playbooks/claude-selffail.md
-**Output:**
-Simulated claude failure.
-**Errors:**
-- broken
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — claude-selffail\n**Status:** failed\n**Playbook:** playbooks/claude-selffail.md\n**Output:**\nSimulated claude failure.\n**Errors:**\n- broken\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$TEST_HOME/.bun/bin/claude"
@@ -2693,11 +2768,10 @@ JSON
 _stub_claude_log_entry() {
   local status="$1"
   local output="$2"
-  cat > "$TEST_HOME/.bun/bin/claude" << STUB
-#!/bin/bash
-cat >/dev/null
-cat <<'OUT'
-LOG_ENTRY:
+  # The read-tier single-call path (scripts/ceo-cron.sh) always invokes claude
+  # with --output-format json and extracts the body via `jq -r '.result'`, so
+  # the stub must emit a JSON envelope, not the raw LOG_ENTRY text.
+  local body="LOG_ENTRY:
 ## 12:00 - pending-drip
 **Status:** $status
 **Playbook:** pending-drip.md
@@ -2705,7 +2779,14 @@ LOG_ENTRY:
 $output
 **Errors:**
 - none
-END_LOG_ENTRY
+END_LOG_ENTRY"
+  local json
+  json=$(printf '%s' "$body" | jq -Rsc '{result: ., total_cost_usd: 0.001, session_id: "test"}')
+  cat > "$TEST_HOME/.bun/bin/claude" << STUB
+#!/bin/bash
+cat >/dev/null
+cat <<'OUT'
+$json
 OUT
 STUB
   chmod +x "$TEST_HOME/.bun/bin/claude"
@@ -3720,19 +3801,13 @@ tier: read
 status: active
 ---
 PB
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — dr-read
-**Status:** completed
-**Playbook:** playbooks/dr-read.md
-**Output:**
-Preview body from the read model.
-**Errors:**
-- none
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — dr-read\n**Status:** completed\n**Playbook:** playbooks/dr-read.md\n**Output:**\nPreview body from the read model.\n**Errors:**\n- none\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$HOME/.bun/bin/claude"
@@ -3905,19 +3980,13 @@ tier: read
 status: active
 ---
 PB
+  # The read-tier single-call path always requests --output-format json and
+  # extracts the body via `jq -r '.result'`, so the stub emits a JSON envelope.
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
 cat << 'OUT'
-LOG_ENTRY:
-## 09:00 — pending-drip
-**Status:** completed
-**Playbook:** playbooks/pending-drip.md
-**Output:**
-- A genuine pending question to surface.
-**Errors:**
-- none
-END_LOG_ENTRY
+{"result":"LOG_ENTRY:\n## 09:00 — pending-drip\n**Status:** completed\n**Playbook:** playbooks/pending-drip.md\n**Output:**\n- A genuine pending question to surface.\n**Errors:**\n- none\nEND_LOG_ENTRY","total_cost_usd":0.001,"session_id":"test"}
 OUT
 STUB
   chmod +x "$HOME/.bun/bin/claude"
