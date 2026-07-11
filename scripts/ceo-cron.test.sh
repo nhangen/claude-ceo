@@ -801,6 +801,93 @@ PB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# Exercises the real tier-routing wiring in ceo-cron.sh (not a reimplemented
+# copy — see scripts/ceo-cron-tier-routing.test.sh, which tests a local helper
+# that never calls into this script). A trigger name matching the shipped
+# scripts/ceo-tier-map.json "read-only-lookup" shape (^(find|locate)\b) must
+# get downgraded to haiku and logged to the shared ledger as a claude-tier row.
+test_read_tier_downgrade_routes_through_real_script_and_logs_ledger() {
+  local body json
+  body="LOG_ENTRY:
+## 12:00 - find-config-lookup
+**Status:** completed
+**Playbook:** find-config-lookup.md
+**Output:**
+found it
+**Errors:**
+- none
+END_LOG_ENTRY"
+  json=$(printf '%s' "$body" | jq -Rsc '{result: ., total_cost_usd: 0.002, session_id: "test"}')
+  cat > "$TEST_HOME/.bun/bin/claude" << STUB
+#!/bin/bash
+cat >/dev/null
+cat <<'OUT'
+$json
+OUT
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  cat > "$CEO_DIR/playbooks/find-config-lookup.md" << 'PB'
+---
+name: find-config-lookup
+description: Read-tier playbook whose trigger name matches the read-only-lookup shape
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" find-config-lookup >/dev/null 2>&1 || true
+
+  local ledger_file
+  ledger_file="$HOME/.local/state/ollama-agent/runs.jsonl"
+  assert_file_exists "$ledger_file" "a matching trigger must write a claude-tier ledger row"
+  local model
+  model=$(jq -rc --arg tn "find-config-lookup" 'select(.writer == "claude-tier" and .task_name == $tn) | .model' "$ledger_file" 2>/dev/null | tail -1)
+  assert_eq "$model" "haiku" "a trigger matching the allowlist must dispatch on the downgraded tier, not the playbook's declared model"
+}
+
+# Regression test for the completed:true-on-failure bug: the read-tier ledger
+# write must not claim success when the underlying claude call actually failed.
+test_read_tier_downgrade_failure_does_not_log_completed_true() {
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "synthetic stderr from claude stub" >&2
+exit 2
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  cat > "$CEO_DIR/playbooks/find-config-lookup-fail.md" << 'PB'
+---
+name: find-config-lookup-fail
+description: Read-tier playbook matching the read-only-lookup shape, exercising the claude failure path
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" find-config-lookup-fail >/dev/null 2>&1 || true
+
+  local ledger_file
+  ledger_file="$HOME/.local/state/ollama-agent/runs.jsonl"
+  assert_file_exists "$ledger_file" "a matching trigger must still write a claude-tier ledger row even on failure"
+  local completed
+  completed=$(jq -rc --arg tn "find-config-lookup-fail" 'select(.writer == "claude-tier" and .task_name == $tn) | .completed' "$ledger_file" 2>/dev/null | tail -1)
+  assert_eq "$completed" "false" "a failed downgraded dispatch must not be logged as completed:true"
+}
+
 test_phase3_failure_does_not_log_completed() {
   # Stateful stub: succeeds on Phase-1 (with ACTION line low-stakes-write),
   # fails on Phase-3.

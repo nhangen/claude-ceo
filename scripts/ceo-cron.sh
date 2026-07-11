@@ -1847,7 +1847,7 @@ END_LOG_ENTRY"
   SINGLE_OUTPUT="$(printf '%s' "$SINGLE_RAW" | jq -r '.result // empty' 2>/dev/null || true)"
   SINGLE_COST="$(printf '%s' "$SINGLE_RAW" | jq -r '.total_cost_usd // "null"' 2>/dev/null || echo "null")"
   if [ -n "${_TIER_MATCH:-}" ]; then
-    ceo_ledger_write_entry "claude-tier" "$MODEL" "$TRIGGER" "$VAULT" "${SINGLE_COST:-null}" "true" > /dev/null
+    ceo_ledger_write_entry "claude-tier" "$MODEL" "$TRIGGER" "$VAULT" "${SINGLE_COST:-null}" "$([ "$SINGLE_EXIT" -eq 0 ] && echo true || echo false)" > /dev/null
   fi
 
   if [ $SINGLE_EXIT -ne 0 ]; then
