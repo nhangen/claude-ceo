@@ -404,28 +404,55 @@ _release_lock() {
   fi
 }
 
-_check_rate_limit() {
-  local output="$1"
-  local phase="$2"
-  if printf '%s\n' "$output" | grep -qEi "session limit|hit your limit"; then
-    if [ "$phase" = "single-call" ] && [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" != "1" ]; then
-      _v "Claude rate-limited! Falling back to ollama..."
-      echo "$(date) [$TRIGGER] Rate-limited (Claude). Falling back to ollama." >> "$LOG_DIR/cron-skips.log"
-      export CEO_CRON_OLLAMA_FALLBACK=1
-      _release_lock
-      exec bash "$SCRIPT_DIR/ceo-cron.sh" "$TRIGGER"
-    fi
+# _route_claude_failure <exit_code> <raw_stdout> <phase> — called when a
+# `claude --print` invocation exited non-zero. Classifies the failure via
+# _classify_claude_failure (ceo-cron-lib.sh) and handles the two classes that
+# need special routing:
+#   transient — availability/throttle (5xx, 429, rate-limit, network). On the
+#               single-call path, fall back to ollama once; on plan/exec (or if
+#               already on the fallback run) record the run skipped and exit 0.
+#   auth      — NEVER fall back: an ollama report would re-mute the exact
+#               logged-out alarm. Record a failed run with a re-auth escalation
+#               and exit non-zero so cron telemetry goes red.
+# For `terminal` (and the can't-happen `ok`) it returns, letting the caller's
+# own failed-run handling take over — that path already records failed + exits.
+_route_claude_failure() {
+  local rc="$1" output="$2" phase="$3"
+  local class; class="$(_classify_claude_failure "$rc" "$output")"
 
-    _v "SKIPPED (rate-limited in $phase)"
-    _report action "$TRIGGER" "**Status:** skipped: rate-limited
+  case "$class" in
+    transient)
+      if [ "$phase" = "single-call" ] && [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" != "1" ]; then
+        _v "Claude unavailable (transient)! Falling back to ollama..."
+        echo "$(date) [$TRIGGER] Transient failure (Claude). Falling back to ollama." >> "$LOG_DIR/cron-skips.log"
+        export CEO_CRON_OLLAMA_FALLBACK=1
+        _release_lock
+        exec bash "$SCRIPT_DIR/ceo-cron.sh" "$TRIGGER"
+      fi
+      _v "SKIPPED (transient failure in $phase)"
+      _report action "$TRIGGER" "**Status:** skipped: unavailable
 **Playbook:** $PLAYBOOK_REL
-**Note:** Claude API session limit reached. Raw output saved to cron-raw.log."
-    echo "$(date) [$TRIGGER] Rate-limited ($phase):" >> "$LOG_DIR/cron-skips.log"
-    echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
-    echo "$output" >> "$LOG_DIR/cron-raw.log"
-    echo "---" >> "$LOG_DIR/cron-raw.log"
-    exit 0
-  fi
+**Note:** Claude API transiently unavailable (rate-limit / 5xx / network) in $phase. Raw output saved to cron-raw.log."
+      echo "$(date) [$TRIGGER] Transient ($phase):" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
+      echo "$output" >> "$LOG_DIR/cron-raw.log"
+      echo "---" >> "$LOG_DIR/cron-raw.log"
+      exit 0
+      ;;
+    auth)
+      _v "AUTH FAILURE in $phase — not falling back (would mask a logged-out host)"
+      _report action "$TRIGGER" "**Status:** failed: auth
+**Playbook:** $PLAYBOOK_REL
+**Note:** Claude authentication failed in $phase — automation is down until re-auth. Fix: ssh to this host, run \`claude\`, then /login. Raw output saved to cron-raw.log."
+      echo "$(date) [$TRIGGER] AUTH FAILURE ($phase):" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
+      echo "$output" >> "$LOG_DIR/cron-raw.log"
+      echo "---" >> "$LOG_DIR/cron-raw.log"
+      _record_failure "Claude auth failure in $phase for $TRIGGER — host needs re-login"
+      exit 1
+      ;;
+  esac
+  # terminal / ok → return; caller's own failed-run handling takes over.
 }
 
 # Single source of truth for routing read-tier model output. Both runner
@@ -1856,7 +1883,7 @@ END_LOG_ENTRY"
     # stdout before the CLI can emit its JSON envelope), so check the raw
     # stdout here, not the jq-parsed .result (which would be empty on
     # non-JSON input and silently defeat rate-limit detection).
-    _check_rate_limit "$SINGLE_RAW" "single-call"
+    _route_claude_failure "$SINGLE_EXIT" "$SINGLE_RAW" "single-call"
     _v "FAILED (exit: $SINGLE_EXIT)"
     _report action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
@@ -1937,7 +1964,7 @@ PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with
   --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$LOG_DIR/cron-stderr.log") || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
-  _check_rate_limit "$PLAN_OUTPUT" "plan"
+  _route_claude_failure "$PLAN_EXIT" "$PLAN_OUTPUT" "plan"
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
   echo "$(date) [$TRIGGER] Plan output:" >> "$LOG_DIR/cron-raw.log"
   echo "$PLAN_OUTPUT" >> "$LOG_DIR/cron-raw.log"
@@ -2044,7 +2071,7 @@ END_LOG_ENTRY"
 
   _v "Phase 3 done (exit: $EXEC_EXIT)"
   if [ $EXEC_EXIT -ne 0 ]; then
-    _check_rate_limit "$EXEC_OUTPUT" "exec"
+    _route_claude_failure "$EXEC_EXIT" "$EXEC_OUTPUT" "exec"
     _v "FAILED — raw output saved to cron-raw.log"
     _report action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL

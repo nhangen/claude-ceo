@@ -3313,6 +3313,47 @@ STUB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_claude_auth_failure_does_not_fall_back_and_exits_nonzero() {
+  # Auth failure must NOT fall back to ollama (a local-model report would
+  # re-mute the logged-out alarm). Fails if the auth path is reverted to
+  # fall-open: then rc would be 0 and ollama would be invoked.
+  cat > "$CEO_DIR/playbooks/authfail.md" << 'PB'
+---
+name: authfail
+description: auth failure
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  # single-call uses --output-format json; stub emits an auth-error envelope.
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+echo '{"type":"result","is_error":true,"subtype":"error","api_error_status":401,"result":""}'
+exit 1
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+  rm -f "$HOME/ollama-invoked-model.txt"
+
+  local rc=0
+  bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "cron must exit non-zero on auth failure (no fallback)"
+
+  local ollama_invoked
+  ollama_invoked=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
+  assert_eq "$ollama_invoked" "" "ollama must NOT be invoked on auth failure"
+
+  local skip_log
+  skip_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skip_log" "AUTH FAILURE" "cron-skips.log must record the auth failure"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_ceo_cron_skips_read_tier_on_failed_gather() {
   cat > "$CEO_DIR/playbooks/morning-brief.md" << 'PB'
 ---
