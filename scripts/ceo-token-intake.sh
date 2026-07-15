@@ -64,6 +64,60 @@ capture() {
   return 0
 }
 
+# check_auth_health — flag when this host's Claude runs produce nothing.
+# The reliable signal is NOT "an authentication_failed turn exists" — transient
+# 401s and aborted micro-sessions are ambient noise even on a healthy, logged-in
+# host (a busy dev box shows hundreds). The signal is: sessions WERE attempted in
+# the last 48h but NONE produced a successful, token-bearing turn. A logged-out
+# host (or otherwise broken auth) writes error-only sessions with 0 output tokens,
+# so its token report goes empty and the outage hides for days.
+#
+# Keying on success (not on the error string) also sidesteps a self-referential
+# false positive: a session that merely *discusses* authentication_failed embeds
+# the string in .message.content, but has real successful turns too, so it reads
+# as healthy. The top-level .isApiErrorMessage/.error fields only ENRICH the
+# message when we already know the host produced nothing. jq inspects the object
+# root; no jq → skip (never guess). Always returns 0 — informational, not a run failure.
+AUTH_ALERT=""
+check_auth_health() {
+  local pdir="$HOME/.claude/projects"
+  if [ ! -d "$pdir" ]; then
+    printf 'no Claude projects dir at %s — nothing to check\n' "$pdir"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'SKIP: jq not on PATH; cannot inspect session outcomes without false positives.\n'
+    return 0
+  fi
+  local recent=0 has_success=0 saw_autherr=0 f
+  while IFS= read -r f; do
+    recent=$((recent + 1))
+    if [ -n "$(jq -c 'select((.message.usage.output_tokens // 0) > 0)' "$f" 2>/dev/null | head -1)" ]; then
+      has_success=1
+      break
+    fi
+    if [ "$saw_autherr" -eq 0 ] \
+       && jq -e 'select(.isApiErrorMessage == true and .error == "authentication_failed")' "$f" >/dev/null 2>&1; then
+      saw_autherr=1
+    fi
+  done < <(find "$pdir" -type f -name '*.jsonl' -mtime -2 2>/dev/null)
+
+  if [ "$recent" -eq 0 ]; then
+    printf 'OK: no Claude sessions in the last 48h (host idle — nothing to verify).\n'
+    return 0
+  fi
+  if [ "$has_success" -eq 1 ]; then
+    printf 'OK: host produced successful Claude turns in the last 48h.\n'
+    return 0
+  fi
+
+  local why="producing no successful output (check auth/network)"
+  [ "$saw_autherr" -eq 1 ] && why="LOGGED OUT — recent turns report authentication_failed"
+  AUTH_ALERT="Claude on $HOST ran $recent session(s) in the last 48h but produced zero successful turns: $why. Scheduled automation is failing silently. Fix: ssh to this host, run \`claude\`, then /login."
+  printf 'WARN: %s\n' "$AUTH_ALERT"
+  return 0
+}
+
 # Resolve token-scope from the Claude Code plugin cache rather than PATH —
 # the plugin doesn't install a wrapper, and stale ~/.bun/bin symlinks from
 # prior standalone installs satisfy `command -v` but dangle. See #37.
@@ -86,9 +140,9 @@ if ! {
   printf -- '---\ndate: %s\ntype: ceo-token-intake\n---\n\n' "$TODAY"
   printf '# Token Report — %s\n' "$TODAY"
   capture "RTK — global savings" rtk gain
-  capture "RTK — current project" rtk gain -p
   capture "ccusage — Claude Code monthly" npx --yes ccusage@latest monthly
   capture "token-scope — last 24h" "${TS_CMD[@]}" --since 1d
+  capture "auth health" check_auth_health
 } > "$REPORT_FILE"; then
   echo "ERROR: failed to write $REPORT_FILE" >&2
   exit 1
@@ -105,6 +159,18 @@ fi
 touch "$INBOX_FILE"
 if ! grep -qF -- "$WIKILINK" "$INBOX_FILE"; then
   printf '%s\n' "$INBOX_LINE" >> "$INBOX_FILE"
+fi
+
+# Escalate a logged-out host to the inbox as a distinct actionable item.
+# Dedupe on the UNCHECKED marker so a still-broken day doesn't re-append, but a
+# fresh outage after a prior check-off DOES re-alert — a state transition, not
+# signal spam (see ceo-automated-writers-are-playbooks).
+if [ -n "$AUTH_ALERT" ]; then
+  AUTH_MARKER="No successful Claude runs on $HOST"
+  AUTH_LINE="- [ ] ⚠️ $AUTH_MARKER in 48h — likely logged out; ssh in and run \`claude\` then /login ($WIKILINK)"
+  if ! grep -qF -- "- [ ] ⚠️ $AUTH_MARKER" "$INBOX_FILE"; then
+    printf '%s\n' "$AUTH_LINE" >> "$INBOX_FILE"
+  fi
 fi
 
 exit 0

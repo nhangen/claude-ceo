@@ -185,7 +185,11 @@ EOF
 test_exits_nonzero_when_capture_command_missing() {
   rm -f "$TEST_HOME/.bun/bin/token-scope"
   local rc=0
-  bash "$INTAKE" >/dev/null 2>&1 || rc=$?
+  # Pin PATH to the test stub dirs only. Inheriting the real $PATH lets an
+  # ambient ~/.bun/bin/token-scope satisfy `command -v` and defeat the
+  # missing-binary scenario this test exists to exercise.
+  PATH="$TEST_HOME/stubs:$TEST_HOME/.bun/bin:/usr/bin:/bin" \
+    bash "$INTAKE" >/dev/null 2>&1 || rc=$?
   if [ "$rc" = "0" ]; then
     printf '  FAIL [%s] script must exit non-zero when a capture binary is missing\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
@@ -322,6 +326,73 @@ STUB
     printf '  FAIL [%s] bun stub received wrong entry path (runtime+path pair mismatched)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_omits_rtk_current_project_section() {
+  bash "$INTAKE" >/dev/null 2>&1
+  local today report body
+  today=$(date +%Y-%m-%d)
+  report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
+  body=$(cat "$report")
+  assert_not_contains "$body" "RTK — current project" \
+    "daemon-cwd 'current project' section must be dropped (it logged the scheduler's own dir)"
+  assert_contains "$body" "RTK — global savings" "global RTK section must remain"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_auth_health_ok_when_a_successful_turn_exists() {
+  # HOME is re-pinned to $TEST_HOME via the getent stub, so stage sessions there.
+  local proj="$TEST_HOME/.claude/projects/-some-project"
+  mkdir -p "$proj"
+  # One genuine successful (token-bearing) turn → host is healthy.
+  printf '%s\n' '{"type":"assistant","message":{"usage":{"output_tokens":10}}}' > "$proj/ok.jsonl"
+  # A session that merely *mentions* the error string must NOT flip it to WARN —
+  # the success signal makes the self-referential false positive impossible.
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"discussing \"error\":\"authentication_failed\" here"}]}}' \
+    > "$proj/mention.jsonl"
+  bash "$INTAKE" >/dev/null 2>&1
+  local today report body inbox inbox_body
+  today=$(date +%Y-%m-%d)
+  report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
+  body=$(cat "$report")
+  assert_contains "$body" "## auth health" "report must include an auth health section"
+  assert_contains "$body" "OK: host produced successful Claude turns" "a host with a successful turn must read OK"
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  inbox_body=$([ -f "$inbox" ] && cat "$inbox" || echo "")
+  assert_not_contains "$inbox_body" "No successful Claude runs" "a healthy host must not raise an alert"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_auth_alert_when_no_successful_turns_dedupes_and_reappears() {
+  # A logged-out host writes sessions with zero successful turns; the error-only
+  # session also carries the top-level authentication_failed field for enrichment.
+  local proj="$TEST_HOME/.claude/projects/-some-project"
+  mkdir -p "$proj"
+  printf '%s\n' '{"type":"assistant","isApiErrorMessage":true,"error":"authentication_failed","message":{"model":"<synthetic>","usage":{"output_tokens":0},"content":[{"type":"text","text":"Not logged in · Please run /login"}]}}' \
+    > "$proj/sess.jsonl"
+
+  bash "$INTAKE" >/dev/null 2>&1
+  local today report body inbox count
+  today=$(date +%Y-%m-%d)
+  report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
+  body=$(cat "$report")
+  assert_contains "$body" "zero successful turns" "report must flag a host that produced nothing"
+  assert_contains "$body" "LOGGED OUT" "auth-error field must enrich the message"
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  count=$(grep -c -F "No successful Claude runs on $CEO_HOSTNAME" "$inbox")
+  assert_eq "$count" "1" "broken host must get exactly one inbox alert"
+
+  # Still broken next run → must NOT re-append (dedupe on the unchecked marker).
+  bash "$INTAKE" >/dev/null 2>&1
+  count=$(grep -c -F "No successful Claude runs on $CEO_HOSTNAME" "$inbox")
+  assert_eq "$count" "1" "still-broken host must not spam a second alert"
+
+  # After the alert is checked off, a fresh outage must re-alert (transition).
+  sed -i.bak "s|- \[ \] \(.*No successful Claude runs\)|- [x] \1|" "$inbox"; rm -f "$inbox.bak"
+  bash "$INTAKE" >/dev/null 2>&1
+  count=$(grep -c -F "No successful Claude runs on $CEO_HOSTNAME" "$inbox")
+  assert_eq "$count" "2" "outage after a prior check-off must re-alert"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
