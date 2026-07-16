@@ -719,7 +719,6 @@ STUB
   done
   got=$([ -f "$marker" ] && echo fired || echo none)
   assert_eq "$got" "fired" "unguarded escalation must reach the notification path"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_path_uses_home() {
