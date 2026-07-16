@@ -29,10 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run script tests
-        # Each *.test.sh is self-isolating (its own mktemp -d + HOME override), so
-        # they run concurrently. Output is captured per-file and printed as a whole
-        # block to keep failures readable under interleaving; xargs exits non-zero
-        # if any test does, failing the step.
+        # The *.test.sh files run concurrently: each is either pure-logic (sources a
+        # lib, asserts in memory) or isolates its writes via mktemp / $$-scoped paths,
+        # and no two write the same fixed path under scripts/ — that no-fixed-name-
+        # collision property is what keeps -P 4 safe. Output is captured per-file and
+        # printed as a whole block to keep failures readable under interleaving; xargs
+        # exits non-zero if any test does, failing the step.
         run: |
           shopt -s nullglob
           tests=(scripts/*.test.sh)
