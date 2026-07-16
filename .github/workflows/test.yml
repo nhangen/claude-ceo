@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# Supersede in-flight runs for the same ref: a rapid push sequence keeps only
+# the newest run, freeing the older ones' minutes instead of running them out.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
@@ -23,16 +29,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run script tests
+        # Each *.test.sh is self-isolating (its own mktemp -d + HOME override), so
+        # they run concurrently. Output is captured per-file and printed as a whole
+        # block to keep failures readable under interleaving; xargs exits non-zero
+        # if any test does, failing the step.
         run: |
-          fail=0
-          count=0
-          for t in scripts/*.test.sh; do
-            echo "=== $t ==="
-            count=$((count + 1))
-            bash "$t" || fail=1
-          done
-          [ "$count" -ge 1 ] || { echo "no tests ran"; exit 1; }
-          exit "$fail"
+          shopt -s nullglob
+          tests=(scripts/*.test.sh)
+          [ "${#tests[@]}" -ge 1 ] || { echo "no tests ran"; exit 1; }
+          printf '%s\n' "${tests[@]}" | xargs -P 4 -I {} bash -c '
+            out=$(bash "$1" 2>&1); rc=$?
+            printf "=== %s (rc=%d) ===\n%s\n" "$1" "$rc" "$out"
+            exit "$rc"
+          ' _ {}
       - name: ollama-agent pytest
         run: |
           python3 -m pip install --quiet pytest
@@ -53,8 +62,18 @@ jobs:
       # the checkout dir. Clone it there so bun install can link it. cronbird is
       # public, so no credential is needed.
       - name: Check out cronbird (path dependency)
+        # Pinned to a known-good commit rather than tracking HEAD. cronbird is a
+        # source-level path dependency, so our strict `tsc` compiles its internals
+        # too — an unpinned HEAD lets any upstream cronbird change (new required
+        # DaemonDeps fields, stricter code) break this job with no change here.
+        # The daemon runs against this same ref in production; bump deliberately
+        # (update CRONBIRD_REF, adapt src/main.ts, re-run) when adopting new
+        # cronbird features.
+        env:
+          CRONBIRD_REF: 1a715f76ba61a12975d8a4ca8683e67be4d76f01
         run: |
-          git clone --depth 1 https://github.com/nhangen/cronbird.git "${GITHUB_WORKSPACE}/../cronbird"
+          git clone --filter=blob:none https://github.com/nhangen/cronbird.git "${GITHUB_WORKSPACE}/../cronbird"
+          git -C "${GITHUB_WORKSPACE}/../cronbird" checkout --quiet "$CRONBIRD_REF"
           # cronbird needs its own node_modules (croner) so module resolution
           # from its source resolves — bun links the package but hoists its deps
           # into the consumer tree, which cronbird's own files can't reach.
