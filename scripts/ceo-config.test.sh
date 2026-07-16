@@ -659,7 +659,7 @@ test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
   local counter_file="$TEST_HOME/.claude/ceo-cron-config-fails"
   local fails_value
   for _i in 1 2 3; do
-    env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 PATH="$PATH" bash -c "
+    env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
       set -uo pipefail
       source '$LIB'
       ceo_require_vault
@@ -677,6 +677,48 @@ test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
   fails_value=$(cat "$counter_file" 2>/dev/null || echo missing)
   assert_eq "$fails_value" "1" "corrupted counter must reset to 1 on next failure"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_fatal_escalation_desktop_notify_guarded() {
+  # The FATAL escalation (fails >= 3) pops a real macOS notification via
+  # osascript. It must be suppressed under CEO_NO_DESKTOP_NOTIFY=1 so the test
+  # suite (which drives the counter to 3) never fires a real popup, while the
+  # durable log still records. A stub osascript captures invocation + validates
+  # argv (stub-cli-argv-validation).
+  local bindir="$TEST_HOME/stubbin"; mkdir -p "$bindir"
+  cat > "$bindir/osascript" <<'STUB'
+#!/bin/bash
+case "$*" in
+  *"display notification"*"Claude CEO FATAL"*) echo fired >> "$OSA_MARKER" ;;
+  *) echo "osascript stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$bindir/osascript"
+  local marker="$TEST_HOME/osa-fired"
+  local fatal_log="$TEST_HOME/.claude/ceo-fatal.log"
+  local counter="$TEST_HOME/.claude/ceo-cron-config-fails"
+  local got
+
+  # Phase 1 — guarded: 3 fails with CEO_NO_DESKTOP_NOTIFY=1 → stub must NOT fire.
+  rm -f "$counter" "$marker" "$fatal_log" 2>/dev/null || true
+  for _i in 1 2 3; do
+    env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 CEO_NO_DESKTOP_NOTIFY=1 \
+      OSA_MARKER="$marker" PATH="$bindir:$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_require_vault" >/dev/null 2>&1 || true
+  done
+  got=$([ -f "$marker" ] && echo fired || echo none)
+  assert_eq "$got" "none" "guarded escalation must NOT fire the desktop notification"
+  assert_file_exists "$fatal_log" "durable FATAL log must be written even when the popup is suppressed"
+  assert_contains "$(cat "$fatal_log" 2>/dev/null)" "CEO_VAULT unresolved after 3 ticks" "fatal log records tick count"
+
+  # Phase 2 — unguarded: 3 fails, no guard → stub MUST fire (guard is load-bearing;
+  # reverting the guard makes Phase 1 fail).
+  rm -f "$counter" "$marker" 2>/dev/null || true
+  for _i in 1 2 3; do
+    env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 \
+      OSA_MARKER="$marker" PATH="$bindir:$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_require_vault" >/dev/null 2>&1 || true
+  done
+  got=$([ -f "$marker" ] && echo fired || echo none)
+  assert_eq "$got" "fired" "unguarded escalation must reach the notification path"
 }
 
 test_pr_sources_path_uses_home() {
