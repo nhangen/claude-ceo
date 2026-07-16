@@ -167,7 +167,7 @@ See [`docs/install.md`](docs/install.md) for fresh multi-machine setup, [`docs/p
 
 ```bash
 bash scripts/ceo-config.test.sh         # config loader / path helpers
-bash scripts/ceo-cron.test.sh           # dispatch + tier semantics
+for f in scripts/ceo-cron-*.test.sh; do bash "$f"; done  # dispatch + tier semantics (ceo-cron.sh, split into shards)
 bash scripts/ceo-notify.test.sh         # notification helper
 bash scripts/ceo-discord-report.test.sh # full-report Discord webhook helper
 bash scripts/ceo-schedule.test.sh       # schedule override + collision detection
