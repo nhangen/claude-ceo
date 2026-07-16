@@ -180,10 +180,28 @@ ceo_require_vault() {
     # Sentinel file alongside the notification channels so observability sees
     # the escalation even if osascript (locked session) and logger both fail.
     : > "$HOME/.claude/ceo-fatal-alerted" 2>/dev/null || true
-    if command -v osascript &>/dev/null; then
-      osascript -e 'display notification "CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." with title "Claude CEO FATAL"' &>/dev/null || true
-    else
-      logger "Claude CEO FATAL: CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." 2>/dev/null || true
+    # Durable diagnostic. A dispatched cron tick's stderr is discarded by the
+    # daemon, so the macOS popup is otherwise the ONLY trace of this failure and
+    # there is nothing to diagnose after the fact. Record the resolution context
+    # to a CEO_VAULT-independent log (the vault is what failed to resolve): which
+    # HOME/USER the failing tick ran under and whether ~/.ceo/config was visible
+    # there — the two things that pinpoint a wrong-HOME cron/launchd env.
+    printf '%s FATAL CEO_VAULT unresolved after %d ticks — HOME=%s USER=%s config=%s env_CEO_VAULT=%s\n' \
+      "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)" "$fails" "$HOME" "${USER:-?}" \
+      "$([ -f "$(ceo_config_path)" ] && echo present || echo MISSING)" \
+      "${CEO_VAULT:+set}" >> "$HOME/.claude/ceo-fatal.log" 2>/dev/null || true
+    # Desktop notification is user-facing and must NOT fire from the test suite
+    # or any automated/non-interactive run — the escalation test drives the
+    # counter to 3, which would otherwise pop a real "Claude CEO FATAL" macOS
+    # notification on the developer's machine. Tests set CEO_NO_DESKTOP_NOTIFY=1;
+    # real cron ticks leave it unset and still alert. The durable log + sentinel
+    # above are unconditional so observability survives the suppressed popup.
+    if [ -z "${CEO_NO_DESKTOP_NOTIFY:-}" ]; then
+      if command -v osascript &>/dev/null; then
+        osascript -e 'display notification "CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." with title "Claude CEO FATAL"' &>/dev/null || true
+      else
+        logger "Claude CEO FATAL: CEO_VAULT unresolved for 3+ cron ticks. Run ceo setup." 2>/dev/null || true
+      fi
     fi
   fi
   exit 1
