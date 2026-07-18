@@ -40,10 +40,12 @@ import {
   doneDir,
   enabledPath,
   heartbeatPath,
+  isSafeSegment,
   registryPath,
   resolveFixedLookbackMs,
   resolveHost,
   runningDir,
+  runningMarker,
   swarmPath,
   syncedHeartbeatPath,
 } from "@/runtime";
@@ -122,6 +124,7 @@ function readStateDir(dir: string): Record<string, string> {
   if (!existsSync(dir)) return {};
   const out: Record<string, string> = {};
   for (const name of readdirSync(dir)) {
+    if (!isSafeSegment(name)) continue; // defensive: never read a name we'd refuse to write
     try {
       out[name] = readFileSync(`${dir}/${name}`, "utf8");
     } catch {
@@ -129,6 +132,16 @@ function readStateDir(dir: string): Record<string, string> {
     }
   }
   return out;
+}
+
+/** Is a process alive? `kill(pid, 0)` probes without signalling; ESRCH ⇒ gone. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function main(): Promise<void> {
@@ -186,6 +199,12 @@ async function main(): Promise<void> {
       // Swallow + log so one bad dispatch can't crash-loop the daemon; the
       // guard is already persisted, so this playbook is simply skipped this
       // minute and fires again at its next slot.
+      // A job name is used as a run-state filename; refuse anything that isn't a
+      // single safe path segment rather than write outside the run-state dir.
+      if (!isSafeSegment(name)) {
+        log(`refusing to dispatch unsafe job name: ${JSON.stringify(name)}`);
+        return;
+      }
       const startedTs = Date.now();
       const runMarker = `${runDir}/${name}`;
       const clearRunning = () => {
@@ -197,7 +216,7 @@ async function main(): Promise<void> {
       };
       try {
         // Mark in-flight BEFORE spawn so a completion can never race ahead of it.
-        writeFileSync(runMarker, String(startedTs));
+        writeFileSync(runMarker, runningMarker(startedTs));
         const proc = Bun.spawn(cfg.dispatchArgv(name), {
           env: { ...process.env, CEO_VAULT: vault },
           stdout: "ignore",
@@ -205,6 +224,10 @@ async function main(): Promise<void> {
           stdin: "ignore",
         });
         proc.unref();
+        // Rewrite with the PID now that it's known, so a crashed daemon's orphaned
+        // marker is dropped by liveness (dead PID) instead of stalling the queue
+        // for RUN_STATE_STALE_MS.
+        writeFileSync(runMarker, runningMarker(startedTs, proc.pid));
         log(`dispatched ${name}`);
         // Record completion so cronbird's queue advances (the MAX_CONCURRENT=1
         // gate drains the next job only once this one is observed done). Runs on
@@ -250,7 +273,7 @@ async function main(): Promise<void> {
     // the loop observes completions and drains the queue instead of stranding
     // every job behind the first (which would silently drop same-minute
     // collisions like morning + morning-brief at 03:20).
-    readCompletions: () => buildCompletions(readStateDir(runDir), readStateDir(dDir), Date.now()),
+    readCompletions: () => buildCompletions(readStateDir(runDir), readStateDir(dDir), Date.now(), { isAlive: pidAlive }),
   };
 
   log(`started — host=${host} vault=${vault} registry=${regPath}`);

@@ -108,10 +108,39 @@ export function doneDir(home: string): string {
  */
 export const RUN_STATE_STALE_MS = 3_600_000; // 1 hour
 
-/** Parse a `running/<name>` body (epoch-ms startedTs); null on garbage/torn. */
-export function parseRunningEntry(raw: string): number | null {
-  const n = Number(raw.trim());
-  return Number.isFinite(n) && n > 0 ? n : null;
+/** A parsed `running/<name>` marker: when it started, and the child PID if known. */
+export interface RunningMarker {
+  startedTs: number;
+  /** null during the brief pre-spawn window before the PID is known. */
+  pid: number | null;
+}
+
+/**
+ * Serialize a running marker. Written as `startedTs` before spawn (PID unknown),
+ * rewritten as `startedTs pid` once the child exists so a crashed daemon's
+ * orphaned marker can be dropped by liveness rather than waiting out the stale
+ * window.
+ */
+export function runningMarker(startedTs: number, pid?: number | null): string {
+  return pid != null && pid > 0 ? `${startedTs} ${pid}` : String(startedTs);
+}
+
+/** Parse a `running/<name>` body (`startedTs` or `startedTs pid`); null on garbage/torn. */
+export function parseRunningEntry(raw: string): RunningMarker | null {
+  const parts = raw.trim().split(/\s+/);
+  const startedTs = Number(parts[0]);
+  if (!Number.isFinite(startedTs) || startedTs <= 0) return null;
+  const pidNum = parts.length > 1 ? Number(parts[1]) : NaN;
+  return { startedTs, pid: Number.isInteger(pidNum) && pidNum > 0 ? pidNum : null };
+}
+
+/**
+ * A job name is used directly as a run-state filename, so it must be a single
+ * safe path segment — no `/`, no `.`/`..`. Live registry names are kebab slugs;
+ * this guards the path-escape surface if a future name isn't.
+ */
+export function isSafeSegment(name: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(name) && name !== "." && name !== "..";
 }
 
 /** Parse+validate a `done/<name>` body (CompletionRecord JSON); null on garbage/torn. */
@@ -152,12 +181,23 @@ export function buildCompletions(
   runningRaw: Record<string, string>,
   doneRaw: Record<string, string>,
   now: number,
-  staleMs = RUN_STATE_STALE_MS,
+  opts: { staleMs?: number; isAlive?: (pid: number) => boolean } = {},
 ): { running: Record<string, number>; done: Record<string, CompletionRecord> } {
+  const staleMs = opts.staleMs ?? RUN_STATE_STALE_MS;
+  const isAlive = opts.isAlive;
   const running: Record<string, number> = {};
   for (const [name, raw] of Object.entries(runningRaw)) {
-    const ts = parseRunningEntry(raw);
-    if (ts !== null && !isStaleRunning(ts, now, staleMs)) running[name] = ts;
+    const m = parseRunningEntry(raw);
+    if (m === null) continue;
+    // With a known PID and a liveness probe: a live child is genuinely in-flight
+    // (keep it, even past the stale window — respects MAX_CONCURRENT=1 for a long
+    // job); a dead PID is a crash orphan, dropped immediately (no 1h stall).
+    if (m.pid !== null && isAlive) {
+      if (isAlive(m.pid)) running[name] = m.startedTs;
+      continue;
+    }
+    // No PID yet (pre-spawn window) or no probe → fall back to the time guard.
+    if (!isStaleRunning(m.startedTs, now, staleMs)) running[name] = m.startedTs;
   }
   const done: Record<string, CompletionRecord> = {};
   for (const [name, raw] of Object.entries(doneRaw)) {
