@@ -72,7 +72,7 @@ jobs:
         # (update CRONBIRD_REF, adapt src/main.ts, re-run) when adopting new
         # cronbird features.
         env:
-          CRONBIRD_REF: 1a715f76ba61a12975d8a4ca8683e67be4d76f01
+          CRONBIRD_REF: 7b8f35ebb2b8b7f534cd105438b2b2601f2a2763
         run: |
           git clone --filter=blob:none https://github.com/nhangen/cronbird.git "${GITHUB_WORKSPACE}/../cronbird"
           git -C "${GITHUB_WORKSPACE}/../cronbird" checkout --quiet "$CRONBIRD_REF"
