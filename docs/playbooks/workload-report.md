@@ -1,28 +1,17 @@
 ---
 name: workload-report
-description: Twice-weekly Zenhub team workload report — current sprint, next sprint, other, by assignee and pipeline with story-point totals
+description: Twice-weekly GitHub Projects team workload report — current sprint, next sprint, other, by assignee and Status/pipeline with story-point (Estimate) totals
 trigger: cron
 schedule: "0 7 * * 1,3"
 preflight: none
 tier: read
-status: disabled
+status: active
 runner: skill
 skill: workload-report
 out_pattern: CEO/reports/workload/${TODAY}-${HOSTNAME}.md
-requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]
 ---
 
 # Workload Report
-
-> ⚠ **Non-functional since 2026-06-29.** This playbook reads from ZenHub (see
-> `requires: [ZENHUB_TOKEN, ZENHUB_WORKSPACE_ID]`), which was retired that day.
-> The underlying skill was **not** migrated to GitHub Projects (unlike
-> `story-points`), so it produces no usable report. **Disabled 2026-07-08**
-> (`status: disabled`) so the scheduler stops firing a job that can only fail.
-> To restore it, migrate the skill to GitHub Projects (mirror `story-points`'s
-> `ghp-estimates.js` pattern) and flip `status` back to `active`. Applying the
-> disable requires `ceo playbook scan` **on ML-1** (per `ceo-scan-only-on-ml1`);
-> until then the installed scheduler line lingers on hosts that already scanned.
 
 Skill-backed playbook. The dispatcher invokes the `workload-report` skill directly via `runner: skill` — no LLM call.
 
@@ -34,7 +23,7 @@ Runs the `workload-report` Claude Code skill and lands the markdown report at:
 CEO/reports/workload/<YYYY-MM-DD>-<host>.md
 ```
 
-Each fire writes a fresh dated snapshot so trends across sprints stay diffable. The skill itself queries Zenhub GraphQL + GitHub: per-assignee, per-pipeline counts and story-point totals, bucketed into Current Sprint / Next Sprint / Other.
+Each fire writes a fresh dated snapshot so trends across sprints stay diffable. The skill queries **GitHub Projects v2 project 80** (`awesomemotive`) — the consolidated board that replaced the retired per-product ZenHub workspaces on 2026-06-29 (covers OptinMonster, TrustPulse, and Beacon). It produces per-assignee, per-Status/pipeline counts and story-point (Estimate) totals, bucketed into Current Sprint / Next Sprint / Other by the project's iteration field.
 
 No inbox line. Workload is reference material, not a `- [ ]` task — surfaced via `ceo report` or direct file open.
 
@@ -42,14 +31,14 @@ No inbox line. Workload is reference material, not a `- [ ]` task — surfaced v
 
 Monday and Wednesday, 07:00 local. Monday seeds the week's starting picture post-weekend; Wednesday is a mid-sprint pulse before the typical Thursday/Friday sprint flip.
 
-## Install
+## Install / credentials
 
-Add the following keys to `~/.config/ceo/credentials.env`:
+The skill reads project 80 over the GitHub GraphQL API and needs a token with `project` scope:
 
-- `ZENHUB_TOKEN`: Zenhub API token (create at app.zenhub.com).
-- `ZENHUB_WORKSPACE_ID`: Your target Zenhub Workspace ID.
+- `GH_PROJECT_TOKEN` (or `GITHUB_TOKEN`) in the environment takes precedence.
+- If neither is set, `run-report.sh` falls back to `gh auth token --user nhangenam` (the `nhangenam` gh token already carries `project` scope).
 
-(The skill will still opportunistically read `~/.claude.json` or `~/.cursor/mcp.json` if run manually, but CEO strictly requires these in `credentials.env`.)
+No ZenHub token, no `ZENHUB_WORKSPACE_ID`, no `.env` file, no ZenHub MCP — that data source was removed 2026-06-29.
 
 ## Verify
 
@@ -65,8 +54,9 @@ Files accumulate forever by design — explicitly chose history over overwrite f
 
 ## Troubleshooting
 
-- **No output or empty report:** check `cron-stderr.log` for the skill's stderr. Common cause: `~/.cursor/mcp.json` missing or `ZENHUB_TOKEN` resolved to the literal string `"null"`.
-- **`WARN: no assignee rows`:** auth succeeded but Zenhub returned zero items — likely a wrong `ZENHUB_WORKSPACE_ID` or the gh user has no access to the workspace.
+- **No output or empty report:** check `cron-stderr.log` for the skill's stderr. Common cause: no GitHub token on PATH — set `GH_PROJECT_TOKEN`/`GITHUB_TOKEN` or run `gh auth login`.
+- **Zero assignee rows:** auth succeeded but project 80 returned no items — usually the gh user lacks access to the org project, or the token is missing `project` scope.
+- **Most point totals show 0:** the Estimate field is sparsely populated on project 80 (most items are unsized). Expected, not a bug.
 - **Wrong host in filename:** `CEO_HOSTNAME` overrides `hostname -s` if set.
 
 ## Disable
