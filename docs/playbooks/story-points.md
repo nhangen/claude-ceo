@@ -5,7 +5,7 @@ trigger: cron
 schedule: "0 17 * * 5"
 preflight: none
 tier: read
-status: active
+status: disabled
 runner: skill
 skill: story-points
 out_pattern: Awesome Motive/reports/story-points/${TODAY}-backlog-pr-story-points.md
@@ -13,6 +13,14 @@ requires: [GH_PROJECT_TOKEN]
 ---
 
 # Story Points
+
+**Disabled 2026-08-01.** Retired via nhangen/llm-tools#288 — dropped from the
+opus/sonnet model-tiering evaluation rather than tested further. The scheduler
+dispatches only `status: active` playbooks, so this one no longer fires; the doc stays
+so `ceo playbook scan` keeps registering it as disabled rather than treating a deleted
+file as drift. The skill it drove is archived at `archive/skills/story-points/` in
+llm-tools and is no longer installed, so re-enabling this means restoring the skill
+first. Everything below describes the playbook as it last ran.
 
 Skill-backed playbook. The dispatcher invokes the `story-points` skill directly via
 `runner: skill` — no LLM call. Every Friday 17:00 it produces one markdown report with
