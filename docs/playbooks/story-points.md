@@ -15,12 +15,21 @@ requires: [GH_PROJECT_TOKEN]
 # Story Points
 
 **Disabled 2026-08-01.** Retired via nhangen/llm-tools#288 — dropped from the
-opus/sonnet model-tiering evaluation rather than tested further. The scheduler
-dispatches only `status: active` playbooks, so this one no longer fires; the doc stays
-so `ceo playbook scan` keeps registering it as disabled rather than treating a deleted
-file as drift. The skill it drove is archived at `archive/skills/story-points/` in
-llm-tools and is no longer installed, so re-enabling this means restoring the skill
-first. Everything below describes the playbook as it last ran.
+opus/sonnet model-tiering evaluation rather than tested further.
+
+Editing this file does not by itself stop a run. `ceo playbook scan` reads the **vault**
+copy first and lets it shadow the repo (`scripts/ceo`), so what a host actually dispatches
+is whatever `~/.ceo/registry.json` last recorded. Taking a status change live needs the
+vault copy updated and a rescan on the owner host — for this single-scope playbook, ML-1.
+That was done on 2026-08-01: the vault copy reads `status: disabled` and both ML-1 and the
+MacBook regenerated their registries, which now report `story-points` as `disabled`. The
+scheduler builds `isActive` from `status === "active"` (`lib/scheduler/src/registry.ts`),
+so it is no longer dispatched.
+
+The doc stays in place rather than being deleted so `ceo playbook diff` doesn't report the
+still-present vault copy as `Vault only:` drift forever. The skill it drove is archived at
+`archive/skills/story-points/` in llm-tools and is no longer installed, so re-enabling this
+means restoring that skill first. Everything below describes the playbook as it last ran.
 
 Skill-backed playbook. The dispatcher invokes the `story-points` skill directly via
 `runner: skill` — no LLM call. Every Friday 17:00 it produces one markdown report with
