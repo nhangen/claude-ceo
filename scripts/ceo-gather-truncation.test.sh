@@ -52,6 +52,7 @@ teardown() {
 # Source the gather under production's shell options and report the exit status
 # alongside the variable under test and the degradation flag. Anything that trips
 # errexit shows up as a non-zero RC here instead of killing the harness.
+#
 # Run in a SEPARATE bash process, not `( set -euo pipefail … ) || …`. A subshell
 # used as the left operand of `||` has errexit suppressed, so that shape silently
 # reports RC=0 for a run that production would abort — it cannot observe the very
@@ -93,12 +94,19 @@ _write_oversized_pending() {
 
 # The fixture is only meaningful if it actually reproduces the original bug, and
 # the threshold depends on the platform's pipe buffer plus head's read-ahead —
-# neither visible here. So assert the pre-fix form still dies on this exact file,
-# and that it dies of SIGPIPE (141) specifically rather than some other error.
-# Without this, shrinking the fixture silently returns the suite to
+# neither visible here. So assert the pre-fix form still fails on this exact file.
+# Without it, shrinking the fixture silently returns the suite to
 # green-against-broken, which is how the first draft of this test passed.
+#
 # Separate process for the same reason as _run_gather_strict — `( … ) || rc=$?`
 # suppresses errexit and reports a misleading 0.
+#
+# Asserts non-zero rather than a specific code: the failure signature is
+# platform-dependent. macOS/BSD grep and WSL's GNU grep 3.11 die from the signal
+# (141), while the GNU grep on GitHub's ubuntu runner handles it and exits 2 on
+# "write error: Broken pipe". Pinning 141 passed locally and failed CI. Either
+# way the pre-fix form exits non-zero, which is the only thing that matters —
+# that is what errexit turns into an aborted run.
 _assert_fixture_reproduces() {
   local file="$1" rc=0
   bash -c '
@@ -106,12 +114,16 @@ _assert_fixture_reproduces() {
     _naive=$(grep -n "^- \[ \]" "$1" 2>/dev/null | head -20)
     printf "%s" "$_naive" >/dev/null
   ' _ "$file" >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "141" \
-    "fixture must still SIGPIPE the pre-fix \`grep | head\` form, or it proves nothing"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  if [ "$rc" -eq 0 ]; then
+    printf '  FAIL [%s] fixture no longer breaks the pre-fix `grep | head` form (rc=0), so it proves nothing — it must exceed the pipe buffer\n' \
+      "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
 }
 
 # An oversized Pending.md must truncate, not abort. Reverting to
-# `grep … | head -20` makes this fail with RC=141.
+# `grep … | head -20` makes this fail with a non-zero RC (141 or 2, per platform).
 test_oversized_pending_does_not_abort() {
   _write_oversized_pending
   _assert_fixture_reproduces "$CEO_VAULT/Pending.md"
