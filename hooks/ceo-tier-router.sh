@@ -24,7 +24,13 @@ if [ "$tool_name" != "Task" ] && [ "$tool_name" != "Agent" ]; then
 fi
 
 subagent_type="$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // ""')"
-label="$(printf '%s' "$input" | jq -r '.tool_input.description // .tool_input.prompt // ""' | head -c 200)"
+# Capture, then truncate from a here-string. `jq … | head -c 200` SIGPIPEs jq once
+# the prompt exceeds the pipe buffer, and under `set -euo pipefail` this bare
+# assignment aborts the hook — skipping tier routing for exactly the largest
+# dispatches. `head -c` stays byte-counting for parity with the tier-map labels.
+_label_raw="$(printf '%s' "$input" | jq -r '.tool_input.description // .tool_input.prompt // ""')"
+label="$(head -c 200 <<< "$_label_raw")"
+unset _label_raw
 
 [ -n "$label" ] || exit 0
 

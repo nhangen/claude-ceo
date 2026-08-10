@@ -492,7 +492,9 @@ _dispatch_single_output() {
   _v ""
 
   local self_reported_failed=0
-  if printf '%s\n' "$log_entry" | grep -q '^\*\*Status:\*\* failed'; then
+  # Here-string: `grep -q` closes the pipe on the first match, so a log entry past
+  # the pipe buffer would report no-match and let a self-reported failure through.
+  if grep -q '^\*\*Status:\*\* failed' <<< "$log_entry"; then
     self_reported_failed=1
   fi
 
@@ -568,7 +570,7 @@ _append_pending_drip_to_inbox() {
     return 0
   fi
 
-  if printf '%s\n' "$log_entry" | grep -Eiq 'no relevant .*questions?'; then
+  if grep -Eiq 'no relevant .*questions?' <<< "$log_entry"; then
     _v "Pending drip found no relevant questions; inbox unchanged."
     return 0
   fi
@@ -1075,7 +1077,7 @@ preflight_has_ceo_branches() {
   [ -f "$repos_file" ] || return 1
   while IFS= read -r repo_path; do
     repo_path=$(echo "$repo_path" | xargs)
-    [ -d "$repo_path" ] && git -C "$repo_path" branch --list "${BRANCH_PREFIX}*" 2>/dev/null | grep -q . && return 0
+    [ -d "$repo_path" ] && [ -n "$(git -C "$repo_path" branch --list "${BRANCH_PREFIX}*" 2>/dev/null)" ] && return 0
   done < <(grep "^|" "$repos_file" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $3}')
   return 1
 }

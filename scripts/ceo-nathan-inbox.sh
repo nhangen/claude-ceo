@@ -81,7 +81,7 @@ _denyfile="$VAULT/Profile/discretion-denylist.txt"
 
 _is_flagged() {
   [ -s "$_DENY_TMP" ] || return 1
-  printf '%s' "$1" | grep -qiFf "$_DENY_TMP"
+  grep -qiFf "$_DENY_TMP" <<< "$1"
 }
 
 # ---------- Pending.md queries + mutations ----------
@@ -131,7 +131,7 @@ _autostamp_qids() {
       # a later `ok` can never close two questions at once (confirm invariant).
       # Distinct text diverges as the sha1 prefix lengthens; byte-identical
       # questions exhaust the 40-char hash, then fall back to an -N suffix.
-      while printf '%s\n' "$used" | grep -qxF "$qid"; do
+      while grep -qxF "$qid" <<< "$used"; do
         n=$((n + 1))
         if [ "$n" -le 40 ]; then qid="q-$(printf '%s' "$base" | cut -c1-"$n")"
         else qid="q-$base-$n"; fi
@@ -288,7 +288,10 @@ id from the list. If none apply, reply with exactly: NONE. No other text."
   read -ra pcmd <<< "$PROPOSE_CMD"
   out="$(printf '%s' "$prompt" | "${pcmd[@]}" 2>/dev/null)"; prc=$?
   if [ "$prc" -ne 0 ]; then _needs_review "LLM harness unavailable (exit $prc) — held: $bullet"; return; fi
-  line="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | head -1)"
+  # First non-blank line, pipe-free: `sed … | head -1` leaves head closing the pipe
+  # on sed, which is the same SIGPIPE shape one level down. awk reads a here-string,
+  # so its `exit` can't break anything. NF==0 for a whitespace-only line.
+  line="$(awk 'NF{print; exit}' <<< "$out")"
   # shellcheck disable=SC2086  # intentional split: fields are qid + confidence
   set -f; set -- $line; set +f   # -f so a * / ? in model output can't glob the cwd
   case "${1:-}" in ""|NONE|none|None) _needs_review "unmatched: $bullet"; return ;; esac

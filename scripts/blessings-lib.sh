@@ -32,13 +32,18 @@ ensure_blessings_cache() {
     return 0
   fi
 
-  local picks
-  picks=$(strip_frontmatter "$src" \
+  # Shuffle fully, then take 3 from a here-string. `… | cut -f2- | head -3` SIGPIPEs
+  # cut once the shuffled pool passes the pipe buffer (~400 entries), and pipefail
+  # promotes 141 to this bare assignment — which aborts count-blessings.sh's
+  # cmd_repick *after* it has already rm -f'd the cache, losing it with no output.
+  # ceo-gather.sh's caller happens to survive only because it uses `|| true`.
+  local picks pool
+  pool=$(strip_frontmatter "$src" \
     | { grep '^- ' || true; } \
     | awk 'BEGIN{srand()} {print rand()"\t"$0}' \
     | sort -k1,1n \
-    | cut -f2- \
-    | head -3)
+    | cut -f2-)
+  picks=$(head -3 <<< "$pool")
 
   tmp=$(mktemp "$cache.tmp.XXXXXX")
   {

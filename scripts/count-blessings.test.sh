@@ -265,6 +265,67 @@ test_repick_prints_todays_picks() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# A pool past the pipe buffer used to SIGPIPE `cut` in the `… | cut -f2- | head -3`
+# pipeline, and pipefail promoted 141 to a bare assignment in ensure_blessings_cache.
+# cmd_repick rm -f's the cache BEFORE calling it, so errexit aborted mid-way and the
+# cache was simply gone — repick printed nothing, and `show` then exited 0 printing
+# nothing, so the blessings block vanished from the morning report with no error
+# anywhere. Threshold is roughly 400 entries, i.e. reached by accumulation.
+#
+# ceo-gather.sh's caller survived only because it uses `|| true`, which is why a
+# per-caller triage cleared this site. The fix is in the library, not the caller.
+_write_many_blessings() {
+  local count="$1" today i
+  today=$(date +%Y-%m-%d)
+  {
+    printf -- '---\ntype: ea-blessings\nupdated: %s\n---\n\n' "$today"
+    for ((i = 0; i < count; i++)); do
+      printf -- '- blessing %04d %s\n' "$i" "$(printf 'y%.0s' {1..200})"
+    done
+  } > "$CEO_DIR/blessings.md"
+}
+
+# The fixture must exceed the pipe buffer or the pre-fix pipeline works fine and the
+# test passes against broken code. Prove it size-dependently: the pre-fix shape must
+# fail on this pool and succeed on a 3-entry one. Not asserting 141 — the signature
+# differs across platforms (2 on GitHub's ubuntu runner).
+_pool_pipe_rc() {
+  local n="$1" rc=0
+  ( set -o pipefail
+    local i
+    for ((i = 0; i < n; i++)); do printf -- '- b %04d %s\n' "$i" "$(printf 'y%.0s' {1..200})"; done \
+      | cut -f2- | head -3 >/dev/null
+  ) || rc=$?
+  echo "$rc"
+}
+
+test_repick_survives_oversized_blessings_file() {
+  local big_rc small_rc
+  big_rc=$(_pool_pipe_rc 700)
+  small_rc=$(_pool_pipe_rc 3)
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  if [ "$big_rc" -eq 0 ]; then
+    printf '  FAIL [%s] fixture no longer breaks the pre-fix `cut | head -3` form (rc=0), so it proves nothing\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  elif [ "$small_rc" -ne 0 ]; then
+    printf '  FAIL [%s] canary passing for the wrong reason: pre-fix form fails on a SMALL pool too (rc=%s)\n' "$CURRENT_TEST" "$small_rc"
+    _record_assertion_fail
+  fi
+
+  _write_many_blessings 700
+  local out rc=0
+  out=$(bash "$CLI" repick 2>/dev/null) || rc=$?
+  assert_eq "$rc" "0" "repick must not abort on a large blessings file"
+  assert_file_exists "$CEO_DIR/cache/blessings-today.md" \
+    "repick must leave the cache it deleted — losing it silently drops blessings from the report"
+  assert_contains "$out" "Repicked" "repick must still print its confirmation"
+
+  local picks
+  picks=$(grep -c '^- ' "$CEO_DIR/cache/blessings-today.md" 2>/dev/null || echo 0)
+  assert_eq "$picks" "3" "cache must hold exactly 3 picks"
+}
+
+
 test_repick_forces_regeneration() {
   bash "$CLI" add "a" >/dev/null
   bash "$CLI" add "b" >/dev/null

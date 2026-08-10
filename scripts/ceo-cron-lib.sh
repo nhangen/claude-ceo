@@ -71,10 +71,14 @@ _classify_claude_failure() {
     # NB: do NOT use `.is_error // empty` — jq's `//` treats the boolean `false`
     # like null, collapsing a genuine `is_error:false` to empty. Read it raw
     # ("false"/"true"/"null"/"" for non-object).
-    is_error=$(printf '%s' "$raw" | jq -r 'if type=="object" then (.is_error) else empty end' 2>/dev/null || true)
-    status=$(printf '%s'  "$raw" | jq -r 'if type=="object" then (.api_error_status // empty) else empty end' 2>/dev/null || true)
-    subtype=$(printf '%s' "$raw" | jq -r 'if type=="object" then (.subtype // empty) else empty end' 2>/dev/null || true)
-    stop=$(printf '%s'    "$raw" | jq -r 'if type=="object" then (.stop_reason // empty) else empty end' 2>/dev/null || true)
+    # Here-strings, not `printf … | jq`: on plain-text (non-JSON) output jq bails
+    # at the first bytes and closes stdin, so a large body SIGPIPEs printf and the
+    # shell writes "printf: write error: Broken pipe" into the cron log on every
+    # plain-text failure. `|| true` still stands — jq exits non-zero on a parse error.
+    is_error=$(jq -r 'if type=="object" then (.is_error) else empty end' <<< "$raw" 2>/dev/null || true)
+    status=$(jq -r 'if type=="object" then (.api_error_status // empty) else empty end' <<< "$raw" 2>/dev/null || true)
+    subtype=$(jq -r 'if type=="object" then (.subtype // empty) else empty end' <<< "$raw" 2>/dev/null || true)
+    stop=$(jq -r 'if type=="object" then (.stop_reason // empty) else empty end' <<< "$raw" 2>/dev/null || true)
   fi
 
   # Parseable success envelope: ok, unless the result was truncated (a partial
@@ -100,11 +104,14 @@ _classify_claude_failure() {
   # No parseable envelope. Exit 0 = success (plain-text plan/exec phases).
   if [ "$rc" -eq 0 ] 2>/dev/null; then echo "ok"; return 0; fi
 
-  # Non-zero exit, non-JSON stdout → last-resort banner match.
-  if printf '%s' "$raw" | grep -qEi 'session limit|hit your limit|rate.?limit|overloaded'; then
+  # Non-zero exit, non-JSON stdout → last-resort banner match. Here-strings, not
+  # `printf … | grep -q`: grep exits on the first match and closes the pipe, so a
+  # body past the pipe buffer SIGPIPEs printf and pipefail reports 141 — a match
+  # read as a no-match, silently disabling the ollama fallback on large responses.
+  if grep -qEi 'session limit|hit your limit|rate.?limit|overloaded' <<< "$raw"; then
     echo "transient"; return 0
   fi
-  if printf '%s' "$raw" | grep -qEi 'authentication_failed|not authenticated|logged out|invalid api key|please run .?/login'; then
+  if grep -qEi 'authentication_failed|not authenticated|logged out|invalid api key|please run .?/login' <<< "$raw"; then
     echo "auth"; return 0
   fi
   echo "terminal"; return 0   # fail-safe: unknown never falls open to fallback

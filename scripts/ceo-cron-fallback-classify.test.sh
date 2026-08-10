@@ -90,4 +90,83 @@ test_badflag_empty_stdout_is_terminal() {
   assert_eq "$(_classify_claude_failure 1 "")" "terminal" "empty stdout + non-zero → terminal"
 }
 
+# --- Oversized bodies: the banner match must survive a body past the pipe buffer ---
+
+# A body large enough that the producer is still writing when `grep -q` exits on
+# its first match — the only condition under which SIGPIPE fires. The banner sits
+# on line 1 so grep short-circuits immediately. ~200KB against a 64KB pipe buffer.
+_oversized_body() {
+  local banner="$1" pad i=0
+  printf '%s\n' "$banner"
+  pad=$(printf 'x%.0s' {1..200})
+  while [ "$i" -lt 1000 ]; do printf '%s\n' "$pad"; i=$((i + 1)); done
+}
+
+# The fixture is load-bearing: below the pipe buffer the pre-fix form works fine
+# and the test would pass against broken code. Assert the old
+# `printf … | grep -q` really does report failure on this exact body — AND that it
+# succeeds on a small body carrying the same banner. Both halves are needed: a bare
+# "non-zero" check is also satisfied by grep's rc=1 no-match, which would let a
+# banner that stopped matching masquerade as a working canary. The pair proves the
+# failure is size-dependent, i.e. SIGPIPE.
+#
+# Deliberately NOT asserting rc==141: the signature is platform-dependent. BSD grep
+# and GNU grep on WSL give 141; GNU grep on GitHub's ubuntu runner gives 2 ("write
+# error: Broken pipe"). Pinning 141 cost a CI cycle in #294.
+_pipe_form_rc() {
+  local raw="$1" pattern="$2" rc=0
+  ( set -o pipefail; printf '%s' "$raw" | grep -qEi "$pattern" ) || rc=$?
+  echo "$rc"
+}
+
+_assert_pipe_form_breaks() {
+  local raw="$1" pattern="$2" banner="$3" big_rc small_rc
+  big_rc=$(_pipe_form_rc "$raw" "$pattern")
+  small_rc=$(_pipe_form_rc "$banner" "$pattern")
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  if [ "$big_rc" -eq 0 ]; then
+    printf '  FAIL [%s] fixture no longer breaks the pre-fix `printf | grep -q` form (rc=0), so it proves nothing — it must exceed the pipe buffer\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  elif [ "$small_rc" -ne 0 ]; then
+    printf '  FAIL [%s] canary is passing for the wrong reason: the pre-fix form also fails on a SMALL body (rc=%s), so the pattern simply is not matching — not SIGPIPE\n' "$CURRENT_TEST" "$small_rc"
+    _record_assertion_fail
+  fi
+}
+
+test_oversized_ratelimit_body_is_still_transient() {
+  local banner='Claude API session limit reached. Please try again later.' raw
+  raw=$(_oversized_body "$banner")
+  _assert_pipe_form_breaks "$raw" 'session limit' "$banner"
+  assert_eq "$(_classify_claude_failure 1 "$raw")" "transient" \
+    "rate-limit banner in a 200KB body → transient (fallback stays armed)"
+}
+
+test_oversized_auth_body_is_still_auth() {
+  local banner='Error: authentication_failed. Please run /login.' raw
+  raw=$(_oversized_body "$banner")
+  _assert_pipe_form_breaks "$raw" 'authentication_failed' "$banner"
+  assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" \
+    "auth banner in a 200KB body → auth, not terminal"
+}
+
+test_oversized_plaintext_body_emits_no_stderr_noise() {
+  # The envelope probes ran `printf … | jq`; when jq bails on non-JSON before
+  # draining stdin, the shell writes four "printf: write error: Broken pipe" lines
+  # into the cron log. Classification was correct; the log was not.
+  #
+  # HONEST LIMIT: this test does NOT reliably fail when that fix is reverted. Whether
+  # jq exits before printf finishes writing is a scheduling race — observed firing
+  # repeatedly in one run of this suite and 0/6 times in a direct probe at the same
+  # 200KB. So there is no canary here, unlike the two tests above. What it does pin
+  # deterministically is the classification, and after the fix there is no pipe left
+  # at all, so clean stderr is structural rather than lucky.
+  local raw errfile out
+  raw=$(_oversized_body 'some unexpected error we have no pattern for')
+  errfile=$(mktemp)
+  out=$(_classify_claude_failure 1 "$raw" 2>"$errfile")
+  assert_eq "$out" "terminal" "unknown oversized body → terminal (fail-safe)"
+  assert_eq "$(cat "$errfile")" "" "no broken-pipe noise leaks to stderr"
+  rm -f "$errfile"
+}
+
 run_tests
