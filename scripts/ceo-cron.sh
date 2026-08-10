@@ -733,10 +733,17 @@ END_LOG_ENTRY"
   local failed_chunks=0
   for i in $(seq 1 "$n_chunks"); do
     offset=$(( (i - 1) * chunk_budget ))
-    # Two pipe-free steps, not `tail … | head -c`: head closing the pipe SIGPIPEs
-    # tail on every chunk but the last, which pipefail turns into an aborted scan
-    # (#293). Byte-exact on purpose — these offsets come from `wc -c`, so slicing
-    # with ${SCAN_BLOCK:offset:len} would misalign chunks on multibyte content.
+    # Two pipe-free steps, not `tail … | head -c`. head closing the pipe SIGPIPEs
+    # tail on every chunk but the last, so the pipeline's status is 141 under
+    # pipefail. That does NOT abort today: the sole caller is
+    # `OLLAMA_OUT=$(_ollama_chunked_scan …) || OLLAMA_EXIT=$?`, and a command
+    # substitution on the left of `||` has errexit suppressed, so the 141 was
+    # discarded and `piece` still received its full budget of bytes. This is
+    # therefore hardening, not a live bug fix — but the same construct in a bare
+    # assignment is exactly what killed every playbook in #293, and it would abort
+    # here the moment that caller loses its `||`. Byte-exact on purpose: the offsets
+    # come from `wc -c`, so ${SCAN_BLOCK:offset:len} would misalign chunk
+    # boundaries on multibyte content.
     piece=$(tail -c "+$((offset + 1))" <<< "$SCAN_BLOCK")
     piece=$(head -c "$chunk_budget" <<< "$piece")
     [ -z "$(printf '%s' "$piece" | tr -d '[:space:]')" ] && continue
@@ -793,8 +800,10 @@ ${partial_findings}"
     _v "  Synthesis prompt too large ($synth_bytes bytes) — truncating findings"
     local avail=$(( CEO_OLLAMA_MAX_PROMPT_BYTES - base_bytes - 512 ))
     # Here-string, not `printf … | head -c`. This branch runs only when the findings
-    # exceed the cap — exactly when head closes early and SIGPIPEs the producer, so
-    # under pipefail the truncation aborted the run it was meant to rescue (#293).
+    # exceed the cap — exactly when head closes early and SIGPIPEs the producer. Same
+    # standing as the chunk site above: errexit is suppressed at this function's
+    # caller, so the 141 was discarded rather than aborting. Hardening against the
+    # #293 construct, not a live fix.
     partial_findings=$(head -c "$avail" <<< "$partial_findings")
     synth_prompt="${base_prompt}
 PRE-SUMMARIZED VAULT FINDINGS (truncated):
