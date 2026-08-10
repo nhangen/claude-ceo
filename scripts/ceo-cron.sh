@@ -733,7 +733,12 @@ END_LOG_ENTRY"
   local failed_chunks=0
   for i in $(seq 1 "$n_chunks"); do
     offset=$(( (i - 1) * chunk_budget ))
-    piece=$(printf '%s' "$SCAN_BLOCK" | tail -c "+$((offset + 1))" | head -c "$chunk_budget")
+    # Two pipe-free steps, not `tail … | head -c`: head closing the pipe SIGPIPEs
+    # tail on every chunk but the last, which pipefail turns into an aborted scan
+    # (#293). Byte-exact on purpose — these offsets come from `wc -c`, so slicing
+    # with ${SCAN_BLOCK:offset:len} would misalign chunks on multibyte content.
+    piece=$(tail -c "+$((offset + 1))" <<< "$SCAN_BLOCK")
+    piece=$(head -c "$chunk_budget" <<< "$piece")
     [ -z "$(printf '%s' "$piece" | tr -d '[:space:]')" ] && continue
 
     chunk_prompt="Extract actionable findings from this vault data fragment for a morning scan. Output a concise bullet list only — no preamble or commentary.
@@ -787,7 +792,10 @@ ${partial_findings}"
   if [ "$synth_bytes" -gt "$CEO_OLLAMA_MAX_PROMPT_BYTES" ]; then
     _v "  Synthesis prompt too large ($synth_bytes bytes) — truncating findings"
     local avail=$(( CEO_OLLAMA_MAX_PROMPT_BYTES - base_bytes - 512 ))
-    partial_findings=$(printf '%s' "$partial_findings" | head -c "$avail")
+    # Here-string, not `printf … | head -c`. This branch runs only when the findings
+    # exceed the cap — exactly when head closes early and SIGPIPEs the producer, so
+    # under pipefail the truncation aborted the run it was meant to rescue (#293).
+    partial_findings=$(head -c "$avail" <<< "$partial_findings")
     synth_prompt="${base_prompt}
 PRE-SUMMARIZED VAULT FINDINGS (truncated):
 ${partial_findings}"

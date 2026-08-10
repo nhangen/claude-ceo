@@ -333,7 +333,12 @@ BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 PROFILE_FILE="$VAULT/Profile.md"
 if [ -f "$PROFILE_FILE" ]; then
 export ACTIVE_DOMAINS_CONTENT
-ACTIVE_DOMAINS_CONTENT=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null | head -c "$GATHER_MAX_FILE")
+# Capture, then truncate — piping sed into `head -c` SIGPIPEs sed once the section
+# exceeds the cap, which pipefail turns into an aborted run (#293). Here-string
+# rather than ${var:0:n} to keep head's byte semantics; the cap is a byte budget.
+_active_domains_raw=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null || true)
+ACTIVE_DOMAINS_CONTENT=$(head -c "$GATHER_MAX_FILE" <<< "$_active_domains_raw")
+unset _active_domains_raw
 else
   export ACTIVE_DOMAINS_CONTENT=""
 fi
@@ -345,7 +350,10 @@ fi
 PENDING_FILE="$VAULT/Pending.md"
 if [ -f "$PENDING_FILE" ]; then
 export PENDING_ASK_QUESTIONS
-PENDING_ASK_QUESTIONS=$(grep -n '^- \[ \]' "$PENDING_FILE" 2>/dev/null | head -20)
+# `grep -m 20`, not `grep … | head -20`: head closing the pipe SIGPIPEs grep, and
+# pipefail made that 141 abort every playbook once this file passed 20 items (#293).
+# `|| true` covers grep's exit 1 on no matches — empty is valid, the preflight skips.
+PENDING_ASK_QUESTIONS=$(grep -n -m 20 '^- \[ \]' "$PENDING_FILE" 2>/dev/null || true)
 else
   export PENDING_ASK_QUESTIONS=""
 fi
