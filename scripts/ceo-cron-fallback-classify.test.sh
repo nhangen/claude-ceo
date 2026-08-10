@@ -90,4 +90,58 @@ test_badflag_empty_stdout_is_terminal() {
   assert_eq "$(_classify_claude_failure 1 "")" "terminal" "empty stdout + non-zero → terminal"
 }
 
+# --- Oversized bodies: the banner match must survive a body past the pipe buffer ---
+
+# A body large enough that the producer is still writing when `grep -q` exits on
+# its first match — the only condition under which SIGPIPE fires. The banner sits
+# on line 1 so grep short-circuits immediately. ~200KB against a 64KB pipe buffer.
+_oversized_body() {
+  local banner="$1" pad i=0
+  printf '%s\n' "$banner"
+  pad=$(printf 'x%.0s' {1..200})
+  while [ "$i" -lt 1000 ]; do printf '%s\n' "$pad"; i=$((i + 1)); done
+}
+
+# The fixture is load-bearing: below the pipe buffer the pre-fix form works fine
+# and the test would pass against broken code. Assert the old
+# `printf … | grep -q` really does report failure on this exact body.
+_assert_pipe_form_breaks() {
+  local raw="$1" pattern="$2" rc=0
+  ( set -o pipefail; printf '%s' "$raw" | grep -qEi "$pattern" ) || rc=$?
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  if [ "$rc" -eq 0 ]; then
+    printf '  FAIL [%s] fixture no longer breaks the pre-fix `printf | grep -q` form (rc=0), so it proves nothing — it must exceed the pipe buffer\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+}
+
+test_oversized_ratelimit_body_is_still_transient() {
+  local raw
+  raw=$(_oversized_body 'Claude API session limit reached. Please try again later.')
+  _assert_pipe_form_breaks "$raw" 'session limit'
+  assert_eq "$(_classify_claude_failure 1 "$raw")" "transient" \
+    "rate-limit banner in a 200KB body → transient (fallback stays armed)"
+}
+
+test_oversized_auth_body_is_still_auth() {
+  local raw
+  raw=$(_oversized_body 'Error: authentication_failed. Please run /login.')
+  _assert_pipe_form_breaks "$raw" 'authentication_failed'
+  assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" \
+    "auth banner in a 200KB body → auth, not terminal"
+}
+
+test_oversized_plaintext_body_emits_no_stderr_noise() {
+  # The envelope probes ran `printf … | jq`, and jq bails immediately on non-JSON,
+  # so every large plain-text failure wrote four "printf: write error: Broken pipe"
+  # lines into the cron log. Classification was correct; the log was not.
+  local raw errfile out
+  raw=$(_oversized_body 'some unexpected error we have no pattern for')
+  errfile=$(mktemp)
+  out=$(_classify_claude_failure 1 "$raw" 2>"$errfile")
+  assert_eq "$out" "terminal" "unknown oversized body → terminal (fail-safe)"
+  assert_eq "$(cat "$errfile")" "" "no broken-pipe noise leaks to stderr"
+  rm -f "$errfile"
+}
+
 run_tests
