@@ -1116,6 +1116,58 @@ test_pending_drip_failed_entry_uses_report_not_inbox() {
 }
 
 
+test_pending_drip_oversized_no_questions_leaves_inbox_alone() {
+  # ceo-cron.sh:571's `grep -Eiq 'no relevant .*questions?'` gate, at a size that
+  # broke it: the marker is near the top, so grep short-circuits while the producer
+  # is still writing, pipefail reports 141, the `if` reads no-match, and a drip that
+  # explicitly found nothing gets appended anyway. Inbox noise, not data loss.
+  _write_pending_drip_registry
+  local pad line filler=""
+  pad=$(printf 'x%.0s' {1..200})
+  for ((line = 0; line < 1000; line++)); do filler+="$pad"$'\n'; done
+  _stub_claude_log_entry "completed" "No relevant questions for this trigger.
+$filler"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local inbox="$CEO_DIR/inbox/testhost.md"
+  if [ -s "$inbox" ]; then
+    printf '  FAIL [%s] a "no relevant questions" drip must leave the inbox untouched\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+
+test_pending_drip_oversized_failed_entry_uses_report_not_inbox() {
+  # Same invariant as the test above, at a size that breaks the mechanism it used.
+  # `**Status:** failed` sits on line 3, so the pre-fix `printf '%s\n' "$log_entry"
+  # | grep -q` had grep short-circuit almost immediately while the producer was
+  # still writing the body — pipefail then reported 141, the `if` read it as
+  # no-match, and a run that self-reported FAILURE was promoted to success and
+  # appended to Nathan's inbox. The small-body test above passes against that
+  # revert, so it is not coverage for this.
+  _write_pending_drip_registry
+  local pad line filler=""
+  pad=$(printf 'x%.0s' {1..200})
+  for ((line = 0; line < 1000; line++)); do filler+="$pad"$'\n'; done
+  _stub_claude_log_entry "failed" "Something failed
+$filler"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local inbox report
+  inbox="$CEO_DIR/inbox/testhost.md"
+  report="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  if [ -s "$inbox" ]; then
+    printf '  FAIL [%s] oversized failed pending-drip must not create inbox task\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_file_exists "$report" "oversized failed pending-drip must use normal report path"
+}
+
+
 test_pending_drip_skips_when_pending_md_empty() {
   _write_pending_drip_registry
   # Setup line 32 + helper line 1885 leave $CEO_DIR/approvals/pending.md

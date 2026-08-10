@@ -288,7 +288,10 @@ id from the list. If none apply, reply with exactly: NONE. No other text."
   read -ra pcmd <<< "$PROPOSE_CMD"
   out="$(printf '%s' "$prompt" | "${pcmd[@]}" 2>/dev/null)"; prc=$?
   if [ "$prc" -ne 0 ]; then _needs_review "LLM harness unavailable (exit $prc) — held: $bullet"; return; fi
-  line="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | head -1)"
+  # First non-blank line, pipe-free: `sed … | head -1` leaves head closing the pipe
+  # on sed, which is the same SIGPIPE shape one level down. awk reads a here-string,
+  # so its `exit` can't break anything. NF==0 for a whitespace-only line.
+  line="$(awk 'NF{print; exit}' <<< "$out")"
   # shellcheck disable=SC2086  # intentional split: fields are qid + confidence
   set -f; set -- $line; set +f   # -f so a * / ? in model output can't glob the cwd
   case "${1:-}" in ""|NONE|none|None) _needs_review "unmatched: $bullet"; return ;; esac

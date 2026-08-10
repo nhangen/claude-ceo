@@ -77,7 +77,8 @@ test_disable_flag_skips_tier_map() {
 
 _oversized_task_payload() {
   local big
-  # ~120KB, opening with "find" so the tier map matches on the first 200 bytes.
+  # 100,000 bytes (~1.5x the measured 64KB pipe buffer), opening with "find" so the
+  # tier map matches within the first 200 bytes.
   big=$(printf 'find %.0s' {1..20000})
   jq -nc --arg p "$big" \
     '{tool_name:"Task", tool_input:{prompt:$p, subagent_type:"general-purpose"}}'

@@ -166,9 +166,16 @@ if ! {
       for r in "${REASONS[@]}"; do printf -- '- %s\n' "$r"; done
       printf '\n## Largest dumps\n\n```\n'
       if [ -d "$WSL_CRASHES_PATH" ]; then
-        if ! ls -laSh "$WSL_CRASHES_PATH" 2>/dev/null | head -10; then
+        # Capture then truncate. `ls | head -10` SIGPIPEs ls on a directory with
+        # enough entries, and pipefail made the `if !` read that as a failure —
+        # so the alert printed the 10 dumps AND "(unable to list)" underneath.
+        _dump_listing=$(ls -laSh "$WSL_CRASHES_PATH" 2>/dev/null) || _dump_listing=""
+        if [ -n "$_dump_listing" ]; then
+          head -10 <<< "$_dump_listing"
+        else
           echo "(unable to list)"
         fi
+        unset _dump_listing
       fi
       printf '```\n\n## Resolution\n\nDelete unwanted dumps:\n\n```bash\nrm %s/*.dmp\n```\n' "$WSL_CRASHES_PATH"
     fi

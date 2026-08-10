@@ -104,37 +104,62 @@ _oversized_body() {
 
 # The fixture is load-bearing: below the pipe buffer the pre-fix form works fine
 # and the test would pass against broken code. Assert the old
-# `printf … | grep -q` really does report failure on this exact body.
-_assert_pipe_form_breaks() {
+# `printf … | grep -q` really does report failure on this exact body — AND that it
+# succeeds on a small body carrying the same banner. Both halves are needed: a bare
+# "non-zero" check is also satisfied by grep's rc=1 no-match, which would let a
+# banner that stopped matching masquerade as a working canary. The pair proves the
+# failure is size-dependent, i.e. SIGPIPE.
+#
+# Deliberately NOT asserting rc==141: the signature is platform-dependent. BSD grep
+# and GNU grep on WSL give 141; GNU grep on GitHub's ubuntu runner gives 2 ("write
+# error: Broken pipe"). Pinning 141 cost a CI cycle in #294.
+_pipe_form_rc() {
   local raw="$1" pattern="$2" rc=0
   ( set -o pipefail; printf '%s' "$raw" | grep -qEi "$pattern" ) || rc=$?
+  echo "$rc"
+}
+
+_assert_pipe_form_breaks() {
+  local raw="$1" pattern="$2" banner="$3" big_rc small_rc
+  big_rc=$(_pipe_form_rc "$raw" "$pattern")
+  small_rc=$(_pipe_form_rc "$banner" "$pattern")
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$rc" -eq 0 ]; then
+  if [ "$big_rc" -eq 0 ]; then
     printf '  FAIL [%s] fixture no longer breaks the pre-fix `printf | grep -q` form (rc=0), so it proves nothing — it must exceed the pipe buffer\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  elif [ "$small_rc" -ne 0 ]; then
+    printf '  FAIL [%s] canary is passing for the wrong reason: the pre-fix form also fails on a SMALL body (rc=%s), so the pattern simply is not matching — not SIGPIPE\n' "$CURRENT_TEST" "$small_rc"
     _record_assertion_fail
   fi
 }
 
 test_oversized_ratelimit_body_is_still_transient() {
-  local raw
-  raw=$(_oversized_body 'Claude API session limit reached. Please try again later.')
-  _assert_pipe_form_breaks "$raw" 'session limit'
+  local banner='Claude API session limit reached. Please try again later.' raw
+  raw=$(_oversized_body "$banner")
+  _assert_pipe_form_breaks "$raw" 'session limit' "$banner"
   assert_eq "$(_classify_claude_failure 1 "$raw")" "transient" \
     "rate-limit banner in a 200KB body → transient (fallback stays armed)"
 }
 
 test_oversized_auth_body_is_still_auth() {
-  local raw
-  raw=$(_oversized_body 'Error: authentication_failed. Please run /login.')
-  _assert_pipe_form_breaks "$raw" 'authentication_failed'
+  local banner='Error: authentication_failed. Please run /login.' raw
+  raw=$(_oversized_body "$banner")
+  _assert_pipe_form_breaks "$raw" 'authentication_failed' "$banner"
   assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" \
     "auth banner in a 200KB body → auth, not terminal"
 }
 
 test_oversized_plaintext_body_emits_no_stderr_noise() {
-  # The envelope probes ran `printf … | jq`, and jq bails immediately on non-JSON,
-  # so every large plain-text failure wrote four "printf: write error: Broken pipe"
-  # lines into the cron log. Classification was correct; the log was not.
+  # The envelope probes ran `printf … | jq`; when jq bails on non-JSON before
+  # draining stdin, the shell writes four "printf: write error: Broken pipe" lines
+  # into the cron log. Classification was correct; the log was not.
+  #
+  # HONEST LIMIT: this test does NOT reliably fail when that fix is reverted. Whether
+  # jq exits before printf finishes writing is a scheduling race — observed firing
+  # repeatedly in one run of this suite and 0/6 times in a direct probe at the same
+  # 200KB. So there is no canary here, unlike the two tests above. What it does pin
+  # deterministically is the classification, and after the fix there is no pipe left
+  # at all, so clean stderr is structural rather than lucky.
   local raw errfile out
   raw=$(_oversized_body 'some unexpected error we have no pattern for')
   errfile=$(mktemp)
