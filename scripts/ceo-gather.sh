@@ -74,6 +74,39 @@ _pr_gather_mark_degraded() {
 $1"
 }
 
+# Same idea for local vault reads. Tolerating a truncation's exit status (#293)
+# must not also tolerate an IO error: an unreadable Pending.md yields the same
+# empty string as a Pending.md with nothing in it, and the status evaluation below
+# would call that "quiet day". This flag keeps the two distinguishable.
+export FILE_GATHER_DEGRADED=0
+export FILE_GATHER_DEGRADED_REASONS=""
+_file_gather_mark_degraded() {
+  FILE_GATHER_DEGRADED=1
+  FILE_GATHER_DEGRADED_REASONS="$FILE_GATHER_DEGRADED_REASONS
+$1"
+}
+
+# _gather_capture_lines <dest-var> <max-lines> <file> <pattern> — matching lines,
+# capped, without the SIGPIPE that `grep … | head -N` earns under pipefail. Caps
+# inside grep so nothing can signal, then splits grep's exit status three ways:
+# 0 matched, 1 legitimately empty (a valid state — the pending-drip preflight
+# skips on it), anything else an IO/tooling error that must not masquerade as
+# empty. Only the third case marks the gather degraded.
+_gather_capture_lines() {
+  local _dest="$1" _max="$2" _file="$3" _pattern="$4"
+  local _out _rc=0 _err _detail=""
+  _err=$(mktemp) || _err=""
+  _out=$(grep -n -m "$_max" "$_pattern" "$_file" 2>"${_err:-/dev/null}") || _rc=$?
+  if [ "$_rc" -gt 1 ]; then
+    [ -n "$_err" ] && _detail=$(head -c 200 "$_err" 2>/dev/null)
+    echo "WARN: grep on $_file failed (rc=$_rc): $_detail" >&2
+    _file_gather_mark_degraded "file-read-failed:$_file:rc=$_rc"
+    _out=""
+  fi
+  [ -n "$_err" ] && rm -f "$_err"
+  printf -v "$_dest" '%s' "$_out"
+}
+
 # Durable channel for jq-failure reasons. The post-processing helpers below run
 # inside `$(...)` command substitution, so a `_pr_gather_mark_degraded` call from
 # there would set PR_GATHER_DEGRADED in a discarded subshell. Failures are
@@ -241,7 +274,18 @@ YESTERDAY_LOG="$LOG_DIR/$YESTERDAY.md"
 if [ -f "$YESTERDAY_LOG" ]; then
   export YESTERDAY_LOG_EXISTS=true
 export YESTERDAY_LOG_SUMMARY
-YESTERDAY_LOG_SUMMARY=$(sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null | head -20 || echo "no eod summary")
+# Capture then truncate. The old `sed … | head -20 || echo "no eod summary"` did not
+# abort, which is worse: on SIGPIPE head had already emitted 20 good lines and the
+# fallback got *appended* to them, so the prompt carried 20 real lines contradicted
+# by a "no eod summary" trailer. Reachable when the eod section runs to EOF and the
+# day log exceeds the pipe buffer. (#293)
+_yday_summary_raw=$(sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null) || _yday_summary_raw=""
+if [ -n "$_yday_summary_raw" ]; then
+  YESTERDAY_LOG_SUMMARY=$(head -20 <<< "$_yday_summary_raw")
+else
+  YESTERDAY_LOG_SUMMARY="no eod summary"
+fi
+unset _yday_summary_raw
 else
   export YESTERDAY_LOG_EXISTS=false
   export YESTERDAY_LOG_SUMMARY="no log"
@@ -333,7 +377,20 @@ BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 PROFILE_FILE="$VAULT/Profile.md"
 if [ -f "$PROFILE_FILE" ]; then
 export ACTIVE_DOMAINS_CONTENT
-ACTIVE_DOMAINS_CONTENT=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null | head -c "$GATHER_MAX_FILE")
+# Capture, then truncate — piping sed into `head -c` SIGPIPEs sed once the section
+# exceeds the cap, which pipefail turns into an aborted run (#293). Here-string
+# rather than ${var:0:n} to keep head's byte semantics; the cap is a byte budget.
+# sed returns 0 when the range simply doesn't match, so a non-zero status here is a
+# real read error and is recorded rather than silently read as "no section".
+_active_domains_rc=0
+_active_domains_raw=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null) || _active_domains_rc=$?
+if [ "$_active_domains_rc" -ne 0 ]; then
+  echo "WARN: sed on $PROFILE_FILE failed (rc=$_active_domains_rc)" >&2
+  _file_gather_mark_degraded "file-read-failed:$PROFILE_FILE:rc=$_active_domains_rc"
+  _active_domains_raw=""
+fi
+ACTIVE_DOMAINS_CONTENT=$(head -c "$GATHER_MAX_FILE" <<< "$_active_domains_raw")
+unset _active_domains_raw
 else
   export ACTIVE_DOMAINS_CONTENT=""
 fi
@@ -345,7 +402,10 @@ fi
 PENDING_FILE="$VAULT/Pending.md"
 if [ -f "$PENDING_FILE" ]; then
 export PENDING_ASK_QUESTIONS
-PENDING_ASK_QUESTIONS=$(grep -n '^- \[ \]' "$PENDING_FILE" 2>/dev/null | head -20)
+# See _gather_capture_lines: caps inside grep so the truncation can't SIGPIPE (#293),
+# and separates "no unchecked items" from "could not read the file" — a bare `|| true`
+# would report an unreadable Pending.md as a quiet day.
+_gather_capture_lines PENDING_ASK_QUESTIONS 20 "$PENDING_FILE" '^- \[ \]'
 else
   export PENDING_ASK_QUESTIONS=""
 fi
@@ -380,7 +440,11 @@ export LEDGER_PREV_PREDICTED
 LEDGER_PREV_PREDICTED="[]"
 _ledger_dir="$CEO_DIR/model"
 if [ -d "$_ledger_dir" ]; then
-  _latest=$(ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1)
+  # `|| true`: with the dir present but holding no .md, bash leaves the glob literal
+  # and ls exits non-zero, which pipefail + errexit turned into an aborted gather —
+  # same blast radius as #293, reachable on a fresh host or after a ledger prune.
+  # 2>/dev/null hides the message, not the status.
+  _latest=$(ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1) || true
   if [ -n "$_latest" ]; then
     LEDGER_RECENT=$(tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
     # Parse the LAST "predicted today:" block's indented bullets into "repo#num" strings.
@@ -414,15 +478,15 @@ _has_data=0
 [ -n "${PENDING_ASK_QUESTIONS:-}" ] && _has_data=1
 
 if [ "$_has_data" -eq 0 ]; then
-  if [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ]; then
+  if [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ] || [ "${FILE_GATHER_DEGRADED:-0}" -eq 1 ]; then
     CEO_GATHER_STATUS="failed"
-    CEO_GATHER_REASONS="All primary data sources empty, and PR gather degraded: $(echo "$PR_GATHER_DEGRADED_REASONS" | tr '\n' ' ')"
+    CEO_GATHER_REASONS="All primary data sources empty, and gather degraded: $(echo "$PR_GATHER_DEGRADED_REASONS $FILE_GATHER_DEGRADED_REASONS" | tr '\n' ' ')"
   else
     CEO_GATHER_STATUS="empty"
     CEO_GATHER_REASONS="All APIs succeeded, but zero active items found (quiet day)"
   fi
-elif [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ]; then
+elif [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ] || [ "${FILE_GATHER_DEGRADED:-0}" -eq 1 ]; then
   CEO_GATHER_STATUS="partial"
   # Replace newlines with spaces for single-line logging
-  CEO_GATHER_REASONS="PR gather degraded: $(echo "$PR_GATHER_DEGRADED_REASONS" | tr '\n' ' ')"
+  CEO_GATHER_REASONS="gather degraded: $(echo "$PR_GATHER_DEGRADED_REASONS $FILE_GATHER_DEGRADED_REASONS" | tr '\n' ' ')"
 fi
