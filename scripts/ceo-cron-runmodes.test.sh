@@ -662,12 +662,14 @@ test_repeated_aborts_escalate_to_pending_alert() {
   # Three consecutive un-bookkept aborts must raise the ALERT in
   # approvals/pending.md — the signal that was missing for two days.
   #
-  # The cooldown is cleared between runs rather than bypassed with CEO_FORCE,
-  # because production never passes --force: the daemon dispatches
-  # `<trigger> --scheduled` (lib/scheduler/src/runtime.ts). Clearing LAST_RUN_FILE
-  # models three scheduled runs far enough apart that the cooldown has elapsed,
-  # which is how the count actually climbs in production. Forcing would make the
-  # test pass by a route production cannot take.
+  # Runs are --scheduled, not CEO_FORCE, because production never passes --force:
+  # the daemon dispatches `<trigger> --scheduled` (lib/scheduler/src/runtime.ts).
+  # Forcing would make the test pass by a route production cannot take. The
+  # LAST_RUN_FILE clear is now belt-and-suspenders — since #300 a scheduled run
+  # doesn't consult the cooldown at all (cronbird owns that gate) — but it is kept
+  # so this test asserts escalation alone and cannot start passing or failing for
+  # cooldown reasons. test_scheduled_runs_defer_the_cooldown_gate_to_cronbird is
+  # what covers the handover.
   _write_pending_drip_registry
   _stub_claude_log_entry "completed" "never reached"
   local sandbox; sandbox=$(_sandbox_with_aborting_gather)
@@ -703,6 +705,35 @@ test_healthy_playbook_does_not_reset_another_playbooks_failure_streak() {
   assert_eq "$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)" "1" \
     "a different playbook succeeding must not clear this one's failure streak"
   rm -rf "$sandbox"
+}
+
+test_scheduled_runs_defer_the_cooldown_gate_to_cronbird() {
+  # Two back-to-back --scheduled runs must BOTH dispatch. This script's own
+  # cooldown gate exits 0 on a skip, and the daemon reads 0 as a clean success:
+  # attempt counter reset, lastSuccess stamped. So a failing playbook's retry
+  # laundered itself into a scheduler-level success (#298). cronbird declines to
+  # *enqueue* inside a cooldown instead, which is why the gate moved there (#300)
+  # and why a scheduled run must no longer consult .last-run.
+  #
+  # The pair matters: the manual side is still gated (see
+  # test_cron_force_flag_bypasses_cooldown, whose second manual run is skipped),
+  # so this asserts a handover, not the removal of the guard.
+  _register_status_playbook rm-sched-cool active
+
+  bash "$CRON" rm-sched-cool --scheduled >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" "first scheduled run must dispatch"
+  assert_file_exists "$CEO_DIR/log/.last-run-rm-sched-cool" \
+    "a scheduled run must still stamp last-run — the manual gate and ceo doctor both read it"
+  rm -f "$HOME/claude-invoked.txt"
+
+  bash "$CRON" rm-sched-cool --scheduled >/dev/null 2>&1 || true
+  assert_file_exists "$HOME/claude-invoked.txt" \
+    "second scheduled run must dispatch — cronbird owns the cooldown, this script must not skip-with-0"
+
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_not_contains "$skips" "last run too recent" \
+    "a scheduled run must not log a cooldown skip; that line is the false success"
 }
 
 run_tests

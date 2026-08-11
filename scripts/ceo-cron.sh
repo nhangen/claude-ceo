@@ -1063,8 +1063,23 @@ _on_exit() {
 }
 trap _on_exit EXIT
 
-# --- Per-trigger runaway protection (bypass with --force, CEO_FORCE=1, or --dry-run) ---
-if [ "${CEO_FORCE:-}" != "1" ] && [ "${CEO_DRY_RUN:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
+# --- Per-trigger runaway protection (manual runs only) ---
+# Skipped on --scheduled because cronbird owns the cooldown gate there (#300): it
+# declines to *enqueue* a job still inside its cooldown, whereas this gate
+# dispatches the run and then exits 0 — which the daemon reads as a clean
+# success, resetting the attempt counter and stamping lastSuccess. That is the
+# laundering path #298 hit: a failure stamps LAST_RUN_FILE, the retry lands here,
+# and a failing playbook reports success. cronbird's own contract says the same
+# ("never dispatched into a downstream cooldown-skip that would look like a clean
+# success"), so the gate belongs on exactly one side of the boundary.
+#
+# Concurrency is not what this gate protects; the lock above is, and it still
+# runs on every path. The gate stays for manual invocations (`ceo playbook run`,
+# a hand-run of this script, a leftover crontab line), where no scheduler is
+# watching the exit code and 0 is the honest answer for a deferral.
+#
+# Bypass with --force, CEO_FORCE=1, or --dry-run, as before.
+if [ "$RUN_MODE" != "scheduled" ] && [ "${CEO_FORCE:-}" != "1" ] && [ "${CEO_DRY_RUN:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
   LAST_RUN=$(cat "$LAST_RUN_FILE" 2>/dev/null || echo 0)
   case "$LAST_RUN" in (''|*[!0-9]*) LAST_RUN=0 ;; esac
   NOW_EPOCH=$(date +%s)

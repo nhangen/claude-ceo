@@ -41,11 +41,14 @@ import {
   enabledPath,
   heartbeatPath,
   isSafeSegment,
+  parseCooldownSeconds,
   registryPath,
+  resolveCooldownSeconds,
   resolveFixedLookbackMs,
   resolveHost,
   runningDir,
   runningMarker,
+  settingsPath,
   swarmPath,
   syncedHeartbeatPath,
 } from "@/runtime";
@@ -151,6 +154,7 @@ async function main(): Promise<void> {
 
   const { registryPath: regPath, heartbeatPath: hbPath, swarmPath: swPath, syncedHeartbeatPath: syncedHbPath, host } = cfg;
   const enPath = enabledPath(home);
+  const setPath = settingsPath(vault);
   // Dispatch-completion state (cronbird #9 queue): the dispatch wrapper below
   // writes running/done here; readCompletions reassembles it each tick.
   const runDir = runningDir(home);
@@ -262,13 +266,42 @@ async function main(): Promise<void> {
     maxSleepMs: MAX_SLEEP_MS,
     resolveLookback,
     shouldContinue: () => running,
-    // cronbird #9 queue inputs. CEO wires no priority / dependency / cooldown
-    // source yet, so these are the documented defaults: all-equal FIFO ordering,
-    // no upstreams (the dependency gate is a no-op), no cooldown. Wiring real
-    // resolvers from registry metadata is a later, deliberate step.
+    // cronbird #9 queue inputs, resolved in #300.
+    //
+    // priority: all-equal FIFO, deliberately. Ordering only matters for jobs due
+    // in the same minute, and the queue *drains* rather than dropping, so a tie
+    // costs sequencing, not a run. The one same-minute pair in the registry
+    // (morning + morning-brief) is both-disabled and produces independent notes.
+    //
+    // dependencies: none exist. Audited every playbook in docs/playbooks: each
+    // one writes its own artifact and no one reads another's — the only
+    // cross-references are each playbook's own report dir. What look like
+    // upstreams are not: the `inputs:` frontmatter names data ceo-gather.sh
+    // collects live from git/gh/the vault, not another playbook's output, and
+    // value-tracker (06:00) reads nothing from token-intake (08:45) — it would
+    // already be ordered wrong if it did. cron-failure-digest is the interesting
+    // case and argues the other way: it reads log/cron-runs.log, so gating it on
+    // its "upstreams" succeeding would suppress exactly the digest of their
+    // failures. So the dependency gate stays a no-op by decision, not by
+    // omission; revisit only when a playbook genuinely consumes another's file.
     priority: () => 0,
     dependencies: () => [],
-    cooldownSeconds: () => 0,
+    // cooldown: cronbird owns this gate, per its own contract — "a job is never
+    // dispatched into a downstream cooldown-skip that would look like a clean
+    // success". ceo-cron.sh used to enforce it too, and its skip path exits 0,
+    // which cronbird reads as success: attempt counter reset, lastSuccess
+    // stamped. That is what let a failing playbook's retry launder itself into a
+    // daemon-level success (#298), and why ceo-cron.sh now defers the gate to us
+    // on --scheduled runs. Settings are re-read per resolver call so a
+    // cooldown_seconds edit lands without a daemon restart, matching how the
+    // registry, enabled set, and topology are already re-read each tick.
+    cooldownSeconds: (job) =>
+      resolveCooldownSeconds(
+        parseCooldownSeconds(readIfExists(setPath)),
+        job.cronSchedule,
+        new Date(),
+        matcher,
+      ),
     // Real run-state read — the dispatch wrapper above writes running/done, so
     // the loop observes completions and drains the queue instead of stranding
     // every job behind the first (which would silently drop same-minute
