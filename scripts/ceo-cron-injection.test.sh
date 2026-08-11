@@ -447,7 +447,7 @@ STUB
   # host that will stay logged out. Still non-zero, so telemetry stays red, which
   # is what this test's name has always been about. Was a bare 1 before #298.
   assert_eq "$rc" "78" "auth failure must exit 78 (fatal, no retry), not a retryable 1"
-  assert_eq "$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo 0)" "1" \
+  assert_eq "$(_fail_count authfail)" "1" \
     "a fatal exit must still record the failure — the fail count is what escalates"
 
   local ollama_invoked

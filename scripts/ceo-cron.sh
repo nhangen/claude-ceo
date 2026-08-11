@@ -168,7 +168,11 @@ NOW=$(date +%H:%M)
 LOG_FILE="$LOG_DIR/$TODAY.md"
 LOCK_FILE="${CEO_LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}"
 LAST_RUN_FILE="$LOG_DIR/.last-run-${TRIGGER}"
-FAIL_COUNT_FILE="$LOG_DIR/.fail-count"
+# Per-trigger, matching LAST_RUN_FILE above. A single global counter meant any
+# healthy playbook's _record_success zeroed a failing playbook's streak, so on a
+# host running a dozen playbooks the 3-strike escalation below effectively never
+# fired — the alert this file's failure path is built around could not arrive.
+FAIL_COUNT_FILE="$LOG_DIR/.fail-count-$TRIGGER"
 # Host-local, non-synced preview scratch (see output-locations.md). A dry-run
 # overwrites this per (trigger, day) so repeated previews don't accumulate.
 PREVIEW_DIR="$LOG_DIR/preview"
@@ -210,10 +214,18 @@ _report() {
   "$SCRIPT_DIR/ceo-report.sh" "$@"
 }
 
-# Single source of truth for terminal-exit bookkeeping. Every success path
-# calls _record_success; every failure path calls _record_failure. Deferral
-# paths (chat-only, status-not-active, missing playbook, preflight no-work)
-# are not failures and exit directly without invoking either helper.
+# Single source of truth for terminal-exit bookkeeping. Every success path calls
+# _record_success; every failure path calls _record_failure.
+#
+# Genuine deferrals — chat-only, status-not-active, preflight no-work, cooldown
+# skip, lock timeout, transient-unavailable — are not failures, call neither
+# helper, and exit **0**, which is what keeps the EXIT trap from recording them.
+#
+# A missing or unregistered playbook is NOT in that set, despite what this
+# comment used to say: those paths exit 1, so the trap records them. That is
+# intended — a playbook the registry names but that isn't on disk is config
+# breakage, not "nothing to do" — but the distinction is the exit code, not the
+# intent, so any new deferral must exit 0 to stay out of the fail count.
 _record_success() {
   _bookkeeping_done=1   # read by the EXIT trap installed after the lock section
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
@@ -401,7 +413,9 @@ _release_lock() {
   else
     if [ "${_lock_acquired:-false}" = "true" ]; then
       rm -f "$LOCK_DIR/pid" 2>/dev/null
-      rmdir "$LOCK_DIR" 2>/dev/null
+      # `|| true`: _release_lock is the last command of the EXIT handler, and a
+      # failing last command there rewrites the script's exit status.
+      rmdir "$LOCK_DIR" 2>/dev/null || true
     fi
   fi
 }
@@ -1016,24 +1030,34 @@ fi
 # So: any non-zero exit that recorded nothing gets recorded here. Covers both the
 # errexit abort and the bare `exit 1` sites that predate the helpers.
 #
+# Not covered: a signal. On SIGTERM the trap runs but `$?` is 0, so the guard
+# below is false and a killed run (status 143) records nothing. A daemon restart
+# or host sleep mid-run is not a playbook failure, so that is left alone
+# deliberately rather than being papered over with a signal trap.
+#
 # Bash keeps exactly one EXIT trap, so this replaces the mkdir-lock trap set
 # above rather than stacking with it; the handler calls _release_lock, which
 # covers both lock branches. The earlier trap still guards the window between
 # lock acquisition and this line.
 #
-# The exit status is deliberately passed through unchanged rather than rewritten
-# to FATAL_EXIT_CODE (78). An abort is usually deterministic, so failing fast is
-# tempting — but the scheduler's retries are what drive the fail count to the
-# escalation threshold inside a single tick. Trading three cheap re-runs for an
-# alert that arrives now is the right way round. Exit 78 is used where a retry
-# provably cannot help and a human is the only fix: see the auth branch of
-# _route_claude_failure.
+# The handler exits 78 (cronbird's FATAL_EXIT_CODE) rather than passing the
+# original status through, because passing it through is actively wrong here.
+# _record_failure stamps LAST_RUN_FILE, so the scheduler's second attempt hits
+# this script's own cooldown gate below and exits **0** — and cronbird reads 0 as
+# success, resetting its attempt counter and stamping lastSuccess
+# (cronbird/src/core/daemon.ts:243-246). Recording the failure would therefore
+# have converted a daemon-level "failed after 3 attempts" into a daemon-level
+# success after one, which is worse than the silence this trap exists to fix.
+# 78 makes cronbird fail fast to its cap on the first abort, so its failed state
+# and the vault-side record agree.
 _bookkeeping_done=0
 _on_exit() {
   local rc=$?
   if [ "$rc" -ne 0 ] && [ "$_bookkeeping_done" -eq 0 ] && [ "${CEO_DRY_RUN:-}" != "1" ]; then
     _bookkeeping_done=1   # before the call: _record_failure must not re-enter this
     _record_failure "$TRIGGER exited $rc without recording a result (aborted before its own failure handling)" || true
+    _release_lock
+    exit 78
   fi
   _release_lock
 }
@@ -1559,13 +1583,20 @@ if [ "$RUNNER" = "skill" ]; then
   _v "Runner: skill — exec $SKILL_SCRIPT"
 
   TMP_DIR=$(mktemp -d)
-  trap 'rm -rf "$TMP_DIR"' EXIT
+  # Explicit cleanup, not a trap — same reason as the script-runner branch above.
+  # An EXIT trap here replaces _on_exit wholesale (bash keeps one), which silently
+  # disabled both the bookkeeping guarantee and the lock release for every
+  # runner:skill playbook: weekly-synthesis, workload-report, story-points. An
+  # unwritable vault made `mkdir -p`/`mv` below abort with nothing recorded and a
+  # leaked lock dir — the exact #293 shape, in the branch meant to be protected.
+  _skill_cleanup() { rm -rf "$TMP_DIR"; }
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
   SKILL_EXIT=0
   "$SKILL_SCRIPT" --out "$TMP_DIR" >/dev/null 2>>"$LOG_DIR/cron-stderr.log" || SKILL_EXIT=$?
   
   if [ "$SKILL_EXIT" -ne 0 ]; then
     _record_failure "Skill exited $SKILL_EXIT for $TRIGGER"
+    _skill_cleanup
     exit "$SKILL_EXIT"
   fi
 
@@ -1575,6 +1606,7 @@ if [ "$RUNNER" = "skill" ]; then
   
   if [ "${#MD_FILES[@]}" -eq 0 ]; then
     _record_failure "Skill produced no output file for $TRIGGER"
+    _skill_cleanup
     exit 1
   fi
   
@@ -1582,6 +1614,7 @@ if [ "$RUNNER" = "skill" ]; then
 
   if [ ! -s "$TMP_OUT" ]; then
     _record_failure "Skill produced empty output for $TRIGGER"
+    _skill_cleanup
     exit 1
   fi
 
@@ -1593,6 +1626,7 @@ if [ "$RUNNER" = "skill" ]; then
   FINAL_OUT_REL="${FINAL_OUT_REL#"${FINAL_OUT_REL%%[!/]*}"}" # Strip leading slashes
   if [[ "$FINAL_OUT_REL" == *"../"* ]] || [[ "$FINAL_OUT_REL" == ".." ]]; then
     _record_failure "Playbook '$TRIGGER' out_pattern attempts to escape VAULT"
+    _skill_cleanup
     exit 1
   fi
 
@@ -1600,8 +1634,9 @@ if [ "$RUNNER" = "skill" ]; then
   
   mkdir -p "$(dirname "$FINAL_OUT")"
   mv "$TMP_OUT" "$FINAL_OUT"
-  
+
   _record_success
+  _skill_cleanup
   exit 0
 fi
 

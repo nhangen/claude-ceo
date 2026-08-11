@@ -197,6 +197,66 @@ SH
 }
 
 
+test_runner_skill_abort_is_recorded_and_releases_the_lock() {
+  # runner:skill used to install its own `trap 'rm -rf "$TMP_DIR"' EXIT`, which
+  # replaced the bookkeeping/lock-release handler wholesale (bash keeps one EXIT
+  # trap). So for every skill playbook — weekly-synthesis, workload-report,
+  # story-points — an abort in the vault-write tail recorded nothing and leaked
+  # the lock dir: the exact #293 shape, inside the branch meant to be covered.
+  #
+  # Reproduce it at the real abort site: make `mkdir -p "$(dirname "$FINAL_OUT")"`
+  # fail by planting a regular file where the output directory has to go.
+  cat > "$CEO_DIR/playbooks/skill-abort.md" << 'PB'
+---
+name: skill-abort
+description: skill runner whose vault write aborts
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: skill-abort
+out_pattern: CEO/reports/blocker/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/skill-abort/scripts"
+  cat > "$HOME/.claude/skills/skill-abort/scripts/run-report.sh" << 'SH'
+#!/bin/bash
+while [[ "$#" -gt 0 ]]; do
+  case $1 in --out) out_dir="$2"; shift ;; esac
+  shift
+done
+echo "skill output" > "$out_dir/report.md"
+SH
+  chmod +x "$HOME/.claude/skills/skill-abort/scripts/run-report.sh"
+
+  # A regular file where CEO/reports/blocker/ must be a directory.
+  mkdir -p "$CEO_DIR/reports"
+  printf 'not a directory\n' > "$CEO_DIR/reports/blocker"
+
+  local rc=0
+  CEO_TEST_FORCE_MKDIR_LOCK=1 PATH=/usr/bin:/bin bash "$CRON" skill-abort >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf '  FAIL [%s] a skill runner whose vault write fails must not exit 0\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+
+  assert_eq "$(cat "$CEO_DIR/log/.fail-count-skill-abort" 2>/dev/null || echo 0)" "1" \
+    "a skill-runner abort must be recorded, not swallowed by its cleanup trap"
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "without recording a result" \
+    "the abort must leave an ERROR line naming it as un-bookkept"
+  if [ -d "${LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}.d" ]; then
+    printf '  FAIL [%s] the mkdir lock leaked — the cleanup trap replaced the release handler\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+
 test_runner_script_exports_ceo_playbook_id_to_child() {
   cat > "$CEO_DIR/playbooks/playbook-id-script.md" << 'PB'
 ---
@@ -491,7 +551,7 @@ SH
   CEO_VERBOSE=1 bash "$CRON" fail-intake >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after one script failure"
 
   rm -f "$SCRIPT_DIR/fail-intake.sh"
@@ -521,11 +581,11 @@ SH
   chmod +x "$SCRIPT_DIR/ok-intake.sh"
 
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  echo 2 > "$CEO_DIR/log/.fail-count"
+  echo 2 > "$CEO_DIR/log/.fail-count-ok-intake"
   CEO_VERBOSE=1 bash "$CRON" ok-intake >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "0" "FAIL_COUNT_FILE must be 0 after a successful script run"
 
   rm -f "$SCRIPT_DIR/ok-intake.sh"

@@ -335,7 +335,7 @@ STUB
   CEO_VERBOSE=1 bash "$CRON" ollama-selffail >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "model self-reporting **Status:** failed must increment FAIL_COUNT_FILE (silent-success invariant)"
 
   local skips_log
@@ -380,7 +380,7 @@ STUB
   CEO_VERBOSE=1 bash "$CRON" claude-selffail >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "claude path: model self-reporting **Status:** failed must increment FAIL_COUNT_FILE"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -595,7 +595,7 @@ PB
   assert_contains "$skips_log" "jq parse:" "code-3 path must capture a registry diagnostic for the next occurrence"
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "schema gate failure must increment FAIL_COUNT_FILE"
 
   if [ -f "$HOME/claude-invoked.txt" ]; then
@@ -633,7 +633,7 @@ PB
   assert_contains "$skips_log" "schema_version" "cron-skips.log must record schema_version reason"
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "schema gate failure must increment FAIL_COUNT_FILE"
 
   if [ -f "$HOME/claude-invoked.txt" ]; then
@@ -758,7 +758,12 @@ PB
 
   local rc=0
   CEO_VERBOSE=1 bash "$CRON" bad-intake >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "1" "missing-script field must exit 1"
+  # 78 = cronbird's FATAL_EXIT_CODE (EX_CONFIG). A playbook declaring
+  # runner:script with no script field is config breakage: identical on every
+  # retry until a human edits the frontmatter, so the scheduler should give up
+  # rather than spend three dispatches per tick. This path records nothing itself,
+  # so the #298 EXIT trap is what records it and sets the code. Was a bare 1.
+  assert_eq "$rc" "78" "missing-script field must exit 78 (fatal config error), not a retryable 1"
 
   local skips_log
   skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
