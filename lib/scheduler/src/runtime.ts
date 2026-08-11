@@ -2,7 +2,7 @@
  * Real-environment helpers for ceo-schedulerd, kept pure so they are unit-tested
  * without touching the filesystem. `main.ts` composes them with Bun's spawn/fs.
  */
-import type { CompletionRecord } from "cronbird/core";
+import type { CompletionRecord, CronMatcher } from "cronbird/core";
 
 /**
  * How long without a heartbeat before `ceo doctor` reports the daemon stale.
@@ -28,6 +28,104 @@ export function resolveFixedLookbackMs(raw: string | undefined): number | null {
   if (raw === undefined) return null;
   const n = Number(raw.trim());
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Vault-side global settings. `cooldown_seconds` lives here rather than in the
+ * registry: it is one value for the whole fleet, and `ceo-cron.sh` already reads
+ * it from this file via `_cfg '.cooldown_seconds' '1800'`.
+ */
+export function settingsPath(vault: string): string {
+  return `${vault}/CEO/settings.json`;
+}
+
+/** Must match `ceo-cron.sh`'s `_cfg '.cooldown_seconds' '1800'` default. */
+export const DEFAULT_COOLDOWN_SECONDS = 1800;
+
+/**
+ * `cooldown_seconds` from CEO/settings.json. Fail-safe in the *guarding*
+ * direction: an absent, torn, or malformed settings file yields the default, not
+ * zero — an unreadable config must not silently disarm the runaway guard, and
+ * must not throw inside a resolver the daemon calls every tick. A non-integer or
+ * negative value is treated the same way, since `jq` on the shell side would
+ * also have handed that through unvalidated.
+ */
+export function parseCooldownSeconds(raw: string): number {
+  try {
+    const v = (JSON.parse(raw) as { cooldown_seconds?: unknown }).cooldown_seconds;
+    return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : DEFAULT_COOLDOWN_SECONDS;
+  } catch {
+    return DEFAULT_COOLDOWN_SECONDS;
+  }
+}
+
+/** Forward fires sampled to estimate a schedule's tightest interval. */
+const CADENCE_SAMPLES = 5;
+
+/**
+ * The schedule's tightest interval in ms — the min gap over the next
+ * {@link CADENCE_SAMPLES} fires, or `null` for an unparseable or single-fire
+ * schedule.
+ *
+ * Min-of-gaps is the same cadence proxy `cronbird`'s `lookbackForSchedule` uses,
+ * and for the same reason: a forward sample anchored at `now` swings with wake
+ * time for an irregular schedule (fires at 09:00 and 12:00 give 3h-then-21h or
+ * 21h-then-3h depending on when you ask), while the min is intrinsic to the
+ * schedule. It is deliberately *unclamped* here — that function's [1h, 6h] clamp
+ * bounds a catch-up window, and this feeds a rate limit, where clamping a
+ * 30-minute cadence up to an hour would reintroduce the very bug below.
+ */
+export function cadenceMs(schedule: string, now: Date, matcher: CronMatcher): number | null {
+  let cursor = now;
+  let prev: Date | null = null;
+  let minGap = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < CADENCE_SAMPLES; i++) {
+    let next: Date | null;
+    try {
+      next = matcher.nextFire(schedule, cursor);
+    } catch {
+      break;
+    }
+    if (next === null) break;
+    if (prev !== null) minGap = Math.min(minGap, next.getTime() - prev.getTime());
+    prev = next;
+    cursor = next;
+  }
+  return Number.isFinite(minGap) ? minGap : null;
+}
+
+/**
+ * The cooldown cronbird enforces for one job: the global guard, capped so it can
+ * never suppress a slot the schedule deliberately asks for.
+ *
+ * The guard is runaway protection inherited from the crontab era, when a
+ * misconfigured crontab really could re-fire a playbook in a tight loop. Under
+ * the daemon that job is already done by the epoch-minute double-fire guard, the
+ * `MAX_CONCURRENT=1` queue, and `ceo-cron.sh`'s own lock — so the cooldown's
+ * remaining value is a backstop, and it must not outrank an explicit schedule.
+ *
+ * Uncapped, it does. cronbird measures the cooldown from the previous run's
+ * *completion*, which lands at `slot + runtime`, so a cooldown at or above the
+ * cadence eats every other slot. `ticket-triage-autopilot` (a 30-minutely
+ * schedule against the 1800s global) proved this in production: ~1000 lines of
+ * `last run too recent (29m ago)` in cron-skips.log, i.e. a real cadence of 60
+ * minutes, not 30, for as long as it was enabled.
+ *
+ * Halving the cadence is the cap: a run must take longer than half its own
+ * period before the guard can bite, and anything slower than hourly is still
+ * bound by the global 1800s. An unparseable schedule keeps the global value — it
+ * never fires, so the number is moot.
+ */
+export function resolveCooldownSeconds(
+  globalSeconds: number,
+  schedule: string,
+  now: Date,
+  matcher: CronMatcher,
+): number {
+  if (globalSeconds <= 0) return 0;
+  const cadence = cadenceMs(schedule, now, matcher);
+  if (cadence === null) return globalSeconds;
+  return Math.min(globalSeconds, Math.floor(cadence / 2000));
 }
 
 /** Host-local — the registry is now generated per host under `~/.ceo`, not synced via the vault, so concurrent hosts no longer write-conflict on it. */

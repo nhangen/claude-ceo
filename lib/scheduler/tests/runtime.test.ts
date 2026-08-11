@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { createMatcher } from "cronbird/core";
 import {
   buildCompletions,
+  cadenceMs,
+  DEFAULT_COOLDOWN_SECONDS,
+  parseCooldownSeconds,
+  resolveCooldownSeconds,
   CATCHUP_LOOKBACK_CAP_MS,
   CATCHUP_LOOKBACK_FLOOR_MS,
   completionRecord,
@@ -219,5 +224,92 @@ describe("resolveFixedLookbackMs (env override → fixed window, else derived)",
     expect(resolveFixedLookbackMs("0")).toBeNull();
     expect(resolveFixedLookbackMs("-5")).toBeNull();
     expect(resolveFixedLookbackMs("  ")).toBeNull();
+  });
+});
+
+describe("parseCooldownSeconds (global guard value, fail-safe toward guarding)", () => {
+  test("reads cooldown_seconds from settings.json", () => {
+    expect(parseCooldownSeconds('{"cooldown_seconds":900}')).toBe(900);
+  });
+  test("0 is honoured — an explicit opt-out is not the same as a missing value", () => {
+    expect(parseCooldownSeconds('{"cooldown_seconds":0}')).toBe(0);
+  });
+  test("absent / empty / malformed / wrong-type → the default, never 0", () => {
+    // An unreadable config must not silently disarm the guard. Each of these
+    // returning 0 would look identical to the honoured opt-out above.
+    for (const raw of ["", "{}", "not json", '{"cooldown_seconds":"1800"}', '{"cooldown_seconds":-5}', '{"cooldown_seconds":12.5}', '{"cooldown_seconds":null}']) {
+      expect(parseCooldownSeconds(raw)).toBe(DEFAULT_COOLDOWN_SECONDS);
+    }
+  });
+  test("the default matches the shell side's `_cfg '.cooldown_seconds' '1800'`", () => {
+    // These two are a pair: ceo-cron.sh still applies the gate on manual runs, so
+    // a drift here means manual and scheduled runs disagree on the same guard.
+    expect(DEFAULT_COOLDOWN_SECONDS).toBe(1800);
+  });
+});
+
+describe("cadenceMs (tightest interval a schedule fires at)", () => {
+  const matcher = createMatcher();
+  const NOW = new Date("2026-08-11T00:00:00Z");
+  test("*/30 → 30 minutes", () => {
+    expect(cadenceMs("*/30 * * * *", NOW, matcher)).toBe(30 * 60_000);
+  });
+  test("hourly and daily", () => {
+    expect(cadenceMs("0 * * * *", NOW, matcher)).toBe(60 * 60_000);
+    expect(cadenceMs("0 3 * * *", NOW, matcher)).toBe(24 * 60 * 60_000);
+  });
+  test("min-of-gaps, not the next gap — an irregular schedule reports its tightest interval", () => {
+    // Fires 09:00 and 12:00: the forward gaps are 3h and 21h. Asked at 00:00 the
+    // *first* gap is 9h, so a next-gap proxy would answer 9h here and 3h an hour
+    // later. The min is 3h regardless of when you ask.
+    expect(cadenceMs("0 9,12 * * *", NOW, matcher)).toBe(3 * 60 * 60_000);
+    expect(cadenceMs("0 9,12 * * *", new Date("2026-08-11T10:00:00Z"), matcher)).toBe(3 * 60 * 60_000);
+  });
+  test("unparseable schedule → null rather than a throw inside a per-tick resolver", () => {
+    expect(cadenceMs("not a cron", NOW, matcher)).toBeNull();
+  });
+});
+
+describe("resolveCooldownSeconds (guard must never outrank an explicit schedule)", () => {
+  const matcher = createMatcher();
+  const NOW = new Date("2026-08-11T00:00:00Z");
+
+  test("a */30 schedule is capped to 15m, so the 1800s global cannot eat every other slot", () => {
+    // The production bug: cronbird measures cooldown from the previous run's
+    // completion (slot + runtime), so 1800s against a 1800s cadence skipped
+    // ticket-triage-autopilot ~1000 times at "29m ago" — a real cadence of 60m.
+    expect(resolveCooldownSeconds(1800, "*/30 * * * *", NOW, matcher)).toBe(900);
+  });
+
+  test("the cap is what prevents the skip; the uncapped global would not", () => {
+    // Self-validating: asserts the pre-fix value actually suppressed the next
+    // slot, so this test fails if the cap is removed *and* proves the scenario
+    // was real rather than hypothetical.
+    const cadenceSec = cadenceMs("*/30 * * * *", NOW, matcher)! / 1000;
+    const runtimeSec = 5; // a fast run; the gap to the next slot is cadence - 5
+    expect(1800).toBeGreaterThan(cadenceSec - runtimeSec); // uncapped → skipped
+    expect(resolveCooldownSeconds(1800, "*/30 * * * *", NOW, matcher)).toBeLessThan(cadenceSec - runtimeSec);
+  });
+
+  test("anything slower than hourly is still bound by the global, not the cap", () => {
+    expect(resolveCooldownSeconds(1800, "0 3 * * *", NOW, matcher)).toBe(1800);
+    expect(resolveCooldownSeconds(1800, "0 */6 * * *", NOW, matcher)).toBe(1800);
+  });
+
+  test("a 0 global disables the gate outright, cap or no cap", () => {
+    expect(resolveCooldownSeconds(0, "*/30 * * * *", NOW, matcher)).toBe(0);
+  });
+
+  test("unparseable schedule keeps the global — it never fires, so the value is moot", () => {
+    expect(resolveCooldownSeconds(1800, "not a cron", NOW, matcher)).toBe(1800);
+  });
+
+  test("every enabled-in-production schedule keeps its own cadence", () => {
+    // Guards the whole registry, not just the one that broke: for each schedule,
+    // the resolved cooldown must leave room for a run of up to half its period.
+    for (const s of ["*/30 * * * *", "0 */6 * * *", "45 8 * * 1-5", "0 6 * * 1-5", "30 9 * * *", "0 8 * * SUN"]) {
+      const cadence = cadenceMs(s, NOW, matcher)!;
+      expect(resolveCooldownSeconds(1800, s, NOW, matcher) * 1000).toBeLessThanOrEqual(cadence / 2);
+    }
   });
 });
