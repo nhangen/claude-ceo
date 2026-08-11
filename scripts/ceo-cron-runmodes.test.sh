@@ -375,7 +375,7 @@ test_dry_run_under_scheduled_warns() {
 # (read-tier claude exit 1 reaches _record_failure.)
 test_dry_run_failure_path_has_no_side_effects() {
   _register_status_playbook dr-fail active
-  echo 3 > "$CEO_DIR/log/.fail-count"
+  echo 3 > "$CEO_DIR/log/.fail-count-dr-fail"
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
@@ -385,7 +385,7 @@ STUB
 
   bash "$CRON" dr-fail --dry-run >/dev/null 2>&1 || true
 
-  assert_eq "$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null)" "3" "dry-run failure must not increment the fail-count"
+  assert_eq "$(_fail_count)" "3" "dry-run failure must not increment the fail-count"
   assert_fails "dry-run failure must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dr-fail"
   assert_contains "$(cat "$(_preview_file dr-fail)" 2>/dev/null)" "Would record FAILURE" "preview must record the would-be failure"
 }
@@ -617,6 +617,92 @@ PB
   assert_eq "$(_hosts_in_registry h-other)" '["definitely-not-this-host"]' "off-host scope must still be recorded"
   bash "$CRON" h-other --scheduled >/dev/null 2>&1 || true
   assert_file_exists "$HOME/claude-invoked.txt" "Phase 1 must NOT enforce hosts — playbook still dispatches"
+}
+
+# --- Terminal-bookkeeping guarantee (#298) -----------------------------------
+# An abort must not be able to exit silently. Before the EXIT trap, an errexit
+# abort anywhere above the run's own failure handling produced no fail-count
+# bump, no pending.md ALERT, and no notify — which is why #293 stayed invisible
+# for two days on both hosts.
+
+# Sandboxed copy of the tree with an abort injected into the sourced gather, at
+# the same top-level position #293 aborted from. Any non-zero exit from a sourced
+# file under errexit does it; the cause need not be a broken pipe.
+_sandbox_with_aborting_gather() {
+  local sandbox; sandbox=$(mktemp -d)
+  cp "$SCRIPT_DIR"/*.sh "$sandbox/" 2>/dev/null
+  printf '\nexit 9   # injected: abort at the position #293 aborted from\n' >> "$sandbox/ceo-gather.sh"
+  printf '%s' "$sandbox"
+}
+
+test_abort_before_failure_handling_is_still_recorded() {
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "never reached"
+  local sandbox; sandbox=$(_sandbox_with_aborting_gather)
+
+  local rc=0
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$sandbox/ceo-cron.sh" pending-drip >/dev/null 2>&1 || rc=$?
+  # 78, not the injected 9: _record_failure stamps LAST_RUN_FILE, so a retry would
+  # hit the cooldown gate and exit 0 — which cronbird reads as success, resetting
+  # its attempt counter. Passing 9 through would turn "failed" into "succeeded" at
+  # the scheduler level. 78 is its FATAL_EXIT_CODE, so it gives up immediately and
+  # its state agrees with the vault's.
+  assert_eq "$rc" "78" "an un-bookkept abort must exit 78 so the scheduler records a failure, not a success"
+
+  local fails skips
+  fails=$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)
+  assert_eq "$fails" "1" "an abort must increment the fail count — that counter is what escalates at 3"
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "without recording a result" \
+    "an abort must leave an ERROR line naming it as un-bookkept"
+  rm -rf "$sandbox"
+}
+
+test_repeated_aborts_escalate_to_pending_alert() {
+  # Three consecutive un-bookkept aborts must raise the ALERT in
+  # approvals/pending.md — the signal that was missing for two days.
+  #
+  # The cooldown is cleared between runs rather than bypassed with CEO_FORCE,
+  # because production never passes --force: the daemon dispatches
+  # `<trigger> --scheduled` (lib/scheduler/src/runtime.ts). Clearing LAST_RUN_FILE
+  # models three scheduled runs far enough apart that the cooldown has elapsed,
+  # which is how the count actually climbs in production. Forcing would make the
+  # test pass by a route production cannot take.
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "never reached"
+  local sandbox; sandbox=$(_sandbox_with_aborting_gather)
+
+  local attempt=0
+  while [ "$attempt" -lt 3 ]; do
+    rm -f "$CEO_DIR/log/.last-run-pending-drip"
+    CEO_HOSTNAME=testhost bash "$sandbox/ceo-cron.sh" pending-drip --scheduled >/dev/null 2>&1 || true
+    attempt=$((attempt + 1))
+  done
+
+  local pending
+  pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "CEO cron failing repeatedly" \
+    "three aborts must escalate to an ALERT in approvals/pending.md"
+  assert_eq "$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)" "3" "fail count must reach 3"
+  rm -rf "$sandbox"
+}
+
+test_healthy_playbook_does_not_reset_another_playbooks_failure_streak() {
+  # The fail count is per-trigger. A single global counter meant any healthy
+  # playbook's _record_success zeroed a failing one's streak, so on a host running
+  # a dozen playbooks the 3-strike escalation effectively never arrived.
+  _write_pending_drip_registry
+  _register_status_playbook healthy-one active
+  _stub_claude_log_entry "completed" "never reached"
+  local sandbox; sandbox=$(_sandbox_with_aborting_gather)
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$sandbox/ceo-cron.sh" pending-drip >/dev/null 2>&1 || true
+  assert_eq "$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)" "1" "abort recorded"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" healthy-one >/dev/null 2>&1 || true
+  assert_eq "$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)" "1" \
+    "a different playbook succeeding must not clear this one's failure streak"
+  rm -rf "$sandbox"
 }
 
 run_tests

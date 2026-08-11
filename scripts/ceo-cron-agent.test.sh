@@ -372,7 +372,7 @@ STUB
     FAILS=$((FAILS + 1))
   fi
   # The failure must be RECORDED (fail-count incremented), not a bare set -e crash.
-  assert_eq "$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null)" "1" "malformed output must increment the fail count (not crash before recording)"
+  assert_eq "$(_fail_count)" "1" "malformed output must increment the fail count (not crash before recording)"
   assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unparseable output" "parse failure reason must be logged"
 }
 

@@ -60,7 +60,7 @@ PB
   CEO_VERBOSE=1 bash "$CRON" read-tier-fail >/dev/null 2>&1 || true
 
   local fails runs_log
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after a read-tier failure"
   if [[ "$runs_log" == *"read-tier-fail completed"* ]]; then
@@ -197,7 +197,7 @@ PB
   CEO_VERBOSE=1 bash "$CRON" phase3-fail >/dev/null 2>&1 || true
 
   local fails runs_log
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after Phase-3 failure"
   if [[ "$runs_log" == *"phase3-fail completed"* ]]; then
@@ -450,7 +450,7 @@ STUB
   CEO_VERBOSE=1 bash "$CRON" ollama-fail >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after ollama failure"
 
   # Pin: failure must come from the ollama branch specifically. cron-runs.log must
@@ -498,7 +498,7 @@ PB
   CEO_VERBOSE=1 bash "$CRON" ollama-killed >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "a timeout-killed (exit 124) ollama call must increment the fail count"
 
   local runs_log
@@ -622,7 +622,7 @@ STUB
   env -u CEO_OLLAMA_SKIP_PROBE CEO_VERBOSE=1 bash "$CRON" ollama-noprobe >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "unreachable ollama daemon must increment FAIL_COUNT_FILE"
 
   if [ -f "$HOME/ollama-invoked-model.txt" ]; then
@@ -661,7 +661,7 @@ STUB
   CEO_VERBOSE=1 bash "$CRON" ollama-empty >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "empty ollama output must increment FAIL_COUNT_FILE (alert threshold relies on this)"
 
   local runs_log
@@ -704,7 +704,7 @@ STUB
   CEO_VERBOSE=1 bash "$CRON" ollama-apierror >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "a 200 body carrying .error must increment FAIL_COUNT_FILE"
 
   local stderr_log
@@ -751,7 +751,7 @@ STUB
   CEO_VERBOSE=1 bash "$CRON" ollama-nonjson >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "a non-JSON ollama body must increment FAIL_COUNT_FILE"
 
   local stderr_log
@@ -1012,7 +1012,7 @@ PB
   CEO_OLLAMA_MAX_PROMPT_BYTES=100 CEO_VERBOSE=1 bash "$CRON" ollama-toolarge >/dev/null 2>&1 || true
 
   local fails
-  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo "missing")
+  fails=$(_fail_count)
   assert_eq "$fails" "1" "oversized prompt must increment FAIL_COUNT_FILE"
 
   if [ -f "$HOME/ollama-invoked-model.txt" ]; then

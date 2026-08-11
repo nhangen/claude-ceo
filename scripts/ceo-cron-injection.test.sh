@@ -441,7 +441,14 @@ STUB
 
   local rc=0
   bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "1" "cron must exit non-zero on auth failure (no fallback)"
+  # 78 = cronbird's FATAL_EXIT_CODE (src/core/constants.ts). An auth failure cannot
+  # resolve itself between attempts — a human runs /login — so the scheduler must
+  # fail fast to the attempt cap rather than spend three dispatches per tick on a
+  # host that will stay logged out. Still non-zero, so telemetry stays red, which
+  # is what this test's name has always been about. Was a bare 1 before #298.
+  assert_eq "$rc" "78" "auth failure must exit 78 (fatal, no retry), not a retryable 1"
+  assert_eq "$(_fail_count authfail)" "1" \
+    "a fatal exit must still record the failure — the fail count is what escalates"
 
   local ollama_invoked
   ollama_invoked=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")

@@ -390,3 +390,20 @@ STUB
   chmod +x "$HOME/.bun/bin/pt-event-stub"
   export CEO_PT_EVENT_CMD="$HOME/.bun/bin/pt-event-stub --db $PT_EVENT_DB"
 }
+
+# Per-trigger fail counters (#298 — the counter used to be one global file, so a
+# healthy playbook's success zeroed a failing playbook's streak). With no
+# argument this reads the only counter present, which is what nearly every test
+# needs since it exercises a single playbook; pass a trigger explicitly when a
+# test runs more than one, and the ambiguous case is reported rather than
+# silently picking whichever sorted first.
+_fail_count() {
+  local trigger="${1:-}"
+  if [ -n "$trigger" ]; then
+    cat "$CEO_DIR/log/.fail-count-$trigger" 2>/dev/null || echo "missing"
+    return
+  fi
+  local files=("$CEO_DIR"/log/.fail-count-*)
+  if [ "${#files[@]}" -gt 1 ]; then echo "AMBIGUOUS(${#files[@]} counters — pass a trigger)"; return; fi
+  if [ -f "${files[0]}" ]; then cat "${files[0]}"; else echo "missing"; fi
+}
