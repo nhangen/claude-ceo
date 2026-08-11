@@ -619,4 +619,59 @@ PB
   assert_file_exists "$HOME/claude-invoked.txt" "Phase 1 must NOT enforce hosts — playbook still dispatches"
 }
 
+# --- Terminal-bookkeeping guarantee (#298) -----------------------------------
+# An abort must not be able to exit silently. Before the EXIT trap, an errexit
+# abort anywhere above the run's own failure handling produced no fail-count
+# bump, no pending.md ALERT, and no notify — which is why #293 stayed invisible
+# for two days on both hosts.
+
+test_abort_before_failure_handling_is_still_recorded() {
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "never reached"
+
+  # Copy the tree so the injected abort cannot leak into the repo.
+  local sandbox; sandbox=$(mktemp -d)
+  cp "$SCRIPT_DIR"/*.sh "$sandbox/" 2>/dev/null
+  printf '\nexit 9   # injected: abort at the position #293 aborted from\n' >> "$sandbox/ceo-gather.sh"
+
+  local rc=0
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$sandbox/ceo-cron.sh" pending-drip >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf '  FAIL [%s] an aborting gather must not exit 0\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+
+  local fails skips
+  fails=$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo 0)
+  assert_eq "$fails" "1" "an abort must increment the fail count — that counter is what escalates at 3"
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "without recording a result" \
+    "an abort must leave an ERROR line naming it as un-bookkept"
+  rm -rf "$sandbox"
+}
+
+test_repeated_aborts_escalate_to_pending_alert() {
+  # The escalation itself: three consecutive un-bookkept aborts must raise the
+  # ALERT in approvals/pending.md. This is the signal that was missing for two days.
+  _write_pending_drip_registry
+  _stub_claude_log_entry "completed" "never reached"
+  local sandbox; sandbox=$(mktemp -d)
+  cp "$SCRIPT_DIR"/*.sh "$sandbox/" 2>/dev/null
+  printf '\nexit 9   # injected\n' >> "$sandbox/ceo-gather.sh"
+
+  local attempt=0
+  while [ "$attempt" -lt 3 ]; do
+    CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$sandbox/ceo-cron.sh" pending-drip >/dev/null 2>&1 || true
+    attempt=$((attempt + 1))
+  done
+
+  local pending
+  pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "CEO cron failing repeatedly" \
+    "three aborts must escalate to an ALERT in approvals/pending.md"
+  assert_eq "$(cat "$CEO_DIR/log/.fail-count" 2>/dev/null || echo 0)" "3" "fail count must reach 3"
+  rm -rf "$sandbox"
+}
+
 run_tests

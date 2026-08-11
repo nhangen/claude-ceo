@@ -215,6 +215,7 @@ _report() {
 # paths (chat-only, status-not-active, missing playbook, preflight no-work)
 # are not failures and exit directly without invoking either helper.
 _record_success() {
+  _bookkeeping_done=1   # read by the EXIT trap installed after the lock section
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
     _preview "Would record SUCCESS (no .last-run / fail-count reset / cron-runs.log / notify)."
     return 0
@@ -250,6 +251,7 @@ _record_success() {
 
 _record_failure() {
   local reason="$1"
+  _bookkeeping_done=1   # read by the EXIT trap installed after the lock section
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
     echo "$(date): DRY-RUN — would record failure: $reason" >> "$LOG_DIR/cron-skips.log"
     # Surface to stderr too: a dry-run exits 0, so without this an operator
@@ -449,7 +451,10 @@ _route_claude_failure() {
       echo "$output" >> "$LOG_DIR/cron-raw.log"
       echo "---" >> "$LOG_DIR/cron-raw.log"
       _record_failure "Claude auth failure in $phase for $TRIGGER — host needs re-login"
-      exit 1
+      # 78 = cronbird's FATAL_EXIT_CODE (src/core/constants.ts): fail fast to the
+      # attempt cap instead of burning three dispatches on a host that stays
+      # logged out until a human runs /login. Still non-zero, so telemetry is red.
+      exit 78
       ;;
   esac
   # terminal / ok → return; caller's own failed-run handling takes over.
@@ -998,6 +1003,41 @@ else
     exit 0
   fi
 fi
+
+# --- Terminal-bookkeeping guarantee ------------------------------------------
+# Recording a failure is what escalates: _record_failure increments the
+# per-trigger fail count and, on the third consecutive one, appends an ALERT to
+# approvals/pending.md and fires ceo-notify.sh. #293 bypassed every bit of that.
+# The gather aborted under errexit at the top-level `source` below, so the script
+# died before reaching any _record_* call — no fail count, no alert, no notify —
+# and the outage stayed silent on both hosts for two days while the scheduler
+# dispatched on time, collected 141, and retried to its cap each tick.
+#
+# So: any non-zero exit that recorded nothing gets recorded here. Covers both the
+# errexit abort and the bare `exit 1` sites that predate the helpers.
+#
+# Bash keeps exactly one EXIT trap, so this replaces the mkdir-lock trap set
+# above rather than stacking with it; the handler calls _release_lock, which
+# covers both lock branches. The earlier trap still guards the window between
+# lock acquisition and this line.
+#
+# The exit status is deliberately passed through unchanged rather than rewritten
+# to FATAL_EXIT_CODE (78). An abort is usually deterministic, so failing fast is
+# tempting — but the scheduler's retries are what drive the fail count to the
+# escalation threshold inside a single tick. Trading three cheap re-runs for an
+# alert that arrives now is the right way round. Exit 78 is used where a retry
+# provably cannot help and a human is the only fix: see the auth branch of
+# _route_claude_failure.
+_bookkeeping_done=0
+_on_exit() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && [ "$_bookkeeping_done" -eq 0 ] && [ "${CEO_DRY_RUN:-}" != "1" ]; then
+    _bookkeeping_done=1   # before the call: _record_failure must not re-enter this
+    _record_failure "$TRIGGER exited $rc without recording a result (aborted before its own failure handling)" || true
+  fi
+  _release_lock
+}
+trap _on_exit EXIT
 
 # --- Per-trigger runaway protection (bypass with --force, CEO_FORCE=1, or --dry-run) ---
 if [ "${CEO_FORCE:-}" != "1" ] && [ "${CEO_DRY_RUN:-}" != "1" ] && [ -f "$LAST_RUN_FILE" ]; then
