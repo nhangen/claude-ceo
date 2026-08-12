@@ -462,4 +462,42 @@ test_doctor_clamps_future_schedulerd_heartbeat_to_alive() {
   assert_not_contains "$output" "(heartbeat -" "future-dated heartbeat age must not be negative"
 }
 
+# doctor must always reach its Result line. Both the freshness and .stignore
+# blocks pipe through `grep`, and under `set -euo pipefail` a non-matching grep
+# exits 1 and aborts cmd_doctor mid-run — so the report silently truncated on
+# exactly the hosts where there was nothing to report, and the operator saw a
+# short output with no Result summary and no clue it was incomplete.
+test_doctor_prints_its_result_line_when_nothing_is_stale() {
+  # A clean host: no runs logged, so the freshness check finds nothing stale and
+  # its grep matches nothing. Pre-fix this aborted before "Result:".
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "Result:" \
+    "doctor must print its Result summary even when every grep-driven check matches nothing"
+}
+
+test_doctor_reports_the_stignore_check() {
+  # A vault with no .stignore is the ML-1 case: every host-local CEO/log file
+  # syncs between hosts. doctor must say so rather than stay silent.
+  rm -f "$CEO_VAULT/.stignore"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "Result:" "doctor must still complete with a missing .stignore"
+  assert_contains "$output" ".stignore" "doctor must mention .stignore either way"
+}
+
+test_doctor_stignore_clean_when_live_file_matches_repo() {
+  local repo_sti
+  repo_sti="$(cd "$(dirname "$CEO_BIN")/.." && pwd)/syncthing/shared.stignore"
+  if [ -f "$repo_sti" ]; then
+    grep -vE '^\s*(//|#|$)' "$repo_sti" > "$CEO_VAULT/.stignore"
+    local output
+    output=$("$CEO_BIN" doctor 2>&1 || true)
+    assert_contains "$output" "host-local runtime state is not syncing" \
+      "a deployed .stignore must read as clean"
+  else
+    assert_eq "skip" "skip" "repo shared.stignore not reachable from the test bin path"
+  fi
+}
+
 run_tests

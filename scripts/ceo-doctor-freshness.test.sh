@@ -98,4 +98,73 @@ test_absent_signal_file_not_flagged() {
   assert_contains "$out" "STALE=0" "a never-run playbook (no signal file) is pending, not stale"
 }
 
+# --- _doctor_check_stignore -------------------------------------------------
+# Deployment of syncthing/shared.stignore is a manual copy with nothing verifying
+# it. It drifted four months on one host and was never done on the other, so
+# host-local state (per-trigger fail counters, dry-run previews, the host-local
+# registry) synced between machines with no error anywhere.
+
+_sti_files() {
+  REPO_STI="$TMP/shared.stignore"
+  LIVE_STI="$TMP/vault/.stignore"
+  mkdir -p "$TMP/vault"
+  cat > "$REPO_STI" <<'STI'
+// a comment, which must not be treated as a pattern
+CEO/log/.fail-count*
+CEO/log/preview/
+CEO/registry.json
+STI
+}
+
+test_stignore_flags_a_pattern_missing_from_the_live_file() {
+  _sti_files
+  printf '%s\n' 'CEO/log/.fail-count*' 'CEO/registry.json' > "$LIVE_STI"
+  local out; out=$(_doctor_check_stignore "$REPO_STI" "$LIVE_STI")
+  assert_contains "$out" "MISSING=1" "one absent pattern must be counted"
+  assert_contains "$out" "CEO/log/preview/" "the missing pattern must be named"
+  assert_contains "$out" "fix: cp" "the fix line must give the copy command"
+}
+
+test_stignore_clean_when_live_matches_repo() {
+  _sti_files
+  grep -v '^//' "$REPO_STI" > "$LIVE_STI"
+  local out; out=$(_doctor_check_stignore "$REPO_STI" "$LIVE_STI")
+  assert_contains "$out" "MISSING=0" "a live file carrying every pattern is clean"
+}
+
+test_stignore_absent_live_file_is_the_loudest_case() {
+  # ML-1 had no .stignore at all, which is worse than drift: every host-local
+  # file syncs. It must not be reported as merely "0 missing".
+  _sti_files
+  rm -f "$LIVE_STI"
+  local out; out=$(_doctor_check_stignore "$REPO_STI" "$LIVE_STI")
+  assert_contains "$out" "MISSING=1" "an absent .stignore must be flagged, not treated as clean"
+  assert_contains "$out" "no .stignore at the vault root" "the message must say the file is absent"
+}
+
+test_stignore_comments_are_not_treated_as_patterns() {
+  # A '//' line is a Syncthing comment. Counting it as a missing pattern would
+  # make the check permanently dirty and train the reader to ignore it.
+  _sti_files
+  grep -v '^//' "$REPO_STI" > "$LIVE_STI"
+  local out; out=$(_doctor_check_stignore "$REPO_STI" "$LIVE_STI")
+  assert_contains "$out" "MISSING=0" "comment lines must not count as patterns"
+}
+
+test_stignore_absent_repo_file_is_not_reported_as_drift() {
+  _sti_files
+  local out; out=$(_doctor_check_stignore "$TMP/does-not-exist" "$LIVE_STI")
+  assert_contains "$out" "MISSING=0" "an unreadable repo file is not evidence of drift"
+}
+
+test_stignore_matches_whole_lines_not_substrings() {
+  # 'CEO/registry.json' must not be satisfied by a live line that merely contains
+  # it as a substring, or a narrower live pattern would mask a missing broader one.
+  _sti_files
+  printf '%s\n' 'CEO/log/.fail-count*' 'CEO/log/preview/' 'x-CEO/registry.json-y' > "$LIVE_STI"
+  local out; out=$(_doctor_check_stignore "$REPO_STI" "$LIVE_STI")
+  assert_contains "$out" "MISSING=1" "a substring match must not satisfy a pattern"
+  assert_contains "$out" "CEO/registry.json" "the unsatisfied pattern must be named"
+}
+
 run_tests

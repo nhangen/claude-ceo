@@ -127,6 +127,39 @@ _doctor_stale_grace() {
   echo $(( 4 * 86400 ))
 }
 
+# Compare the vault's live .stignore against the repo's syncthing/shared.stignore.
+#
+# Deployment is a documented manual copy (README: "copy syncthing/shared.stignore
+# to ~/Documents/Obsidian/.stignore"), with nothing verifying it happened. It
+# drifted for four months on one host and was never done at all on the other, so
+# every host-local runtime file — per-trigger fail counters, dry-run previews,
+# the host-local registry — synced between machines. Nothing errored; the hosts
+# just silently shared state they are each supposed to own.
+#
+# Prints a "✗ ..." line per missing pattern and a trailing "MISSING=<n>" summary.
+# An absent repo file yields MISSING=0: this check is about deployment drift, and
+# a repo we cannot read is not evidence of it.
+_doctor_check_stignore() {
+  local repo_file="$1" live_file="$2"
+  if [ ! -f "$repo_file" ]; then echo "MISSING=0"; return 0; fi
+  if [ ! -f "$live_file" ]; then
+    echo "✗ no .stignore at the vault root — every host-local CEO/log file is syncing between hosts"
+    echo "  fix: cp $repo_file $live_file"
+    echo "MISSING=1"
+    return 0
+  fi
+  local missing=0 pattern
+  while IFS= read -r pattern; do
+    case "$pattern" in ''|'//'*|'#'*) continue ;; esac
+    if ! grep -qxF -- "$pattern" "$live_file"; then
+      echo "✗ .stignore is missing '$pattern' — that path is syncing between hosts"
+      missing=$((missing + 1))
+    fi
+  done < "$repo_file"
+  [ "$missing" -gt 0 ] && echo "  fix: cp $repo_file $live_file"
+  echo "MISSING=$missing"
+}
+
 # Detect scheduled playbooks that silently stopped RUNNING or stopped DELIVERING
 # to Discord. Prints a "✗ ..." line per stale playbook and a trailing
 # "FRESH=<n> STALE=<n>" summary line. Absent signal files (never-run / never-
@@ -516,12 +549,27 @@ cmd_doctor() {
   # daemon dying; this catches one playbook wedged or gated while the daemon lives.
   local _fresh_out _fr_stale
   _fresh_out=$(_doctor_check_freshness "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}" "$CEO_DIR/log")
-  printf '%s\n' "$_fresh_out" | grep '^✗' | sed 's/^/  /'
+  # `|| true`: under `set -e` a non-matching grep exits 1 and aborts cmd_doctor
+  # before it prints its Result line — so doctor silently truncated on exactly
+  # the healthy hosts where there was nothing to report.
+  printf '%s\n' "$_fresh_out" | grep '^✗' | sed 's/^/  /' || true
   _fr_stale=$(printf '%s\n' "$_fresh_out" | sed -n 's/.*STALE=\([0-9]*\).*/\1/p' | tail -1)
   if [ "${_fr_stale:-0}" -gt 0 ]; then
     fail=$(( fail + _fr_stale ))
   else
     echo "  ✓ playbook freshness: no scheduled playbook has silently stopped running or delivering"
+    ok=$(( ok + 1 ))
+  fi
+
+  local _sti_out _sti_missing _sti_repo
+  _sti_repo="${CEO_STIGNORE_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/syncthing/shared.stignore}"
+  _sti_out=$(_doctor_check_stignore "$_sti_repo" "$CEO_VAULT/.stignore")
+  printf '%s\n' "$_sti_out" | grep -E '^(✗|  fix:)' | sed 's/^/  /' || true
+  _sti_missing=$(printf '%s\n' "$_sti_out" | sed -n 's/^MISSING=\([0-9]*\)$/\1/p' | tail -1)
+  if [ "${_sti_missing:-0}" -gt 0 ]; then
+    warn=$(( warn + 1 ))
+  else
+    echo "  ✓ .stignore matches the repo: host-local runtime state is not syncing"
     ok=$(( ok + 1 ))
   fi
 
