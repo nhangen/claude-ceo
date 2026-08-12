@@ -9,6 +9,50 @@ INTAKE="$SCRIPT_DIR/ceo-token-intake.sh"
 
 source "$SCRIPT_DIR/test-harness.sh"
 
+# Shared stub payloads. capRatio/projectedCapRatio are what the script reads;
+# `partial` and `truncated` decide which weeks form the baseline.
+STUB_WEEK_FULL='{"weekStart":"2026-08-03","partial":false,"truncated":false,"credits":400000000,"capRatio":2.4,"projectedCapRatio":null}'
+# 1.8x now, under the 2.4x baseline -> over cap but NOT worse than recent behaviour
+STUB_JSON_BASELINE="{\"meta\":{\"weekly_cap\":166700000},\"weeks\":[$STUB_WEEK_FULL,{\"weekStart\":\"2026-08-10\",\"partial\":true,\"truncated\":false,\"credits\":300000000,\"capRatio\":1.5,\"projectedCapRatio\":1.8}]}"
+# 3.1x projected, above the 2.4x baseline -> a genuinely worse week
+STUB_JSON_WORSE="{\"meta\":{\"weekly_cap\":166700000},\"weeks\":[$STUB_WEEK_FULL,{\"weekStart\":\"2026-08-10\",\"partial\":true,\"truncated\":false,\"credits\":520000000,\"capRatio\":2.6,\"projectedCapRatio\":3.1}]}"
+
+# write_token_scope_stub <credits-json> <supports-credits: yes|no>
+# Rebuilds the token-scope stub. The JSON is what `--credits --json` returns;
+# "no" makes --help omit --credits, simulating a plugin cache older than the
+# report (the case that must NOT redden cron).
+write_token_scope_stub() {
+  local json="$1" supports="$2"
+  mkdir -p "$TEST_HOME/.bun/bin"
+  {
+    printf '#!/bin/bash\n'
+    printf 'set -u\n'
+    printf 'CREDITS_JSON=%q\n' "$json"
+    printf 'SUPPORTS=%q\n' "$supports"
+    cat << 'STUB'
+case "$1" in
+  --help)
+    echo "token-scope — stub"
+    echo "  --since <duration>"
+    [ "$SUPPORTS" = "yes" ] && echo "  --credits               weekly credit consumption vs plan cap"
+    exit 0 ;;
+  --version) echo "token-scope 9.9.9-stub"; exit 0 ;;
+  --credits)
+    if [ "$SUPPORTS" != "yes" ]; then
+      echo "unknown flag: --credits" >&2; exit 1
+    fi
+    for a in "$@"; do [ "$a" = "--json" ] && { printf '%s\n' "$CREDITS_JSON"; exit 0; }; done
+    echo "token-scope-stub: credits table"; exit 0 ;;
+  --since)
+    echo "token-scope-stub: $*"; exit 0 ;;
+esac
+echo "token-scope-stub: unexpected argv: $*" >&2
+exit 2
+STUB
+  } > "$TEST_HOME/.bun/bin/token-scope"
+  chmod +x "$TEST_HOME/.bun/bin/token-scope"
+}
+
 setup() {
   TEST_HOME=$(mktemp -d)
   HOME_BACKUP="$HOME"
@@ -24,15 +68,20 @@ setup() {
 #!/bin/bash
 echo "rtk-stub: $*"
 STUB
-  cat > "$TEST_HOME/.bun/bin/token-scope" << 'STUB'
-#!/bin/bash
-echo "token-scope-stub: $*"
-STUB
+  # token-scope stub: pattern-matches argv and exits non-zero on an unexpected
+  # shape (stub-cli-argv-validation). An echo-everything stub would have hidden
+  # the --credits probe entirely, and the script's behaviour now depends on it.
+  # Per-test overrides go through write_token_scope_stub below.
+  # Default: a week that DOES escalate (3.1x, above the 2.4x worst full week). The
+  # pre-existing inbox invariant tests then run with the alert firing, which is
+  # when they can actually break; with a quiet default they passed for years
+  # without ever exercising the path that appends a second line.
+  write_token_scope_stub "$STUB_JSON_WORSE" "yes"
   cat > "$TEST_HOME/.bun/bin/npx" << 'STUB'
 #!/bin/bash
 echo "npx-stub: $*"
 STUB
-  chmod +x "$TEST_HOME/.bun/bin/rtk" "$TEST_HOME/.bun/bin/token-scope" "$TEST_HOME/.bun/bin/npx"
+  chmod +x "$TEST_HOME/.bun/bin/rtk" "$TEST_HOME/.bun/bin/npx"
 
   # Stage a getent stub so ceo_pin_home_or_warn (via ceo_resolve_real_home)
   # resolves to $TEST_HOME instead of the developer's real ~/. Without this,
@@ -393,6 +442,187 @@ test_auth_alert_when_no_successful_turns_dedupes_and_reappears() {
   bash "$INTAKE" >/dev/null 2>&1
   count=$(grep -c -F "No successful Claude runs on $CEO_HOSTNAME" "$inbox")
   assert_eq "$count" "2" "outage after a prior check-off must re-alert"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# ─── credit cap escalation ────────────────────────────────────────────────────
+
+test_report_captures_credits_when_supported() {
+  bash "$INTAKE" >/dev/null 2>&1
+  local report
+  report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
+  assert_contains "$(cat "$report")" "credits vs weekly cap" "report must capture the credits section"
+  assert_contains "$(cat "$report")" "worst full week in window" "cap check must state the baseline it compared against"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+}
+
+test_over_cap_but_not_worse_than_baseline_does_not_escalate() {
+  # The user is over cap EVERY week (1.5-4.7x). A bare `> 1` trigger would report
+  # his own baseline back to him weekly, which is the nag
+  # ceo-automated-writers-are-playbooks exists to prevent.
+  write_token_scope_stub "$STUB_JSON_BASELINE" "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local inbox count
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  count=$(grep -c -F "Credit cap" "$inbox" || true)
+  assert_eq "$count" "0" "a week over cap but within recent behaviour must not escalate"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_worse_than_baseline_escalates_once_per_week() {
+  bash "$INTAKE" >/dev/null 2>&1
+  bash "$INTAKE" >/dev/null 2>&1
+  local inbox count
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  count=$(grep -c -F "Credit cap (2026-08-10) on $CEO_HOSTNAME" "$inbox")
+  assert_eq "$count" "1" "a worse-than-baseline week must escalate exactly once, not once per run"
+  assert_contains "$(cat "$inbox")" "3.1x" "the alert must carry the projected ratio"
+  assert_contains "$(cat "$inbox")" "2.4x" "the alert must name the baseline it beat"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
+test_cap_line_does_not_carry_the_report_wikilink() {
+  # The daily review line is counted BY wikilink to prove it appends once. A cap
+  # line carrying the same link broke that invariant every week it fired, and the
+  # suite only passed because the old default stub was under cap.
+  write_token_scope_stub "$STUB_JSON_WORSE" "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local today inbox count
+  today=$(date +%Y-%m-%d)
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
+  assert_eq "$count" "1" "only the review line may carry the report wikilink"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_checked_off_cap_alert_does_not_re_append_same_week() {
+  # Unlike the auth alert (keyed on host, where a re-alert IS the transition),
+  # this marker already keys on the ISO week, so re-appending after a check-off
+  # would report the same week twice.
+  write_token_scope_stub "$STUB_JSON_WORSE" "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local inbox count
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  sed -i.bak "s|- \[ \] ⚠️ \(Credit cap\)|- [x] ⚠️ \1|" "$inbox"; rm -f "$inbox.bak"
+  bash "$INTAKE" >/dev/null 2>&1
+  count=$(grep -c -F "Credit cap (2026-08-10) on $CEO_HOSTNAME" "$inbox")
+  assert_eq "$count" "1" "a checked-off cap alert must not re-append for the same week"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_new_worse_week_re_alerts() {
+  # Both weeks must be in the PAST, or the date filter correctly refuses to judge
+  # them and there is nothing to re-alert about. (Learned the hard way: the first
+  # version of this test used a next-week date and failed for that reason.)
+  local base='{"weekStart":"2026-07-27","partial":false,"truncated":false,"credits":400000000,"capRatio":2.4,"projectedCapRatio":null}'
+  local worse='"partial":true,"truncated":false,"credits":520000000,"capRatio":2.6,"projectedCapRatio":3.1'
+  write_token_scope_stub "{\"meta\":{\"weekly_cap\":166700000},\"weeks\":[$base,{\"weekStart\":\"2026-08-03\",$worse}]}" "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  write_token_scope_stub "{\"meta\":{\"weekly_cap\":166700000},\"weeks\":[$base,{\"weekStart\":\"2026-08-10\",$worse}]}" "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local inbox count
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  count=$(grep -c -F "Credit cap (" "$inbox")
+  assert_eq "$count" "2" "a new week beating the baseline must re-alert"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_future_dated_week_is_not_judged_and_cannot_mask_a_real_one() {
+  # Clock skew on a synced host can stamp a turn into next week. Picking the last
+  # partial row blindly judges that nearly-empty phantom week, reads it as
+  # comfortably under cap, and SILENCES a real over-cap alert.
+  local json
+  json="{\"meta\":{\"weekly_cap\":166700000},\"weeks\":[$STUB_WEEK_FULL,{\"weekStart\":\"2026-08-10\",\"partial\":true,\"truncated\":false,\"credits\":520000000,\"capRatio\":2.6,\"projectedCapRatio\":3.1},{\"weekStart\":\"2099-01-05\",\"partial\":true,\"truncated\":false,\"credits\":300,\"capRatio\":0.000002,\"projectedCapRatio\":0.000002}]}"
+  write_token_scope_stub "$json" "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local report inbox
+  report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  assert_contains "$(cat "$report")" "week 2026-08-10" "must judge the started week, not the future-dated one"
+  assert_contains "$(cat "$inbox")" "Credit cap (2026-08-10)" "the phantom week must not mask a real alert"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+}
+
+test_projection_absent_falls_back_to_spend_so_far() {
+  # --credits returns projectedCapRatio null until a fifth of the week elapses,
+  # so a Monday-morning run must judge on spend-so-far, not extrapolate noise.
+  local json
+  json="{\"meta\":{\"weekly_cap\":166700000},\"weeks\":[$STUB_WEEK_FULL,{\"weekStart\":\"2026-08-10\",\"partial\":true,\"truncated\":false,\"credits\":30000000,\"capRatio\":0.18,\"projectedCapRatio\":null}]}"
+  write_token_scope_stub "$json" "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local report inbox count
+  report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  assert_contains "$(cat "$report")" "0.18x" "must report spend-so-far when no projection exists"
+  if grep -q "nullx" "$report"; then
+    printf '  FAIL [%s] a null ratio must never reach the report text\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  count=$(grep -c -F "Credit cap" "$inbox" || true)
+  assert_eq "$count" "0" "an early-week run under cap must not escalate"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
+test_malformed_credits_json_is_reported_as_a_contract_error() {
+  # A renamed field must not read as "no data" — that would silence this check
+  # indefinitely and look like an idle week.
+  write_token_scope_stub '{"unexpected":true}' "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local report
+  report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
+  assert_contains "$(cat "$report")" "not the expected shape" "a contract change must be named, not swallowed"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_zero_weekly_cap_is_refused() {
+  write_token_scope_stub '{"meta":{"weekly_cap":0},"weeks":[{"weekStart":"2026-08-10","partial":true,"truncated":false,"credits":1,"capRatio":9,"projectedCapRatio":9}]}' "yes"
+  bash "$INTAKE" >/dev/null 2>&1
+  local report inbox
+  report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  assert_contains "$(cat "$report")" "nothing to compare against" "a zero cap must be refused, not printed as 0M"
+  if grep -q -F "0M credit cap" "$inbox"; then
+    printf '  FAIL [%s] must not escalate against a zero cap\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+}
+
+test_stale_plugin_escalates_but_does_not_fail_the_run() {
+  write_token_scope_stub '{}' "no"
+  bash "$INTAKE" >/dev/null 2>&1
+  local rc=$?
+  assert_eq "$rc" "0" "a token-scope without --credits must not fail the run"
+  local inbox
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  assert_contains "$(cat "$inbox")" "Credit cap (stale-plugin)" "stale plugin must escalate as its own item"
+  assert_contains "$(cat "$inbox")" "/plugin update" "the alert must name the fix"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
+test_stale_plugin_skips_the_credits_capture() {
+  write_token_scope_stub '{}' "no"
+  bash "$INTAKE" >/dev/null 2>&1
+  local report
+  report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
+  if grep -qF "credits vs weekly cap" "$report"; then
+    printf '  FAIL [%s] credits capture must be skipped when unsupported\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_missing_binary_is_not_misdiagnosed_as_a_stale_plugin() {
+  # A command-not-found token-scope yields empty --help, which the first cut read
+  # as "old plugin" — telling the user to /plugin update something not installed.
+  rm -f "$TEST_HOME/.bun/bin/token-scope"
+  bash "$INTAKE" >/dev/null 2>&1
+  local inbox
+  inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
+  if [ -f "$inbox" ] && grep -q -F "Credit cap (stale-plugin)" "$inbox"; then
+    printf '  FAIL [%s] a missing binary must not be reported as a stale plugin\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
