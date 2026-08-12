@@ -206,12 +206,27 @@ _preview() {
 # In dry-run the report (and its Discord side-channel) is folded into the
 # preview file instead of being posted/written, so no path can leak a dry-run
 # to Discord or the report intake.
+# The content goes over stdin, never argv. Linux caps a *single* argv string at
+# MAX_ARG_STRLEN (131072 bytes, 32 pages) independently of the far larger total
+# ARG_MAX, so a verbose model response made execve fail E2BIG — rc 126,
+# "Argument list too long". Under `set -euo pipefail` that aborted the playbook
+# *after* the model had run: the report was never written and `_record_failure`
+# was never reached either, so the run vanished with no error in the report it
+# failed to write. macOS has no per-argument limit, which is why this only ever
+# bit ML-1 and the CI runner. ceo-report.sh has always accepted stdin.
+#
+# A here-string rather than `printf ... |`: bash backs `<<<` with a temp file, so
+# there is no writer process to take SIGPIPE if ceo-report.sh exits before
+# draining stdin. A pipe there would trade this bug for the #296 class, where a
+# short-circuiting consumer kills the producer and pipefail aborts the run.
+# `<<<` appends one newline and `$(cat)` strips trailing newlines, so the content
+# ceo-report.sh sees is byte-identical to what argv delivered.
 _report() {
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
     _preview "Report (${1}) that would post to Discord / report intake:" "${3:-}"
     return 0
   fi
-  "$SCRIPT_DIR/ceo-report.sh" "$@"
+  "$SCRIPT_DIR/ceo-report.sh" "$1" "$2" <<< "${3:-}"
 }
 
 # Single source of truth for terminal-exit bookkeeping. Every success path calls
