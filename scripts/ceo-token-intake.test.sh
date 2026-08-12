@@ -72,10 +72,11 @@ STUB
   # shape (stub-cli-argv-validation). An echo-everything stub would have hidden
   # the --credits probe entirely, and the script's behaviour now depends on it.
   # Per-test overrides go through write_token_scope_stub below.
-  # Default: over cap (1.8x) but BELOW the 2.4x worst full week — the user's real
-  # steady state. A stub that was comfortably under cap hid the fact that the cap
-  # line broke the review-line count invariant every week the alert fired.
-  write_token_scope_stub "$STUB_JSON_BASELINE" "yes"
+  # Default: a week that DOES escalate (3.1x, above the 2.4x worst full week). The
+  # pre-existing inbox invariant tests then run with the alert firing, which is
+  # when they can actually break; with a quiet default they passed for years
+  # without ever exercising the path that appends a second line.
+  write_token_scope_stub "$STUB_JSON_WORSE" "yes"
   cat > "$TEST_HOME/.bun/bin/npx" << 'STUB'
 #!/bin/bash
 echo "npx-stub: $*"
@@ -459,6 +460,7 @@ test_over_cap_but_not_worse_than_baseline_does_not_escalate() {
   # The user is over cap EVERY week (1.5-4.7x). A bare `> 1` trigger would report
   # his own baseline back to him weekly, which is the nag
   # ceo-automated-writers-are-playbooks exists to prevent.
+  write_token_scope_stub "$STUB_JSON_BASELINE" "yes"
   bash "$INTAKE" >/dev/null 2>&1
   local inbox count
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
@@ -468,7 +470,6 @@ test_over_cap_but_not_worse_than_baseline_does_not_escalate() {
 }
 
 test_worse_than_baseline_escalates_once_per_week() {
-  write_token_scope_stub "$STUB_JSON_WORSE" "yes"
   bash "$INTAKE" >/dev/null 2>&1
   bash "$INTAKE" >/dev/null 2>&1
   local inbox count

@@ -66,6 +66,11 @@ when the week is over cap **and** above the worst *full* week in the 8-week wind
 Truncated weeks hold only part of their spend, so counting them would understate
 the bar.
 
+When the window contains no full week at all — a fresh host, or `--since` too
+short — there is no bar to clear, so the alert falls back to plain "over cap". That
+fires at most once for that week and only when genuinely over, which is the right
+trade for a host with no history to compare against.
+
 The metric is `--credits`'s projection when it has one and spend-so-far otherwise.
 The report suppresses its projection until a fifth of the week has elapsed, so a
 Monday-morning cron run judges what has actually been spent rather than
