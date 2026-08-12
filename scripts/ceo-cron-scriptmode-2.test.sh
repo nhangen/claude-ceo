@@ -1128,9 +1128,10 @@ test_pending_drip_oversized_no_questions_leaves_inbox_alone() {
   # explicitly found nothing gets appended anyway. Inbox noise, not data loss.
   _write_pending_drip_registry
   # ~100KB: above the 64KB pipe buffer (so the pre-fix grep really SIGPIPEs) but
-  # below Linux's 128KB per-argument execve limit, which _report passes log_entry
-  # through as argv. At 200KB this test also tripped that unrelated ceiling and
-  # failed on CI while passing on macOS — see the argv issue filed separately.
+  # below Linux's 128KB per-argument execve limit. At 200KB this test also tripped
+  # that unrelated ceiling and failed on CI while passing on macOS. That ceiling is
+  # fixed now (#297 — _report routes content over stdin), and the size stays at
+  # ~100KB deliberately so this test keeps pinning one limit, not two.
   local pad line filler=""
   pad=$(printf 'x%.0s' {1..200})
   for ((line = 0; line < 500; line++)); do filler+="$pad"$'\n'; done
@@ -1158,9 +1159,10 @@ test_pending_drip_oversized_failed_entry_uses_report_not_inbox() {
   # revert, so it is not coverage for this.
   _write_pending_drip_registry
   # ~100KB: above the 64KB pipe buffer (so the pre-fix grep really SIGPIPEs) but
-  # below Linux's 128KB per-argument execve limit, which _report passes log_entry
-  # through as argv. At 200KB this test also tripped that unrelated ceiling and
-  # failed on CI while passing on macOS — see the argv issue filed separately.
+  # below Linux's 128KB per-argument execve limit. At 200KB this test also tripped
+  # that unrelated ceiling and failed on CI while passing on macOS. That ceiling is
+  # fixed now (#297 — _report routes content over stdin), and the size stays at
+  # ~100KB deliberately so this test keeps pinning one limit, not two.
   local pad line filler=""
   pad=$(printf 'x%.0s' {1..200})
   for ((line = 0; line < 500; line++)); do filler+="$pad"$'\n'; done
@@ -1218,6 +1220,85 @@ test_pending_drip_no_relevant_questions_suppresses_inbox() {
     FAILS=$((FAILS + 1))
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# _report must hand content to ceo-report.sh over stdin, never as a third argv
+# string. Linux caps a single argv at MAX_ARG_STRLEN (131072) regardless of the
+# much larger total ARG_MAX, so a verbose model response made execve fail E2BIG
+# (rc 126) and, under errexit, aborted the playbook after the model had already
+# run — losing the report and skipping _record_failure too (#297).
+#
+# This one is deterministic on every platform: it asserts the *shape* of the
+# call rather than waiting for a limit to be exceeded, so it fails on a revert
+# even on macOS, which has no per-argument limit at all.
+test_report_passes_content_on_stdin_not_argv() {
+  _write_pending_drip_registry
+  # `failed`, not `completed`: for pending-drip a completed entry is routed to
+  # the host inbox, and only the failure path goes through _report. The sibling
+  # oversized test makes the same choice for the same reason.
+  _stub_claude_log_entry "failed" "stdin-routing-sentinel"
+
+  local sandbox; sandbox=$(mktemp -d)
+  cp "$SCRIPT_DIR"/*.sh "$sandbox/" 2>/dev/null
+  cat > "$sandbox/ceo-report.sh" << STUB
+#!/bin/bash
+printf '%s' "\$#" > "$sandbox/argc"
+printf '%s' "\${3:-}" > "$sandbox/arg3"
+cat > "$sandbox/stdin"
+exit 0
+STUB
+  chmod +x "$sandbox/ceo-report.sh"
+
+  # stdin from /dev/null, which is what the daemon and cron actually hand the
+  # script. It also keeps a revert failing cleanly instead of hanging: pre-fix the
+  # content came in on argv and nothing was piped, so the stub's `cat` inherited
+  # the test runner's stdin and blocked until the suite timed out. A hung suite
+  # burns CI's job timeout and reports nothing useful.
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$sandbox/ceo-cron.sh" pending-drip </dev/null >/dev/null 2>&1 || true
+
+  assert_eq "$(cat "$sandbox/argc" 2>/dev/null || echo missing)" "2" \
+    "ceo-report.sh must receive exactly 2 args — content as argv is what breaks past 128KB on Linux"
+  assert_eq "$(cat "$sandbox/arg3" 2>/dev/null || echo missing)" "" \
+    "the third argv must be empty"
+  local piped
+  piped=$(cat "$sandbox/stdin" 2>/dev/null || echo "")
+  assert_contains "$piped" "stdin-routing-sentinel" \
+    "the report content must arrive on stdin"
+  rm -rf "$sandbox"
+}
+
+# The end-to-end half, at the size that actually tripped the ceiling. Honest
+# limitation: this is only a failing test on Linux (CI, ML-1). macOS has no
+# per-argument limit, so it passes there before and after the fix — which is
+# exactly how the bug hid for as long as it did. The stub test above is what
+# guards the invariant on a developer's Mac.
+test_report_survives_a_log_entry_past_the_linux_argv_ceiling() {
+  _write_pending_drip_registry
+  # ~200KB: comfortably past MAX_ARG_STRLEN (131072). The sibling oversized
+  # tests deliberately sit at ~100KB to stay under it, because they pin the
+  # 64KB pipe-buffer invariant and must not conflate the two limits.
+  local pad line filler=""
+  pad=$(printf 'y%.0s' {1..200})
+  for ((line = 0; line < 1000; line++)); do filler+="$pad"$'\n'; done
+  _stub_claude_log_entry "failed" "argv-ceiling-sentinel
+$filler"
+
+  CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
+
+  local report
+  report="$CEO_DIR/reports/$(date +%Y-%m-%d).md"
+  assert_file_exists "$report" "a 200KB log entry must still produce a report"
+  local body
+  body=$(cat "$report" 2>/dev/null || echo "")
+  assert_contains "$body" "argv-ceiling-sentinel" \
+    "the oversized entry's content must reach the report, not be lost to an E2BIG abort"
+
+  # The E2BIG abort at _report happened *before* _record_failure, so a lost
+  # report also meant a silent run: no fail count, so no 3-strike escalation.
+  # This entry self-reports failed, so the bookkeeping lands in the per-trigger
+  # counter and cron-skips.log rather than cron-runs.log.
+  assert_eq "$(_fail_count pending-drip)" "1" \
+    "the failure must be counted — the pre-fix abort skipped bookkeeping entirely"
 }
 
 run_tests
