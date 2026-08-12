@@ -1,6 +1,6 @@
 ---
 name: token-intake
-description: Daily RTK + token-scope spend intake — drops one inbox item linking to today's report
+description: Daily RTK + token-scope spend intake — drops one inbox item linking to today's report, and escalates a week tracking over the credit cap
 trigger: cron
 schedule: "45 8 * * 1-5"
 preflight: none
@@ -18,20 +18,53 @@ Shell-only playbook. The dispatcher invokes `scripts/ceo-token-intake.sh` direct
 
 ## What it does
 
-Captures four command outputs into `CEO/reports/token/<TODAY>.md`:
+Captures command outputs into `CEO/reports/token/<TODAY>-<HOST>.md`:
 
 - `rtk gain` — global RTK savings
-- `rtk gain -p` — RTK savings scoped to current project
-- `rtk cc-economics` — ccusage spend vs RTK savings
+- `npx ccusage monthly` — Claude Code monthly spend
 - `token-scope --since 1d` — Claude Code spend for the last 24h
+- `token-scope --credits --since 8w` — weekly credits against the plan cap
+- **credit cap check** — reads `--credits --json` and names where the week stands
+- **auth health** — flags a host that ran sessions but produced no successful turns
 
-Then idempotently appends one line to `CEO/inbox.md`:
+Then idempotently appends one line to `CEO/inbox/<HOST>.md` (per-host, so two
+Syncthing peers can't race on the same path):
 
 ```
-- [ ] Review daily token report [[CEO/reports/token/<TODAY>]]
+- [ ] Review daily token report [[CEO/reports/token/<TODAY>-<HOST>]]
 ```
 
-The chat-triggered `inbox` playbook picks the line up next time `ceo chat inbox` runs.
+## Declared outputs
+
+- `CEO/reports/token/{TODAY}-{HOST}.md` — the report
+- `CEO/inbox/{HOST}.md` — the review line, plus up to two escalations below
+
+## Escalations
+
+Two conditions get their own inbox item, because they are actionable rather than
+informational:
+
+| Condition | Marker keyed on | Re-alerts when |
+|---|---|---|
+| Week is over (or projected over) the credit cap | the ISO week | a **new** week goes over |
+| Host produced no successful Claude turns in 48h | the host | the prior alert was checked off |
+
+Both dedupe on the **unchecked** marker, so a condition that persists doesn't
+re-append daily but a genuine state transition does alert. This is the
+`ceo-automated-writers-are-playbooks` rule in practice — the disk-monitor
+incident appended 64 identical hourly alerts because it had no such gate.
+
+**Why credits and not dollars.** The plan's cap is denominated in credits, so a
+dollar total can't answer "am I over?". `--credits` reports weighted tokens per
+ISO week against the cap; the alert carries the ratio and names the lever, which
+is context size per turn — cache reads and writes are ~90% of a weighted week,
+so shorter sessions and `/clear` move the number and shorter answers don't.
+
+**A token-scope too old to have `--credits`** is escalated as its own inbox item
+naming `/plugin update`, and the credits capture is skipped rather than attempted.
+`capture` treats a non-zero exit as a run failure, so attempting it would redden
+cron telemetry every morning for something only the user can fix — training them
+to ignore the failure channel.
 
 ## Install
 

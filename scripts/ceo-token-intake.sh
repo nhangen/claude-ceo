@@ -1,7 +1,10 @@
 #!/bin/bash
 # ceo-token-intake.sh — Daily RTK + token-scope spend intake.
-# Captures four command outputs to CEO/reports/token/<TODAY>-<host>.md and
+# Captures command outputs to CEO/reports/token/<TODAY>-<host>.md and
 # idempotently appends one inbox line to CEO/inbox/<host>.md linking to it.
+# Also escalates a distinct inbox item when the week is tracking over the plan's
+# credit cap — the one number in the report that is actionable rather than
+# informational, and the reason the report exists at all.
 # Per-host filenames keep two Syncthing peers from racing on the same path.
 # The chat-triggered inbox playbook surfaces the line via `ceo chat inbox`.
 #
@@ -136,12 +139,102 @@ if [ "${TS_CMD[0]}" = "token-scope" ]; then
 fi
 unset _ts_resolved _ts_runtime _ts_path
 
+# check_credit_cap — the actionable half of this report.
+#
+# A dollar total cannot say whether the week is over the plan allowance, because
+# the plan is metered in credits. `token-scope --credits --json` reports weighted
+# tokens per ISO week against that cap; this reads the week in progress and, when
+# it is over (or projected over), escalates ONE inbox item.
+#
+# Escalation is keyed on the ISO week, deduped on the UNCHECKED marker: a week
+# that is still over tomorrow does not re-append, but a NEW week going over does
+# alert. That is a state transition, not a signal generator — the distinction
+# ceo-automated-writers-are-playbooks exists to enforce, and the disk-monitor
+# incident (64 identical hourly alerts) is what happens without it.
+#
+# Never fails the run: a stale plugin cache without --credits is reported as its
+# own actionable item, not as red cron telemetry, because the fix is a /plugin
+# update the user performs, not a broken job.
+CAP_ALERT=""
+CAP_ALERT_KEY=""
+
+# Probed once, before the report is written. A build without --credits must not
+# reach `capture` at all: capture treats a non-zero exit as a run failure, so an
+# out-of-date plugin cache would redden cron telemetry every morning when the
+# actual fix is a `/plugin update` the user performs. That belongs in the inbox
+# as an actionable item, not in the failure channel.
+TS_HAS_CREDITS=0
+if "${TS_CMD[@]}" --help 2>/dev/null | grep -q -- '--credits'; then
+  TS_HAS_CREDITS=1
+else
+  CAP_ALERT="token-scope in the plugin cache predates \`--credits\`, so this report cannot say whether the week is over the credit cap. Fix: run \`/plugin update\` in Claude Code."
+  CAP_ALERT_KEY="stale-plugin"
+fi
+
+check_credit_cap() {
+  if [ "$TS_HAS_CREDITS" -ne 1 ]; then
+    printf 'SKIP: this token-scope build has no --credits (plugin cache predates it); escalated to the inbox.\n'
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'SKIP: jq not on PATH; cannot read the credits report without guessing.\n'
+    return 0
+  fi
+
+  local json
+  if ! json=$("${TS_CMD[@]}" --credits --since 8w --json 2>/dev/null); then
+    printf 'SKIP: token-scope --credits exited non-zero.\n'
+    return 0
+  fi
+
+  # The week in progress: partial, and started on or before now. Reading the last
+  # row instead would pick a future-dated week if a synced host's clock is skewed.
+  local row
+  row=$(printf '%s' "$json" | jq -c '
+    (.meta.weekly_cap // 0) as $cap
+    | [ .weeks[] | select(.partial == true) ] | last
+    | select(. != null)
+    | { week: .weekStart,
+        credits: .credits,
+        ratio: (.projectedCapRatio // .capRatio),
+        projected: (.projectedCapRatio != null),
+        cap: $cap }' 2>/dev/null) || row=""
+  if [ -z "$row" ] || [ "$row" = "null" ]; then
+    printf 'No week in progress in the last 8w — nothing to compare against the cap.\n'
+    return 0
+  fi
+
+  local week ratio projected credits cap
+  week=$(printf '%s' "$row" | jq -r '.week')
+  ratio=$(printf '%s' "$row" | jq -r '.ratio')
+  projected=$(printf '%s' "$row" | jq -r '.projected')
+  credits=$(printf '%s' "$row" | jq -r '(.credits / 1000000) | (. * 10 | round) / 10')
+  cap=$(printf '%s' "$row" | jq -r '(.cap / 1000000) | (. * 10 | round) / 10')
+
+  local over
+  over=$(printf '%s' "$row" | jq -r 'if (.ratio // 0) > 1 then "yes" else "no" end')
+  local shape="so far"
+  [ "$projected" = "true" ] && shape="projected"
+
+  printf 'week %s: %sM credits %s vs %sM cap (%sx)\n' "$week" "$credits" "$shape" "$cap" "$ratio"
+  if [ "$over" = "yes" ]; then
+    CAP_ALERT="Week of $week is ${ratio}x the ${cap}M credit cap (${credits}M $shape). Cache reads and writes are ~90% of a weighted week, so the lever is context size per turn — shorter sessions and /clear, not shorter answers."
+    CAP_ALERT_KEY="$week"
+    printf 'WARN: over cap\n'
+  fi
+  return 0
+}
+
 if ! {
   printf -- '---\ndate: %s\ntype: ceo-token-intake\n---\n\n' "$TODAY"
   printf '# Token Report — %s\n' "$TODAY"
   capture "RTK — global savings" rtk gain
   capture "ccusage — Claude Code monthly" npx --yes ccusage@latest monthly
   capture "token-scope — last 24h" "${TS_CMD[@]}" --since 1d
+  if [ "$TS_HAS_CREDITS" -eq 1 ]; then
+    capture "token-scope — credits vs weekly cap" "${TS_CMD[@]}" --credits --since 8w
+  fi
+  capture "credit cap check" check_credit_cap
   capture "auth health" check_auth_health
 } > "$REPORT_FILE"; then
   echo "ERROR: failed to write $REPORT_FILE" >&2
@@ -170,6 +263,17 @@ if [ -n "$AUTH_ALERT" ]; then
   AUTH_LINE="- [ ] ⚠️ $AUTH_MARKER in 48h — likely logged out; ssh in and run \`claude\` then /login ($WIKILINK)"
   if ! grep -qF -- "- [ ] ⚠️ $AUTH_MARKER" "$INBOX_FILE"; then
     printf '%s\n' "$AUTH_LINE" >> "$INBOX_FILE"
+  fi
+fi
+
+# Escalate an over-cap week (or a plugin too old to tell) as its own item.
+# The marker carries the week, so a still-over week does not re-append tomorrow
+# but a new week going over does alert.
+if [ -n "$CAP_ALERT" ]; then
+  CAP_MARKER="Credit cap ($CAP_ALERT_KEY) on $HOST"
+  CAP_LINE="- [ ] ⚠️ $CAP_MARKER — $CAP_ALERT ($WIKILINK)"
+  if ! grep -qF -- "- [ ] ⚠️ $CAP_MARKER" "$INBOX_FILE"; then
+    printf '%s\n' "$CAP_LINE" >> "$INBOX_FILE"
   fi
 fi
 
