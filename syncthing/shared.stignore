@@ -29,7 +29,15 @@ node_modules
 CEO/log/.last-run-*
 CEO/log/.retry-*.json
 CEO/log/.config-hash
-CEO/log/.fail-count
+// Trailing * is load-bearing: #299 renamed the single .fail-count to
+// .fail-count-<trigger>, and the bare pattern silently stopped matching, so
+// every per-trigger counter synced between hosts. That reintroduced the exact
+// bug #299 fixed — one host's healthy run zeroing another's failure streak —
+// one level up. ceo-stignore-coverage.test.sh now enforces the coverage.
+CEO/log/.fail-count*
+CEO/log/.last-scan
+CEO/log/.from-nathan-seen
+CEO/log/.nathan-nb-counter
 // --dry-run preview output is host-local scratch (see ceo-cron.sh --dry-run)
 CEO/log/preview/
 // registry.json is host-local — it now lives at ~/.ceo/registry.json (each host
