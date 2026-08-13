@@ -72,6 +72,54 @@ test_auth_banner_non_json_is_auth() {
   assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" "auth banner → auth"
 }
 
+# The two shapes observed on ML-1 2026-08-13, verbatim from cron-raw.log. Both
+# were classified `terminal`, so no re-auth escalation fired and cronbird retried
+# three times per playbook — the exact outcome ff05940's fatal-on-auth signal
+# exists to prevent.
+
+test_oauth_expired_envelope_is_auth() {
+  # The single-call envelope names auth in `.result` and nowhere else:
+  # api_error_status is null, and subtype is the string "success" even though
+  # is_error is true. Reading only the status/subtype keys yields terminal.
+  local raw='{"is_error":true,"stop_reason":"stop_sequence","total_cost_usd":0,"terminal_reason":"api_error","api_error_status":null,"subtype":"success","result":"Failed to authenticate: OAuth session expired and could not be refreshed","type":"result"}'
+  assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" \
+    "OAuth-expired envelope → auth (auth text lives in .result)"
+}
+
+test_oauth_expired_plaintext_is_auth() {
+  # Plan/exec phases emit this bare, with no envelope. The pre-fix banner regex
+  # matched `authentication_failed|not authenticated|logged out|invalid api key|
+  # please run /login` — none of which appear in what Claude Code actually prints.
+  local raw='Failed to authenticate: OAuth session expired and could not be refreshed'
+  assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" \
+    "OAuth-expired plain text → auth"
+}
+
+test_envelope_subtype_success_with_error_still_not_ok() {
+  # Guard the trap that made the envelope look healthy: subtype "success" beside
+  # is_error true must never read as ok, whatever .result says.
+  local raw='{"is_error":true,"subtype":"success","api_error_status":null,"result":"something else entirely"}'
+  assert_eq "$(_classify_claude_failure 1 "$raw")" "terminal" \
+    "is_error true with subtype success → terminal, never ok"
+}
+
+test_result_text_does_not_hijack_a_successful_envelope() {
+  # A *successful* run whose report happens to discuss authentication must stay
+  # ok — the new .result read must not outrank is_error:false.
+  local raw='{"is_error":false,"subtype":"success","result":"Reviewed the OAuth session expired handling in ceo-cron-lib.sh"}'
+  assert_eq "$(_classify_claude_failure 0 "$raw")" "ok" \
+    "is_error false wins over auth-shaped .result text"
+}
+
+test_envelope_without_is_error_key_does_not_become_auth() {
+  # jq gives "null" for a missing is_error, so a check written as "not false" would
+  # accept this and exit 78 on a phase that succeeded. The .result read requires
+  # is_error to be literally true for that reason.
+  local raw='{"result":"the OAuth session expired handling was refactored"}'
+  assert_eq "$(_classify_claude_failure 0 "$raw")" "ok" \
+    "an exit-0 envelope with no is_error key must not classify as auth on .result prose"
+}
+
 test_plaintext_plan_success_is_ok() {
   # Plan/exec phases emit plain text (no --output-format json); exit 0 = success.
   local raw='ACTION: 1 | read | check inbox | n/a'
