@@ -115,9 +115,15 @@ _classify_claude_failure() {
   # Structured error whose only auth signal is the .result prose. Checked against
   # the same pattern as the plain-text tier below, so the two paths cannot drift
   # apart — which is how the envelope path missed a message the banner tier would
-  # also have missed. Reached only when is_error is not "false", so a successful
-  # run whose report merely discusses authentication is unaffected.
-  if [ -n "$result" ] && _looks_like_auth_failure "$result"; then
+  # also have missed.
+  #
+  # `is_error = true` is required rather than merely "not false". An envelope with
+  # no is_error key at all yields the string "null" here, so "not false" would let
+  # an exit-0 object whose report happens to discuss authentication — "the session
+  # expired handling was refactored" — classify as auth and exit 78. No current
+  # caller emits that shape (single-call always passes --output-format json), but
+  # the guard costs one condition and removes the class.
+  if [ "$is_error" = "true" ] && [ -n "$result" ] && _looks_like_auth_failure "$result"; then
     echo "auth"; return 0
   fi
   # Structured error, is_error true, but no usable status → unknown-but-real.

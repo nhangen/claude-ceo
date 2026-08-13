@@ -111,6 +111,15 @@ test_result_text_does_not_hijack_a_successful_envelope() {
     "is_error false wins over auth-shaped .result text"
 }
 
+test_envelope_without_is_error_key_does_not_become_auth() {
+  # jq gives "null" for a missing is_error, so a check written as "not false" would
+  # accept this and exit 78 on a phase that succeeded. The .result read requires
+  # is_error to be literally true for that reason.
+  local raw='{"result":"the OAuth session expired handling was refactored"}'
+  assert_eq "$(_classify_claude_failure 0 "$raw")" "ok" \
+    "an exit-0 envelope with no is_error key must not classify as auth on .result prose"
+}
+
 test_plaintext_plan_success_is_ok() {
   # Plan/exec phases emit plain text (no --output-format json); exit 0 = success.
   local raw='ACTION: 1 | read | check inbox | n/a'
