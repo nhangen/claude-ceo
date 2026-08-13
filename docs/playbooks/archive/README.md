@@ -2,7 +2,7 @@
 
 Retired playbooks, kept for reference. Nothing here dispatches.
 
-`ceo playbook scan` enumerates `<dir>/*.md` non-recursively (`scripts/ceo:1400`), so
+`ceo playbook scan` enumerates `<dir>/*.md` non-recursively (`scripts/ceo:1406`), so
 files in this subdirectory are never registered and never scheduled. All three also
 carry `status: disabled`. That is a separate gate, one level down: `disabled` is a valid
 status, so scan does write a registry entry for such a file — but the scheduler dispatches
@@ -30,8 +30,11 @@ To revive one: reverse the list. Move the file to `docs/playbooks/`, re-check it
 frontmatter against `docs/playbooks/SCHEMA.md` (the schema has moved on), restore the
 `CEO/swarm.json` owner entry, set a real `status:`, then `ceo playbook scan` on the owner
 host. Check `preflight:` before flipping status — `auto-review`'s was deleted with it and
-now reads `none`; an unknown preflight name does not block, it logs and runs anyway
-(`scripts/ceo-cron.sh:1342`).
+now reads `none`. A `preflight:` naming a function that no longer exists is now fatal: the
+run records a failure and exits 78 without dispatching (#311). That is the reverse of what
+this file said until then, and the reason it is worth checking here: the scan-time lint
+covers `disabled` and `draft` playbooks too, so a revived one will fail the suite before it
+ever fails a scheduled run.
 
 ## Contents
 

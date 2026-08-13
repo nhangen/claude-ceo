@@ -661,4 +661,80 @@ SH
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+
+# A playbook whose preflight_<name>() does not exist has lost its work gate. That
+# used to warn through _v — gated on CEO_VERBOSE=1, so a scheduled run said nothing
+# — and dispatch anyway, unconditionally, forever. CEO_VERBOSE is deliberately left
+# unset in these three tests: a run with it set was never the problem.
+_write_unknown_preflight_playbook() {
+  cat > "$CEO_DIR/playbooks/ghost-gate.md" << 'PB'
+---
+name: ghost-gate
+description: Declares a preflight nobody defines
+trigger: cron
+schedule: "0 9 * * *"
+preflight: no_such_gate
+tier: read
+status: active
+runner: claude
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+}
+
+test_unknown_preflight_does_not_dispatch() {
+  _write_unknown_preflight_playbook
+  bash "$CRON" ghost-gate >/dev/null 2>&1
+  local invoked=no
+  [ -f "$HOME/claude-invoked.txt" ] && invoked=yes
+  assert_eq "$invoked" "no" \
+    "a playbook whose preflight function is missing must not reach the model"
+}
+
+test_unknown_preflight_exits_fatal() {
+  _write_unknown_preflight_playbook
+  local rc=0
+  bash "$CRON" ghost-gate >/dev/null 2>&1 || rc=$?
+  # 78 rather than any non-zero: _record_failure stamps LAST_RUN_FILE, so a retry
+  # hits the cooldown gate and exits 0, which cronbird reads as success. Same
+  # reasoning as the auth path (ceo-cron.sh :486).
+  assert_eq "$rc" "78" "must exit cronbird's FATAL_EXIT_CODE so retries stop"
+}
+
+# Declaring nothing is not the same as declaring a gate that cannot be found. scan
+# writes "" for an absent preflight: field, and jq's `//` does not substitute empty
+# strings, so the resolved value was "" — which reached the unknown-preflight branch
+# and ran anyway only because that branch was a no-op. Making the branch fatal
+# without normalizing "" first took out four unrelated runner:skill tests, which is
+# how this case got written.
+test_playbook_with_no_preflight_field_still_dispatches() {
+  cat > "$CEO_DIR/playbooks/no-gate.md" << 'PB'
+---
+name: no-gate
+description: Declares no preflight at all
+trigger: cron
+schedule: "0 9 * * *"
+tier: read
+status: active
+runner: claude
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" no-gate >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "a playbook that declares no preflight must run, not fail closed"
+  assert_file_exists "$HOME/claude-invoked.txt" "and must actually reach the model"
+}
+
+test_unknown_preflight_is_recorded_not_whispered() {
+  _write_unknown_preflight_playbook
+  bash "$CRON" ghost-gate >/dev/null 2>&1
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "no_such_gate" \
+    "cron-skips.log must name the preflight that could not be resolved"
+  assert_contains "$skips" "ERROR" \
+    "and record it as a failure, not as a verbose-only note"
+}
+
 run_tests

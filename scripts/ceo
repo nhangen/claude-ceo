@@ -664,6 +664,7 @@ cmd_preflight() {
 
   local would_run=0
   local would_skip=0
+  local would_fail=0
 
   echo "  Data: PRs for review=$PR_REVIEW_COUNT | PRs authored=$PR_AUTHORED_COUNT"
   echo "  Data: Pending=$PENDING_COUNT | Approved=$APPROVED_COUNT"
@@ -683,15 +684,20 @@ cmd_preflight() {
         would_skip=$((would_skip + 1))
       fi
     else
-      result="RUN (unknown preflight)"
-      would_run=$((would_run + 1))
+      # Not "RUN (unknown preflight)". ceo-cron.sh refuses to dispatch a playbook
+      # whose preflight_<name>() is missing and exits 78, so counting it toward
+      # would_run made the one command whose job is previewing cron disagree with
+      # cron. It is not a SKIP either — a skip is the gate saying no work, and here
+      # there is no gate.
+      result="FAIL (unknown preflight — cron will refuse to dispatch)"
+      would_fail=$((would_fail + 1))
     fi
 
     printf "  %-18s %-8s %-30s → %s\n" "$name" "$model" "$preflight" "$result"
   done < <(jq -r '.playbooks[] | "\(.name)|\(.model)|\(.preflight)|\(.status)"' "$registry_file")
 
   echo ""
-  echo "Result: $would_run would run, $would_skip would skip"
+  echo "Result: $would_run would run, $would_skip would skip$([ "$would_fail" -gt 0 ] && printf ', %s would FAIL (unresolvable preflight)' "$would_fail")"
   echo "Estimated API calls: $((would_run * 2)) (plan + execute per trigger)"
 }
 

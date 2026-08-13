@@ -266,6 +266,98 @@ test_all_active_skill_runner_playbooks_declare_out_pattern() {
     "every active runner:skill playbook must declare a non-empty out_pattern (ceo-cron.sh :1408 fails the run otherwise)"
 }
 
+test_all_runnable_playbooks_declare_a_resolvable_preflight() {
+  # A playbook whose preflight_<name>() does not exist has no work gate, and
+  # ceo-cron.sh now refuses to dispatch it (exit 78) rather than running
+  # unconditionally in silence. That turns a typo into a dead playbook, so catch it
+  # here instead of at 09:00. This was live: preflight_has_auto_review_prs() was
+  # deleted while archive/auto-review.md still declared it (#307).
+  #
+  # Same non-recursive "$pdir"/*.md walk as the out_pattern lint above, so
+  # docs/playbooks/archive/ is exempt for free — a retired playbook may name a
+  # function that was deleted with it.
+  #
+  # `disabled` and `draft` are deliberately NOT skipped, unlike the out_pattern
+  # lint. ceo-cron.sh:1316 allows manual:disabled and manual:draft, so a disabled
+  # playbook run by hand hits the same fail-closed branch — and archive/README.md's
+  # revive runbook says to check `preflight:` before flipping status, which is
+  # exactly the moment an unlinted one bites. All four currently-disabled docs
+  # resolve, so this costs nothing today and closes the hole.
+  local pdir="$SCRIPT_DIR/../docs/playbooks"
+  local cron="$SCRIPT_DIR/ceo-cron.sh"
+  assert_file_exists "$cron" "ceo-cron.sh must exist — it defines the preflights"
+  local f fm pf offenders=""
+  for f in "$pdir"/*.md; do
+    [ -f "$f" ] || continue
+    fm=$(awk 'NR==1&&$0=="---"{f=1;next} f&&$0=="---"{exit} f{print}' "$f")
+    # SCHEMA.md and friends live in this dir and are not playbooks.
+    printf '%s\n' "$fm" | grep -qE '^name:' || continue
+    printf '%s\n' "$fm" | grep -qE '^status:[[:space:]]*(archived|retired)' && continue
+    pf=$(printf '%s\n' "$fm" | grep -E '^preflight:' | head -1 | sed 's/^preflight:[[:space:]]*//')
+    [ -n "$pf" ] || continue
+    # Digits are part of a legal name — preflight_has_log_entries_after_4pm is real,
+    # and a [a-z_]-only pattern reports it as missing.
+    grep -qE "^preflight_${pf}\(\)" "$cron" || offenders="$offenders $(basename "$f"):$pf"
+  done
+  assert_eq "$offenders" "" \
+    "every runnable playbook's preflight: must name a preflight_<name>() defined in ceo-cron.sh"
+}
+
+# cmd_preflight re-defines every preflight inline, because it cannot source
+# ceo-cron.sh mid-script (scripts/ceo:636). Two copies of the same list drift, and
+# the drift is invisible: a preflight defined only in ceo-cron.sh makes `ceo
+# preflight` — the command whose entire job is previewing what cron will do —
+# report FAIL for a playbook that runs fine, and one defined only in ceo does the
+# reverse. Names are compared, not bodies; the bodies legitimately differ (the
+# preview's are read-only probes).
+test_preflight_definitions_agree_between_ceo_and_ceo_cron() {
+  local cron="$SCRIPT_DIR/ceo-cron.sh"
+  local cli="$SCRIPT_DIR/ceo"
+  local in_cron in_cli
+  # Tolerates `function foo`, a space before the parens, and leading indentation —
+  # ceo's copies are indented inside cmd_preflight and ceo-cron.sh's are not, and a
+  # pattern that only matched one spelling would report a phantom mismatch on a
+  # reformat.
+  local _pat='^[[:space:]]*(function[[:space:]]+)?preflight_[a-z0-9_]+[[:space:]]*\(\)'
+  in_cron=$(grep -oE "$_pat" "$cron" | grep -oE 'preflight_[a-z0-9_]+' | sort -u)
+  in_cli=$(grep -oE "$_pat" "$cli" | grep -oE 'preflight_[a-z0-9_]+' | sort -u)
+  assert_contains "$in_cron" "preflight_none" \
+    "sanity: the extraction must find ceo-cron.sh's preflights at all"
+  assert_contains "$in_cli" "preflight_none" \
+    "sanity: and ceo's inline copies too"
+  assert_eq "$(comm -23 <(printf '%s\n' "$in_cron") <(printf '%s\n' "$in_cli") | tr '\n' ' ')" "" \
+    "every preflight ceo-cron.sh defines must also exist in cmd_preflight, or the preview reports FAIL for a playbook that runs"
+  assert_eq "$(comm -13 <(printf '%s\n' "$in_cron") <(printf '%s\n' "$in_cli") | tr '\n' ' ')" "" \
+    "and vice versa, or the preview reports RUN for a playbook cron refuses"
+}
+
+# docs/playbooks/archive/ is inert only because scan enumerates "$d"/*.md
+# non-recursively (ceo:1406). Nothing asserted that, so a change to a find-based or
+# **/*.md walk would silently re-register the three retired AwesomeMotive playbooks
+# — against a board and repos Nathan can no longer reach — with the suite green.
+#
+# The fixture is deliberately status: active. #307 also set status: disabled on all
+# three archived docs, which is a second gate; this test has to fail on the glob
+# alone, or it passes for the wrong reason and stops guarding the thing it names.
+test_scan_does_not_recurse_into_a_playbooks_subdirectory() {
+  mkdir -p "$CEO_DIR/playbooks/archive"
+  _write_playbook "$CEO_DIR/playbooks/archive/retired-thing.md" "retired-thing" ""
+  _run_scan
+  assert_not_contains "$SCAN_OUT" "retired-thing" \
+    "scan must not descend into playbooks/archive/ (ceo:1406 is a non-recursive glob)"
+  assert_no_match "$(jq -r '.playbooks[].name' "$HOME/.ceo/registry.json" 2>/dev/null)" \
+    "retired-thing" "and must not register it"
+}
+
+# The positive control for the test above. If scan stopped registering *anything*,
+# the non-recursion assertion would pass while meaning nothing.
+test_scan_registers_a_playbook_in_the_top_level_dir() {
+  _write_playbook "$CEO_DIR/playbooks/top-level-thing.md" "top-level-thing" ""
+  _run_scan
+  assert_contains "$(jq -r '.playbooks[].name' "$HOME/.ceo/registry.json" 2>/dev/null)" \
+    "top-level-thing" "scan must register a playbook that sits directly in playbooks/"
+}
+
 test_scan_warns_when_vault_shadows_repo_with_differing_copy() {
   # The silent-stale foot-gun: a vault playbook shadows a repo playbook of the
   # same name AND the two differ, so scan used the (possibly stale) vault copy.
