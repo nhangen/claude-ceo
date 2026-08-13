@@ -22,8 +22,29 @@ source "$SCRIPT_DIR/test-harness.sh"
 # check-ignore needs a path git can decide on, not a path that happens to exist,
 # so these are all hypothetical files under the ignored dirs. --no-index keeps a
 # tracked path from short-circuiting the answer.
+# Reports yes / no / error — three outcomes, not two. `check-ignore -q` exits 1 for
+# "not ignored" and 2 for "git could not answer" (a malformed .gitignore, a bad
+# repo). Collapsing both to "no" would make every negative assertion below pass for
+# the wrong reason at exactly the moment the pattern file is broken.
 _is_ignored() {
-  git -C "$REPO_ROOT" check-ignore -q --no-index "$1" && echo yes || echo no
+  local rc=0
+  git -C "$REPO_ROOT" check-ignore -q --no-index "$1" 2>/dev/null || rc=$?
+  case "$rc" in
+    0) echo yes ;;
+    1) echo no ;;
+    *) echo "error(rc=$rc)" ;;
+  esac
+}
+
+# The reason _is_ignored has three outcomes rather than two. If a git failure read as
+# "not ignored", every negative assertion in this file would pass at exactly the
+# moment git can no longer answer — the shape this file exists to avoid.
+test_a_git_failure_is_not_reported_as_not_ignored() {
+  local got
+  got=$(_is_ignored "")
+  assert_contains "$got" "error" \
+    "a path git cannot resolve must report error, not a confident 'no'"
+  assert_not_contains "$got" "no" "and must not be mistaken for 'not ignored'"
 }
 
 test_tmp_dir_is_ignored() {
