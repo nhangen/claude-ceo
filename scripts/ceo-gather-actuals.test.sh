@@ -30,9 +30,8 @@ case "\$*" in
 esac
 STUB
   chmod +x "$STUB_BIN/gh"; export PATH="$STUB_BIN:$PATH"
-  export CEO_SPRINT_HELPER="/bin/true"
 }
-teardown() { rm -rf "$TMP"; unset CEO_VAULT CEO_SPRINT_HELPER; }
+teardown() { rm -rf "$TMP"; unset CEO_VAULT; }
 
 test_exports_yesterday_merged_ledger_tail_and_prev_predicted() {
   setup

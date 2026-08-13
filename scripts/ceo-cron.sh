@@ -1176,22 +1176,6 @@ preflight_has_ceo_branches() {
   return 1
 }
 
-preflight_has_auto_review_prs() {
-  local scan_script="$HOME/.claude/skills/auto-review/scripts/scan-prs.sh"
-  [ -x "$scan_script" ] || return 1
-  if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null 2>&1; then
-    _record_failure "gh CLI missing or unauthenticated; cannot run auto-review scan"
-    return 1
-  fi
-  local scan_out="/tmp/auto-review-scan.json"
-  "$scan_script" > "$scan_out" 2>/tmp/auto-review-scan.stderr
-  local exit_code=$?
-  case "$exit_code" in
-    0) return 0 ;;  # qualifying PRs found
-    *) return 1 ;;  # zero qualifying or auth failure
-  esac
-}
-
 # --- Look up trigger in registry ---
 REGISTRY_FILE="$(_ceo_registry_path)"
 # Append the offending registry head + jq parse status to the skip log so a
