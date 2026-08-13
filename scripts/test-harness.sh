@@ -16,6 +16,24 @@ _record_assertion_fail() {
   [ -n "${TEST_FAILS_TMP:-}" ] && echo 1 >> "$TEST_FAILS_TMP"
 }
 
+# fail_test <msg> [detail...] — record a failure from a hand-rolled check, i.e.
+# one whose condition no assert_* expresses. Use this instead of printing FAIL and
+# bumping FAILS: a test body runs in run_tests' subshell, so an in-process FAILS
+# increment is discarded when that subshell exits and the run reports success
+# while printing FAIL. It counts as an assertion too, or a test whose only check
+# is hand-rolled would be reported as "NO ASSERTIONS RAN" rather than as the
+# failure it actually hit.
+fail_test() {
+  local msg="$1"; shift
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  printf '  FAIL [%s] %s\n' "$CURRENT_TEST" "$msg"
+  local detail
+  for detail in "$@"; do
+    printf '    %s\n' "$detail"
+  done
+  _record_assertion_fail
+}
+
 assert_eq() {
   local got="$1" want="$2" msg="${3:-}"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -66,6 +84,25 @@ assert_fails() {
   fi
 }
 
+# _record_hand_rolled_fails <fails_at_test_start> — called at the end of a test
+# body, inside run_tests' subshell, to carry out any FAILS increments the body made
+# directly rather than through an assert_* helper.
+#
+# Already-durable failures are subtracted rather than assumed absent:
+# _record_assertion_fail bumps FAILS *and* appends a line, so counting the whole
+# delta would report every assert_* failure twice. TEST_FAILS_TMP is truncated
+# after each test by the caller, so the lines in it are exactly this body's, which
+# is what makes the subtraction sound.
+_record_hand_rolled_fails() {
+  local fails_before="$1" recorded=0
+  [ -f "${TEST_FAILS_TMP:-}" ] && recorded=$(wc -l < "$TEST_FAILS_TMP")
+  local hand_rolled=$(( (FAILS - fails_before) - recorded ))
+  while [ "$hand_rolled" -gt 0 ]; do
+    echo 1 >> "$TEST_FAILS_TMP"
+    hand_rolled=$((hand_rolled - 1))
+  done
+}
+
 _record_test_abort() {
   local test_name="$1" rc="$2"
   if [ "$rc" -ne 0 ]; then
@@ -89,13 +126,22 @@ run_tests() {
     fi
     
     local assertions_before=$ASSERTION_COUNT
-    
+    local fails_before=$FAILS
+
+    # FAILS is compared inside the subshell, not outside it: a test body that
+    # bumps FAILS directly — 126 hand-rolled checks across these suites do — has
+    # its increment discarded when the subshell exits, so the run printed FAIL and
+    # then "All tests passed", exit 0 (#310). The comparison has to happen where
+    # the increment is still visible, and its result travels out through
+    # TEST_FAILS_TMP like every other durable failure. This gates the propagation
+    # at the harness so a suite cannot opt out by not using the helpers.
     (
       trap 'rc=$?; [ $rc -ne 0 ] && _record_test_abort "$CURRENT_TEST" $rc' EXIT
       "$fn"
+      _record_hand_rolled_fails "$fails_before"
       echo "$ASSERTION_COUNT" > "${TEST_FAILS_TMP}.assertions"
     )
-    
+
     if [ -s "$TEST_FAILS_TMP" ]; then
       FAILS=$((FAILS + $(wc -l < "$TEST_FAILS_TMP")))
       true > "$TEST_FAILS_TMP"
