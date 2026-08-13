@@ -740,6 +740,39 @@ PB
 }
 
 
+# `ceo preflight` exists to preview what cron will do, so it must not print RUN for a
+# playbook cron refuses to dispatch. It said exactly that until #311 — "RUN (unknown
+# preflight)", counted toward would_run — which was true when the cron branch was a
+# silent no-op and became a lie when that branch started exiting 78.
+test_cmd_preflight_reports_unresolvable_preflight_as_fail() {
+  cat > "$CEO_DIR/playbooks/ghost-preview.md" << 'PB'
+---
+name: ghost-preview
+description: names a preflight nobody defines
+trigger: cron
+schedule: "0 9 * * *"
+preflight: no_such_gate
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local out
+  out=$(bash "$CEO_CLI" preflight 2>&1)
+  assert_contains "$out" "FAIL (unknown preflight" \
+    "the preview must label an unresolvable preflight as a failure, not as RUN"
+  assert_contains "$out" "would FAIL" \
+    "and count it in the summary rather than folding it into would-run"
+  # Pulled out as its own line first: assert_not_contains matches a literal
+  # substring, so a needle like "ghost-preview .*RUN" can never match and the
+  # assertion would pass no matter what the row said.
+  local row
+  row=$(printf '%s\n' "$out" | grep 'ghost-preview' | head -1)
+  assert_contains "$row" "FAIL" "the offending playbook's own row must read FAIL"
+  assert_not_contains "$row" "→ RUN" "and must not read RUN"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---

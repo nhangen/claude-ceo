@@ -1231,7 +1231,15 @@ MODEL=$(echo "$ENTRY" | jq -r '.model // ""')
 # Preserves "did the playbook declare an explicit model?" across the
 # claude-default fallback below. Empty string = no override.
 MODEL_FROM_FRONTMATTER="$MODEL"
-PREFLIGHT=$(echo "$ENTRY" | jq -r '.preflight // "none"')
+# `// "none"` alone is not enough: scan writes an *empty string* for a playbook
+# that declares no `preflight:` (ceo:1460 via _fm_scalar), and jq's `//` only
+# substitutes null or false. So the default was silently "" — resolving to
+# preflight_(), which does not exist — for every playbook that omits the field.
+# That reached the unknown-preflight branch and ran anyway, which was the right
+# outcome by accident of that branch being a no-op. Now that the branch refuses to
+# dispatch, an unnormalized "" would take down every such playbook, so declaring
+# nothing has to mean "none" here rather than "a gate I cannot find".
+PREFLIGHT=$(echo "$ENTRY" | jq -r 'if (.preflight // "") == "" then "none" else .preflight end')
 STATUS=$(echo "$ENTRY" | jq -r '.status // "unset"')
 [ -z "$STATUS" ] && STATUS="unset"
 TRIGGER_TYPE=$(echo "$ENTRY" | jq -r '.trigger // "cron"')
@@ -1339,7 +1347,35 @@ if type "$PREFLIGHT_FN" &>/dev/null; then
   fi
   _v "Preflight '$PREFLIGHT' passed"
 else
-  _v "WARNING: Unknown preflight '$PREFLIGHT' — running anyway"
+  # A playbook naming a preflight that does not exist is config breakage, not
+  # "nothing to do" — same reading as a registry entry whose playbook is missing
+  # from disk (see _record_success's header). It used to warn through _v and run
+  # anyway, and _v is gated on CEO_VERBOSE=1, so a scheduled run logged nothing at
+  # all: the work-gate was gone and the playbook dispatched unconditionally, every
+  # time, in silence. That was live — preflight_has_auto_review_prs() was deleted
+  # while archive/auto-review.md still declared it (#307).
+  #
+  # This fails closed, which is more than #311 asked for — it asked only to route
+  # the branch through _record_failure. Recording and continuing would in fact have
+  # delivered most of that: the cron-skips.log ERROR line and the Discord failure
+  # post both fire inside _record_failure and survive the later _record_success.
+  # Only the fail-count escalation into approvals/pending.md would be erased, since
+  # _record_success writes 0 to FAIL_COUNT_FILE.
+  #
+  # It fails closed anyway, deliberately, because a playbook dispatching without
+  # the gate it declares is the harm — an unbounded run of work someone wrote a
+  # gate to bound — and a visible log of that harm is not a substitute for not
+  # doing it. The cost is real and worth stating: a typo in `preflight:` now stops
+  # a playbook instead of over-running it. The scan-time lint
+  # (ceo-scan.test.sh, test_all_runnable_playbooks_declare_a_resolvable_preflight)
+  # is what keeps that typo from reaching a scheduled run, and it covers disabled
+  # and draft playbooks too because manual runs of those reach this line.
+  #
+  # 78 is cronbird's FATAL_EXIT_CODE, for the same reason the auth path uses it
+  # (:486) — _record_failure stamps LAST_RUN_FILE, so a retry would hit the
+  # cooldown gate and exit 0, which cronbird reads as success.
+  _record_failure "Playbook '$TRIGGER' declares preflight '$PREFLIGHT' but preflight_${PREFLIGHT}() is not defined — refusing to dispatch without its work gate"
+  exit 78
 fi
 
 # Depth gate (#140): at preflight depth a dry-run stops here — preflight passed,
