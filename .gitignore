@@ -6,3 +6,17 @@ next-steps.txt
 # Python bytecode (ollama-agent package)
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Scratch: cron stdout and hand-run report output land here and can carry
+# production data, so a mis-staged `git add` must not be able to commit them.
+tmp/
+
+# Generated model output. This covers every eval dir without each needing the
+# hand-placed `*` + `!.gitignore` sentinel that evals/ollama-agent-poc/out/ has.
+#
+# Contents, not the directory: git cannot re-include anything beneath an excluded
+# directory, so the `evals/*/out/` form would shadow that tracked sentinel — and
+# any future one — instead of leaving it visible. repo-hygiene.test.sh pins the
+# distinction, since the two spellings read as equivalent.
+evals/*/out/*
