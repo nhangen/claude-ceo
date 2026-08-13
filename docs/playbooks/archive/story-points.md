@@ -14,6 +14,8 @@ requires: [GH_PROJECT_TOKEN]
 
 # Story Points
 
+> **ARCHIVED 2026-08-12.** The AwesomeMotive work this served ended; retired, not deleted, so it can be revived from the record. See `docs/playbooks/archive/README.md`.
+
 **Disabled 2026-08-01.** Retired via nhangen/llm-tools#288 — dropped from the
 opus/sonnet model-tiering evaluation rather than tested further.
 

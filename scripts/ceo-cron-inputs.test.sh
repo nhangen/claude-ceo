@@ -10,15 +10,19 @@ test_pregathered_emits_new_signals_when_inputs_list_them() {
   # shellcheck source=/dev/null
   source "$SCRIPT_DIR/ceo-cron-lib.sh"
   # shellcheck disable=SC2034  # read by the sourced lib's module-scope functions
+  # current_sprint is listed and its variables are populated on purpose: the
+  # retired signal must emit nothing even when a caller supplies everything the
+  # old branch needed, so restoring that branch fails here.
   INPUTS_JSON='["current_sprint","yesterday_merged","ledger_recent"]'
-  export CURRENT_SPRINT_ITEMS='[{"number":7,"repo":"o/r","title":"S"}]'
+  export CURRENT_SPRINT_ITEMS='[{"number":3,"repo":"o/r","title":"S"}]'
   export CURRENT_SPRINT_COUNT=1
   export YESTERDAY_MERGED='[{"number":7,"repo":"o/r"}]'
   export LEDGER_RECENT="predicted today: o/r#7"
   block=$(ceo_build_pregathered_extras)   # helper extracted for testability
-  assert_contains "$block" "Current sprint" "sprint line emitted"
-  assert_contains "$block" '"number":7' "sprint items present"
+  assert_not_contains "$block" "Current sprint" "retired sprint line not emitted"
+  assert_not_contains "$block" '"number":3' "retired sprint items not emitted"
   assert_contains "$block" "Yesterday merged" "yesterday-merged line emitted"
+  assert_contains "$block" '"number":7' "yesterday-merged items present"
   assert_contains "$block" "model ledger" "ledger line emitted"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }

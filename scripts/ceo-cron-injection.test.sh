@@ -178,7 +178,6 @@ preflight: none
 tier: read
 status: active
 inputs:
-  - current_sprint
   - yesterday_merged
   - ledger_recent
 ---
@@ -186,8 +185,8 @@ PB
 
   local out
   out=$(bash "$CEO_CLI" playbook scan 2>&1)
-  if echo "$out" | grep -q "unknown key.*current_sprint\|unknown key.*yesterday_merged\|unknown key.*ledger_recent"; then
-    printf '  FAIL [%s] scan must NOT warn on valid morning-flow keys (current_sprint, yesterday_merged, ledger_recent)\n' "$CURRENT_TEST"
+  if echo "$out" | grep -q "unknown key.*yesterday_merged\|unknown key.*ledger_recent"; then
+    printf '  FAIL [%s] scan must NOT warn on valid morning-flow keys (yesterday_merged, ledger_recent)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))

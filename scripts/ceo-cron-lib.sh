@@ -14,7 +14,6 @@ _inputs_includes() {
 # In the lib so it is unit-testable without driving a full dispatch.
 ceo_build_pregathered_extras() {
   local out=""
-  _inputs_includes current_sprint  && out+="- Current sprint (${CURRENT_SPRINT_COUNT:-0} items): ${CURRENT_SPRINT_ITEMS:-[]}"$'\n'
   _inputs_includes yesterday_merged && out+="- Yesterday merged (observable positives): ${YESTERDAY_MERGED:-[]}"$'\n'
   _inputs_includes ledger_recent    && out+="- model ledger (recent, model-of-Nathan): ${LEDGER_RECENT:-}"$'\n'
   printf '%s' "$out"
@@ -39,8 +38,6 @@ ceo_morning_observe_hook() {
 # usable LOG_ENTRY output. Reads module-scope globals set by the pre-gather phase.
 ceo_morning_raw_digest() {
   echo "**Morning (raw digest — synthesis unavailable)**"
-  local sprint; sprint=$(echo "${CURRENT_SPRINT_ITEMS:-[]}" | jq -r '.[]? | "- [sprint] " + .repo + "#" + (.number|tostring) + " " + .title' 2>/dev/null)
-  [ -n "$sprint" ] && { echo "Current sprint:"; echo "$sprint"; }
   local rev; rev=$(echo "${PR_REVIEW_REQUESTED:-[]}" | jq -r '.[]? | "- [review] " + (.title // "PR")' 2>/dev/null)
   [ -n "$rev" ] && { echo "Needs review:"; echo "$rev"; }
   [ -n "${DAILY_NOTE_TOP3:-}" ] && { echo "Top 3:"; echo "${DAILY_NOTE_TOP3}"; }

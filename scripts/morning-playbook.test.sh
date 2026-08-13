@@ -11,10 +11,12 @@ test_frontmatter_and_contract_present() {
   assert_contains "$body" "tier: read" "read tier"
   assert_contains "$body" "Daily note Top 3\` as the primary key" "ranking keys on Top 3"
   assert_contains "$body" "Never rank by age alone" "states not-by-age rule"
-  # The retired ZenHub sprint signal must not come back: `current_sprint` was
-  # never in ceo-cron.sh's injection vocabulary, so ranking on it silently
-  # never worked. Asserted absent so a re-add fails here, not in production.
-  assert_not_contains "$body" "current_sprint" "no retired sprint input"
+  # The ZenHub sprint signal is retired: the workspace and its credentials are
+  # gone, so the gather helper degraded to `[]` and the injected line carried no
+  # data. Matching the bare word, not `current_sprint`, because the residue this
+  # caught was prose in Constraints ("Rank by sprint/Top-3 signal") rather than
+  # the frontmatter key.
+  assert_not_contains "$body" "sprint" "no retired sprint signal"
   assert_contains "$body" "CEO-PREDICTED-PRIORITIES" "emits predicted block contract"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }

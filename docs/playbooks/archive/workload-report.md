@@ -5,13 +5,15 @@ trigger: cron
 schedule: "0 7 * * 1,3"
 preflight: none
 tier: read
-status: active
+status: disabled
 runner: skill
 skill: workload-report
 out_pattern: CEO/reports/workload/${TODAY}-${HOSTNAME}.md
 ---
 
 # Workload Report
+
+> **ARCHIVED 2026-08-12.** The AwesomeMotive work this served ended; retired, not deleted, so it can be revived from the record. See `docs/playbooks/archive/README.md`.
 
 Skill-backed playbook. The dispatcher invokes the `workload-report` skill directly via `runner: skill` — no LLM call.
 

@@ -39,4 +39,4 @@ A briefing of <= 10 bullets (digest, priorities-with-justification, day plan, go
 
 - Read-only. No write actions.
 - All data is pre-gathered; never run gh/git directly.
-- Rank by sprint/Top-3 signal, never by age alone.
+- Rank by Top-3 / review-blocking signal, never by age alone.

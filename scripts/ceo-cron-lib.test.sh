@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/test-harness.sh"
 source "$SCRIPT_DIR/ceo-cron-lib.sh"   # MUST be safe to source (no dispatch)
 
 test_inputs_includes_reads_inputs_json() {
-  INPUTS_JSON='["current_sprint","daily_note"]'
-  _inputs_includes current_sprint && r1=0 || r1=1
+  INPUTS_JSON='["yesterday_merged","daily_note"]'
+  _inputs_includes yesterday_merged && r1=0 || r1=1
   _inputs_includes nope && r2=0 || r2=1
   assert_eq "$r1" "0" "present key returns 0"
   assert_eq "$r2" "1" "absent key returns 1"

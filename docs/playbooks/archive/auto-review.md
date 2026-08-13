@@ -4,12 +4,14 @@ description: Scan team PRs, dispatch 2-round review pipeline, write drafts to Ob
 trigger: cron
 schedule: "17 9,13 * * 1-5"
 model: sonnet
-preflight: has_auto_review_prs
+preflight: none
 tier: read
-status: draft
+status: disabled
 ---
 
 # Auto PR Review
+
+> **ARCHIVED 2026-08-12.** The AwesomeMotive work this served ended; retired, not deleted, so it can be revived from the record. See `docs/playbooks/archive/README.md`.
 
 Scan all team repos for qualifying PRs, run the 2-round review pipeline (Agent A verify + Agent B independent + expert panel), write actionable drafts to Obsidian. Never posts comments — that's a separate interactive action.
 
