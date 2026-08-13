@@ -43,6 +43,19 @@ ceo_morning_raw_digest() {
   [ -n "${DAILY_NOTE_TOP3:-}" ] && { echo "Top 3:"; echo "${DAILY_NOTE_TOP3}"; }
 }
 
+# _looks_like_auth_failure <text> — true when the text names an authentication
+# failure. One pattern, called from both of _classify_claude_failure's tiers, so
+# the envelope path and the plain-text path cannot recognize different sets of
+# messages. `failed to authenticate` and the OAuth clause are what Claude Code
+# actually prints for an expired session; the older, narrower list matched none
+# of it, so morning and reconcile were classified terminal on ML-1 2026-08-13 —
+# no re-auth escalation, and three retries each instead of a fatal stop.
+# Here-string, not a pipe: grep closes the pipe on its first match, which SIGPIPEs
+# a large body and turns a match into a no-match under pipefail.
+_looks_like_auth_failure() {
+  grep -qEi 'authentication_failed|failed to authenticate|not authenticated|logged out|invalid api key|please run .?/login|oauth[^.]{0,40}(expired|refresh)|session expired|could not be refreshed' <<< "${1:-}"
+}
+
 # _classify_claude_failure <exit_code> <raw_stdout> — decide how a `claude
 # --print` invocation ended, so the caller can route it. Prints exactly one of:
 #   ok        succeeded (complete result)
@@ -63,7 +76,7 @@ ceo_morning_raw_digest() {
 # banner tier without it. Pure — no globals, no I/O.
 _classify_claude_failure() {
   local rc="${1:-1}" raw="${2:-}"
-  local is_error="" status="" subtype="" stop=""
+  local is_error="" status="" subtype="" stop="" result=""
   if command -v jq >/dev/null 2>&1; then
     # NB: do NOT use `.is_error // empty` — jq's `//` treats the boolean `false`
     # like null, collapsing a genuine `is_error:false` to empty. Read it raw
@@ -76,6 +89,10 @@ _classify_claude_failure() {
     status=$(jq -r 'if type=="object" then (.api_error_status // empty) else empty end' <<< "$raw" 2>/dev/null || true)
     subtype=$(jq -r 'if type=="object" then (.subtype // empty) else empty end' <<< "$raw" 2>/dev/null || true)
     stop=$(jq -r 'if type=="object" then (.stop_reason // empty) else empty end' <<< "$raw" 2>/dev/null || true)
+    # `.result` carries the human-readable cause, and for an expired OAuth session
+    # it is the ONLY place auth is named: api_error_status comes back null and
+    # subtype reads "success" beside is_error true (observed ML-1 2026-08-13).
+    result=$(jq -r 'if type=="object" then (.result // empty) else empty end' <<< "$raw" 2>/dev/null || true)
   fi
 
   # Parseable success envelope: ok, unless the result was truncated (a partial
@@ -95,6 +112,14 @@ _classify_claude_failure() {
   case "$subtype" in
     *auth*|*login*|*credential*) echo "auth"; return 0 ;;
   esac
+  # Structured error whose only auth signal is the .result prose. Checked against
+  # the same pattern as the plain-text tier below, so the two paths cannot drift
+  # apart — which is how the envelope path missed a message the banner tier would
+  # also have missed. Reached only when is_error is not "false", so a successful
+  # run whose report merely discusses authentication is unaffected.
+  if [ -n "$result" ] && _looks_like_auth_failure "$result"; then
+    echo "auth"; return 0
+  fi
   # Structured error, is_error true, but no usable status → unknown-but-real.
   [ "$is_error" = "true" ] && { echo "terminal"; return 0; }
 
@@ -108,7 +133,7 @@ _classify_claude_failure() {
   if grep -qEi 'session limit|hit your limit|rate.?limit|overloaded' <<< "$raw"; then
     echo "transient"; return 0
   fi
-  if grep -qEi 'authentication_failed|not authenticated|logged out|invalid api key|please run .?/login' <<< "$raw"; then
+  if _looks_like_auth_failure "$raw"; then
     echo "auth"; return 0
   fi
   echo "terminal"; return 0   # fail-safe: unknown never falls open to fallback
