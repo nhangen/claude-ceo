@@ -90,9 +90,17 @@ assert_fails() {
 #
 # Already-durable failures are subtracted rather than assumed absent:
 # _record_assertion_fail bumps FAILS *and* appends a line, so counting the whole
-# delta would report every assert_* failure twice. TEST_FAILS_TMP is truncated
-# after each test by the caller, so the lines in it are exactly this body's, which
-# is what makes the subtraction sound.
+# delta would report every assert_* failure twice.
+#
+# The subtraction assumes the lines in TEST_FAILS_TMP are this body's, and that is
+# not exactly true — `setup` runs before the subshell and `teardown` after the
+# caller truncates, so a durable failure recorded in either lands in the wrong
+# bucket. Likewise a line appended from a *nested* subshell was not counted in the
+# body's FAILS, so it absorbs a bare increment that should have been reported. Both
+# skew low: a real failure can be undercounted, never invented, and the run still
+# exits non-zero. No suite asserts in setup/teardown and none asserts from a nested
+# subshell, and both behave identically on main. Tracked in #317 rather than papered
+# over here, because fixing it properly means giving each scope its own file.
 _record_hand_rolled_fails() {
   local fails_before="$1" recorded=0
   [ -f "${TEST_FAILS_TMP:-}" ] && recorded=$(wc -l < "$TEST_FAILS_TMP")
@@ -133,8 +141,12 @@ run_tests() {
     # its increment discarded when the subshell exits, so the run printed FAIL and
     # then "All tests passed", exit 0 (#310). The comparison has to happen where
     # the increment is still visible, and its result travels out through
-    # TEST_FAILS_TMP like every other durable failure. This gates the propagation
-    # at the harness so a suite cannot opt out by not using the helpers.
+    # TEST_FAILS_TMP like every other durable failure. Gating it here means the 126
+    # existing sites are covered without being edited.
+    #
+    # It covers the body's own scope, not everything beneath it: a bare increment
+    # inside a nested subshell or a command substitution is measured nowhere and is
+    # still lost (#317). fail_test survives there; no current site is in that shape.
     (
       trap 'rc=$?; [ $rc -ne 0 ] && _record_test_abort "$CURRENT_TEST" $rc' EXIT
       "$fn"

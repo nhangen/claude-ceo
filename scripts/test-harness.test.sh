@@ -50,19 +50,33 @@ test_x() {
     "the run must not also claim success"
 }
 
-# The regression itself. A run that prints FAIL and exits 0 is worse than one that
-# misses the check entirely, because the suite is then trusted on the strength of
-# a green exit code that contradicts its own output.
-test_a_masked_failure_cannot_report_success() {
+# A bare increment one level deeper than the test body — a nested subshell, or a
+# helper called in a command substitution — is still lost. The delta is measured in
+# the body's scope, so nothing below it is visible. No current site is in that shape
+# (all 140 checked), and fail_test does survive there, which is why it stays in the
+# harness despite having no callers yet. Pinning both halves so the recommendation is
+# a tested claim rather than a comment: #317.
+test_fail_test_survives_a_nested_subshell() {
   _run_child '
 test_x() {
   assert_eq a a "a passing assertion, so the no-assertions guard stays quiet"
-  fail_test "the thing under test is broken"
+  ( fail_test "failed inside a nested subshell" )
 }'
-  local contradicts=no
-  [ "$CHILD_RC" -eq 0 ] && [[ "$CHILD_OUT" == *FAIL* ]] && contradicts=yes
-  assert_eq "$contradicts" "no" \
-    "printed failures and the exit code must agree — got rc=$CHILD_RC with: $CHILD_OUT"
+  assert_eq "$CHILD_RC" "1" "fail_test reaches the exit code from a nested subshell"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "counted once"
+}
+
+test_a_bare_increment_in_a_nested_subshell_is_known_to_be_lost() {
+  _run_child '
+test_x() {
+  assert_eq a a "a passing assertion, so the no-assertions guard stays quiet"
+  ( FAILS=$((FAILS + 1)) )
+}'
+  # Asserting the limitation, not endorsing it. If a later change makes this work,
+  # this test fails and should be deleted along with the caveat it documents — that
+  # is the intended way to find out the gap closed.
+  assert_eq "$CHILD_RC" "0" \
+    "documents the known gap: a bare increment below the body's scope is invisible (#317)"
 }
 
 # The #310 regression itself, in the shape the 126 existing sites are written in:
