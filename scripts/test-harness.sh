@@ -11,7 +11,17 @@ ASSERTION_COUNT=0
 # FAILS in-process is kept for the case where assert_* is called outside
 # the subshell (e.g. directly from a helper) but the durable signal is the
 # tmp file.
+# Inside a parent-shell scope (`setup`/`teardown`) the file is the only channel used,
+# and the in-process bump is deliberately suppressed. Using both there is what made a
+# setup failure count twice (#317), and reading the two against each other could not
+# tell a bare parent-depth increment from a nested recorded failure — they cancel, and
+# two genuine failures reported as one. One channel per scope removes the ambiguity
+# instead of estimating around it. Exported, so a nested subshell inherits it.
 _record_assertion_fail() {
+  if [ "${HARNESS_PARENT_SCOPE:-0}" = 1 ] && [ -n "${TEST_FAILS_TMP:-}" ]; then
+    echo 1 >> "$TEST_FAILS_TMP"
+    return 0
+  fi
   FAILS=$((FAILS + 1))
   [ -n "${TEST_FAILS_TMP:-}" ] && echo 1 >> "$TEST_FAILS_TMP"
 }
@@ -92,16 +102,28 @@ assert_fails() {
 # _record_assertion_fail bumps FAILS *and* appends a line, so counting the whole
 # delta would report every assert_* failure twice.
 #
-# The subtraction is exact, because TEST_FAILS_TMP holds this body's lines and
-# nothing else: run_tests truncates it before the subshell and leaves it unset while
-# `setup` and `teardown` run (#317). It was not exact before — those two scopes
-# appended to the same file, so a failure from either was read as one the body had
-# already recorded.
+# The lines are this body's and nothing else's — run_tests truncates the file before
+# the subshell, and `setup`/`teardown` write their own (#317). Before that they shared
+# this one, so a failure from either was read as one the body had already recorded.
 #
-# One case is still outside it. A bare increment in a *nested* subshell or a command
-# substitution never reaches the body's FAILS, so the delta cannot see it and it is
-# lost. fail_test works there; no site in these suites is in that shape, and
-# test-harness.test.sh pins both halves.
+# The subtraction still is not exact, in both directions, and both come from the same
+# cause: a nested subshell or command substitution's FAILS bump never reaches the
+# body's, so the delta and the file disagree about what happened down there.
+#
+#   - A bare increment nested: no line, no delta. Lost outright.
+#   - An assert_* or fail_test failure nested: a line with no matching delta, so
+#     `recorded` outruns the delta and this sweep absorbs a real main-scope increment
+#     instead. Two genuine failures report as one.
+#
+# The second is the worse of the two and is the case an earlier version of this
+# comment claimed had been fixed. It has not been. `while [ "$hand_rolled" -gt 0 ]`
+# floors the negative at zero, which is what makes the absorption silent.
+#
+# So fail_test always reports its own failure at either depth, but in *this* scope it
+# cannot repair a bare main-scope increment sitting beside it — that is the absorption
+# above. The parent scopes have no such caveat: there the file is the only channel
+# (see _record_assertion_fail), so nothing cancels. No site in these suites is in
+# either shape, and test-harness.test.sh pins the bare-increment half only.
 _record_hand_rolled_fails() {
   local fails_before="$1" recorded=0
   [ -f "${TEST_FAILS_TMP:-}" ] && recorded=$(wc -l < "$TEST_FAILS_TMP")
@@ -110,6 +132,31 @@ _record_hand_rolled_fails() {
     echo 1 >> "$TEST_FAILS_TMP"
     hand_rolled=$((hand_rolled - 1))
   done
+}
+
+# _fold_parent_scope <file> — fold a parent-shell scope's recorded failures (setup,
+# teardown) into FAILS. Every line is added, with no arithmetic against FAILS, because
+# HARNESS_PARENT_SCOPE suppressed the in-process bump for exactly these lines — so the
+# file is the whole record and cannot double-count. It works at any depth: a nested
+# subshell inherits the exported flag and appends to the same file.
+#
+# A bare `FAILS=$((FAILS + 1))` at parent depth is untouched by all of this and stays
+# durable on its own, since setup/teardown run in this shell. One nested a level down
+# is still lost — no line, no bump — the same residual hole the body scope has.
+#
+# Two earlier cuts of #317 got this wrong and both failed quietly, which is why this
+# one carries no estimate. Unsetting the file removed the channel entirely: a nested
+# failure reached neither, so the run printed FAIL and exited 0. Folding
+# `lines - (FAILS - before)` then read the two channels against each other and could
+# not tell a bare parent increment from a nested recorded failure — they cancelled, and
+# two genuine failures reported as one where main reported two.
+_fold_parent_scope() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  if [ -s "$file" ]; then
+    FAILS=$((FAILS + $(wc -l < "$file")))
+  fi
+  true > "$file"
 }
 
 _record_test_abort() {
@@ -122,24 +169,30 @@ _record_test_abort() {
 
 run_tests() {
   local count=0
-  local body_fails assertions_file
-  body_fails=$(mktemp)
-  assertions_file="${body_fails}.assertions"
+  local body_fails_tmp assertions_tmp parent_fails_tmp
+  body_fails_tmp=$(mktemp)
+  parent_fails_tmp=$(mktemp)
+  assertions_tmp="${body_fails_tmp}.assertions"
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue
     fi
     CURRENT_TEST="$fn"
 
-    # TEST_FAILS_TMP is the subshell's channel and nothing else's. `setup` and
-    # `teardown` run right here in this shell, so _record_assertion_fail's in-process
-    # FAILS bump is already durable for them — leaving the file set as well made each
-    # of their failures land twice, once as the bump and once when the caller folded
-    # the file in. A setup failure was reported as two, and two as four (#317).
-    unset TEST_FAILS_TMP
-
+    # Each scope gets its own file, and inside a parent scope the file is the only
+    # channel — HARNESS_PARENT_SCOPE suppresses the in-process bump. Sharing the body's
+    # file *and* keeping the bump is what made each setup failure land twice, once as
+    # each: a setup failure was reported as two, and two as four (#317). One channel
+    # per scope means a failure below these scopes is still recorded, without the
+    # caller having to guess which channel carried it.
     if type setup >/dev/null 2>&1; then
+      TEST_FAILS_TMP="$parent_fails_tmp"
+      HARNESS_PARENT_SCOPE=1
+      export TEST_FAILS_TMP HARNESS_PARENT_SCOPE
+      true > "$TEST_FAILS_TMP"
       setup
+      HARNESS_PARENT_SCOPE=0
+      _fold_parent_scope "$parent_fails_tmp"
     fi
 
     local assertions_before=$ASSERTION_COUNT
@@ -156,7 +209,7 @@ run_tests() {
     # It covers the body's own scope, not everything beneath it: a bare increment
     # inside a nested subshell or a command substitution is measured nowhere and is
     # still lost (#317). fail_test survives there; no current site is in that shape.
-    TEST_FAILS_TMP="$body_fails"
+    TEST_FAILS_TMP="$body_fails_tmp"
     export TEST_FAILS_TMP
     true > "$TEST_FAILS_TMP"
 
@@ -164,7 +217,7 @@ run_tests() {
       trap 'rc=$?; [ $rc -ne 0 ] && _record_test_abort "$CURRENT_TEST" $rc' EXIT
       "$fn"
       _record_hand_rolled_fails "$fails_before"
-      echo "$ASSERTION_COUNT" > "$assertions_file"
+      echo "$ASSERTION_COUNT" > "$assertions_tmp"
     )
 
     if [ -s "$TEST_FAILS_TMP" ]; then
@@ -174,9 +227,9 @@ run_tests() {
 
     unset TEST_FAILS_TMP
 
-    if [ -f "$assertions_file" ]; then
-      ASSERTION_COUNT=$(cat "$assertions_file")
-      rm -f "$assertions_file"
+    if [ -f "$assertions_tmp" ]; then
+      ASSERTION_COUNT=$(cat "$assertions_tmp")
+      rm -f "$assertions_tmp"
     fi
 
     if [ "$ASSERTION_COUNT" -eq "$assertions_before" ]; then
@@ -185,11 +238,18 @@ run_tests() {
     fi
     
     if type teardown >/dev/null 2>&1; then
+      TEST_FAILS_TMP="$parent_fails_tmp"
+      HARNESS_PARENT_SCOPE=1
+      export TEST_FAILS_TMP HARNESS_PARENT_SCOPE
+      true > "$TEST_FAILS_TMP"
       teardown
+      HARNESS_PARENT_SCOPE=0
+      _fold_parent_scope "$parent_fails_tmp"
+      unset TEST_FAILS_TMP
     fi
     count=$((count + 1))
   done
-  rm -f "$body_fails" "$assertions_file"
+  rm -f "$body_fails_tmp" "$assertions_tmp" "$parent_fails_tmp"
 
   echo ""
   if [ "$FAILS" -eq 0 ]; then
