@@ -92,15 +92,16 @@ assert_fails() {
 # _record_assertion_fail bumps FAILS *and* appends a line, so counting the whole
 # delta would report every assert_* failure twice.
 #
-# The subtraction assumes the lines in TEST_FAILS_TMP are this body's, and that is
-# not exactly true — `setup` runs before the subshell and `teardown` after the
-# caller truncates, so a durable failure recorded in either lands in the wrong
-# bucket. Likewise a line appended from a *nested* subshell was not counted in the
-# body's FAILS, so it absorbs a bare increment that should have been reported. Both
-# skew low: a real failure can be undercounted, never invented, and the run still
-# exits non-zero. No suite asserts in setup/teardown and none asserts from a nested
-# subshell, and both behave identically on main. Tracked in #317 rather than papered
-# over here, because fixing it properly means giving each scope its own file.
+# The subtraction is exact, because TEST_FAILS_TMP holds this body's lines and
+# nothing else: run_tests truncates it before the subshell and leaves it unset while
+# `setup` and `teardown` run (#317). It was not exact before — those two scopes
+# appended to the same file, so a failure from either was read as one the body had
+# already recorded.
+#
+# One case is still outside it. A bare increment in a *nested* subshell or a command
+# substitution never reaches the body's FAILS, so the delta cannot see it and it is
+# lost. fail_test works there; no site in these suites is in that shape, and
+# test-harness.test.sh pins both halves.
 _record_hand_rolled_fails() {
   local fails_before="$1" recorded=0
   [ -f "${TEST_FAILS_TMP:-}" ] && recorded=$(wc -l < "$TEST_FAILS_TMP")
@@ -121,18 +122,26 @@ _record_test_abort() {
 
 run_tests() {
   local count=0
-  export TEST_FAILS_TMP
-  TEST_FAILS_TMP=$(mktemp)
+  local body_fails assertions_file
+  body_fails=$(mktemp)
+  assertions_file="${body_fails}.assertions"
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue
     fi
     CURRENT_TEST="$fn"
-    
+
+    # TEST_FAILS_TMP is the subshell's channel and nothing else's. `setup` and
+    # `teardown` run right here in this shell, so _record_assertion_fail's in-process
+    # FAILS bump is already durable for them — leaving the file set as well made each
+    # of their failures land twice, once as the bump and once when the caller folded
+    # the file in. A setup failure was reported as two, and two as four (#317).
+    unset TEST_FAILS_TMP
+
     if type setup >/dev/null 2>&1; then
       setup
     fi
-    
+
     local assertions_before=$ASSERTION_COUNT
     local fails_before=$FAILS
 
@@ -147,22 +156,29 @@ run_tests() {
     # It covers the body's own scope, not everything beneath it: a bare increment
     # inside a nested subshell or a command substitution is measured nowhere and is
     # still lost (#317). fail_test survives there; no current site is in that shape.
+    TEST_FAILS_TMP="$body_fails"
+    export TEST_FAILS_TMP
+    true > "$TEST_FAILS_TMP"
+
     (
       trap 'rc=$?; [ $rc -ne 0 ] && _record_test_abort "$CURRENT_TEST" $rc' EXIT
       "$fn"
       _record_hand_rolled_fails "$fails_before"
-      echo "$ASSERTION_COUNT" > "${TEST_FAILS_TMP}.assertions"
+      echo "$ASSERTION_COUNT" > "$assertions_file"
     )
 
     if [ -s "$TEST_FAILS_TMP" ]; then
       FAILS=$((FAILS + $(wc -l < "$TEST_FAILS_TMP")))
       true > "$TEST_FAILS_TMP"
     fi
-    
-    if [ -f "${TEST_FAILS_TMP}.assertions" ]; then
-      ASSERTION_COUNT=$(cat "${TEST_FAILS_TMP}.assertions")
+
+    unset TEST_FAILS_TMP
+
+    if [ -f "$assertions_file" ]; then
+      ASSERTION_COUNT=$(cat "$assertions_file")
+      rm -f "$assertions_file"
     fi
-    
+
     if [ "$ASSERTION_COUNT" -eq "$assertions_before" ]; then
       printf '  FAIL [%s] NO ASSERTIONS RAN (test body exited early or had no assertions)\n' "$CURRENT_TEST"
       FAILS=$((FAILS + 1))
@@ -173,8 +189,8 @@ run_tests() {
     fi
     count=$((count + 1))
   done
-  rm -f "$TEST_FAILS_TMP" "${TEST_FAILS_TMP}.assertions"
-  
+  rm -f "$body_fails" "$assertions_file"
+
   echo ""
   if [ "$FAILS" -eq 0 ]; then
     echo "All tests passed. ($count tests)"
