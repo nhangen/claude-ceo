@@ -53,9 +53,9 @@ test_x() {
 # A bare increment one level deeper than the test body — a nested subshell, or a
 # helper called in a command substitution — is still lost. The delta is measured in
 # the body's scope, so nothing below it is visible. No current site is in that shape
-# (all 140 checked), and fail_test does survive there, which is why it stays in the
-# harness despite having no callers yet. Pinning both halves so the recommendation is
-# a tested claim rather than a comment: #317.
+# (all 140 checked), and fail_test does survive there, which is what makes it the
+# recommendation rather than a bare increment. Pinning both halves so that is a tested
+# claim rather than a comment: #317.
 test_fail_test_survives_a_nested_subshell() {
   _run_child '
 test_x() {
@@ -64,6 +64,145 @@ test_x() {
 }'
   assert_eq "$CHILD_RC" "1" "fail_test reaches the exit code from a nested subshell"
   assert_contains "$CHILD_OUT" "FAILED: 1" "counted once"
+}
+
+# --- Scope attribution (#317) ---
+#
+# `setup` and `teardown` run in the caller's shell, not in the per-test subshell, so
+# _record_assertion_fail's in-process FAILS bump is already durable there. It also
+# appended a line to the shared failure file, and the caller folded that file into
+# FAILS — counting the same failure twice. Each scope's record is now kept in exactly
+# one place: the subshell body reports through its own file, the parent-shell scopes
+# through FAILS directly.
+#
+# The counts below were measured against the pre-fix harness, not derived from the
+# ticket. #317 described this as skewing low and never inventing a failure; that is
+# wrong in the setup case, which invents one per failure. Three of the surrounding
+# cases pass on the broken harness because the double-count cancels a separately
+# lost increment, so any test here has to name the number it expects and why.
+
+test_one_setup_failure_is_counted_once() {
+  _run_child '
+setup() { fail_test "the setup failure"; }
+test_x() { assert_eq a a "the body itself passes"; }'
+  # Pre-fix: FAILED: 2. One failure, counted by the in-process bump and again when
+  # the caller folded setup's line out of the shared file.
+  assert_contains "$CHILD_OUT" "FAILED: 1" "one setup failure is one failure"
+  assert_not_contains "$CHILD_OUT" "FAILED: 2" "not doubled"
+  assert_eq "$CHILD_RC" "1" "and the run still fails"
+}
+
+test_setup_failures_are_not_doubled_at_scale() {
+  _run_child '
+setup() { fail_test "s1"; fail_test "s2"; }
+test_x() { assert_eq a a "the body itself passes"; }'
+  # Pre-fix: FAILED: 4. Proves the ×2 relationship rather than a one-off off-by-one,
+  # which a single-failure case alone cannot distinguish.
+  assert_contains "$CHILD_OUT" "FAILED: 2" "two setup failures are two, not four"
+}
+
+test_a_setup_assert_failure_is_also_counted_once() {
+  _run_child '
+setup() { assert_eq got want "setup assertion"; }
+test_x() { assert_eq a a "the body itself passes"; }'
+  # Same defect through assert_* rather than fail_test — both route to
+  # _record_assertion_fail, so a fix that only touched fail_test would miss this.
+  assert_contains "$CHILD_OUT" "FAILED: 1" "a setup assert failure counts once"
+  assert_contains "$CHILD_OUT" "setup assertion" "and its message is printed"
+}
+
+test_a_setup_failure_and_a_body_increment_are_both_counted() {
+  _run_child '
+setup() { fail_test "the setup failure"; }
+test_x() {
+  assert_eq a a "a passing assertion, so the no-assertions guard stays quiet"
+  FAILS=$((FAILS + 1))
+}'
+  # Pre-fix this already reported 2 — the right number for the wrong reason: setup's
+  # line was double-counted while it simultaneously absorbed the body's increment via
+  # the sweep's subtraction. Kept so the fix cannot restore the balance by
+  # reintroducing either half.
+  assert_contains "$CHILD_OUT" "FAILED: 2" \
+    "a setup failure plus a body increment is two, each counted once"
+}
+
+test_a_teardown_failure_is_counted_once_on_the_last_test() {
+  _run_child '
+teardown() { fail_test "the teardown failure"; }
+test_x() { assert_eq a a "the body itself passes"; }'
+  # Pre-fix this was correct by accident: teardown ran after the caller truncated,
+  # and the loop deleted the file before folding it, so only the in-process bump
+  # survived. Now it is correct by construction.
+  assert_eq "$CHILD_RC" "1" "a failure recorded in teardown fails the run"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "counted once"
+  assert_not_contains "$CHILD_OUT" "All tests passed" "never reported as success"
+}
+
+test_a_teardown_failure_does_not_absorb_the_next_tests_increment() {
+  _run_child '
+teardown() { fail_test "teardown failure"; }
+test_a() { assert_eq a a "passes"; }
+test_b() {
+  assert_eq a a "passes"
+  FAILS=$((FAILS + 1))
+}'
+  # Two teardown failures plus test_b's bare increment. Pre-fix also 3, again by
+  # cancellation: teardown_a's leftover line was re-folded as a second failure while
+  # absorbing test_b's increment.
+  assert_contains "$CHILD_OUT" "FAILED: 3" \
+    "two teardown failures plus one body increment, each counted once"
+}
+
+# The parent scopes get a file of their own rather than no file. An earlier cut of
+# this fix just unset TEST_FAILS_TMP while setup/teardown ran, on the reasoning that
+# their in-process FAILS bump is already durable. True at that shell's depth, false
+# one level down — and unsetting removed the file channel that was carrying it, so a
+# failure below the parent scope reached neither. `main` reported it; that cut printed
+# FAIL and exited 0. Same shape as #310, in a scope the fix hadn't considered.
+
+test_a_setup_failure_below_the_parent_shell_still_fails_the_run() {
+  _run_child '
+setup() { ( fail_test "a setup failure one level down" ); }
+test_x() { assert_eq a a "the body itself passes"; }'
+  assert_eq "$CHILD_RC" "1" "a setup failure below the parent shell must fail the run"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "and is counted exactly once"
+  assert_not_contains "$CHILD_OUT" "All tests passed" "never reported as success"
+}
+
+test_a_teardown_failure_below_the_parent_shell_still_fails_the_run() {
+  _run_child '
+teardown() { x=$(fail_test "a teardown failure one level down"); }
+test_x() { assert_eq a a "the body itself passes"; }'
+  # This half was never a regression — `main` loses it too — so it is a fix, not a
+  # restoration. Pinned alongside its sibling because the harness comments name both
+  # scopes and a reader has no way to tell which one was ever covered.
+  assert_eq "$CHILD_RC" "1" "a teardown failure below the parent shell must fail the run"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "and is counted exactly once"
+}
+
+test_a_parent_scope_failure_at_both_depths_is_counted_once_each() {
+  _run_child '
+setup() { fail_test "at parent depth"; ( fail_test "one level down" ); }
+test_x() { assert_eq a a "the body itself passes"; }'
+  # The two channels must not overlap: the parent-depth failure is carried by its
+  # in-process bump and the nested one by its file line. Counting the file wholesale
+  # would double the first; ignoring it would drop the second.
+  assert_contains "$CHILD_OUT" "FAILED: 2" \
+    "one failure at parent depth plus one below it is two, not one and not three"
+}
+
+test_a_bare_parent_increment_beside_a_nested_failure_counts_both() {
+  _run_child '
+setup() { FAILS=$((FAILS + 1)); ( fail_test "one level down" ); }
+test_x() { assert_eq a a "the body itself passes"; }'
+  # The second cut of this fix folded `lines - (FAILS - before)`, reading the two
+  # channels against each other. A bare parent-depth increment (delta, no line) and a
+  # nested recorded failure (line, no delta) cancelled exactly, so this reported 1 —
+  # under-counting where even `main` reported 2. Suppressing the in-process bump inside
+  # a parent scope makes the file the whole record and removes the ambiguity, but the
+  # arithmetic version looked right, so it gets a trip-wire.
+  assert_contains "$CHILD_OUT" "FAILED: 2" \
+    "a bare parent-depth increment and a nested recorded failure are two failures"
 }
 
 test_a_bare_increment_in_a_nested_subshell_is_known_to_be_lost() {
