@@ -1,0 +1,13 @@
+# Commits in this repository dated 2026-05-28 through 2026-07-14 were authored or
+# committed as `Test User <test@example.com>`. That is not a second contributor: a
+# test suite's setup ran `git config --global user.email` and never restored it, so
+# the placeholder became this machine's global git identity, and every repository
+# committed to in that window inherited the byline. The run ends the day the git
+# identity gate landed. See nhangen/llm-tools#397 and #398.
+#
+# Mapped rather than rewritten. The commits themselves are fine; only the byline is
+# wrong, and rewriting pushed history to correct a name is not a trade worth making.
+# git log, shortlog, and blame honour this file. The raw objects still carry the
+# placeholder, which is the honest record of what happened. Note that GitHub honours
+# .mailmap for the contributors graph only, not for blame or commit pages.
+Nathan Hangen <nhangen@gmail.com> <test@example.com>
