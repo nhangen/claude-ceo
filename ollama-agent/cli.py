@@ -50,6 +50,23 @@ def main(argv=None):
     p.add_argument("--host", default="127.0.0.1:11434")
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--num-ctx", type=int, default=16384)
+    # A thinking model can spend an entire turn reasoning and never reach an answer. On
+    # one long analytic turn that is fatal (measured: qwen3.8:27b over a 1,464-token diff
+    # never answered inside the 600s request timeout, and finished in 62s with thinking
+    # off); across many short turns it costs nothing. So the caller says, and the default
+    # is whatever the model does on its own — unchanged from before this flag existed.
+    p.add_argument("--no-think", dest="think", action="store_const", const=False,
+                   default=None, help="Suppress a thinking model's reasoning phase.")
+    p.add_argument("--timeout", type=int, default=600,
+                   help="Seconds to wait on one ollama request (default 600).")
+    # Some tasks are one completion, not an agentic loop — a code review reads a diff that
+    # is already inline and answers. Offered tools, a model explores instead: measured on
+    # qwen3.8:27b reviewing a diff, three turns went to grep and sed against the very file
+    # pasted into the prompt, the turn cap ran out, and the run returned a tool result
+    # instead of findings. Telling it not to in the prompt did not stop it; withholding the
+    # tools does.
+    p.add_argument("--no-tools", action="store_true",
+                   help="Offer the model no tools — for a single-completion task.")
     p.add_argument("--turn-cap", type=int, default=8)
     p.add_argument("--verify-cmd", default=None,
                    help="Shell command that gates completion: the agent keeps "
@@ -170,7 +187,7 @@ def main(argv=None):
     if skills:
         system = f"{render_catalog(skills)}\n\n{system}"
         print(f"skills: {len(skills)} available (use_skill enabled)", file=sys.stderr)
-    tools = TOOLS + ([USE_SKILL_TOOL] if skills else [])
+    tools = [] if a.no_tools else TOOLS + ([USE_SKILL_TOOL] if skills else [])
 
     mcp_transport, mcp_client, mcp_names = None, None, {}
     if a.mcp:
@@ -202,7 +219,8 @@ def main(argv=None):
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names)
-    transport = ollama_transport(a.model, host=a.host, temperature=a.temperature, num_ctx=a.num_ctx)
+    transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
+                                 num_ctx=a.num_ctx, timeout=a.timeout, think=a.think)
     try:
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
                         run_id=a.run_id, verify_cmd=a.verify_cmd)

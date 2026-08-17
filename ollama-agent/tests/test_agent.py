@@ -374,6 +374,45 @@ def test_transport_success(monkeypatch):
     assert usage == {"input": 7, "output": 11}
 
 
+def _captured_payload(monkeypatch, **kwargs):
+    """Return the JSON body ollama_transport would POST, plus the timeout it passed."""
+    import ollama_agent.transport as t
+    seen = {}
+
+    def fake_urlopen(req, timeout):
+        seen["body"] = json.loads(req.data.decode())
+        seen["timeout"] = timeout
+        return _FakeResp(200, json.dumps({"message": {"role": "assistant", "content": "ok"},
+                                          "prompt_eval_count": 1, "eval_count": 1}))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fake_urlopen)
+    t.ollama_transport("m", **kwargs)([{"role": "user", "content": "hi"}], [])
+    return seen
+
+
+def test_transport_omits_think_by_default(monkeypatch):
+    # The default has to stay byte-identical to what shipped before the parameter existed:
+    # an older daemon should not be handed a field it does not know, and "think": null is
+    # not the same request as no "think" key at all.
+    seen = _captured_payload(monkeypatch)
+    assert "think" not in seen["body"]
+    assert seen["timeout"] == 600
+
+
+def test_transport_sends_think_false_when_asked(monkeypatch):
+    # A thinking model can spend a whole turn reasoning and never answer. Measured on
+    # qwen3.8:27b over a 1,464-token diff: no answer inside 600s with thinking on, 62s
+    # with it off. The flag is the only thing that reaches the daemon — a "/no_think"
+    # prompt prefix was measured doing nothing at all.
+    seen = _captured_payload(monkeypatch, think=False)
+    assert seen["body"]["think"] is False
+
+
+def test_transport_timeout_is_caller_settable(monkeypatch):
+    seen = _captured_payload(monkeypatch, timeout=42)
+    assert seen["timeout"] == 42
+
+
 def test_transport_httperror_routes_through_success_parser(monkeypatch):
     import io
     import ollama_agent.transport as t

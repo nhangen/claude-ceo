@@ -431,3 +431,56 @@ def test_cli_ungated_opt_in_runs(tmp_path, monkeypatch, capsys):
     rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills", "--ungated"])
     assert rc == 0
     assert "system" in captured       # run_agent reached
+
+
+def _transport_kwargs(tmp_path, monkeypatch, argv):
+    """Run main() offline and return the kwargs it handed ollama_transport."""
+    captured = {}
+    _stub(monkeypatch, captured)
+    seen = {}
+    monkeypatch.setattr(cli, "ollama_transport",
+                        lambda *a, **k: seen.update(k) or (lambda m, t: {"role": "assistant", "content": "ok"}))
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--ungated"] + argv)
+    assert rc == 0
+    return seen
+
+
+def test_cli_defaults_leave_thinking_to_the_model(tmp_path, monkeypatch):
+    # Existing callers must be unaffected: think=None means the payload carries no
+    # "think" key at all, which is what shipped before the flag existed.
+    seen = _transport_kwargs(tmp_path, monkeypatch, [])
+    assert seen["think"] is None
+    assert seen["timeout"] == 600
+
+
+def test_cli_no_think_reaches_the_transport(tmp_path, monkeypatch):
+    # The wrapper that needs this (ollama-review.sh) runs one long analytic turn, where
+    # a thinking model spends the whole turn reasoning and never answers.
+    seen = _transport_kwargs(tmp_path, monkeypatch, ["--no-think"])
+    assert seen["think"] is False
+
+
+def test_cli_timeout_reaches_the_transport(tmp_path, monkeypatch):
+    seen = _transport_kwargs(tmp_path, monkeypatch, ["--timeout", "1200"])
+    assert seen["timeout"] == 1200
+
+
+def test_cli_no_tools_offers_an_empty_toolset(tmp_path, monkeypatch):
+    # A review is one completion. Given tools, the model was measured spending its whole
+    # turn budget grepping the file already pasted into its prompt and never answering.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "review this", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--ungated", "--no-tools"])
+    assert rc == 0
+    assert captured["tools"] == []
+
+
+def test_cli_tools_are_offered_by_default(tmp_path, monkeypatch):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--ungated"])
+    assert rc == 0
+    assert captured["tools"], "the default must keep offering the toolset"
