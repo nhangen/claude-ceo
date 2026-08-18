@@ -465,3 +465,47 @@ def test_parse_chat_response_error_body_raises():
 def test_parse_chat_response_missing_message_raises():
     with pytest.raises(RuntimeError, match="no message"):
         parse_chat_response(200, json.dumps({"done": True}))
+
+
+# --- why the run ended (reason) ---
+#
+# The ledger's outcome was a two-field truth table with a null in it:
+# (completed, verified). Across 57 real rows the shapes are (True, None) x28,
+# (True, True) x17, (False, False) x7, (False, None) x5 — so reading "did this
+# work" means joining two nullable fields and knowing that None means "no gate
+# configured", not "unknown". `reason` says it in one field.
+#
+# Only the three values the loop can actually reach are emitted. A RuntimeError
+# returns from cli before the ledger write, and an OOM kill takes the process
+# with it, so "error"/"killed" would be values nothing ever writes.
+
+def test_reason_ok_when_model_stops_ungated(tmp_path):
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd=None)
+    assert rec["reason"] == "ok"
+
+
+def test_reason_ok_when_the_gate_passes(tmp_path):
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="true")
+    assert rec["reason"] == "ok"
+
+
+def test_reason_turn_cap_when_ungated_run_exhausts_the_cap(tmp_path):
+    # The 5 real (False, None) rows: the model never stopped and no gate was
+    # configured, so nothing failed — it just ran out of turns.
+    transport = _script({"role": "assistant", "tool_calls": [
+        {"function": {"name": "list_dir", "arguments": {"path": "."}}}]})
+    rec = run_agent("loop forever", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, turn_cap=4)
+    assert rec["completed"] is False
+    assert rec["reason"] == "turn-cap"
+
+
+def test_reason_verify_failed_when_the_gate_is_still_red_at_the_cap(tmp_path):
+    # The 7 real (False, False) rows, all at turns == cap. Distinct from the
+    # case above: work was attempted and the gate rejected it every time.
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS,
+                    turn_cap=3, verify_cmd="false")
+    assert rec["completed"] is False
+    assert rec["reason"] == "verify-failed"

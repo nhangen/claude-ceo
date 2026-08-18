@@ -91,3 +91,21 @@ def test_ledger_path_uses_xdg_state(monkeypatch, tmp_path):
     monkeypatch.delenv("OLLAMA_AGENT_LEDGER", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     assert ledger_path() == tmp_path / "ollama-agent" / "runs.jsonl"
+
+
+def test_append_run_records_the_reason(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(completed=False, verified=False, reason="verify-failed"),
+               "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["reason"] == "verify-failed"
+
+
+def test_append_run_reason_absent_reads_as_null(tmp_path):
+    # Rows written before this field existed have no reason; a consumer must be
+    # able to tell "not recorded" from any real value rather than get a default
+    # that reads as a claim about the run.
+    p = tmp_path / "runs.jsonl"
+    rec = _rec()
+    rec.pop("reason", None)
+    append_run(rec, "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["reason"] is None
