@@ -54,6 +54,7 @@ def append_run(rec, model, task_name, cwd, now=None, path=None):
         "turns": rec.get("turns"),
         "completed": rec.get("completed"),
         "verified": rec.get("verified"),
+        "reason": rec.get("reason"),
     }
     try:
         p.parent.mkdir(parents=True, exist_ok=True)

@@ -72,12 +72,19 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     failure back and the loop continues, so the run drives to a green gate rather
     than to the model's own say-so. `verified` is None when no gate is configured,
     else the last check's pass/fail; the turn cap still bounds the loop.
+
+    `reason` says why the loop ended in one field, so a consumer needn't join
+    two nullable ones: "ok" (the model stopped and the gate passed, or none
+    was configured), "turn-cap" (ungated run out of turns), or
+    "verify-failed" (out of turns, gate last observed red). It carries no
+    value for a crash or a kill — neither reaches the ledger write.
     """
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": task}]
     transcript = list(messages)
     completed = False
     verified = None
+    reason = None
     turns = 0
     ollama_input_tokens = 0
     ollama_output_tokens = 0
@@ -100,6 +107,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                 if res.get("returncode") == 0:
                     verified = True
                     completed = True
+                    reason = "ok"
                     break
                 verified = False
                 feedback = {"role": "user", "content": (
@@ -112,6 +120,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                 messages.append(feedback)
                 continue
             completed = True
+            reason = "ok"
             break
         for c in calls:
             fn_obj = c.get("function") or {}
@@ -128,9 +137,17 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
             tool_msg = {"role": "tool", "content": result}
             transcript.append(tool_msg)
             messages.append(tool_msg)
+    if reason is None:
+        # Fell out of the while condition rather than breaking, so the cap is
+        # exhausted. `verified is False` means a gate was configured and was
+        # red the last time it ran — which may be several turns back, if the
+        # model kept calling tools afterwards and never stopped again. None
+        # means no gate was configured, so nothing failed: it ran out of turns.
+        reason = "verify-failed" if verified is False else "turn-cap"
     return {
         "completed": completed,
         "verified": verified,
+        "reason": reason,
         "turns": turns,
         "run_id": run_id,
         "ollama_input_tokens": ollama_input_tokens,

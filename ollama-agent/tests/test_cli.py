@@ -484,3 +484,22 @@ def test_cli_tools_are_offered_by_default(tmp_path, monkeypatch):
                    "--no-rules", "--no-skills", "--ungated"])
     assert rc == 0
     assert captured["tools"], "the default must keep offering the toolset"
+
+
+def test_cli_writes_the_reason_to_a_real_ledger(tmp_path, monkeypatch, capsys):
+    # End-to-end through the wiring the other cli tests stub out: real run_agent,
+    # real append_run, a real ledger file. Only the network transport is faked.
+    # `_stub` replaces both run_agent and append_run, so a `reason` asserted only
+    # there would pass with the field never reaching a ledger row.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+    monkeypatch.setattr(cli, "ollama_transport",
+                        lambda *a, **k: (lambda m, t: ({"role": "assistant", "content": "ok"},
+                                                       {"input": 10, "output": 20})))
+    rc = cli.main(["--ungated", "--task", "fix it", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--verify-cmd", "false", "--turn-cap", "2"])
+    assert rc == 0
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["verified"] is False
+    assert row["reason"] == "verify-failed"
