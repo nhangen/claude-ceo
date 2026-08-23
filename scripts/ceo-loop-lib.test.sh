@@ -204,9 +204,20 @@ test_promotion_high_risk_to_production_main_without_approval_blocked_hard() {
   assert_eq "$rc" "7" "premium gate is a hard stop, not advisory"
 }
 
+test_promotion_approval_bound_to_wrong_digest_does_not_unlock() {
+  printf '%s\n' '{"approved_by":"n","ticket":"t","change_digest":"deadbeef"}' > "$TMP/approval-wrong.json"
+  local out rc=0
+  out=$(ceo_promotion_gate high main main "$TMP/approval-wrong.json" "real-digest") || rc=$?
+  assert_eq "$out" "blocked-premium"
+  assert_eq "$rc" "7"
+  # The same approval bound to THIS change's digest does unlock it.
+  printf '%s\n' '{"approved_by":"n","ticket":"t","change_digest":"real-digest"}' > "$TMP/approval-right.json"
+  assert_eq "$(ceo_promotion_gate high main main "$TMP/approval-right.json" "real-digest")" "promote"
+}
+
 test_promotion_high_risk_with_premium_approval_evidence_promotes() {
   : > "$TMP/premium-approval.md"
-  assert_eq "$(ceo_promotion_gate high main main "$TMP/premium-approval.md")" "promote"
+  assert_eq "$(ceo_promotion_gate low main main "$TMP/premium-approval.md" "")" "park-integration"
 }
 
 test_promotion_low_risk_defaults_to_integration_branch() {
