@@ -18,6 +18,13 @@ ceo_loop_state_dir() {
   printf '%s/%s' "$CEO_LOOP_STATE_ROOT" "$1"
 }
 
+# ── portable mutual exclusion (no flock on macOS/BSD) ────────────────────────
+# State mutations that read-modify-write run inside an inner bash whose body is
+# a single-quoted heredoc (no nested-quote hell), guarded by an atomic mkdir
+# lock with a bounded wait: concurrent loops queue up or fail loudly at
+# CEO_LOCK_TIMEOUT_SECS — they never race.
+CEO_LOCK_TIMEOUT_SECS="${CEO_LOCK_TIMEOUT_SECS:-10}"
+
 # ── risk classification (#329: premium gate scope) ──────────────────────────
 
 # ceo_risk_classify <map.json> <repo-relative-path>...
@@ -48,62 +55,95 @@ ceo_risk_classify() {
 # ── finding fingerprints → repair-ticket dedup (#329 AC: equivalents collapse) ─
 
 # ceo_finding_fingerprint <repo> <base-sha> <invariant-or-test> <location> <severity>
-# Location is normalized: line numbers stripped, so "the same finding at a
-# shifted line" collapses. Base sha binds the fingerprint to what the finding
-# was found against — a rebase that changes the code legitimately re-opens.
+# Location is normalized (line numbers stripped) so "the same finding at a
+# shifted line" collapses; severity is case-folded so HIGH/high agree. Base sha
+# binds the fingerprint to what the finding was found against — a rebase that
+# changes the code legitimately re-opens.
 ceo_finding_fingerprint() {
   local repo="$1" base="$2" invariant="$3" location="$4" severity="$5"
   local normalized
   normalized="$(printf '%s' "$location" | sed -E 's/:[0-9]+(:[0-9]+)?$//')"
+  severity="$(printf '%s' "$severity" | tr '[:upper:]' '[:lower:]')"
   printf '%s' "$repo|$base|$invariant|$normalized|$severity" | shasum -a 256 | cut -d' ' -f1
 }
 
-# ceo_ticket_dedup <state-dir> <fingerprint> <ticket-json>
+# ceo_ticket_dedup <state-dir> <fingerprint> <summary>
 # Echoes the existing ticket id when this fingerprint was already filed;
-# otherwise appends the row (retries start at 0) and echoes the new id.
+# otherwise appends the row under the state lock (retries start at 0) and
+# echoes the new id. The full fingerprint is the ticket id — no truncation,
+# so requeue updates can never touch a sibling row.
 ceo_ticket_dedup() {
-  local dir="$1" fp="$2" ticket_json="$3"
+  local dir="$1" fp="$2" summary="$3"
   mkdir -p "$dir"
-  local file="$dir/repair-tickets.jsonl"
-  touch "$file"
-  local existing
-  existing="$(jq -r --arg fp "$fp" 'select(.fingerprint == $fp) | .ticket_id' "$file" 2>/dev/null | head -1)"
-  if [ -n "$existing" ]; then
-    echo "$existing"
-    return 0
+  touch "$dir/repair-tickets.jsonl"
+  CEO_LOCK_DIR="$dir" CEO_FP="$fp" CEO_SUMMARY="$summary" CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash <<'DEDUP_INNER'
+set -euo pipefail
+lock="$CEO_LOCK_DIR/.lock"; waited=0
+until mkdir "$lock" 2>/dev/null; do
+  sleep 0.2; waited=$((waited + 1))
+  if [ "$waited" -ge $((CEO_LOCK_WAIT * 5)) ]; then
+    echo "ceo-lock: state lock at $lock held too long — refusing to race" >&2
+    exit 8
   fi
-  jq -nc --arg fp "$fp" --arg json "$ticket_json" \
-    '{fingerprint: $fp, ticket_id: ("repair-" + ($fp | .[0:12])), retries: 0} + ($json | fromjson)' \
-    >> "$file"
-  jq -r --arg fp "$fp" 'select(.fingerprint == $fp) | .ticket_id' "$file" | head -1
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+file="$CEO_LOCK_DIR/repair-tickets.jsonl"
+existing="$(jq -r --arg fp "$CEO_FP" 'select(.fingerprint == $fp) | .ticket_id' "$file" | head -1)"
+if [ -n "$existing" ]; then
+  echo "$existing"
+  exit 0
+fi
+jq -nc --arg fp "$CEO_FP" --arg s "$CEO_SUMMARY"   '{fingerprint: $fp, ticket_id: ("repair-" + $fp), retries: 0, summary: $s}' >> "$file"
+echo "repair-$CEO_FP"
+DEDUP_INNER
 }
 
 # ── bounded requeue (#329 AC: exhaustion stays visible) ──────────────────────
 
 # ceo_requeue_decide <state-dir> <ticket-id> <max-retries>
 # Increments the retry counter and prints "retry:<n>", or on reaching the cap
-# prints "exhausted", records the ticket in exhausted.jsonl, and exits 3 —
-# loud, but distinguishable from a generic failure.
+# prints "exhausted", records the ticket in exhausted.jsonl exactly once (the
+# row is marked so later cycles short-circuit), and exits 3 — loud, but
+# distinguishable from a generic failure. Unknown tickets are an internal
+# error, not CLI misuse: exit 8.
 ceo_requeue_decide() {
   local dir="$1" ticket_id="$2" max_retries="$3"
   mkdir -p "$dir"
-  local file="$dir/repair-tickets.jsonl"
-  touch "$file"
-  if ! jq -e --arg t "$ticket_id" 'select(.ticket_id == $t)' "$file" >/dev/null; then
-    echo "ceo-requeue: unknown ticket $ticket_id" >&2
-    return 2
+  touch "$dir/repair-tickets.jsonl"
+  CEO_LOCK_DIR="$dir" CEO_T="$ticket_id" CEO_MAX="$max_retries" \
+    CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash <<'REQUEUE_INNER'
+set -euo pipefail
+lock="$CEO_LOCK_DIR/.lock"; waited=0
+until mkdir "$lock" 2>/dev/null; do
+  sleep 0.2; waited=$((waited + 1))
+  if [ "$waited" -ge $((CEO_LOCK_WAIT * 5)) ]; then
+    echo "ceo-lock: state lock at $lock held too long — refusing to race" >&2
+    exit 8
   fi
-  local current next
-  current="$(jq -r --arg t "$ticket_id" 'select(.ticket_id == $t) | .retries' "$file" | head -1)"
-  next=$((current + 1))
-  if [ "$next" -gt "$max_retries" ]; then
-    jq -c --arg t "$ticket_id" 'select(.ticket_id == $t)' "$file" | head -1 >> "$dir/exhausted.jsonl"
-    echo "exhausted"
-    return 3
-  fi
-  jq -c --arg t "$ticket_id" 'select(.ticket_id == $t) |= (.retries = '"$next"')' "$file" > "$file.tmp" \
-    && mv "$file.tmp" "$file"
-  echo "retry:$next"
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+file="$CEO_LOCK_DIR/repair-tickets.jsonl"
+if ! jq -e --arg t "$CEO_T" 'select(.ticket_id == $t)' "$file" >/dev/null; then
+  echo "ceo-requeue: unknown ticket $CEO_T" >&2
+  exit 8
+fi
+status="$(jq -r --arg t "$CEO_T" 'select(.ticket_id == $t) | .status // ""' "$file" | head -1)"
+if [ "$status" = "exhausted" ]; then
+  echo "exhausted"; exit 3
+fi
+current="$(jq -r --arg t "$CEO_T" 'select(.ticket_id == $t) | .retries' "$file" | head -1)"
+next=$((current + 1))
+if [ "$next" -gt "$CEO_MAX" ]; then
+  jq -c --arg t "$CEO_T" 'select(.ticket_id == $t) | .status = "exhausted"' "$file" \
+    | head -1 >> "$CEO_LOCK_DIR/exhausted.jsonl"
+  jq -c --arg t "$CEO_T" 'select(.ticket_id == $t) |= (.status = "exhausted")' "$file" \
+    > "$file.tmp" && mv "$file.tmp" "$file"
+  echo "exhausted"; exit 3
+fi
+jq -c --arg t "$CEO_T" --argjson n "$next" \
+  'select(.ticket_id == $t) |= (.retries = $n)' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+echo "retry:$next"
+REQUEUE_INNER
 }
 
 # ── provider-neutral routing with policy failover (#329) ─────────────────────
@@ -185,30 +225,67 @@ ceo_review_gate() {
 ceo_worker_register() {
   local dir="$1" branch="$2" base="$3"; shift 3
   mkdir -p "$dir"
-  local file="$dir/workers.jsonl"
-  touch "$file"
-  local f conflict
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    for f in "$@"; do
-      if jq -e --arg f "$f" --arg b "$branch" \
-        'select(.branch != $b) | (.files | index($f))' <<<"$row" >/dev/null 2>&1; then
-        conflict="$(jq -r .branch <<<"$row")"
-        echo "ceo-workers: '$branch' overlaps in-flight worker '$conflict' on file $f — serialize or rebase" >&2
-        return 6
-      fi
-    done
-  done < "$file"
-  jq -nc --arg b "$branch" --arg base "$base" --argjson files "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
-    '{branch: $b, base: $base, files: $files}' >> "$file"
+  touch "$dir/workers.jsonl"
+  CEO_LOCK_DIR="$dir" CEO_BRANCH="$branch" CEO_BASE="$base" \
+    CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash -s "$@" <<'REGISTER_INNER'
+set -euo pipefail
+lock="$CEO_LOCK_DIR/.lock"; waited=0
+until mkdir "$lock" 2>/dev/null; do
+  sleep 0.2; waited=$((waited + 1))
+  if [ "$waited" -ge $((CEO_LOCK_WAIT * 5)) ]; then
+    echo "ceo-lock: state lock at $lock held too long — refusing to race" >&2
+    exit 8
+  fi
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+file="$CEO_LOCK_DIR/workers.jsonl"
+lineno=0
+while IFS= read -r row; do
+  lineno=$((lineno + 1))
+  [ -n "$row" ] || continue
+  # A row that fails validation is a corrupt state file, not "no conflict":
+  # the gate must not silently pass exactly when its state is least trustworthy.
+  if ! echo "$row" | jq -e '(.branch | type == "string") and (.files | type == "array")' >/dev/null 2>&1; then
+    echo "ceo-workers: corrupt row at line $lineno of $file — fix or remove it before registering" >&2
+    exit 6
+  fi
+  for f in "$@"; do
+    if echo "$row" | jq -e --arg f "$f" --arg b "$CEO_BRANCH" \
+      'select(.branch != $b) | (.files | index($f))' >/dev/null 2>&1; then
+      conflict="$(echo "$row" | jq -r .branch)"
+      echo "ceo-workers: '$CEO_BRANCH' overlaps in-flight worker '$conflict' on file $f — serialize or rebase" >&2
+      exit 6
+    fi
+  done
+done < "$file"
+jq -nc --arg b "$CEO_BRANCH" --arg base "$CEO_BASE" \
+  --argjson files "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
+  '{branch: $b, base: $base, files: $files}' >> "$file"
+REGISTER_INNER
 }
 
-# ceo_worker_release <state-dir> <branch>
+# ceo_worker_release <state-dir> <branch> — removes the branch's row under the
+# state lock so a concurrent registration between read and rename survives.
 ceo_worker_release() {
   local dir="$1" branch="$2"
   local file="$dir/workers.jsonl"
   [ -f "$file" ] || return 0
-  jq -c --arg b "$branch" 'select(.branch != $b)' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+  CEO_LOCK_DIR="$dir" CEO_BRANCH="$branch" CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash <<'RELEASE_INNER'
+set -euo pipefail
+lock="$CEO_LOCK_DIR/.lock"; waited=0
+until mkdir "$lock" 2>/dev/null; do
+  sleep 0.2; waited=$((waited + 1))
+  if [ "$waited" -ge $((CEO_LOCK_WAIT * 5)) ]; then
+    # Release is best-effort cleanup; losing it here leaves a visible stale
+    # row rather than corrupting state. Say so instead of failing the caller.
+    echo "ceo-workers: release skipped — state lock busy ($CEO_LOCK_DIR)" >&2
+    exit 0
+  fi
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+file="$CEO_LOCK_DIR/workers.jsonl"
+jq -c --arg b "$CEO_BRANCH" 'select(.branch != $b)' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+RELEASE_INNER
 }
 
 # ceo_base_stale <recorded-base> <current-base> — 0 when equal, 1 when stale.

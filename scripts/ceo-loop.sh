@@ -47,7 +47,7 @@ case "$cmd" in
   *) usage ;;
 esac
 
-SPEC="" ROUTES="" TARGET="main" DEFAULT_BRANCH="main" REPO_SLUG=""
+SPEC="" ROUTES="" TARGET="main" DEFAULT_BRANCH="main" REPO_SLUG="" CURRENT_BASE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --spec) SPEC="$2"; shift 2 ;;
@@ -55,6 +55,7 @@ while [ $# -gt 0 ]; do
     --target) TARGET="$2"; shift 2 ;;
     --default-branch) DEFAULT_BRANCH="$2"; shift 2 ;;
     --repo) REPO_SLUG="$2"; shift 2 ;;
+    --current-base) CURRENT_BASE="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -80,23 +81,43 @@ fi
 
 jget() { jq -r "$1" "$SPEC"; }
 
-REPO="$(jget '.repo')"
-BRANCH="$(jget '.branch')"
-BASE="$(jget '.base')"
+require_field() { # <jq-path> <name>
+  local v
+  v="$(jget "$1")"
+  if [ -z "$v" ] || [ "$v" = "null" ]; then
+    echo "ceo-loop: spec is missing required field '$2' — refusing to guess" >&2
+    exit 2
+  fi
+  printf '%s' "$v"
+}
+REPO="$(require_field '.repo' 'repo')"
+BRANCH="$(require_field '.branch' 'branch')"
+BASE="$(require_field '.base' 'base')"
 SHAPE="$(jget '.shape // "bug-fix"')"
-AUTHOR="$(jget '.author')"
-VERIFY_CMD="$(jget '.verify_cmd // ""')"
+AUTHOR="$(require_field '.author' 'author')"
+VERIFY_CMD="$(require_field '.verify_cmd' 'verify_cmd')"
+
+mapfile -t SPEC_FILES < <(jq -r '.files[]?' "$SPEC")
+if [ "${#SPEC_FILES[@]}" -eq 0 ] || [ -z "${SPEC_FILES[0]}" ]; then
+  # An unserialized file list would fall through every risk rule to default —
+  # exactly the degenerate input the map's fail-closed contract forbids.
+  echo "ceo-loop: spec has no changed files — cannot classify risk" >&2
+  exit 2
+fi
 DIR="$(state_dir_for "$REPO")"
 mkdir -p "$DIR"
 touch "$DIR/queue.jsonl" "$DIR/workers.jsonl" "$DIR/findings.jsonl" \
       "$DIR/repair-tickets.jsonl" "$DIR/telemetry.jsonl"
 
+FINGERPRINTS_FILE=""
 ceo_loop_cleanup() {
   # A dead or blocked run still frees its serialization slot: the work failed
   # but nobody else is writing those files through this loop anymore.
-  rm -f "${FINGERPRINTS_FILE:-}" 2>/dev/null || true
-  ceo_worker_release "$DIR" "${BRANCH:-}" 2>/dev/null || true
+  [ -n "$FINGERPRINTS_FILE" ] && rm -f "$FINGERPRINTS_FILE" 2>/dev/null || true
+  ceo_worker_release "$DIR" "$BRANCH" 2>/dev/null || true
 }
+# Installed BEFORE any registration so every early exit frees the slot.
+trap ceo_loop_cleanup EXIT
 START_TS="$(date +%s)"
 
 # ── 1. queue ──────────────────────────────────────────────────────────────────
@@ -104,11 +125,17 @@ jq -c '{ts: (now | todate), repo: .repo, branch: .branch, base: .base, shape: (.
   "$SPEC" >> "$DIR/queue.jsonl"
 echo "loop: queued $REPO/$BRANCH ($SHAPE)"
 
+# ── 1b. stale base (#329 AC: conflicts stop promotion at the door) ────────────
+if [ -n "$CURRENT_BASE" ] && ! ceo_base_stale "$BASE" "$CURRENT_BASE"; then
+  echo "loop: STALE BASE — spec was cut from $BASE but the target is at $CURRENT_BASE. Rebase and resubmit." >&2
+  exit 9
+fi
+
 # ── 2. route + isolated worker (overlap-serialized) ───────────────────────────
 ROUTE="$(ceo_route_select "$ROUTES" "$SHAPE")"
 PROVIDER="$(jq -r .provider <<<"$ROUTE")"
 MODEL="$(jq -r .model <<<"$ROUTE")"
-mapfile -t FILES < <(jq -r '.files[]' "$SPEC")
+FILES=("${SPEC_FILES[@]}")
 ceo_worker_register "$DIR" "$BRANCH" "$BASE" "${FILES[@]}" || exit $?
 echo "loop: worker $PROVIDER/$MODEL on isolated branch $BRANCH (${#FILES[@]} files)"
 
@@ -148,20 +175,23 @@ echo "loop: review passed via cross-provider reviewer $PASSING_REVIEWER"
 
 # ── 5. findings -> fingerprints -> deduplicated tickets ───────────────────────
 FINGERPRINTS_FILE="$(mktemp "${TMPDIR:-/tmp}/ceo-loop-findings.XXXXXX")"
-trap ceo_loop_cleanup EXIT
 : > "$FINGERPRINTS_FILE"
+CYCLE_FINDINGS=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   INVARIANT="$(jq -r .invariant <<<"$f")"
   LOCATION="$(jq -r .location <<<"$f")"
   SEVERITY="$(jq -r .severity <<<"$f")"
   FP="$(ceo_finding_fingerprint "$REPO" "$BASE" "$INVARIANT" "$LOCATION" "$SEVERITY")"
-  printf '{"fingerprint":"%s","invariant":"%s","location":"%s","severity":"%s"}\n' \
-    "$FP" "$INVARIANT" "$LOCATION" "$SEVERITY" >> "$DIR/findings.jsonl"
-  TICKET_ID="$(ceo_ticket_dedup "$DIR" "$FP" \
-    "{\"summary\": \"$INVARIANT at $LOCATION\", \"severity\": \"$SEVERITY\", \"repo\": \"$REPO\", \"base\": \"$BASE\"}")"
-  if grep -q "^$TICKET_ID$" "$FINGERPRINTS_FILE"; then
-    echo "loop: duplicate finding collapsed onto existing ticket $TICKET_ID"
+  # Built by jq, never string-interpolated: reviewer strings may contain quotes.
+  jq -cn --arg fp "$FP" --arg inv "$INVARIANT" --arg loc "$LOCATION" \
+    --arg sev "$SEVERITY" --arg repo "$REPO" --arg base "$BASE" \
+    '{fingerprint: $fp, invariant: $inv, location: $loc, severity: $sev,
+      repo: $repo, base: $base}' >> "$DIR/findings.jsonl"
+  TICKET_ID="$(ceo_ticket_dedup "$DIR" "$FP" "$INVARIANT at $LOCATION [$SEVERITY]")"
+  CYCLE_FINDINGS=$((CYCLE_FINDINGS + 1))
+  if grep -qxF "$TICKET_ID" "$FINGERPRINTS_FILE"; then
+    echo "loop: duplicate finding collapsed onto existing ticket ${TICKET_ID:0:19}..."
   else
     echo "$TICKET_ID" >> "$FINGERPRINTS_FILE"
   fi
@@ -171,6 +201,14 @@ done < <(jq -c '.findings[]?' "$SPEC")
 RISK_MAP="$LIB_DIR/ceo-risk-map.json"
 RISK="$(ceo_risk_classify "$RISK_MAP" "${FILES[@]}")"
 PREMIUM_APPROVAL="${CEO_LOOP_PREMIUM_APPROVAL:-}"
+if [ -n "$PREMIUM_APPROVAL" ]; then
+  # Evidence, not existence: an empty or schema-less file must NOT unlock the
+  # gate — a stray env var pointing at a log would otherwise promote HIGH risk.
+  if ! jq -e '.approved_by and .ticket' "$PREMIUM_APPROVAL" >/dev/null 2>&1; then
+    echo "loop: premium approval file lacks evidence (needs .approved_by and .ticket): $PREMIUM_APPROVAL" >&2
+    exit 7
+  fi
+fi
 ACTION=""
 set +e
 ACTION="$(CEO_LOOP_ALLOW_MAIN="${CEO_LOOP_ALLOW_MAIN:-0}" \
@@ -189,14 +227,16 @@ fi
 # ── 7. requeue on failing verification (bounded) ─────────────────────────────
 FINAL_RC=0
 if [ "$TEST_RC" -ne 0 ]; then
-  TICKET_HEAD="$(head -1 "$FINGERPRINTS_FILE")"
-  if [ -n "$TICKET_HEAD" ]; then
-    OUT="$(ceo_requeue_decide "$DIR" "$TICKET_HEAD" "${CEO_LOOP_MAX_RETRIES:-2}")" || FINAL_RC=$?
+  while IFS= read -r tid; do
+    OUT="$(ceo_requeue_decide "$DIR" "$tid" "${CEO_LOOP_MAX_RETRIES:-2}")" || RC_HERE=$?
+    RC_HERE="${RC_HERE:-0}"
     case "$OUT" in
-      retry:*) echo "loop: requeued as ticket $TICKET_HEAD ($OUT)" ;;
-      exhausted) echo "loop: retries EXHAUSTED for $TICKET_HEAD — recorded in $DIR/exhausted.jsonl" ;;
+      retry:*) echo "loop: requeued as ticket ${tid:0:19}... ($OUT)" ;;
+      exhausted) echo "loop: retries EXHAUSTED for ${tid:0:19}... — recorded in $DIR/exhausted.jsonl" ;;
     esac
-  fi
+    [ "$RC_HERE" -gt "$FINAL_RC" ] && FINAL_RC=$RC_HERE
+    RC_HERE=0
+  done < "$FINGERPRINTS_FILE"
 fi
 
 # ── 8. telemetry (token-scope ingestion contract) ─────────────────────────────
@@ -208,7 +248,7 @@ jq -nc \
   --arg target "$TARGET" --arg risk "$RISK" --arg action "$ACTION" \
   --argjson accepted "$ACCEPTED" \
   --argjson seconds_to_passing "$((NOW_TS - START_TS))" \
-  --argjson findings "$(wc -l < "$DIR/findings.jsonl" | tr -d ' ')" \
+  --argjson findings "$CYCLE_FINDINGS" \
   --argjson reviewer_disagreement 0 \
   '{ts: $ts, writer: "ceo-loop", repo: $repo, branch: $branch, model: $model,
     target: $target, risk: $risk, action: $action, accepted: $accepted,

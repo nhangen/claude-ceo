@@ -66,6 +66,13 @@ test_fingerprint_new_base_revision_reopens_the_finding() {
   assert_fails "new base must reopen the finding" test "$a" = "$b"
 }
 
+test_fingerprint_severity_is_case_folded() {
+  local a b
+  a=$(ceo_finding_fingerprint o/r abc123 "t.sh" "l.sh:1" "HIGH")
+  b=$(ceo_finding_fingerprint o/r abc123 "t.sh" "l.sh:1" "high")
+  assert_eq "$a" "$b" "HIGH vs high are the same finding"
+}
+
 test_dedup_first_filing_creates_second_returns_same_ticket_id() {
   local dir="$TMP/dedup"; mkdir -p "$dir"
   local fp id1 id2
@@ -88,6 +95,35 @@ test_requeue_increments_to_cap_then_exhausted_and_visible() {
   assert_eq "$rc" "3" "exhaustion is loud, distinguishable from generic failure"
   assert_file_exists "$dir/exhausted.jsonl"
   assert_contains "$(cat "$dir/exhausted.jsonl")" "$tid"
+}
+
+test_requeue_exhaustion_recorded_once_not_every_cycle() {
+  local dir="$TMP/requeue2"; mkdir -p "$dir"
+  local fp tid out before after
+  fp=$(ceo_finding_fingerprint o/r abc "t.sh" "l.sh:1" "MED")
+  tid=$(ceo_ticket_dedup "$dir" "$fp" "x")
+  ceo_requeue_decide "$dir" "$tid" 0 >/dev/null 2>&1 || true
+  assert_file_exists "$dir/exhausted.jsonl"
+  before=$(wc -l < "$dir/exhausted.jsonl" | tr -d ' ')
+  ceo_requeue_decide "$dir" "$tid" 0 >/dev/null 2>&1 || true
+  after=$(wc -l < "$dir/exhausted.jsonl" | tr -d ' ')
+  assert_eq "$after" "$before" "the marker row short-circuits duplicate exhaustion records"
+}
+
+test_requeue_unknown_ticket_is_internal_error_code_8() {
+  local dir="$TMP/requeue3"; mkdir -p "$dir"
+  local rc=0
+  ceo_requeue_decide "$dir" "repair-nonexistent" 2 >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "8" "internal state error is not CLI misuse (exit 2)"
+}
+
+test_register_corrupt_row_is_hard_stop_not_silent_pass() {
+  local dir="$TMP/workers4"; mkdir -p "$dir"
+  printf '%s\n' 'not json at all' >> "$dir/workers.jsonl"
+  local out rc=0
+  out=$(ceo_worker_register "$dir" "nh/x" "aaa" "lib/u.sh" 2>&1) || rc=$?
+  assert_contains "$out" "corrupt row"
+  assert_eq "$rc" "6"
 }
 
 test_route_primary_selection() {
@@ -116,12 +152,14 @@ test_review_author_cannot_be_its_own_only_reviewer() {
   local out rc=0
   out=$(ceo_review_gate "ollama/qwen3.8:27b" 2>&1) || rc=$?
   assert_contains "$out" "no reviewer"
+  assert_eq "$rc" "5" "refusal must carry its documented code"
 }
 
 test_review_same_provider_only_panel_is_refused() {
   local out rc=0
   out=$(ceo_review_gate "ollama/qwen" "ollama/qwen-turbo" 2>&1) || rc=$?
   assert_contains "$out" "cross-provider review required"
+  assert_eq "$rc" "5" "refusal must carry its documented code"
 }
 
 test_review_one_different_provider_reviewer_passes_and_is_echoed() {

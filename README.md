@@ -183,7 +183,13 @@ Gates and their failure codes:
 | Review | At least one reviewer from a different provider than the author | 5 |
 | Overlap | In-flight workers touching the same file serialize; conflicts name the other branch | 6 |
 | Premium | HIGH-risk paths (billing/auth/migrations/credentials/shared helpers/hooks/CI — `ceo-risk-map.json`) cannot reach production main without `CEO_LOOP_PREMIUM_APPROVAL` evidence; low risk parks on an integration branch until `CEO_LOOP_ALLOW_MAIN=1` | 7 |
-| Requeue | Repair tickets retry up to the cap (`CEO_LOOP_MAX_RETRIES`, default 2), then land in `exhausted.jsonl` — visible, never deleted | 3 |
+| Stale base | Spec base differing from the target's current revision (`--current-base`) stops the loop before any work runs — rebase and resubmit | 9 |
+| Requeue | Repair tickets retry up to the cap (`CEO_LOOP_MAX_RETRIES`, default 2), then land in `exhausted.jsonl` exactly once — visible, never deleted | 3 |
+| State lock | Concurrent loops serialize on a portable mkdir lock; a held-too-long lock refuses to race rather than corrupting state | 8 |
+
+Premium approval is evidence, not existence: `CEO_LOOP_PREMIUM_APPROVAL` must
+point at a JSON file carrying `.approved_by` and `.ticket` — an empty or
+schema-less file does not unlock the gate.
 
 Risk classification fails closed: an unreadable `ceo-risk-map.json` classifies as
 HIGH. Finding fingerprints bind repo + base revision + invariant + normalized
