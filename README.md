@@ -163,6 +163,41 @@ Scheduling is owned by the `ceo-schedulerd` daemon (native crontab install is re
 
 See [`docs/install.md`](docs/install.md) for fresh multi-machine setup, [`docs/playbooks/SCHEMA.md`](docs/playbooks/SCHEMA.md#swarm-selection-model) for the full selection model, and [`docs/migration.md`](docs/migration.md) for migrating an existing single-host install.
 
+## Worker Loop (risk-routed delegation)
+
+`scripts/ceo-loop.sh` runs one work item through the full #329 loop:
+queue -> isolated worker branch (overlap-serialized, stale-base checked) ->
+tests -> heterogeneous review panel -> finding fingerprints with repair-ticket
+dedup -> risk-gated promotion -> bounded requeue -> telemetry.
+
+```bash
+token-scope-style spec: scripts/ceo-loop.sh run --spec task.json --routes routes.json
+scripts/ceo-loop.sh status --repo <repo-slug>
+```
+
+Gates and their failure codes:
+
+| Gate | Rule | Exit |
+|---|---|---|
+| Routing | Provider-neutral route table per task shape; on provider failure reroute down the candidate list or exit naming what died | 4 |
+| Review | At least one reviewer from a different provider than the author | 5 |
+| Overlap | In-flight workers touching the same file serialize; conflicts name the other branch | 6 |
+| Premium | HIGH-risk paths (billing/auth/migrations/credentials/shared helpers/hooks/CI — `ceo-risk-map.json`) cannot reach production main without `CEO_LOOP_PREMIUM_APPROVAL` evidence; low risk parks on an integration branch until `CEO_LOOP_ALLOW_MAIN=1` | 7 |
+| Stale base | Spec base differing from the target's current revision (`--current-base`) stops the loop before any work runs — rebase and resubmit | 9 |
+| Requeue | Repair tickets retry up to the cap (`CEO_LOOP_MAX_RETRIES`, default 2), then land in `exhausted.jsonl` exactly once — visible, never deleted | 3 |
+| State lock | Concurrent loops serialize on a portable mkdir lock; a held-too-long lock refuses to race rather than corrupting state | 8 |
+
+Premium approval is evidence, not existence: `CEO_LOOP_PREMIUM_APPROVAL` must
+point at a JSON file carrying `.approved_by` and `.ticket` — an empty or
+schema-less file does not unlock the gate.
+
+Risk classification fails closed: an unreadable `ceo-risk-map.json` classifies as
+HIGH. Finding fingerprints bind repo + base revision + invariant + normalized
+location + severity, so line-shifted equivalents collapse onto one ticket while
+a rebase legitimately reopens one. Every cycle appends a telemetry row
+(`telemetry.jsonl`) in the token-scope-ingestable contract plus a shared-ledger
+entry via `ceo-model-ledger.sh`.
+
 ## Development
 
 ```bash
