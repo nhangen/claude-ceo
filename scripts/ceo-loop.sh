@@ -279,9 +279,21 @@ for rentry in "${REVIEWER_ENTRIES[@]}"; do
   rcmd="$(jq -r '.command // ""' <<<"$rentry")"
   [ -n "$rcmd" ] && [ "$rcmd" != "null" ] || continue
   if ROUT="$(WT="$WT" SPEC="$SPEC" BASE="$BASE" DIFF="$(git -C "$WT" diff "$CURRENT_BASE" 2>/dev/null || true)" bash -c "$rcmd" 2>&1)"; then
-    [ -n "$ROUT" ] && printf '%s\n' "$ROUT" >> "$FINDINGS_TMP"
-    if [ -z "$PASSING_REVIEWER" ] && [ "$rprov" != "$AUTHOR_PROVIDER" ]; then
-      PASSING_REVIEWER="$rprov/$rmodel"
+    # A review that ran must have SAID something parseable: findings, or an
+    # explicit {"status":"clean"} acknowledgement (which is not itself a
+    # finding and never reaches the ticket pipeline). Empty or unparseable
+    # output is a broken review, not a clean one.
+    if printf '%s\n' "$ROUT" | jq -e '.status == "clean"' >/dev/null 2>&1; then
+      if [ -z "$PASSING_REVIEWER" ] && [ "$rprov" != "$AUTHOR_PROVIDER" ]; then
+        PASSING_REVIEWER="$rprov/$rmodel"
+      fi
+    elif printf '%s\n' "$ROUT" | jq -e '.invariant or .summary' >/dev/null 2>&1; then
+      printf '%s\n' "$ROUT" >> "$FINDINGS_TMP"
+      if [ -z "$PASSING_REVIEWER" ] && [ "$rprov" != "$AUTHOR_PROVIDER" ]; then
+        PASSING_REVIEWER="$rprov/$rmodel"
+      fi
+    else
+      echo "loop: reviewer $rprov/$rmodel produced no parseable review — treating as failed" >&2
     fi
   else
     echo "loop: reviewer $rprov/$rmodel failed to run" >&2
@@ -302,9 +314,12 @@ echo "loop: review passed via cross-provider reviewer $PASSING_REVIEWER"
 CYCLE_FINDINGS=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
+  jq -e '.status == "clean"' <<<"$f" >/dev/null 2>&1 && continue
   INVARIANT="$(jq -r '.invariant // .summary // empty' <<<"$f" 2>/dev/null)" || INVARIANT=""
   LOCATION="$(jq -r '.location // ""' <<<"$f" 2>/dev/null)" || LOCATION=""
-  SEVERITY="$(jq -r '.severity // ""' <<<"$f" 2>/dev/null)" || SEVERITY=""
+  # A finding without a stated severity is treated as high — fail closed.
+  SEVERITY="$(jq -r '.severity // "high"' <<<"$f" 2>/dev/null)" || SEVERITY="high"
+  [ -n "$SEVERITY" ] || SEVERITY="high"
   [ -n "$INVARIANT" ] || continue
   FP="$(ceo_finding_fingerprint "$REPO" "$CURRENT_BASE" "$INVARIANT" "$LOCATION" "$SEVERITY")"
   jq -cn --arg fp "$FP" --arg inv "$INVARIANT" --arg loc "$LOCATION" \
@@ -318,6 +333,8 @@ while IFS= read -r f; do
     "Finding no longer reproduces on a fresh verification run of ${BRANCH}" \
     "$SEVERITY" "$REPO" "$CURRENT_BASE")"
   CYCLE_FINDINGS=$((CYCLE_FINDINGS + 1))
+  # The requeue pass iterates TICKET ids, not raw finding JSON.
+  echo "$TICKET_ID" >> "$FINGERPRINTS_FILE"
   if [ "$(printf '%s' "$SEVERITY" | tr '[:upper:]' '[:lower:]')" = "high" ]; then
     HIGH_FINDINGS=$((HIGH_FINDINGS + 1))
   fi
@@ -390,13 +407,13 @@ if [ "$ACCEPTED" = "true" ] && [ "$GATE_RC" -eq 0 ] && [ -n "$ACTION" ]; then
     PROMOTED=true
     if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1 && command -v gh >/dev/null 2>&1; then
       if git -C "$WT" push origin "$BRANCH" >/dev/null 2>&1; then
-        if gh pr create --head "$BRANCH" --base "$TARGET" \
+        if (cd "$WT" && gh pr create --head "$BRANCH" --base "$TARGET" \
           --title "ceo-loop: $REPO/$BRANCH" \
-          --body "Autonomous loop PR (#329). risk=$RISK worker=$WORKER_IDENTITY reviewer=$PASSING_REVIEWER" \
+          --body "Autonomous loop PR (#329). risk=$RISK worker=$WORKER_IDENTITY reviewer=$PASSING_REVIEWER") \
           >/dev/null 2>&1; then
           echo "loop: PR opened against $TARGET"
         else
-          echo "loop: pushed $BRANCH (PR creation skipped)"
+          echo "loop: pushed $BRANCH (gh pr create failed — open one manually)" >&2
         fi
       else
         echo "loop: push failed — branch $BRANCH kept locally" >&2

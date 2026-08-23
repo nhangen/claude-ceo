@@ -40,17 +40,14 @@ mkrepo() { # <name> — a real git repo with one commit on main
 }
 
 mkroutes() { # <file> <worker-script> <reviewer-script> [reviewer2-script]
-  cat > "$1" <<JSON
-{
-  "candidates": [
-    {"provider": "ollama", "model": "qwen-test", "command": "$2"},
-    {"provider": "opencode", "model": "kimi-test", "command": "$3"}
-  ],
-  "reviewers": [
-    {"provider": "opencode", "model": "kimi-test", "command": "${4:-true}"}
-  ]
-}
-JSON
+  # Built by jq: worker/reviewer commands may contain any quoting.
+  jq -n --arg w "$2" --arg b "$3" \
+    --arg r "${4:-echo '{\"status\":\"clean\"}'}" \
+    '{candidates: [
+       {provider: "ollama", model: "qwen-test", command: $w},
+       {provider: "opencode", model: "kimi-test", command: $b}],
+      reviewers: [
+       {provider: "opencode", model: "kimi-test", command: $r}]}' > "$1"
 }
 
 mkspec() { # <file> <repo-dir> <branch> <verify-cmd>
@@ -135,7 +132,7 @@ EOF
   git -C "$repo" branch integration   # a real integration target exists
   local out rc=0
   out=$(bash "$LOOP" run --spec "$TMP/high.json" --routes "$TMP/routes-high.json" --target integration 2>&1) || rc=$?
-  if [ "$rc" = "0" ]; then fail_test "HIGH findings must block acceptance (exit 5)"; fi
+  assert_eq "$rc" "5" "HIGH findings must exit exactly 5"
   assert_contains "$out" "HIGH finding(s) block promotion"
   local row
   row=$(grep -rh "SQL injection" "$CEO_LOOP_STATE_ROOT" --include="repair-tickets.jsonl" | head -1)
@@ -234,7 +231,7 @@ test_provider_failure_reroutes_to_next_candidate() {
     {"provider": "ollama", "model": "qwen-test", "command": "false"},
     {"provider": "opencode", "model": "kimi-test", "command": "$wbackup"}
   ],
-  "reviewers": [{"provider": "anthropic", "model": "claude-test", "command": "true"}]}
+  "reviewers": [{"provider": "anthropic", "model": "claude-test", "command": "echo '{\"status\":\"clean\"}'"}]}
 JSON
   mkspec "$TMP/reroute.json" "$repo" nh/loop-reroute "true"
   local out rc=0
@@ -271,7 +268,13 @@ test_requeue_dispatches_another_attempt_then_exhausts_visibly() {
   mkspec "$TMP/exh.json" "$repo2" nh/loop-exh "false"
   rc=0
   out=$(CEO_LOOP_MAX_RETRIES=1 bash "$LOOP" run --spec "$TMP/exh.json" --routes "$TMP/routes-exh.json" --target main 2>&1) || rc=$?
-  if [ "$rc" = "0" ]; then fail_test "exhausted retries must not exit clean"; fi
+  assert_eq "$rc" "3" "first failing run exits 3 (requeued)"
+  # Second run spends the last retry slot; third hits the cap visibly.
+  CEO_LOOP_MAX_RETRIES=1 bash "$LOOP" run --spec "$TMP/exh.json" --routes "$TMP/routes-exh.json" --target main >/dev/null 2>&1 || true
+  rc=0
+  out=$(CEO_LOOP_MAX_RETRIES=1 bash "$LOOP" run --spec "$TMP/exh.json" --routes "$TMP/routes-exh.json" --target main 2>&1) || rc=$?
+  assert_contains "$out" "retries EXHAUSTED"
+  assert_eq "$rc" "3" "exhaustion maps to exit 3"
   assert_file_exists "$(find "$CEO_LOOP_STATE_ROOT" -name exhausted.jsonl | head -1)"
 }
 
@@ -294,6 +297,141 @@ JSON
   out=$(bash "$LOOP" run --spec "$TMP/same.json" --routes "$TMP/routes-same.json" --target main 2>&1) || rc=$?
   assert_contains "$out" "review gate failed"
   assert_eq "$rc" "5"
+}
+
+
+test_all_candidates_failing_exits_4() {
+  local repo; repo="$(mkrepo alldead)"
+  cat > "$TMP/routes-dead.json" <<JSON
+{"candidates": [
+    {"provider": "ollama", "model": "q1", "command": "false"},
+    {"provider": "opencode", "model": "k1", "command": "false"}
+  ],
+  "reviewers": [{"provider": "anthropic", "model": "c", "command": "echo '{\"status\":\"clean\"}'"}]}
+JSON
+  mkspec "$TMP/alldead.json" "$repo" nh/loop-dead "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/alldead.json" --routes "$TMP/routes-dead.json" --target main 2>&1) || rc=$?
+  assert_contains "$out" "every routed candidate failed"
+  assert_eq "$rc" "4"
+}
+
+test_missing_verify_cmd_is_usage_error_exit_2() {
+  local repo; repo="$(mkrepo noverify)"
+  jq -n --arg repo t --arg dir "$repo" --arg branch nh/x \
+    '{repo:$repo,repo_dir:$dir,branch:$branch,shape:"bug-fix"}' > "$TMP/noverify.json"
+  mkroutes "$TMP/routes-nv.json" true true
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/noverify.json" --routes "$TMP/routes-nv.json" --target main 2>&1) || rc=$?
+  assert_contains "$out" "missing required field"
+  assert_eq "$rc" "2"
+}
+
+test_worker_that_writes_nothing_refuses_to_classify() {
+  local repo; repo="$(mkrepo nowrite)"
+  mkroutes "$TMP/routes-nowrite.json" true true
+  mkspec "$TMP/nowrite.json" "$repo" nh/loop-nowrite "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/nowrite.json" --routes "$TMP/routes-nowrite.json" --target main 2>&1) || rc=$?
+  assert_contains "$out" "no changed files"
+  assert_eq "$rc" "2"
+}
+
+test_declared_files_never_replace_the_diff_for_risk() {
+  local repo; repo="$(mkrepo declared)"
+  # Spec CLAIMS a benign docs change; worker actually writes billing code.
+  local wscript="${TMP}/w-lie.sh"
+  write_script "$wscript" 'cd "$WT" && mkdir -p src/billing && echo charge > src/billing/charge.ts'
+  mkroutes "$TMP/routes-declared.json" "$wscript" true
+  jq -n --arg repo "declared-nh-loop-declared" --arg dir "$repo" --arg branch nh/loop-declared \
+    --arg verify true --argjson files '["docs/notes.md"]' \
+    '{repo:$repo,repo_dir:$dir,branch:$branch,shape:"bug-fix",verify_cmd:$verify,files:$files}' > "$TMP/declared.json"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/declared.json" --routes "$TMP/routes-declared.json" --target main 2>&1) || rc=$?
+  # Diff-derived risk is high -> premium block, regardless of the benign claim.
+  assert_contains "$out" "BLOCKED"
+  assert_eq "$rc" "7"
+}
+
+test_reviewer_that_fails_to_run_is_not_a_pass() {
+  local repo; repo="$(mkrepo deadrev)"
+  local wscript="${TMP}/w-dr.sh"; write_script "$wscript" 'cd "$WT" && echo q > q.txt'
+  cat > "$TMP/routes-deadrev.json" <<JSON
+{"candidates": [{"provider": "ollama", "model": "qwen-test", "command": "$wscript"}],
+ "reviewers": [{"provider": "anthropic", "model": "claude-test", "command": "false"}]}
+JSON
+  mkspec "$TMP/deadrev.json" "$repo" nh/loop-deadrev "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/deadrev.json" --routes "$TMP/routes-deadrev.json" --target main 2>&1) || rc=$?
+  assert_contains "$out" "review gate failed"
+  assert_eq "$rc" "5"
+}
+
+test_premium_digest_binds_each_input_dimension() {
+  source_lib_digest() {
+    # Independent implementation of the documented format: repo|base|files,
+    # files sorted, comma-joined with a trailing comma.
+    local files="$3"
+    [ -n "$files" ] && files="$files,"
+    printf '%s' "$1|$2|$files" | shasum -a 256 | cut -d" " -f1
+  }
+  local d1 d2 d3 d4
+  d1=$(ceo_change_digest r abc f.sh)
+  assert_eq "$d1" "$(source_lib_digest r abc f.sh)" "digest matches independent computation"
+  d2=$(ceo_change_digest r def f.sh)
+  if [ "$d1" = "$d2" ]; then fail_test "base revision must bind the digest"; fi
+  d3=$(ceo_change_digest r abc g.sh)
+  if [ "$d1" = "$d3" ]; then fail_test "file set must bind the digest"; fi
+  d4=$(ceo_change_digest other abc f.sh)
+  if [ "$d1" = "$d4" ]; then fail_test "repo must bind the digest"; fi
+}
+
+
+test_finding_tickets_requeue_and_exhaust_not_just_verify_ones() {
+  local repo; repo="$(mkrepo findingrequeue)"
+  local wscript="${TMP}/w-fr.sh"; write_script "$wscript" 'cd "$WT" && mkdir -p src/lib && echo q > src/lib/util.sh'
+  local rscript="${TMP}/r-fr.sh"
+  cat > "$rscript" <<'EOF'
+#!/bin/bash
+echo '{"invariant":"helper stays pure","location":"src/lib/util.sh:7","severity":"MEDIUM"}'
+EOF
+  chmod +x "$rscript"
+  cat > "$TMP/routes-fr.json" <<JSON
+{"candidates": [{"provider": "ollama", "model": "qwen-test", "command": "$wscript"}],
+ "reviewers": [{"provider": "anthropic", "model": "claude-test", "command": "$rscript"}]}
+JSON
+  mkspec "$TMP/fr.json" "$repo" nh/loop-fr "false"   # work fails verification too
+  git -C "$repo" branch integration
+  for i in 1 2 3; do
+    CEO_LOOP_MAX_RETRIES=1 bash "$LOOP" run --spec "$TMP/fr.json" --routes "$TMP/routes-fr.json" \
+      --target integration >/dev/null 2>&1 || true
+  done
+  # The FINDING's own ticket must reach exhaustion, not just the verify one.
+  local exh
+  exh=$(find "$CEO_LOOP_STATE_ROOT" -path "*findingrequeue*" -name exhausted.jsonl -exec cat {} \;)
+  assert_contains "$exh" "helper stays pure"
+}
+
+
+test_finding_without_severity_fails_closed_to_high() {
+  local repo; repo="$(mkrepo nosev)"
+  local wscript="${TMP}/w-ns.sh"; write_script "$wscript" 'cd "$WT" && mkdir -p src/lib && echo q > src/lib/util.sh'
+  local rscript="${TMP}/r-ns.sh"
+  cat > "$rscript" <<'EOF'
+#!/bin/bash
+echo '{"invariant":"unlabeled finding","location":"src/lib/util.sh:9"}'
+EOF
+  chmod +x "$rscript"
+  cat > "$TMP/routes-ns.json" <<JSON
+{"candidates": [{"provider": "ollama", "model": "qwen-test", "command": "$wscript"}],
+ "reviewers": [{"provider": "anthropic", "model": "claude-test", "command": "$rscript"}]}
+JSON
+  mkspec "$TMP/ns.json" "$repo" nh/loop-ns "true"
+  git -C "$repo" branch integration
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/ns.json" --routes "$TMP/routes-ns.json" --target integration 2>&1) || rc=$?
+  assert_eq "$rc" "5" "unlabeled severity is treated as HIGH and blocks"
+  assert_contains "$(grep -rh "unlabeled finding" "$CEO_LOOP_STATE_ROOT" --include="repair-tickets.jsonl")" '"severity":"high"'
 }
 
 run_tests
