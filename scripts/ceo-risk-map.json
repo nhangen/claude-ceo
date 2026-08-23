@@ -1,13 +1,15 @@
 {
-  "_comment": "Path-based risk classification for the #329 promotion gate. A changed path matches a rule ONLY if its repo-relative path matches match_pattern (case-insensitive regex). The HIGHEST risk among matching rules wins; no match means default_risk. Unlike ceo-tier-map.json this map FAILS CLOSED: an unreadable map or a broken lookup classifies as high, because the gate this feeds blocks production-main promotion. Add a rule only after reviewing that the path class really carries that blast radius (#254 owns the broader policy).",
+  "_comment": "Path-based risk classification for the #329 promotion gate. A changed path matches a rule ONLY if its repo-relative path matches match_pattern (case-insensitive regex). The HIGHEST risk among matching rules wins; no match means default_risk. Unlike ceo-tier-map.json this map FAILS CLOSED: an unreadable map or a broken lookup classifies as high, because the gate this feeds blocks production-main promotion. Add a rule only after reviewing that the path class really carries that blast radius (#254 owns the broader policy). Filename rules match anywhere in the path so src/billing.ts and db/migrate.ts cannot slip through a directory-shaped rule.",
   "rules": [
-    { "name": "billing", "match_pattern": "(^|/)(billing|payments?|stripe|edd)/", "risk": "high" },
-    { "name": "authn-authz", "match_pattern": "(^|/)(auth|acl|permissions?|capabilities?)(/|\\.|-)", "risk": "high" },
-    { "name": "migrations", "match_pattern": "(^|/)migrations?/", "risk": "high" },
-    { "name": "credentials", "match_pattern": "(^|/)(credentials?|secrets?)(\\.|-|/)", "risk": "high" },
-    { "name": "shared-helpers", "match_pattern": "(^|/)(lib|shared|common)/.*\\.(sh|py|ts)$", "risk": "high" },
+    { "name": "billing", "match_pattern": "(^|/)(billing|invoice|payments?|purchases?|stripe|edd|checkout)", "risk": "high" },
+    { "name": "authn-authz", "match_pattern": "(^|/)(auth|acl|permissions?|capabilities?|sessions?|logins?|oauth)(/|\\.|-|$)|password", "risk": "high" },
+    { "name": "user-writes", "match_pattern": "(^|/)(save|update|delete|create)[-_]?(user|account|profile|customer|member|subscription)", "risk": "high" },
+    { "name": "migrations", "match_pattern": "(^|/)migrations?(/|-|\\.|_)|(migrate|schema)\\.(php|sql|ts|js|py)$", "risk": "high" },
+    { "name": "credentials", "match_pattern": "(^|/)(credentials?|secrets?|api[_-]?keys?|tokens?)(\\.|-|_|/)|(secret|apikey)", "risk": "high" },
+    { "name": "shared-helpers", "match_pattern": "(^|/)(lib|shared|common|helpers?)/.*\\.(sh|py|ts|php)$", "risk": "high" },
     { "name": "hooks", "match_pattern": "(^|/)hooks/", "risk": "high" },
     { "name": "ci-workflows", "match_pattern": "^\\.github/workflows/", "risk": "high" },
+    { "name": "db-layer", "match_pattern": "(^|/)(db|database)/.*\\.(sh|py|ts|php|sql)$", "risk": "high" },
     { "name": "tests", "match_pattern": "(^|/)tests?/", "risk": "low" },
     { "name": "docs", "match_pattern": "\\.(md|txt)$", "risk": "low" }
   ],

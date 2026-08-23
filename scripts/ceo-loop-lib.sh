@@ -258,9 +258,14 @@ while IFS= read -r row; do
     fi
   done
 done < "$file"
+# Upsert: a branch registering twice replaces its own row instead of stacking
+# duplicates (a later release of one duplicate would orphan the other).
 jq -nc --arg b "$CEO_BRANCH" --arg base "$CEO_BASE" \
   --argjson files "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
   '{branch: $b, base: $base, files: $files}' >> "$file"
+# Keep exactly one row per branch: the upsert drops earlier rows for it.
+jq -cs 'sort_by(.branch) | group_by(.branch) | map(last) | .[]' "$file" \
+  > "$file.dedup" && mv "$file.dedup" "$file"
 REGISTER_INNER
 }
 
@@ -295,20 +300,32 @@ ceo_base_stale() {
 
 # ── promotion gate (#329: premium pre-merge before production main) ──────────
 
-# ceo_promotion_gate <risk> <target-branch> <default-branch> <premium-approval-file|[]>
+# ceo_change_digest <repo-slug> <base-sha> <file>... — canonical identity of a
+# change set. A premium approval is bound to this digest; an approval minted
+# for one change cannot authorize another (#329 audit: approvals were reusable
+# and unbound).
+ceo_change_digest() {
+  local repo="$1" base="$2"; shift 2
+  printf '%s|%s|%s' "$repo" "$base" "$(printf '%s\n' "$@" | sort | tr '\n' ',')" |
+    shasum -a 256 | cut -d' ' -f1
+}
+
+# ceo_promotion_gate <risk> <target> <default> <approval-file|''> <expected-digest>
 # Returns the action on stdout:
 #   promote            safe to merge into <target>
 #   park-integration   fine work, but target is production main and the risk
 #                      or policy says integration branch first
-#   blocked-premium    HIGH risk aimed at production main with no premium
-#                      approval evidence — hard stop, exit 7
+#   blocked-premium    HIGH risk aimed at production main without approval
+#                      evidence bound to THIS change — hard stop, exit 7
 ceo_promotion_gate() {
-  local risk="$1" target="$2" default_branch="$3" approval="${4:-}"
+  local risk="$1" target="$2" default_branch="$3" approval="${4:-}" digest="${5:-}"
   if [ "$target" != "$default_branch" ]; then
     echo "promote"; return 0
   fi
   if [ "$risk" = "high" ]; then
-    if [ -n "$approval" ] && [ -f "$approval" ]; then
+    if [ -n "$approval" ] && [ -f "$approval" ] \
+       && jq -e '.approved_by and .ticket and .change_digest' "$approval" >/dev/null 2>&1 \
+       && [ "$(jq -r '.change_digest' "$approval")" = "$digest" ]; then
       echo "promote"; return 0
     fi
     echo "blocked-premium"
@@ -318,4 +335,39 @@ ceo_promotion_gate() {
     echo "promote"; return 0
   fi
   echo "park-integration"
+}
+
+# ceo_filing_ticket <dir> <fingerprint> <summary> <owner> <failing-test>
+#                    <definition-of-done> <severity> <repo> <base>
+# Repair tickets carry what #329 requires on every ticket: owner, the exact
+# failing test/invariant, a definition of done, and severity — external_id is
+# filled by the driver when GitHub is reachable.
+ceo_filing_ticket() {
+  local dir="$1" fp="$2" summary="$3" owner="$4" failing_test="$5" dod="$6" sev="$7" repo="$8" base="$9"
+  mkdir -p "$dir"; touch "$dir/repair-tickets.jsonl"
+  CEO_LOCK_DIR="$dir" CEO_FP="$fp" \
+    CEO_SUMMARY="$summary" CEO_OWNER="$owner" CEO_TEST="$failing_test" \
+    CEO_DOD="$dod" CEO_SEV="$sev" CEO_REPO="$repo" CEO_BASE="$base" \
+    bash <<'TICKET_INNER'
+set -euo pipefail
+lock="$CEO_LOCK_DIR/.lock"; waited=0
+until mkdir "$lock" 2>/dev/null; do
+  sleep 0.2; waited=$((waited + 1))
+  [ "$waited" -ge 50 ] && { echo "ceo-lock: held too long" >&2; exit 8; }
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+file="$CEO_LOCK_DIR/repair-tickets.jsonl"
+existing="$(jq -r --arg fp "$CEO_FP" 'select(.fingerprint == $fp) | .ticket_id' "$file" | head -1)"
+if [ -n "$existing" ]; then echo "$existing"; exit 0; fi
+jq -nc --arg fp "$CEO_FP" \
+  '{fingerprint: $fp, ticket_id: ("repair-" + $fp), retries: 0,
+    summary: $ARGS.named.summary, owner: $ARGS.named.owner,
+    failing_test: $ARGS.named.failing_test, definition_of_done: $ARGS.named.dod,
+    severity: $ARGS.named.sev, repo: $ARGS.named.repo, base: $ARGS.named.base,
+    external_id: null}' \
+    --arg summary "$CEO_SUMMARY" --arg owner "$CEO_OWNER" \
+    --arg failing_test "$CEO_TEST" --arg dod "$CEO_DOD" \
+    --arg sev "$CEO_SEV" --arg repo "$CEO_REPO" --arg base "$CEO_BASE" >> "$file"
+echo "repair-$CEO_FP"
+TICKET_INNER
 }
