@@ -188,7 +188,7 @@ Gates and their failure codes:
 | State lock | Concurrent loops serialize on a portable mkdir lock; a held-too-long lock refuses to race rather than corrupting state | 8 |
 | Branch name | `.branch` must satisfy `git check-ref-format` and must not begin with `-`; the name becomes both a ref and a worktree path, so it is validated before either is built | 2 |
 | Ownership | The loop reclaims a branch only while `refs/ceo-loop/owned/<key>` still records that branch's current tip. Anything else — a name it never created, or one that moved since — is refused, never deleted | 6 |
-| Worker commit | The worker's output must commit. The changed-file list is read from the working tree, so a rejected commit (a repo-level `pre-commit` hook) would have the run classify and review a change the branch does not hold | 6 |
+| Worker output | Staging or committing the worker's output must succeed; either failing refuses the run. The changed-file list is read from the working tree, so output that never reaches the branch would otherwise be classified, reviewed, and reported as accepted work | 6 |
 
 The ownership marker is durable state: `refs/ceo-loop/owned/<key>` under the
 target repo, one ref per branch the loop created, where `<key>` is a hash of the

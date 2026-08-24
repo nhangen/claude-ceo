@@ -288,13 +288,22 @@ while [ "$ATTEMPT" -le "$MAX_RETRIES" ]; do
   if [ "$DRY_RUN" != "1" ]; then
     # The loop owns committing whatever the worker left behind, so the diff
     # (and therefore the file list) is fully observable.
-    git -C "$WT" add -A >/dev/null 2>&1 || true
+    # Neither of these is optional, and the reason is one invariant rather than
+    # two commands: FILES below comes from `git diff --name-only` against the
+    # WORKING TREE, so any path that leaves the worker's output uncommitted has
+    # risk classification, the reviewers, and the promotion summary all reading
+    # a change the branch does not hold — and the run then reports "holds
+    # accepted work" over an empty branch.
+    #
+    # A failed `add` is the subtler half: nothing is staged, so the commit block
+    # below is skipped entirely and takes its own refusal with it. A wedged
+    # index.lock does it, which is exactly what a concurrent git in the same
+    # worktree leaves behind.
+    git -C "$WT" add -A >/dev/null 2>&1 \
+      || { echo "ceo-loop: could not stage the worker's output in $WT — refusing to report work the branch does not hold" >&2; exit 6; }
     if ! git -C "$WT" diff --cached --quiet 2>/dev/null; then
-      # Not optional. FILES below comes from `git diff --name-only` against the
-      # WORKING TREE, so a swallowed rejection (a repo-level pre-commit hook —
-      # worktrees share $REPO_DIR/.git/hooks) leaves risk classification and the
-      # reviewers reading a change the branch does not hold, and the run then
-      # reports "holds accepted work" over an empty branch.
+      # A rejected commit is the other half — a repo-level pre-commit hook
+      # reaches here, since worktrees share $REPO_DIR/.git/hooks.
       git -C "$WT" commit -q -m "ceo-loop: worker output ($WORKER_IDENTITY)" \
         || { echo "ceo-loop: could not commit the worker's output on $BRANCH — it is uncommitted in $WT and the next reclaim would discard it" >&2; exit 6; }
       # The marker tracks the tip, so it has to follow every commit the loop

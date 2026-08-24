@@ -585,4 +585,24 @@ test_a_rejected_commit_is_not_reported_as_accepted_work() {
     "the branch is empty — which is exactly why the run must not claim otherwise"
 }
 
+test_a_failed_stage_is_not_reported_as_accepted_work() {
+  # Sibling of the rejected-commit arm, and the same invariant: `git add -A`
+  # failing leaves nothing staged, so `diff --cached --quiet` skips the whole
+  # commit block — including its refusal. FILES still reads the working tree,
+  # so a modified tracked file keeps the run looking productive.
+  local repo; repo="$(mkrepo failedstage)"
+  local wscript="${TMP}/w-addfail.sh"
+  # Edit a TRACKED file (so the working-tree diff is non-empty), then wedge the
+  # index so the loop's own `git add` cannot run.
+  write_script "$wscript" 'cd "$WT" && echo edited > base.txt && touch "$(git rev-parse --git-dir)/index.lock"'
+  mkroutes "$TMP/routes-addfail.json" "$wscript" true
+  mkspec "$TMP/addfail.json" "$repo" nh/loop-addfail "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/addfail.json" --routes "$TMP/routes-addfail.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a failed stage stops the run instead of reporting work the branch does not hold"
+  assert_not_contains "$out" "holds accepted work"
+  assert_eq "$(git -C "$repo" log --oneline main..nh/loop-addfail 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "the branch is empty — which is why the run must not claim otherwise"
+}
+
 run_tests
