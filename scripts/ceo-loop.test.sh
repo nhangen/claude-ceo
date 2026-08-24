@@ -565,4 +565,24 @@ test_rejects_a_branch_name_that_would_be_read_as_an_option() {
   assert_contains "$out" "not a valid git branch name"
 }
 
+test_a_rejected_commit_is_not_reported_as_accepted_work() {
+  # The loop's whole file-list contract rests on the worker's output being
+  # committed: FILES comes from `git diff --name-only "$CURRENT_BASE"`, which
+  # reads the WORKING TREE. With the commit swallowed, the risk classifier and
+  # the reviewers see a change the branch does not hold, the run prints "holds
+  # accepted work", and ceo_claim_branch certifies the empty branch as owned.
+  local repo; repo="$(mkrepo rejectedcommit)"
+  printf '#!/bin/sh\nexit 1\n' > "$repo/.git/hooks/pre-commit"
+  chmod +x "$repo/.git/hooks/pre-commit"
+  local wscript="${TMP}/w-rej.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-rej.json" "$wscript" true
+  mkspec "$TMP/rej.json" "$repo" nh/loop-rej "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/rej.json" --routes "$TMP/routes-rej.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a rejected commit stops the run instead of certifying an empty branch"
+  assert_not_contains "$out" "holds accepted work"
+  assert_eq "$(git -C "$repo" log --oneline main..nh/loop-rej 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "the branch is empty — which is exactly why the run must not claim otherwise"
+}
+
 run_tests

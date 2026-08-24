@@ -18,7 +18,8 @@
 # Spec JSON fields:
 #   repo        state-namespacing slug
 #   repo_dir    path to the target git repository (required)
-#   branch      isolated worker branch name
+#   branch      isolated worker branch name; must satisfy
+#               `git check-ref-format` and must not begin with '-'
 #   base        base revision (default: current sha of the target branch)
 #   verify_cmd  REQUIRED command run inside the worktree; must exit 0
 #   files       optional declared file intents for early overlap checks —
@@ -31,7 +32,8 @@
 # Worker/reviewer commands receive WT (worktree), SPEC, BASE in their env.
 #
 # Exit codes: 0 ok · 2 bad usage / invalid spec · 3 retries exhausted ·
-# 4 routing failure · 5 review gate failure · 6 overlap or corrupt state ·
+# 4 routing failure · 5 review gate failure ·
+# 6 overlap, branch not owned, uncommittable worker output, or corrupt state ·
 # 7 premium-gate block · 8 lock contention · 9 stale base
 
 set -euo pipefail
@@ -289,7 +291,13 @@ while [ "$ATTEMPT" -le "$MAX_RETRIES" ]; do
     # (and therefore the file list) is fully observable.
     git -C "$WT" add -A >/dev/null 2>&1 || true
     if ! git -C "$WT" diff --cached --quiet 2>/dev/null; then
-      git -C "$WT" commit -q -m "ceo-loop: worker output ($WORKER_IDENTITY)" || true
+      # Not optional. FILES below comes from `git diff --name-only` against the
+      # WORKING TREE, so a swallowed rejection (a repo-level pre-commit hook —
+      # worktrees share $REPO_DIR/.git/hooks) leaves risk classification and the
+      # reviewers reading a change the branch does not hold, and the run then
+      # reports "holds accepted work" over an empty branch.
+      git -C "$WT" commit -q -m "ceo-loop: worker output ($WORKER_IDENTITY)" \
+        || { echo "ceo-loop: could not commit the worker's output on $BRANCH — it is uncommitted in $WT and the next reclaim would discard it" >&2; exit 6; }
       # The marker tracks the tip, so it has to follow every commit the loop
       # makes or the next run reads its own work as a stranger's.
       ceo_claim_branch
