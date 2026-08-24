@@ -101,6 +101,19 @@ require_field() { # <jq-path> <name>
 }
 REPO="$(require_field '.repo' 'repo' | tr '/' '-')" # keep state paths one level deep
 BRANCH="$(require_field '.branch' 'branch')"
+# The branch name becomes both a git ref and a filesystem path, so it is
+# validated before either is built from it. ".." survives the slash collapse
+# below untouched, which made WT resolve to $REPO_DIR itself and pointed the
+# reclaim's `rm -rf` at the repository root (#332).
+# `git check-ref-format` accepts a leading dash, and only `checkout -b` happens
+# to refuse one later — every other interpolation of $BRANCH would read it as an
+# option — so that case is rejected here rather than left to luck.
+if ! git check-ref-format "refs/heads/$BRANCH" 2>/dev/null \
+   || case "$BRANCH" in -*) true ;; *) false ;; esac \
+   || [ "${BRANCH//\//_}" = "." ] || [ "${BRANCH//\//_}" = ".." ]; then
+  echo "ceo-loop: '$BRANCH' is not a valid git branch name — refusing to build a ref or a worktree path from it" >&2
+  exit 2
+fi
 SHAPE="$(jget '.shape // "bug-fix"')"
 VERIFY_CMD="$(require_field '.verify_cmd' 'verify_cmd')"
 
@@ -186,9 +199,47 @@ ATTEMPT=0
 WORKER_IDENTITY=""
 TEST_RC=1
 VERIFY_LOG=""
+# One key per branch name, used for both the ownership ref and the worktree
+# directory. Keying either on the name itself is what produced two bugs: a ref
+# namespace cannot hold "topic" and "topic/sub" at once, and collapsing "/" to
+# "_" made nh/loop-x and the literal nh_loop-x share one worktree, so the second
+# run evicted the first run's checkout.
+branch_key() { # <branch-name> -> stable hex, whichever hasher this host has
+  local h
+  h="$(printf '%s' "$1" | shasum 2>/dev/null | awk '{print $1}')"
+  [ -n "$h" ] || h="$(printf '%s' "$1" | sha1sum 2>/dev/null | awk '{print $1}')"
+  [ -n "$h" ] || h="$(printf '%s' "$1" | cksum | awk '{print $1"-"$2}')"
+  printf '%s' "$h"
+}
+BRANCH_KEY="$(branch_key "$BRANCH")"
+
 if [ "$DRY_RUN" != "1" ]; then
-  WT="$REPO_DIR/.ceo-loop/${BRANCH//\//_}"
-  # Reclaim leftovers from a prior failed attempt: this loop owns the branch.
+  WT="$REPO_DIR/.ceo-loop/${BRANCH//\//_}-${BRANCH_KEY:0:12}"
+  OWNED_REF="refs/ceo-loop/owned/$BRANCH_KEY"
+  # The marker records the tip it vouches for, and is re-pointed every time the
+  # loop advances the branch. Existence alone is not ownership: a name freed by
+  # a merge and later reused by a person left the old marker standing, and the
+  # loop deleted their work on the strength of it. A tip that does not match is
+  # somebody else's commit, whoever made it.
+  ceo_claim_branch() {
+    git -C "$REPO_DIR" update-ref "$OWNED_REF" "$(git -C "$WT" rev-parse HEAD)" \
+      || { echo "ceo-loop: could not record ownership of $BRANCH" >&2; exit 6; }
+  }
+  BRANCH_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "refs/heads/$BRANCH" 2>/dev/null || true)"
+  OWNED_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "$OWNED_REF" 2>/dev/null || true)"
+  if [ -z "$BRANCH_TIP" ]; then
+    # No branch: a marker left behind by an earlier run vouches for nothing, and
+    # keeping it is what let the next holder of the name be deleted.
+    [ -z "$OWNED_TIP" ] || git -C "$REPO_DIR" update-ref -d "$OWNED_REF" 2>/dev/null || true
+  elif [ "$BRANCH_TIP" != "$OWNED_TIP" ]; then
+    if [ -z "$OWNED_TIP" ]; then
+      echo "ceo-loop: branch $BRANCH already exists and was not created by ceo-loop — refusing to delete it." >&2
+    else
+      echo "ceo-loop: branch $BRANCH has moved since ceo-loop last wrote it ($OWNED_TIP -> $BRANCH_TIP) — refusing to delete it." >&2
+    fi
+    echo "  Choose a different .branch in the spec, or delete the branch yourself if it is disposable." >&2
+    exit 6
+  fi
   # Reclaim leftovers from prior attempts: deregister the worktree first
   # (a branch checked out in a registered worktree cannot be deleted), prune,
   # then drop the loop-owned branch.
@@ -200,6 +251,9 @@ if [ "$DRY_RUN" != "1" ]; then
     || { echo "ceo-loop: could not create isolated worktree at $WT" >&2; exit 6; }
   git -C "$WT" checkout -b "$BRANCH" "$CURRENT_BASE" >/dev/null 2>&1 \
     || { echo "ceo-loop: could not create branch $BRANCH" >&2; exit 6; }
+  # Claim it in the same step that creates it, so a run killed later still
+  # leaves a branch the next run is allowed to reclaim.
+  ceo_claim_branch
 fi
 
 # Early registration with declared intent (if any) so concurrent loops on the
@@ -236,6 +290,9 @@ while [ "$ATTEMPT" -le "$MAX_RETRIES" ]; do
     git -C "$WT" add -A >/dev/null 2>&1 || true
     if ! git -C "$WT" diff --cached --quiet 2>/dev/null; then
       git -C "$WT" commit -q -m "ceo-loop: worker output ($WORKER_IDENTITY)" || true
+      # The marker tracks the tip, so it has to follow every commit the loop
+      # makes or the next run reads its own work as a stranger's.
+      ceo_claim_branch
     fi
   fi
 
