@@ -186,6 +186,16 @@ Gates and their failure codes:
 | Stale base | Spec base differing from the target's current revision (`--current-base`) stops the loop before any work runs — rebase and resubmit | 9 |
 | Requeue | Repair tickets retry up to the cap (`CEO_LOOP_MAX_RETRIES`, default 2), then land in `exhausted.jsonl` exactly once — visible, never deleted | 3 |
 | State lock | Concurrent loops serialize on a portable mkdir lock; a held-too-long lock refuses to race rather than corrupting state | 8 |
+| Branch name | `.branch` must satisfy `git check-ref-format` and must not begin with `-`; the name becomes both a ref and a worktree path, so it is validated before either is built | 2 |
+| Ownership | The loop reclaims a branch only while `refs/ceo-loop/owned/<key>` still records that branch's current tip. Anything else — a name it never created, or one that moved since — is refused, never deleted | 6 |
+| Worker commit | The worker's output must commit. The changed-file list is read from the working tree, so a rejected commit (a repo-level `pre-commit` hook) would have the run classify and review a change the branch does not hold | 6 |
+
+The ownership marker is durable state: `refs/ceo-loop/owned/<key>` under the
+target repo, one ref per branch the loop created, where `<key>` is a hash of the
+branch name (a ref namespace cannot hold both `topic` and `topic/sub`). Each ref
+holds the tip the loop last wrote. A marker whose branch is gone is pruned on the
+next run for that name; an orphan is harmless in the meantime, because a tip that
+does not match refuses rather than deletes.
 
 Premium approval is evidence, not existence: `CEO_LOOP_PREMIUM_APPROVAL` must
 point at a JSON file carrying `.approved_by` and `.ticket` — an empty or
