@@ -104,15 +104,14 @@ require_field() { # <jq-path> <name>
 REPO="$(require_field '.repo' 'repo' | tr '/' '-')" # keep state paths one level deep
 BRANCH="$(require_field '.branch' 'branch')"
 # The branch name becomes both a git ref and a filesystem path, so it is
-# validated before either is built from it. ".." survives the slash collapse
-# below untouched, which made WT resolve to $REPO_DIR itself and pointed the
-# reclaim's `rm -rf` at the repository root (#332).
-# `git check-ref-format` accepts a leading dash, and only `checkout -b` happens
-# to refuse one later — every other interpolation of $BRANCH would read it as an
-# option — so that case is rejected here rather than left to luck.
+# validated before either is built from it. `check-ref-format` is the authority
+# and covers the case that mattered: ".." reached the slash collapse below, WT
+# resolved to $REPO_DIR, and the reclaim's `rm -rf` aimed at the repository root
+# (#332). The one thing it accepts and should not is a leading dash — today only
+# `checkout -b` happens to refuse that, and every other interpolation of $BRANCH
+# would read it as an option, so it is rejected here rather than left to luck.
 if ! git check-ref-format "refs/heads/$BRANCH" 2>/dev/null \
-   || case "$BRANCH" in -*) true ;; *) false ;; esac \
-   || [ "${BRANCH//\//_}" = "." ] || [ "${BRANCH//\//_}" = ".." ]; then
+   || case "$BRANCH" in -*) true ;; *) false ;; esac; then
   echo "ceo-loop: '$BRANCH' is not a valid git branch name — refusing to build a ref or a worktree path from it" >&2
   exit 2
 fi
