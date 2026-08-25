@@ -133,9 +133,11 @@ touch "$DIR/queue.jsonl" "$DIR/workers.jsonl" "$DIR/findings.jsonl" \
       "$DIR/repair-tickets.jsonl" "$DIR/exhausted.jsonl" "$DIR/telemetry.jsonl"
 
 FINGERPRINTS_FILE=""
+FINDINGS_TMP=""
 WT=""
 ceo_loop_cleanup() {
   [ -n "$FINGERPRINTS_FILE" ] && rm -f "$FINGERPRINTS_FILE" 2>/dev/null || true
+  [ -n "$FINDINGS_TMP" ] && rm -f "$FINDINGS_TMP" 2>/dev/null || true
   # A dead or blocked run frees its serialization slot but LEAVES the worktree
   # and branch for inspection — deleting evidence of what a worker did would
   # hide the very state a repair ticket needs.
@@ -342,8 +344,9 @@ mapfile -t REVIEWER_ENTRIES < <(jq -c '.reviewers[]' "$ROUTES" 2>/dev/null | gre
 AUTHOR_PROVIDER="${WORKER_IDENTITY%%/*}"
 PASSING_REVIEWER=""
 FINDINGS_TMP="$(mktemp "${TMPDIR:-/tmp}/ceo-loop-findings.XXXXXX")"
-FINGERPRINTS_FILE="$FINDINGS_TMP"
+FINGERPRINTS_FILE="$(mktemp "${TMPDIR:-/tmp}/ceo-loop-fingerprints.XXXXXX")"
 : > "$FINDINGS_TMP"
+: > "$FINGERPRINTS_FILE"
 for rentry in "${REVIEWER_ENTRIES[@]}"; do
   rprov="$(jq -r .provider <<<"$rentry")"
   rmodel="$(jq -r .model <<<"$rentry")"
@@ -441,7 +444,7 @@ if [ "$TEST_RC" -ne 0 ]; then
     "${CEO_LOOP_TICKET_OWNER:-unassigned}" \
     "$VERIFY_CMD" \
     "verify_cmd exits 0 inside the worktree" "HIGH" "$REPO" "$CURRENT_BASE")"
-  echo "$VTID" >> "$FINDINGS_TMP"
+  echo "$VTID" >> "$FINGERPRINTS_FILE"
 fi
 if [ "$TEST_RC" -ne 0 ] || [ "$HIGH_FINDINGS" -gt 0 ]; then
   # Bounded requeue already spent its attempts above; record exhaustion.
