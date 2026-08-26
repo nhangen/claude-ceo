@@ -102,7 +102,6 @@ require_field() { # <jq-path> <name>
 REPO="$(require_field '.repo' 'repo' | tr '/' '-')" # keep state paths one level deep
 BRANCH="$(require_field '.branch' 'branch')"
 SHAPE="$(jget '.shape // "bug-fix"')"
-AUTHOR="" # derived from the route that actually ran — never self-attested
 VERIFY_CMD="$(require_field '.verify_cmd' 'verify_cmd')"
 
 # Real git mechanics need a real repository (#329 audit: nothing was created).
@@ -255,7 +254,6 @@ done
 
 FILES=()
 HIGH_FINDINGS=0
-FINDINGS_JSONL=""
 if [ "$DRY_RUN" != "1" ]; then
   # Authoritative file list: the actual diff against the base revision.
   mapfile -t FILES < <(git -C "$WT" diff --name-only "$CURRENT_BASE" 2>/dev/null | grep -v '^$' || true)
