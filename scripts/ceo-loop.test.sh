@@ -19,7 +19,6 @@ export CEO_LOOP_STATE_ROOT
 OLLAMA_AGENT_LEDGER="$TMP/ledger/runs.jsonl"
 export OLLAMA_AGENT_LEDGER
 
-REPO_N=0
 STATE_N=0
 fresh_state() { # isolate each test's loop state so order can never matter
   STATE_N=$((STATE_N + 1))
@@ -57,8 +56,9 @@ mkspec() { # <file> <repo-dir> <branch> <verify-cmd>
       verify_cmd: $verify}' > "$1"
 }
 
+# The body of the default worker, written into a script file by write_script.
+# Not exported: it is passed as an argument, never inherited.
 WORKER_WRITE='cd "$WT" && echo feature > feature.txt'
-export WORKER_WRITE WORKER_FAIL=false
 
 write_script() { # <path> <body> — exec bit required: routes run commands directly
   printf '#!/bin/bash\n%s\n' "$2" > "$1"
@@ -402,7 +402,7 @@ EOF
 JSON
   mkspec "$TMP/fr.json" "$repo" nh/loop-fr "false"   # work fails verification too
   git -C "$repo" branch integration
-  for i in 1 2 3; do
+  for _ in 1 2 3; do
     CEO_LOOP_MAX_RETRIES=1 bash "$LOOP" run --spec "$TMP/fr.json" --routes "$TMP/routes-fr.json" \
       --target integration >/dev/null 2>&1 || true
   done
