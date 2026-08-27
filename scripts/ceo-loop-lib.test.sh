@@ -239,7 +239,8 @@ test_branch_key_returns_deterministic_hash() {
   k3="$(branch_key "nh/other-test")"
   assert_eq "$k1" "$k2" "same branch produces identical key"
   assert_fails "different branches produce different keys" test "$k1" = "$k3"
-  assert_eq "${#k1}" "40" "sha1/shasum produces 40-character hex key"
+  assert_eq "${#k1}" "40" "the key is a 40-character SHA-1"
+  assert_fails "the key is lowercase hex only" test -n "$(printf '%s' "$k1" | tr -d '0-9a-f')"
 }
 
 run_tests

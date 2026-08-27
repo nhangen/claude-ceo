@@ -669,7 +669,9 @@ test_rejects_a_target_name_with_leading_dash() {
   local out rc=0
   out=$(bash "$LOOP" run --spec "$TMP/tdash.json" --routes "$TMP/routes-tdash.json" --target -oProxyCommand=x 2>&1) || rc=$?
   assert_eq "$rc" "2" "a target branch name starting with - is rejected at argument validation"
-  assert_contains "$out" "not a valid git branch name"
+  # Name the value: valid_ref_name is called for BRANCH, TARGET and DEFAULT_BRANCH
+  # and emits one message shape, so a bare needle passes with TARGET unvalidated.
+  assert_contains "$out" "'-oProxyCommand=x' is not a valid git branch name"
 }
 
 test_rejects_a_target_name_git_would_not_accept() {
@@ -680,7 +682,7 @@ test_rejects_a_target_name_git_would_not_accept() {
   local out rc=0
   out=$(bash "$LOOP" run --spec "$TMP/tbad.json" --routes "$TMP/routes-tbad.json" --target "main^" 2>&1) || rc=$?
   assert_eq "$rc" "2" "an invalid target branch name is rejected at argument validation"
-  assert_contains "$out" "not a valid git branch name"
+  assert_contains "$out" "'main^' is not a valid git branch name"
 }
 
 run_tests
