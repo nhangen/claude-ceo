@@ -243,11 +243,47 @@ if [ "$DRY_RUN" != "1" ]; then
     echo "  Choose a different .branch in the spec, or delete the branch yourself if it is disposable." >&2
     exit 6
   fi
-  # Reclaim leftovers from prior attempts: deregister the worktree first
-  # (a branch checked out in a registered worktree cannot be deleted), prune,
-  # then drop the loop-owned branch.
-  git -C "$REPO_DIR" worktree remove --force --force "$WT" 2>/dev/null || true
-  git -C "$REPO_DIR" worktree prune >/dev/null 2>&1 || true
+  # Reclaim leftovers from prior attempts: deregister every worktree
+  # registration this branch owns (a branch checked out in a registered worktree
+  # cannot be deleted), then drop the loop-owned branch.
+  #
+  # NOT `git worktree prune` (#345). That is repo-wide, and "directory missing"
+  # is not "worktree dead" -- an unmounted volume looks identical, and prune
+  # deletes that worktree's admin dir along with its index and HEAD, which
+  # `git worktree repair` cannot undo.
+  #
+  # Ownership is two tests, because neither alone covers it. A leftover carries
+  # `branch refs/heads/$BRANCH` only if the run that made it reached the
+  # `checkout -b` below; killed between `worktree add --detach` and that line it
+  # is registered `detached`, and a branch filter is structurally blind to it --
+  # those then accumulate one admin dir per run, silently, at exit 0. The
+  # directory name catches them: it is ${BRANCH//\//_}-${BRANCH_KEY:0:12},
+  # unique to this branch.
+  #
+  # Both tests are confined to $REPO_DIR/.ceo-loop/, and the branch one has to
+  # be. The loop owns the branch NAME, not every checkout of it: a person who
+  # checks the parked branch out somewhere of their own to read it leaves the
+  # tip unmoved, so the ownership guard above passes, and an unscoped branch
+  # match would hand their dirty worktree to `remove --force --force`. Outside
+  # .ceo-loop/ the right answer is the `checkout -b` refusal further down.
+  #
+  # Removing by the path `worktree list` reports, rather than by $WT, is also
+  # strictly more robust: where the path has a symlinked prefix and a missing
+  # ancestor directory -- /var -> /private/var under $TMPDIR, which is the test
+  # fixture rather than any real repo -- git refuses the uncanonicalized form as
+  # "not a working tree".
+  WT_BASE="/$(basename "$WT")"
+  { git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
+    | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
+        /^worktree / { if (own && p != "") print p
+                       p = substr($0, 10)
+                       own = (substr(p, length(p) - length(base) + 1) == base) }
+        $0 == br     { if (p ~ /\/\.ceo-loop\//) own = 1 }
+        END          { if (own && p != "") print p }
+      ' \
+    | while IFS= read -r WT_OWNED; do
+        git -C "$REPO_DIR" worktree remove --force --force "$WT_OWNED" 2>/dev/null || true
+      done
   rm -rf "$WT"
   git -C "$REPO_DIR" branch -D "$BRANCH" 2>/dev/null || true
   git -C "$REPO_DIR" worktree add --detach "$WT" "$CURRENT_BASE" >/dev/null 2>&1 \

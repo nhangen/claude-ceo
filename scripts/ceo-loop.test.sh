@@ -685,4 +685,117 @@ test_rejects_a_target_name_git_would_not_accept() {
   assert_contains "$out" "'main^' is not a valid git branch name"
 }
 
+test_loop_reclaim_leaves_an_unrelated_absent_worktree_registered() {
+  # The loop must clear only the worktree blocking the branch in front of it.
+  # `git worktree prune` is repo-wide and reads "directory missing" as "worktree
+  # dead", which an unmounted volume or offline path looks like — it deletes that
+  # worktree's admin dir, taking its index and HEAD with it, and `git worktree
+  # repair` cannot undo that (#345).
+  local repo; repo="$(mkrepo blastradius)"
+  local human_wt="$TMP/vol/blast-human"
+  mkdir -p "$TMP/vol"
+  git -C "$repo" worktree add -q -b nh/human-work "$human_wt" main
+  echo "human work" > "$human_wt/human.txt"
+  /usr/bin/git -C "$human_wt" add -A && git -C "$human_wt" commit -qm "human work"
+
+  # Initial loop run to create the branch, worktree, and ownership marker
+  local wscript="${TMP}/w-blast.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-blast.json" "$wscript" true
+  mkspec "$TMP/blast.json" "$repo" nh/loop-blast "false"
+  CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/blast.json" --routes "$TMP/routes-blast.json" --target main >/dev/null 2>&1 || true
+
+  # Simulate the human worktree becoming unreachable (e.g. unmounted volume)
+  mv "$TMP/vol" "$TMP/vol-unmounted"
+
+  # Simulate loop worktree directory being removed (stale registration leftover)
+  rm -rf "$repo/.ceo-loop"
+
+  # Second loop run (reclaim path with successful verification)
+  mkspec "$TMP/blast.json" "$repo" nh/loop-blast "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/blast.json" --routes "$TMP/routes-blast.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "0" "reclaim run must succeed"
+
+  # Verify the unreachable worktree was NOT deregistered
+  assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c 'blast-human' || true)" "1" \
+    "an unreachable worktree the loop was not asked about stays registered"
+
+  # Remount and verify human worktree is functional
+  mv "$TMP/vol-unmounted" "$TMP/vol"
+  assert_eq "$(git -C "$human_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo BROKEN)" "nh/human-work" \
+    "the remounted human worktree is still a working checkout"
+  # Read the content through the repo, not through the worktree -- the two
+  # assertions this replaces both re-measured the line above from inside the
+  # broken checkout, so all three flipped together and none could flip alone.
+  assert_eq "$(git -C "$repo" cat-file -e refs/heads/nh/human-work:human.txt 2>/dev/null && echo yes || echo no)" \
+    "yes" "the human commit content survives"
+}
+
+test_loop_reclaim_clears_a_detached_leftover_registration() {
+  # `worktree add --detach` runs before `checkout -b`, so a run killed between
+  # them leaves a registration with no branch on it. Selecting leftovers by
+  # branch alone cannot see that one, and the repo-wide prune that used to
+  # absorb it is gone -- so each reclaim registers another admin dir, silently,
+  # at exit 0.
+  local repo; repo="$(mkrepo detachedleftover)"
+  local wscript="${TMP}/w-detached.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-detached.json" "$wscript" true
+  mkspec "$TMP/detached.json" "$repo" nh/loop-detached "true"
+
+  CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/detached.json" \
+    --routes "$TMP/routes-detached.json" --target main >/dev/null 2>&1 || true
+
+  # Reduce the loop's own worktree to the state a kill between `worktree add
+  # --detach` and `checkout -b` leaves behind: registered, detached, directory
+  # unreachable.
+  local wt; wt="$(git -C "$repo" worktree list --porcelain \
+    | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/nh\/loop-detached$/{print p}')"
+  [ -n "$wt" ] || { echo "fixture: no loop worktree registered" >&2; return 1; }
+  git -C "$repo" -C "$wt" checkout -q --detach HEAD 2>/dev/null \
+    || git -C "$wt" checkout -q --detach HEAD
+  git -C "$repo" branch -D nh/loop-detached >/dev/null 2>&1 || true
+  rm -rf "$repo/.ceo-loop"
+  assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c '^detached$' || true)" "1" \
+    "fixture leaves exactly one detached registration"
+
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/detached.json" \
+    --routes "$TMP/routes-detached.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "0" "the reclaim run must succeed"
+  assert_eq "$(ls "$repo/.git/worktrees" 2>/dev/null | wc -l | tr -d ' ')" "1" \
+    "the leftover registration is cleared, not left to accumulate beside the new one"
+}
+
+test_loop_reclaim_leaves_a_human_checkout_of_its_branch_alone() {
+  # The loop owns the branch NAME, not every checkout of it. A person who checks
+  # the parked branch out to read it leaves the tip unmoved, so the ownership
+  # guard passes -- and an unscoped branch match would then hand their dirty
+  # worktree to `remove --force --force`, which deletes it without complaint.
+  local repo; repo="$(mkrepo humancheckout)"
+  local wscript="${TMP}/w-human.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-human.json" "$wscript" true
+  mkspec "$TMP/human.json" "$repo" nh/loop-human "true"
+
+  CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/human.json" \
+    --routes "$TMP/routes-human.json" --target main >/dev/null 2>&1 || true
+
+  # The loop's own worktree goes away; the branch stays parked at the tip the
+  # loop recorded, which is what makes the ownership guard pass on the next run.
+  rm -rf "$repo/.ceo-loop"
+  git -C "$repo" worktree prune
+
+  # A person checks that branch out somewhere of their own, with uncommitted work.
+  local human_wt="$TMP/human-review-$$"
+  git -C "$repo" worktree add -q "$human_wt" nh/loop-human
+  echo "notes I have not committed" > "$human_wt/notes.txt"
+
+  bash "$LOOP" run --spec "$TMP/human.json" --routes "$TMP/routes-human.json" \
+    --target main >/dev/null 2>&1 || true
+
+  assert_eq "$([ -f "$human_wt/notes.txt" ] && echo PRESENT || echo DESTROYED)" "PRESENT" \
+    "uncommitted work in a human's checkout of the branch is not deleted"
+  assert_eq "$(git -C "$human_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo BROKEN)" \
+    "nh/loop-human" "and their worktree is still a working checkout"
+}
+
 run_tests
