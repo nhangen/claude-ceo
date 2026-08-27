@@ -434,4 +434,175 @@ JSON
   assert_contains "$(grep -rh "unlabeled finding" "$CEO_LOOP_STATE_ROOT" --include="repair-tickets.jsonl")" '"severity":"high"'
 }
 
+test_refuses_to_delete_a_branch_the_loop_did_not_create() {
+  # #332: "this loop owns the branch" was an assumption, not a check. A spec
+  # whose .branch collides with existing work force-deleted it and exited 0.
+  local repo; repo="$(mkrepo reclaim)"
+  git -C "$repo" checkout -q -b important-work
+  echo irreplaceable > "$repo/only-here.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "work that exists nowhere else"
+  local doomed; doomed="$(git -C "$repo" rev-parse important-work)"
+  git -C "$repo" checkout -q main
+  local wscript="${TMP}/w-reclaim.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-reclaim.json" "$wscript" true
+  mkspec "$TMP/reclaim.json" "$repo" important-work "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/reclaim.json" --routes "$TMP/routes-reclaim.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a branch the loop cannot prove it created is refused, not deleted"
+  assert_contains "$out" "was not created by ceo-loop"
+  assert_eq "$(git -C "$repo" rev-parse important-work 2>/dev/null || echo GONE)" "$doomed" \
+    "the pre-existing branch still points at its own commit"
+}
+
+test_reclaims_its_own_branch_across_runs() {
+  # The refusal above must not break the reclaim it replaces: a branch this
+  # loop created is still reclaimable on the next run.
+  local repo; repo="$(mkrepo reown)"
+  local wscript="${TMP}/w-reown.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-reown.json" "$wscript" true
+  mkspec "$TMP/reown.json" "$repo" nh/loop-reown "true"
+  bash "$LOOP" run --spec "$TMP/reown.json" --routes "$TMP/routes-reown.json" --target main >/dev/null 2>&1 || true
+  assert_eq "$(git -C "$repo" for-each-ref --format='%(objectname)' refs/ceo-loop/owned \
+    | grep -cx "$(git -C "$repo" rev-parse nh/loop-reown)")" "1" \
+    "the loop records ownership pointing at the branch tip it created"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/reown.json" --routes "$TMP/routes-reown.json" --target main 2>&1) || rc=$?
+  assert_not_contains "$out" "was not created by ceo-loop"
+  assert_contains "$out" "isolated branch nh/loop-reown"
+}
+
+test_rejects_a_branch_name_git_would_not_accept() {
+  # ".." survives the ${BRANCH//\//_} collapse untouched, so WT resolved to
+  # $REPO_DIR and line 198's rm -rf targeted the repo root. Only rm's own
+  # refusal to unlink ".." prevented the deletion.
+  local repo; repo="$(mkrepo badname)"
+  local wscript="${TMP}/w-bad.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-bad.json" "$wscript" true
+  mkspec "$TMP/bad.json" "$repo" .. "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/bad.json" --routes "$TMP/routes-bad.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "2" "an invalid branch name is rejected at spec validation"
+  assert_contains "$out" "not a valid git branch name"
+  assert_file_exists "$repo/base.txt"
+}
+
+test_a_stale_ownership_marker_does_not_authorize_deleting_a_stranger() {
+  # #332 audit: the marker must vouch for the branch that is there NOW. A name
+  # freed after a merge and later reused by a person left the old marker
+  # standing, and the loop deleted their branch on the strength of it.
+  local repo; repo="$(mkrepo reusedname)"
+  local wscript="${TMP}/w-reused.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-reused.json" "$wscript" true
+  mkspec "$TMP/reused.json" "$repo" nh/reused "true"
+  bash "$LOOP" run --spec "$TMP/reused.json" --routes "$TMP/routes-reused.json" --target main >/dev/null 2>&1 || true
+  # The branch is merged and deleted, as it would be after a PR lands.
+  git -C "$repo" worktree list --porcelain | awk '/^worktree .*\.ceo-loop/{print $2}' \
+    | while read -r w; do git -C "$repo" worktree remove --force --force "$w" 2>/dev/null || true; done
+  git -C "$repo" worktree prune
+  git -C "$repo" branch -D nh/reused >/dev/null 2>&1 || true
+  # A person now reuses the freed name for unrelated work.
+  git -C "$repo" checkout -q -b nh/reused main
+  echo mine > "$repo/human-only.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "human work on a reused name"
+  local doomed; doomed="$(git -C "$repo" rev-parse nh/reused)"
+  git -C "$repo" checkout -q main
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/reused.json" --routes "$TMP/routes-reused.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a marker that no longer matches the branch tip proves nothing"
+  assert_eq "$(git -C "$repo" rev-parse nh/reused 2>/dev/null || echo GONE)" "$doomed" \
+    "the human branch that reused the name still points at its own commit"
+  assert_eq "$(git -C "$repo" cat-file -e nh/reused:human-only.txt 2>/dev/null && echo yes || echo no)" \
+    "yes" "the human commit's content is still reachable"
+}
+
+test_ownership_markers_do_not_collide_across_nested_branch_names() {
+  # A ref namespace keyed on the branch name cannot hold both "topic" and
+  # "topic/sub": one loose ref would have to be a file and a directory.
+  local repo; repo="$(mkrepo nested)"
+  local wscript="${TMP}/w-nested.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-nested.json" "$wscript" true
+  mkspec "$TMP/nested-a.json" "$repo" topic/sub "true"
+  bash "$LOOP" run --spec "$TMP/nested-a.json" --routes "$TMP/routes-nested.json" --target main >/dev/null 2>&1 || true
+  git -C "$repo" worktree list --porcelain | awk '/^worktree .*\.ceo-loop/{print $2}' \
+    | while read -r w; do git -C "$repo" worktree remove --force --force "$w" 2>/dev/null || true; done
+  git -C "$repo" worktree prune
+  git -C "$repo" branch -D topic/sub >/dev/null 2>&1 || true
+  mkspec "$TMP/nested-b.json" "$repo" topic "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/nested-b.json" --routes "$TMP/routes-nested.json" --target main 2>&1) || rc=$?
+  assert_not_contains "$out" "could not record ownership"
+  assert_not_contains "$out" "was not created by ceo-loop"
+  assert_eq "$rc" "0" "a branch whose name is a prefix of an owned one still runs"
+}
+
+test_two_branch_names_never_share_one_worktree_directory() {
+  # WT collapsed "/" to "_", so nh/loop-x and the literal nh_loop-x landed in
+  # the same directory and the second run evicted the first run's worktree.
+  local repo; repo="$(mkrepo collapse)"
+  local wscript="${TMP}/w-collapse.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-collapse.json" "$wscript" true
+  mkspec "$TMP/collapse-a.json" "$repo" nh/loop-x "true"
+  bash "$LOOP" run --spec "$TMP/collapse-a.json" --routes "$TMP/routes-collapse.json" --target main >/dev/null 2>&1 || true
+  local before; before="$(git -C "$repo" worktree list | grep -c 'ceo-loop' || true)"
+  mkspec "$TMP/collapse-b.json" "$repo" nh_loop-x "true"
+  bash "$LOOP" run --spec "$TMP/collapse-b.json" --routes "$TMP/routes-collapse.json" --target main >/dev/null 2>&1 || true
+  assert_eq "$(git -C "$repo" worktree list | grep -c 'ceo-loop' || true)" "$((before + 1))" \
+    "the second branch gets its own worktree instead of evicting the first"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-x >/dev/null && echo yes || echo no)" \
+    "yes" "the first branch survives the second run"
+}
+
+test_rejects_a_branch_name_that_would_be_read_as_an_option() {
+  # git check-ref-format accepts a leading dash; only `checkout -b` happens to
+  # refuse it later, and every other interpolation of $BRANCH would not.
+  local repo; repo="$(mkrepo dashname)"
+  local wscript="${TMP}/w-dash.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-dash.json" "$wscript" true
+  mkspec "$TMP/dash.json" "$repo" -oProxyCommand=x "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/dash.json" --routes "$TMP/routes-dash.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "2" "a branch name starting with - is rejected at spec validation"
+  assert_contains "$out" "not a valid git branch name"
+}
+
+test_a_rejected_commit_is_not_reported_as_accepted_work() {
+  # The loop's whole file-list contract rests on the worker's output being
+  # committed: FILES comes from `git diff --name-only "$CURRENT_BASE"`, which
+  # reads the WORKING TREE. With the commit swallowed, the risk classifier and
+  # the reviewers see a change the branch does not hold, the run prints "holds
+  # accepted work", and ceo_claim_branch certifies the empty branch as owned.
+  local repo; repo="$(mkrepo rejectedcommit)"
+  printf '#!/bin/sh\nexit 1\n' > "$repo/.git/hooks/pre-commit"
+  chmod +x "$repo/.git/hooks/pre-commit"
+  local wscript="${TMP}/w-rej.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-rej.json" "$wscript" true
+  mkspec "$TMP/rej.json" "$repo" nh/loop-rej "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/rej.json" --routes "$TMP/routes-rej.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a rejected commit stops the run instead of certifying an empty branch"
+  assert_not_contains "$out" "holds accepted work"
+  assert_eq "$(git -C "$repo" log --oneline main..nh/loop-rej 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "the branch is empty — which is exactly why the run must not claim otherwise"
+}
+
+test_a_failed_stage_is_not_reported_as_accepted_work() {
+  # Sibling of the rejected-commit arm, and the same invariant: `git add -A`
+  # failing leaves nothing staged, so `diff --cached --quiet` skips the whole
+  # commit block — including its refusal. FILES still reads the working tree,
+  # so a modified tracked file keeps the run looking productive.
+  local repo; repo="$(mkrepo failedstage)"
+  local wscript="${TMP}/w-addfail.sh"
+  # Edit a TRACKED file (so the working-tree diff is non-empty), then wedge the
+  # index so the loop's own `git add` cannot run.
+  write_script "$wscript" 'cd "$WT" && echo edited > base.txt && touch "$(git rev-parse --git-dir)/index.lock"'
+  mkroutes "$TMP/routes-addfail.json" "$wscript" true
+  mkspec "$TMP/addfail.json" "$repo" nh/loop-addfail "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/addfail.json" --routes "$TMP/routes-addfail.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a failed stage stops the run instead of reporting work the branch does not hold"
+  assert_not_contains "$out" "holds accepted work"
+  assert_eq "$(git -C "$repo" log --oneline main..nh/loop-addfail 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "the branch is empty — which is why the run must not claim otherwise"
+}
+
 run_tests
