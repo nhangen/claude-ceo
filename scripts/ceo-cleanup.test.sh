@@ -65,6 +65,14 @@ test_cleanup_resolves_and_reaps_merged_branch_on_main_default() {
   assert_contains "$out" "BRANCH_DELETED: ceo/test-feature" "must report branch deletion"
   assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/ceo/test-feature 2>/dev/null || echo GONE)" "GONE" \
     "merged branch must actually be deleted from git refs"
+  # The counters need pinning at their quiet values too: an arm that only ever
+  # asserts a non-zero count cannot catch a counter that never increments, or
+  # one that increments always.
+  assert_contains "$out" "MERGED_TOTAL: 1" "a reaped branch is counted"
+  assert_contains "$out" "REAP_FAILED: 0" "nothing failed, so nothing is reported failed"
+  assert_contains "$out" "STALE_STATE: 0" "no stale-state warning on a clean run"
+  assert_contains "$out" "AI_NEEDED: no" "a clean run needs no human"
+  assert_not_contains "$out" "FETCH_FAILED" "a healthy run raises no fetch alarm"
 }
 
 test_cleanup_resolves_and_reaps_merged_branch_on_master_default() {
@@ -377,8 +385,7 @@ test_cleanup_prunes_stale_worktree_and_reaps_branch() {
   local out rc=0
   out=$(bash "$CLEANUP" 2>&1) || rc=$?
   assert_eq "$rc" "0" "cleanup must succeed"
-  assert_contains "$out" "WORKTREE_STALE:" "must identify stale worktree"
-  assert_contains "$out" "ceo-stale-wt — pruning" "must announce worktree pruning"
+  assert_contains "$out" "WORKTREE_STALE_REMOVED:" "must report the stale worktree it removed"
   assert_contains "$out" "BRANCH_DELETED: ceo/stale-wt" "branch must be deleted"
   assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/ceo/stale-wt 2>/dev/null || echo GONE)" "GONE" \
     "branch must be reaped after pruning stale worktree"
@@ -403,6 +410,128 @@ test_cleanup_suppresses_git_branch_d_stdout() {
   assert_contains "$out" "BRANCH_DELETED: ceo/suppress-branch"
   assert_not_contains "$out" "Deleted branch ceo/suppress-branch" \
     "raw git branch -d stdout must not leak into report"
+}
+
+test_cleanup_leaves_an_unrelated_absent_worktree_registered() {
+  # The reaper must clear only the worktree blocking the branch in front of it.
+  # `git worktree prune` is repo-wide and reads "directory missing" as "worktree
+  # dead", which an unmounted volume also looks like -- it deletes that
+  # worktree's admin dir, taking its index and HEAD with it, and `git worktree
+  # repair` cannot undo that.
+  local repo; repo="$(mkrepo_cleanup blastradius main)"
+  set_repos_md "$repo"
+
+  local ceo_wt="$TMP/wt/blast-ceo" human_wt="$TMP/vol/blast-human"
+  git -C "$repo" worktree add -q -b ceo/blast "$ceo_wt" main
+  echo wt > "$ceo_wt/wt.txt"
+  /usr/bin/git -C "$ceo_wt" add -A && git -C "$ceo_wt" commit -qm "ceo work"
+  git -C "$repo" worktree add -q -b nh/human-work "$human_wt" main
+
+  git -C "$repo" checkout -q main
+  git -C "$repo" merge -q --no-ff ceo/blast -m merge
+
+  rm -rf "$ceo_wt"                 # genuinely dead
+  mv "$TMP/vol" "$TMP/vol-unmounted"   # merely unreachable right now
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKTREE_STALE_REMOVED:"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/ceo/blast 2>/dev/null || echo GONE)" "GONE" \
+    "the dead worktree is cleared so the merged branch can be reaped"
+  assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c 'blast-human' || true)" "1" \
+    "an unreachable worktree the reaper was not asked about stays registered"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/human-work >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
+    "PRESENT" "and its branch is untouched"
+
+  mv "$TMP/vol-unmounted" "$TMP/vol"
+  assert_eq "$(git -C "$human_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo BROKEN)" "nh/human-work" \
+    "the remounted worktree is still a working checkout"
+}
+
+test_cleanup_reports_no_remote_rather_than_a_fetch_alarm() {
+  # mkrepo_cleanup builds a repo with no origin. Blaming a fetch there fires the
+  # warning on every remote-less repo and it stops meaning anything.
+  local repo; repo="$(mkrepo_cleanup noremote main)"
+  git -C "$repo" checkout -q -b ceo/noremote
+  echo x > "$repo/x.txt"
+  /usr/bin/git -C "$repo" add -A && git -C "$repo" commit -qm x
+  git -C "$repo" checkout -q main
+  git -C "$repo" merge -q --no-ff ceo/noremote -m merge
+  set_repos_md "$repo"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "NO_REMOTE:" "a repo with no origin says so"
+  assert_not_contains "$out" "FETCH_FAILED" "and raises no fetch alarm"
+  assert_contains "$out" "STALE_STATE: 0"
+}
+
+test_cleanup_treats_a_local_only_default_branch_as_healthy() {
+  # ceo_branch_resolves accepts a purely local refs/heads/<name>, so
+  # DEFAULT_BRANCH can name a branch origin has never heard of. Fetching that
+  # always fails against a perfectly healthy remote.
+  local repo; repo="$(mkclone_cleanup localonly trunk ceo/localonly no_lag)"
+  git -C "$repo" checkout -q -b main
+  git -C "$repo" symbolic-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
+  set_repos_md "$repo"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "DEFAULT_BRANCH: main" "the local-only branch is chosen"
+  assert_not_contains "$out" "FETCH_FAILED" "a healthy origin raises no alarm"
+  assert_contains "$out" "STALE_STATE: 0"
+}
+
+test_cleanup_surfaces_a_leaked_ownership_marker() {
+  # The branch is gone but its marker survives. Counting that as a clean reap
+  # is the report lying in the direction this ticket exists to stop.
+  local repo; repo="$(mkrepo_cleanup leakedmarker main)"
+  git -C "$repo" checkout -q -b ceo/leaked
+  echo x > "$repo/x.txt"
+  /usr/bin/git -C "$repo" add -A && git -C "$repo" commit -qm x
+  local ref; ref="$(mkmarker "$repo" ceo/leaked)"
+  git -C "$repo" checkout -q main
+  git -C "$repo" merge -q --no-ff ceo/leaked -m merge
+  set_repos_md "$repo"
+
+  # Hold the ref's lock so `update-ref -d` cannot take it.
+  local lock="$repo/.git/$ref.lock"
+  mkdir -p "$(dirname "$lock")" && : > "$lock"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  rm -f "$lock"
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "BRANCH_DELETED: ceo/leaked"
+  assert_contains "$out" "MARKER_DELETE_FAILED:"
+  assert_contains "$out" "STALE_STATE: 1" "a leaked marker is counted"
+  assert_contains "$out" "AI_NEEDED: yes" "and reaches a human"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q "$ref" >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
+    "PRESENT" "the marker really did leak"
+}
+
+test_cleanup_reports_every_reason_a_human_is_needed() {
+  # Two problems in one run must both appear. The nested per-combination form
+  # this replaced had arms no fixture could reach.
+  local repo; repo="$(mkclone_cleanup tworeasons main ceo/tworeasons local_lag)"
+  git -C "$repo" checkout -q -b ceo/abandoned
+  echo x > "$repo/x.txt"
+  /usr/bin/git -C "$repo" add -A && git -C "$repo" commit -qm x
+  git -C "$repo" checkout -q main
+  # Age it past the orphan threshold.
+  local old; old="$(date -u -v-30d +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%S)"
+  GIT_COMMITTER_DATE="$old" git -C "$repo" branch -f ceo/abandoned ceo/abandoned
+  set_repos_md "$repo"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "REAP_FAILED: 1"
+  assert_contains "$out" "failed to reap" "the reap failure is named"
+  assert_contains "$out" "AI_NEEDED: yes"
 }
 
 run_tests
