@@ -90,7 +90,11 @@ if [ -f "$REPOS_FILE" ]; then
     echo "  DEFAULT_BRANCH: $DEFAULT_BRANCH"
 
     # Fetch default branch once per repo if remote exists
-    git -C "$REPO_PATH" fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+    if git -C "$REPO_PATH" remote get-url origin >/dev/null 2>&1; then
+      if ! git -C "$REPO_PATH" fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null; then
+        echo "  FETCH_FAILED: origin/$DEFAULT_BRANCH — merge state may be stale"
+      fi
+    fi
 
     # List CEO branches
     CEO_BRANCHES=$(git -C "$REPO_PATH" branch --list --format="%(refname:short)" "${BRANCH_PREFIX}*" 2>/dev/null || true)
@@ -108,8 +112,13 @@ if [ -f "$REPOS_FILE" ]; then
 
         # Find and remove worktree for this branch
         WT_PATH=$(git -C "$REPO_PATH" worktree list --porcelain 2>/dev/null | awk -v target="branch refs/heads/$BRANCH" '/^worktree /{wt=substr($0, 10)} $0==target{print wt}')
-        if [ -n "$WT_PATH" ] && [ -d "$WT_PATH" ]; then
-          git -C "$REPO_PATH" worktree remove "$WT_PATH" 2>/dev/null && echo "  WORKTREE_REMOVED: $WT_PATH" || echo "  WORKTREE_REMOVE_FAILED: $WT_PATH"
+        if [ -n "$WT_PATH" ]; then
+          if [ -d "$WT_PATH" ]; then
+            git -C "$REPO_PATH" worktree remove "$WT_PATH" 2>/dev/null && echo "  WORKTREE_REMOVED: $WT_PATH" || echo "  WORKTREE_REMOVE_FAILED: $WT_PATH"
+          else
+            echo "  WORKTREE_STALE: $WT_PATH — pruning"
+            git -C "$REPO_PATH" worktree prune 2>/dev/null || true
+          fi
         fi
 
         # Delete local branch, and only then its ownership marker (#338).
@@ -121,7 +130,7 @@ if [ -f "$REPOS_FILE" ]; then
         # the marker there leaves the branch standing with no ownership record,
         # and ceo-loop then reads it as a stranger's branch and refuses it
         # forever (exit 6), recoverable only by a hand-written update-ref (#341).
-        if git -C "$REPO_PATH" branch -d "$BRANCH" 2>/dev/null; then
+        if git -C "$REPO_PATH" branch -d "$BRANCH" >/dev/null 2>&1; then
           echo "  BRANCH_DELETED: $BRANCH"
           MERGED_COUNT=$((MERGED_COUNT + 1))
           OWNED_REF="refs/ceo-loop/owned/$(branch_key "$BRANCH")"

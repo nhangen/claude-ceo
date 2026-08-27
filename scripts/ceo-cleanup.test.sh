@@ -345,4 +345,64 @@ test_cleanup_counts_deletions_not_detections_and_reports_reap_failure() {
     "$(git -C "$repo" rev-parse ceo/countfail)" "the un-reaped branch still exists"
 }
 
+test_cleanup_reports_fetch_failure_when_origin_fetch_fails() {
+  local repo; repo="$(mkclone_cleanup fetchfail main ceo/fetchfail no_lag)"
+  git -C "$repo" remote set-url origin /dev/null/does/not/exist
+  set_repos_md "$repo"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed despite fetch failure"
+  assert_contains "$out" "FETCH_FAILED: origin/main — merge state may be stale"
+}
+
+test_cleanup_prunes_stale_worktree_and_reaps_branch() {
+  local repo; repo="$(mkrepo_cleanup stalewt-1 main)"
+  set_repos_md "$repo"
+
+  local wt="$TMP/wt/ceo-stale-wt"
+  git -C "$repo" worktree add -q -b ceo/stale-wt "$wt" main
+  echo "wt" > "$wt/wt.txt"
+  git -C "$wt" add -A && git -C "$wt" commit -qm "add wt feature"
+
+  # Merge branch into main
+  git -C "$repo" checkout -q main
+  git -C "$repo" merge -q --no-ff ceo/stale-wt -m "merge wt feature"
+
+  # Remove directory manually so worktree becomes stale / missing on disk
+  rm -rf "$wt"
+  assert_eq "$(git -C "$repo" worktree list | grep -c "ceo/stale-wt" || true)" "1" \
+    "worktree is still registered in git metadata"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKTREE_STALE:" "must identify stale worktree"
+  assert_contains "$out" "ceo-stale-wt — pruning" "must announce worktree pruning"
+  assert_contains "$out" "BRANCH_DELETED: ceo/stale-wt" "branch must be deleted"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/ceo/stale-wt 2>/dev/null || echo GONE)" "GONE" \
+    "branch must be reaped after pruning stale worktree"
+  assert_eq "$(git -C "$repo" worktree list | grep -c "ceo/stale-wt" || true)" "0" \
+    "worktree must be pruned from git metadata"
+}
+
+test_cleanup_suppresses_git_branch_d_stdout() {
+  local repo; repo="$(mkrepo_cleanup suppress-1 main)"
+  set_repos_md "$repo"
+
+  git -C "$repo" checkout -q -b ceo/suppress-branch
+  echo "sup" > "$repo/sup.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "add sup"
+
+  git -C "$repo" checkout -q main
+  git -C "$repo" merge -q --no-ff ceo/suppress-branch -m "merge sup"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "BRANCH_DELETED: ceo/suppress-branch"
+  assert_not_contains "$out" "Deleted branch ceo/suppress-branch" \
+    "raw git branch -d stdout must not leak into report"
+}
+
 run_tests
