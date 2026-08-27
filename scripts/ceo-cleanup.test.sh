@@ -324,4 +324,25 @@ test_cleanup_reports_an_unresolvable_default_branch() {
     "$(git -C "$repo" rev-parse ceo/orphaned)" "nothing is reaped when the default branch is unknown"
 }
 
+test_cleanup_counts_deletions_not_detections_and_reports_reap_failure() {
+  # Local main lags origin/main: ancestry probe says merged, but git branch -d
+  # fails. MERGED_TOTAL must report 0 (actual reaps), REAP_FAILED must report 1,
+  # and AI_NEEDED must flip to yes naming the failure.
+  local repo; repo="$(mkclone_cleanup countfail main ceo/countfail local_lag)"
+  local ref; ref="$(mkmarker "$repo" ceo/countfail)"
+  set_repos_md "$repo"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "MERGED: ceo/countfail" "branch is detected as merged"
+  assert_contains "$out" "BRANCH_DELETE_FAILED: ceo/countfail" "branch delete fails"
+  assert_contains "$out" "MERGED_TOTAL: 0" "MERGED_TOTAL counts actual reaps, not detections"
+  assert_contains "$out" "REAP_FAILED: 1" "REAP_FAILED reports un-reaped branches"
+  assert_contains "$out" "AI_NEEDED: yes" "AI_NEEDED must flip to yes on reap failure"
+  assert_contains "$out" "1 merged branch(es) failed to reap" "AI_NEEDED reason names reap failures"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/ceo/countfail 2>/dev/null || echo GONE)" \
+    "$(git -C "$repo" rev-parse ceo/countfail)" "the un-reaped branch still exists"
+}
+
 run_tests

@@ -42,6 +42,7 @@ echo ""
 
 # --- Process each cloned repo ---
 MERGED_COUNT=0
+REAP_FAILED_COUNT=0
 ORPHAN_BRANCHES=""
 HAS_REPOS=false
 
@@ -122,6 +123,7 @@ if [ -f "$REPOS_FILE" ]; then
         # forever (exit 6), recoverable only by a hand-written update-ref (#341).
         if git -C "$REPO_PATH" branch -d "$BRANCH" 2>/dev/null; then
           echo "  BRANCH_DELETED: $BRANCH"
+          MERGED_COUNT=$((MERGED_COUNT + 1))
           OWNED_REF="refs/ceo-loop/owned/$(branch_key "$BRANCH")"
           if git -C "$REPO_PATH" show-ref --verify -q "$OWNED_REF" 2>/dev/null; then
             git -C "$REPO_PATH" update-ref -d "$OWNED_REF" 2>/dev/null \
@@ -130,8 +132,8 @@ if [ -f "$REPOS_FILE" ]; then
           fi
         else
           echo "  BRANCH_DELETE_FAILED: $BRANCH"
+          REAP_FAILED_COUNT=$((REAP_FAILED_COUNT + 1))
         fi
-        MERGED_COUNT=$((MERGED_COUNT + 1))
       else
         # Check if branch has an open PR
         REPO_NAME=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/' | sed 's/.*github.com[:/]\(.*\)/\1/' || echo "unknown")
@@ -161,6 +163,7 @@ if [ "$HAS_REPOS" = false ]; then
 fi
 
 echo "MERGED_TOTAL: $MERGED_COUNT"
+echo "REAP_FAILED: $REAP_FAILED_COUNT"
 
 # --- Sync conflicts ---
 CONFLICTS=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null || true)
@@ -181,9 +184,15 @@ if [ -n "$ORPHAN_BRANCHES" ]; then
   echo ""
   echo "ORPHAN_SUMMARY:"
   printf '%b\n' "$ORPHAN_BRANCHES"
-  echo ""
+fi
+
+echo ""
+if [ -n "$ORPHAN_BRANCHES" ] && [ "$REAP_FAILED_COUNT" -gt 0 ]; then
+  echo "AI_NEEDED: yes — review orphaned branches; $REAP_FAILED_COUNT merged branch(es) failed to reap (check worktree or local branch lag)"
+elif [ -n "$ORPHAN_BRANCHES" ]; then
   echo "AI_NEEDED: yes — review orphaned branches and decide whether to propose deletion"
+elif [ "$REAP_FAILED_COUNT" -gt 0 ]; then
+  echo "AI_NEEDED: yes — $REAP_FAILED_COUNT merged branch(es) failed to reap (check worktree or local branch lag)"
 else
-  echo ""
   echo "AI_NEEDED: no — all branches are merged or active"
 fi
