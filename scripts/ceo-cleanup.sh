@@ -42,6 +42,8 @@ echo ""
 
 # --- Process each cloned repo ---
 MERGED_COUNT=0
+REAP_FAILED_COUNT=0
+STALE_STATE_COUNT=0
 ORPHAN_BRANCHES=""
 HAS_REPOS=false
 
@@ -88,8 +90,23 @@ if [ -f "$REPOS_FILE" ]; then
     fi
     echo "  DEFAULT_BRANCH: $DEFAULT_BRANCH"
 
-    # Fetch default branch once per repo if remote exists
-    git -C "$REPO_PATH" fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+    # Fetch the default branch once per repo.
+    #
+    # ceo_branch_resolves accepts a purely local refs/heads/<name>, so
+    # DEFAULT_BRANCH can name a branch the remote has never heard of. Fetching
+    # that always fails, against a perfectly healthy origin, so the failure is
+    # only worth reporting when a remote-tracking ref says the branch is there
+    # to fetch. Without that check the warning fires on every such repo and
+    # stops meaning anything.
+    if ! git -C "$REPO_PATH" remote get-url origin >/dev/null 2>&1; then
+      echo "  NO_REMOTE: merge state judged from local refs only"
+    elif ! FETCH_ERR="$(git -C "$REPO_PATH" fetch origin "$DEFAULT_BRANCH" --quiet 2>&1)" \
+         && git -C "$REPO_PATH" rev-parse --verify -q "refs/remotes/origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+      # Reaping continues on the stale view below, so this has to reach
+      # AI_NEEDED rather than scroll past as one more line.
+      echo "  FETCH_FAILED: origin/$DEFAULT_BRANCH — merge state may be stale: $(printf '%s' "$FETCH_ERR" | tr '\n' ' ' | cut -c1-160)"
+      STALE_STATE_COUNT=$((STALE_STATE_COUNT + 1))
+    fi
 
     # List CEO branches
     CEO_BRANCHES=$(git -C "$REPO_PATH" branch --list --format="%(refname:short)" "${BRANCH_PREFIX}*" 2>/dev/null || true)
@@ -107,8 +124,26 @@ if [ -f "$REPOS_FILE" ]; then
 
         # Find and remove worktree for this branch
         WT_PATH=$(git -C "$REPO_PATH" worktree list --porcelain 2>/dev/null | awk -v target="branch refs/heads/$BRANCH" '/^worktree /{wt=substr($0, 10)} $0==target{print wt}')
-        if [ -n "$WT_PATH" ] && [ -d "$WT_PATH" ]; then
-          git -C "$REPO_PATH" worktree remove "$WT_PATH" 2>/dev/null && echo "  WORKTREE_REMOVED: $WT_PATH" || echo "  WORKTREE_REMOVE_FAILED: $WT_PATH"
+        if [ -n "$WT_PATH" ]; then
+          if [ -d "$WT_PATH" ]; then
+            git -C "$REPO_PATH" worktree remove "$WT_PATH" 2>/dev/null && echo "  WORKTREE_REMOVED: $WT_PATH" || echo "  WORKTREE_REMOVE_FAILED: $WT_PATH"
+          else
+            # Registered but the directory is gone, which blocks `branch -d`.
+            #
+            # NOT `git worktree prune`: that is repo-wide, and "directory
+            # missing" is not "worktree dead" — an unmounted volume or a
+            # sleeping network mount looks identical. Called from this
+            # per-branch loop it deregisters every other worktree in the repo
+            # that happens to be unreachable right now, deleting the
+            # per-worktree admin dir that holds their index and HEAD. Measured:
+            # `git worktree repair` cannot undo it and staged work is gone.
+            # `worktree remove --force` touches exactly this path (#344).
+            if git -C "$REPO_PATH" worktree remove --force "$WT_PATH" 2>/dev/null; then
+              echo "  WORKTREE_STALE_REMOVED: $WT_PATH"
+            else
+              echo "  WORKTREE_STALE_REMOVE_FAILED: $WT_PATH"
+            fi
+          fi
         fi
 
         # Delete local branch, and only then its ownership marker (#338).
@@ -120,18 +155,19 @@ if [ -f "$REPOS_FILE" ]; then
         # the marker there leaves the branch standing with no ownership record,
         # and ceo-loop then reads it as a stranger's branch and refuses it
         # forever (exit 6), recoverable only by a hand-written update-ref (#341).
-        if git -C "$REPO_PATH" branch -d "$BRANCH" 2>/dev/null; then
+        if git -C "$REPO_PATH" branch -d "$BRANCH" >/dev/null 2>&1; then
           echo "  BRANCH_DELETED: $BRANCH"
+          MERGED_COUNT=$((MERGED_COUNT + 1))
           OWNED_REF="refs/ceo-loop/owned/$(branch_key "$BRANCH")"
           if git -C "$REPO_PATH" show-ref --verify -q "$OWNED_REF" 2>/dev/null; then
             git -C "$REPO_PATH" update-ref -d "$OWNED_REF" 2>/dev/null \
               && echo "  MARKER_DELETED: $OWNED_REF" \
-              || echo "  MARKER_DELETE_FAILED: $OWNED_REF"
+              || { echo "  MARKER_DELETE_FAILED: $OWNED_REF"; STALE_STATE_COUNT=$((STALE_STATE_COUNT + 1)); }
           fi
         else
           echo "  BRANCH_DELETE_FAILED: $BRANCH"
+          REAP_FAILED_COUNT=$((REAP_FAILED_COUNT + 1))
         fi
-        MERGED_COUNT=$((MERGED_COUNT + 1))
       else
         # Check if branch has an open PR
         REPO_NAME=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/' | sed 's/.*github.com[:/]\(.*\)/\1/' || echo "unknown")
@@ -161,10 +197,12 @@ if [ "$HAS_REPOS" = false ]; then
 fi
 
 echo "MERGED_TOTAL: $MERGED_COUNT"
+echo "REAP_FAILED: $REAP_FAILED_COUNT"
+echo "STALE_STATE: $STALE_STATE_COUNT"
 
 # --- Sync conflicts ---
 CONFLICTS=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null || true)
-CONFLICT_COUNT=$(echo "$CONFLICTS" | grep -c "." 2>/dev/null || echo 0)
+CONFLICT_COUNT=$(printf '%s' "$CONFLICTS" | grep -c "." 2>/dev/null) || CONFLICT_COUNT=0
 echo ""
 echo "SYNC_CONFLICTS: $CONFLICT_COUNT"
 if [ -n "$CONFLICTS" ] && [ "$CONFLICT_COUNT" -gt 0 ]; then
@@ -181,9 +219,19 @@ if [ -n "$ORPHAN_BRANCHES" ]; then
   echo ""
   echo "ORPHAN_SUMMARY:"
   printf '%b\n' "$ORPHAN_BRANCHES"
-  echo ""
-  echo "AI_NEEDED: yes — review orphaned branches and decide whether to propose deletion"
+fi
+
+# Every condition that needs a human contributes one clause, so a run with two
+# problems reports both. The nested form this replaces had an arm per
+# combination, and the combination arms were the ones no test could reach.
+AI_REASONS=""
+[ -n "$ORPHAN_BRANCHES" ] && AI_REASONS="$AI_REASONS; review orphaned branches and decide whether to propose deletion"
+[ "$REAP_FAILED_COUNT" -gt 0 ] && AI_REASONS="$AI_REASONS; $REAP_FAILED_COUNT merged branch(es) failed to reap (check worktree or local branch lag)"
+[ "$STALE_STATE_COUNT" -gt 0 ] && AI_REASONS="$AI_REASONS; $STALE_STATE_COUNT stale-state warning(s) — see FETCH_FAILED / MARKER_DELETE_FAILED above"
+
+echo ""
+if [ -n "$AI_REASONS" ]; then
+  echo "AI_NEEDED: yes —${AI_REASONS#;}"
 else
-  echo ""
   echo "AI_NEEDED: no — all branches are merged or active"
 fi
