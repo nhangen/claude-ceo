@@ -8,7 +8,8 @@ set -euo pipefail
 # Usage: ceo-cleanup.sh
 # Requires: CEO_VAULT env var or defaults to ~/Documents/Obsidian
 
-_CLEANUP_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+_CLEANUP_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ceo-config.sh
 source "$_CLEANUP_DIR/ceo-config.sh"
 ceo_require_vault
 VAULT="$CEO_VAULT"
@@ -48,8 +49,26 @@ if [ -f "$REPOS_FILE" ]; then
 
     echo "REPO: $REPO_PATH"
 
+    # Resolve default branch: origin/HEAD -> main -> master
+    DEFAULT_BRANCH="$(git -C "$REPO_PATH" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
+    if [ -z "$DEFAULT_BRANCH" ]; then
+      if git -C "$REPO_PATH" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1 \
+         || git -C "$REPO_PATH" rev-parse --verify -q refs/heads/main >/dev/null 2>&1; then
+        DEFAULT_BRANCH="main"
+      elif git -C "$REPO_PATH" rev-parse --verify -q refs/remotes/origin/master >/dev/null 2>&1 \
+           || git -C "$REPO_PATH" rev-parse --verify -q refs/heads/master >/dev/null 2>&1; then
+        DEFAULT_BRANCH="master"
+      else
+        DEFAULT_BRANCH="main"
+      fi
+    fi
+    echo "  DEFAULT_BRANCH: $DEFAULT_BRANCH"
+
+    # Fetch default branch once per repo if remote exists
+    git -C "$REPO_PATH" fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+
     # List CEO branches
-    CEO_BRANCHES=$(git -C "$REPO_PATH" branch --list "${BRANCH_PREFIX}*" 2>/dev/null | sed 's/^[* ]*//' || true)
+    CEO_BRANCHES=$(git -C "$REPO_PATH" branch --list --format="%(refname:short)" "${BRANCH_PREFIX}*" 2>/dev/null || true)
 
     if [ -z "$CEO_BRANCHES" ]; then
       echo "  BRANCHES: none"
@@ -57,13 +76,13 @@ if [ -f "$REPOS_FILE" ]; then
     fi
 
     for BRANCH in $CEO_BRANCHES; do
-      # Check if branch is merged into origin/master
-      git -C "$REPO_PATH" fetch origin master --quiet 2>/dev/null || true
-      if git -C "$REPO_PATH" merge-base --is-ancestor "$BRANCH" origin/master 2>/dev/null; then
+      # Check if branch is merged into default branch (origin or local)
+      if git -C "$REPO_PATH" merge-base --is-ancestor "$BRANCH" "origin/$DEFAULT_BRANCH" 2>/dev/null \
+         || git -C "$REPO_PATH" merge-base --is-ancestor "$BRANCH" "$DEFAULT_BRANCH" 2>/dev/null; then
         echo "  MERGED: $BRANCH"
 
         # Find and remove worktree for this branch
-        WT_PATH=$(git -C "$REPO_PATH" worktree list --porcelain 2>/dev/null | grep -B1 "branch refs/heads/$BRANCH" | grep "^worktree" | sed 's/worktree //' || true)
+        WT_PATH=$(git -C "$REPO_PATH" worktree list --porcelain 2>/dev/null | awk -v target="branch refs/heads/$BRANCH" '/^worktree /{wt=substr($0, 10)} $0==target{print wt}')
         if [ -n "$WT_PATH" ] && [ -d "$WT_PATH" ]; then
           git -C "$REPO_PATH" worktree remove "$WT_PATH" 2>/dev/null && echo "  WORKTREE_REMOVED: $WT_PATH" || echo "  WORKTREE_REMOVE_FAILED: $WT_PATH"
         fi
