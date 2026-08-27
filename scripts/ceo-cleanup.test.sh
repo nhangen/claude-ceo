@@ -3,6 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 source ./test-harness.sh
+# shellcheck source=ceo-loop-lib.sh
+source ./ceo-loop-lib.sh
 
 SCRIPT_DIR="$(pwd)"
 CLEANUP="$SCRIPT_DIR/ceo-cleanup.sh"
@@ -149,6 +151,37 @@ test_cleanup_removes_worktree_for_merged_branch() {
   assert_eq "$(git -C "$repo" worktree list | grep -c "ceo/test-wt" || true)" "0" \
     "worktree must be deregistered"
   assert_eq "$([ -d "$wt" ] && echo exists || echo gone)" "gone" "worktree directory must be removed"
+}
+
+test_cleanup_deletes_owned_ref_for_merged_branch() {
+  local repo; repo="$(mkrepo_cleanup repo-owned-1 main)"
+  set_repos_md "$repo"
+
+  # Create a ceo branch with a commit
+  git -C "$repo" checkout -q -b ceo/owned-feature
+  echo "owned" > "$repo/owned.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "add owned feature"
+
+  # Create the loop ownership marker as ceo-loop would
+  local key; key="$(branch_key "ceo/owned-feature")"
+  local owned_ref="refs/ceo-loop/owned/$key"
+  git -C "$repo" update-ref "$owned_ref" "$(git -C "$repo" rev-parse ceo/owned-feature)"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q "$owned_ref" 2>/dev/null || echo GONE)" \
+    "$(git -C "$repo" rev-parse ceo/owned-feature)" "ownership marker must exist before cleanup"
+
+  # Merge branch into main
+  git -C "$repo" checkout -q main
+  git -C "$repo" merge -q --no-ff ceo/owned-feature -m "merge owned feature"
+
+  # Run cleanup
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "MERGED: ceo/owned-feature"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q "$owned_ref" 2>/dev/null || echo GONE)" "GONE" \
+    "ownership marker must be deleted when branch is reaped"
+  assert_eq "$(git -C "$repo" for-each-ref refs/ceo-loop/owned | wc -l | tr -d ' ')" "0" \
+    "for-each-ref refs/ceo-loop/owned must be empty"
 }
 
 run_tests

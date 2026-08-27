@@ -371,3 +371,15 @@ jq -nc --arg fp "$CEO_FP" \
 echo "repair-$CEO_FP"
 TICKET_INNER
 }
+
+# ── branch key hashing (#338) ────────────────────────────────────────────────
+
+# branch_key <branch-name> -> stable hex, whichever hasher this host has
+branch_key() {
+  local h
+  h="$(printf '%s' "$1" | shasum 2>/dev/null | awk '{print $1}')"
+  [ -n "$h" ] || h="$(printf '%s' "$1" | sha1sum 2>/dev/null | awk '{print $1}')"
+  [ -n "$h" ] || h="$(printf '%s' "$1" | cksum | awk '{print $1"-"$2}')"
+  printf '%s' "$h"
+}
+

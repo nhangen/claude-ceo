@@ -11,6 +11,8 @@ set -euo pipefail
 _CLEANUP_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=ceo-config.sh
 source "$_CLEANUP_DIR/ceo-config.sh"
+# shellcheck source=ceo-loop-lib.sh
+source "$_CLEANUP_DIR/ceo-loop-lib.sh"
 ceo_require_vault
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
@@ -89,6 +91,13 @@ if [ -f "$REPOS_FILE" ]; then
 
         # Delete local branch
         git -C "$REPO_PATH" branch -d "$BRANCH" 2>/dev/null && echo "  BRANCH_DELETED: $BRANCH" || echo "  BRANCH_DELETE_FAILED: $BRANCH"
+
+        # Delete loop ownership marker if present (#338)
+        BRANCH_KEY="$(branch_key "$BRANCH")"
+        OWNED_REF="refs/ceo-loop/owned/$BRANCH_KEY"
+        if git -C "$REPO_PATH" show-ref --verify -q "$OWNED_REF" 2>/dev/null; then
+          git -C "$REPO_PATH" update-ref -d "$OWNED_REF" 2>/dev/null || true
+        fi
         MERGED_COUNT=$((MERGED_COUNT + 1))
       else
         # Check if branch has an open PR

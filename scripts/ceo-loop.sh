@@ -207,13 +207,6 @@ VERIFY_LOG=""
 # namespace cannot hold "topic" and "topic/sub" at once, and collapsing "/" to
 # "_" made nh/loop-x and the literal nh_loop-x share one worktree, so the second
 # run evicted the first run's checkout.
-branch_key() { # <branch-name> -> stable hex, whichever hasher this host has
-  local h
-  h="$(printf '%s' "$1" | shasum 2>/dev/null | awk '{print $1}')"
-  [ -n "$h" ] || h="$(printf '%s' "$1" | sha1sum 2>/dev/null | awk '{print $1}')"
-  [ -n "$h" ] || h="$(printf '%s' "$1" | cksum | awk '{print $1"-"$2}')"
-  printf '%s' "$h"
-}
 BRANCH_KEY="$(branch_key "$BRANCH")"
 
 if [ "$DRY_RUN" != "1" ]; then
