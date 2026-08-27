@@ -243,16 +243,37 @@ if [ "$DRY_RUN" != "1" ]; then
     echo "  Choose a different .branch in the spec, or delete the branch yourself if it is disposable." >&2
     exit 6
   fi
-  # Reclaim leftovers from prior attempts: deregister the worktree first
-  # (a branch checked out in a registered worktree cannot be deleted), then drop
-  # the loop-owned branch. NOT `git worktree prune`: that is repo-wide and would
-  # deregister unrelated unreachable worktrees (#345). `worktree remove --force`
-  # handles stale registrations scoped strictly to this branch/worktree (#344).
-  WT_REGISTERED=$(git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null | awk -v target="branch refs/heads/$BRANCH" '/^worktree /{wt=substr($0, 10)} $0==target{print wt}')
-  if [ -n "$WT_REGISTERED" ]; then
-    git -C "$REPO_DIR" worktree remove --force --force "$WT_REGISTERED" 2>/dev/null || true
-  fi
-  git -C "$REPO_DIR" worktree remove --force --force "$WT" 2>/dev/null || true
+  # Reclaim leftovers from prior attempts: deregister every worktree
+  # registration this branch owns (a branch checked out in a registered worktree
+  # cannot be deleted), then drop the loop-owned branch.
+  #
+  # NOT `git worktree prune` (#345). That is repo-wide, and "directory missing"
+  # is not "worktree dead" -- an unmounted volume looks identical, and prune
+  # deletes that worktree's admin dir along with its index and HEAD, which
+  # `git worktree repair` cannot undo.
+  #
+  # Ownership is two tests, because neither alone covers it. A leftover carries
+  # `branch refs/heads/$BRANCH` only if the run that made it reached the
+  # `checkout -b` below; killed between `worktree add --detach` and that line it
+  # is registered `detached`, and a branch filter is structurally blind to it --
+  # those then accumulate one admin dir per run, silently, at exit 0. The
+  # directory name catches them: it is ${BRANCH//\//_}-${BRANCH_KEY:0:12},
+  # unique to this branch, so the match stays scoped to what we own. Removing by
+  # the path `worktree list` reports, rather than by $WT, also sidesteps
+  # /var vs /private/var on macOS -- git refuses the uncanonicalized form as
+  # "not a working tree" once the directory is gone.
+  WT_BASE="/$(basename "$WT")"
+  git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null \
+    | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
+        /^worktree / { if (own && p != "") print p
+                       p = substr($0, 10)
+                       own = (substr(p, length(p) - length(base) + 1) == base) }
+        $0 == br     { own = 1 }
+        END          { if (own && p != "") print p }
+      ' \
+    | while IFS= read -r WT_OWNED; do
+        git -C "$REPO_DIR" worktree remove --force --force "$WT_OWNED" 2>/dev/null || true
+      done
   rm -rf "$WT"
   git -C "$REPO_DIR" branch -D "$BRANCH" 2>/dev/null || true
   git -C "$REPO_DIR" worktree add --detach "$WT" "$CURRENT_BASE" >/dev/null 2>&1 \

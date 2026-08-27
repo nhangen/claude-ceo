@@ -719,17 +719,51 @@ test_loop_reclaim_leaves_an_unrelated_absent_worktree_registered() {
   # Verify the unreachable worktree was NOT deregistered
   assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c 'blast-human' || true)" "1" \
     "an unreachable worktree the loop was not asked about stays registered"
-  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/human-work >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
-    "PRESENT" "and its branch is untouched"
 
   # Remount and verify human worktree is functional
   mv "$TMP/vol-unmounted" "$TMP/vol"
   assert_eq "$(git -C "$human_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo BROKEN)" "nh/human-work" \
     "the remounted human worktree is still a working checkout"
-  assert_eq "$(git -C "$human_wt" status --porcelain 2>/dev/null && echo OK || echo BROKEN)" "OK" \
-    "remounted worktree status operates cleanly"
-  assert_eq "$(git -C "$human_wt" cat-file -e HEAD:human.txt 2>/dev/null && echo yes || echo no)" "yes" \
-    "human commit content is intact"
+  # Read the content through the repo, not through the worktree -- the two
+  # assertions this replaces both re-measured the line above from inside the
+  # broken checkout, so all three flipped together and none could flip alone.
+  assert_eq "$(git -C "$repo" cat-file -e refs/heads/nh/human-work:human.txt 2>/dev/null && echo yes || echo no)" \
+    "yes" "the human commit content survives"
+}
+
+test_loop_reclaim_clears_a_detached_leftover_registration() {
+  # `worktree add --detach` runs before `checkout -b`, so a run killed between
+  # them leaves a registration with no branch on it. Selecting leftovers by
+  # branch alone cannot see that one, and the repo-wide prune that used to
+  # absorb it is gone -- so each reclaim registers another admin dir, silently,
+  # at exit 0.
+  local repo; repo="$(mkrepo detachedleftover)"
+  local wscript="${TMP}/w-detached.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-detached.json" "$wscript" true
+  mkspec "$TMP/detached.json" "$repo" nh/loop-detached "true"
+
+  CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/detached.json" \
+    --routes "$TMP/routes-detached.json" --target main >/dev/null 2>&1 || true
+
+  # Reduce the loop's own worktree to the state a kill between `worktree add
+  # --detach` and `checkout -b` leaves behind: registered, detached, directory
+  # unreachable.
+  local wt; wt="$(git -C "$repo" worktree list --porcelain \
+    | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/nh\/loop-detached$/{print p}')"
+  [ -n "$wt" ] || { echo "fixture: no loop worktree registered" >&2; return 1; }
+  git -C "$repo" -C "$wt" checkout -q --detach HEAD 2>/dev/null \
+    || git -C "$wt" checkout -q --detach HEAD
+  git -C "$repo" branch -D nh/loop-detached >/dev/null 2>&1 || true
+  rm -rf "$repo/.ceo-loop"
+  assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c '^detached$' || true)" "1" \
+    "fixture leaves exactly one detached registration"
+
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/detached.json" \
+    --routes "$TMP/routes-detached.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "0" "the reclaim run must succeed"
+  assert_eq "$(ls "$repo/.git/worktrees" 2>/dev/null | wc -l | tr -d ' ')" "1" \
+    "the leftover registration is cleared, not left to accumulate beside the new one"
 }
 
 run_tests
