@@ -685,4 +685,51 @@ test_rejects_a_target_name_git_would_not_accept() {
   assert_contains "$out" "'main^' is not a valid git branch name"
 }
 
+test_loop_reclaim_leaves_an_unrelated_absent_worktree_registered() {
+  # The loop must clear only the worktree blocking the branch in front of it.
+  # `git worktree prune` is repo-wide and reads "directory missing" as "worktree
+  # dead", which an unmounted volume or offline path looks like — it deletes that
+  # worktree's admin dir, taking its index and HEAD with it, and `git worktree
+  # repair` cannot undo that (#345).
+  local repo; repo="$(mkrepo blastradius)"
+  local human_wt="$TMP/vol/blast-human"
+  mkdir -p "$TMP/vol"
+  git -C "$repo" worktree add -q -b nh/human-work "$human_wt" main
+  echo "human work" > "$human_wt/human.txt"
+  /usr/bin/git -C "$human_wt" add -A && git -C "$human_wt" commit -qm "human work"
+
+  # Initial loop run to create the branch, worktree, and ownership marker
+  local wscript="${TMP}/w-blast.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-blast.json" "$wscript" true
+  mkspec "$TMP/blast.json" "$repo" nh/loop-blast "false"
+  CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/blast.json" --routes "$TMP/routes-blast.json" --target main >/dev/null 2>&1 || true
+
+  # Simulate the human worktree becoming unreachable (e.g. unmounted volume)
+  mv "$TMP/vol" "$TMP/vol-unmounted"
+
+  # Simulate loop worktree directory being removed (stale registration leftover)
+  rm -rf "$repo/.ceo-loop"
+
+  # Second loop run (reclaim path with successful verification)
+  mkspec "$TMP/blast.json" "$repo" nh/loop-blast "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/blast.json" --routes "$TMP/routes-blast.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "0" "reclaim run must succeed"
+
+  # Verify the unreachable worktree was NOT deregistered
+  assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c 'blast-human' || true)" "1" \
+    "an unreachable worktree the loop was not asked about stays registered"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/human-work >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
+    "PRESENT" "and its branch is untouched"
+
+  # Remount and verify human worktree is functional
+  mv "$TMP/vol-unmounted" "$TMP/vol"
+  assert_eq "$(git -C "$human_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo BROKEN)" "nh/human-work" \
+    "the remounted human worktree is still a working checkout"
+  assert_eq "$(git -C "$human_wt" status --porcelain 2>/dev/null && echo OK || echo BROKEN)" "OK" \
+    "remounted worktree status operates cleanly"
+  assert_eq "$(git -C "$human_wt" cat-file -e HEAD:human.txt 2>/dev/null && echo yes || echo no)" "yes" \
+    "human commit content is intact"
+}
+
 run_tests

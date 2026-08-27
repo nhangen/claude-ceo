@@ -244,10 +244,15 @@ if [ "$DRY_RUN" != "1" ]; then
     exit 6
   fi
   # Reclaim leftovers from prior attempts: deregister the worktree first
-  # (a branch checked out in a registered worktree cannot be deleted), prune,
-  # then drop the loop-owned branch.
+  # (a branch checked out in a registered worktree cannot be deleted), then drop
+  # the loop-owned branch. NOT `git worktree prune`: that is repo-wide and would
+  # deregister unrelated unreachable worktrees (#345). `worktree remove --force`
+  # handles stale registrations scoped strictly to this branch/worktree (#344).
+  WT_REGISTERED=$(git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null | awk -v target="branch refs/heads/$BRANCH" '/^worktree /{wt=substr($0, 10)} $0==target{print wt}')
+  if [ -n "$WT_REGISTERED" ]; then
+    git -C "$REPO_DIR" worktree remove --force --force "$WT_REGISTERED" 2>/dev/null || true
+  fi
   git -C "$REPO_DIR" worktree remove --force --force "$WT" 2>/dev/null || true
-  git -C "$REPO_DIR" worktree prune >/dev/null 2>&1 || true
   rm -rf "$WT"
   git -C "$REPO_DIR" branch -D "$BRANCH" 2>/dev/null || true
   git -C "$REPO_DIR" worktree add --detach "$WT" "$CURRENT_BASE" >/dev/null 2>&1 \
