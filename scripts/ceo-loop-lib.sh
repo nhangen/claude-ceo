@@ -371,3 +371,20 @@ jq -nc --arg fp "$CEO_FP" \
 echo "repair-$CEO_FP"
 TICKET_INNER
 }
+
+# ── branch key hashing (#338) ────────────────────────────────────────────────
+
+# branch_key <branch-name> -> 40-hex SHA-1
+#
+# One hasher, hard-required, matching ceo_finding_fingerprint and the repair
+# fingerprint above. This used to fall back sha1sum -> cksum, which bought
+# nothing — those callers already require shasum outright, so a shasum-free host
+# is broken regardless — and cost the property the key exists for. The key is an
+# identity: ceo-loop.sh writes refs/ceo-loop/owned/<key> and ceo-cleanup.sh
+# deletes it. Two PATHs resolving different tiers (cron vs. an interactive
+# login) yield different keys for one branch, and cleanup then reports a clean
+# reap while the marker leaks permanently (#341).
+branch_key() {
+  printf '%s' "$(printf '%s' "$1" | shasum | awk '{print $1}')"
+}
+

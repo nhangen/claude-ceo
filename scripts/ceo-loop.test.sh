@@ -661,4 +661,28 @@ JSON
   assert_not_contains "$out" "unknown ticket"
 }
 
+test_rejects_a_target_name_with_leading_dash() {
+  local repo; repo="$(mkrepo targetdash)"
+  local wscript="${TMP}/w-tdash.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-tdash.json" "$wscript" true
+  mkspec "$TMP/tdash.json" "$repo" nh/loop-tdash "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/tdash.json" --routes "$TMP/routes-tdash.json" --target -oProxyCommand=x 2>&1) || rc=$?
+  assert_eq "$rc" "2" "a target branch name starting with - is rejected at argument validation"
+  # Name the value: valid_ref_name is called for BRANCH, TARGET and DEFAULT_BRANCH
+  # and emits one message shape, so a bare needle passes with TARGET unvalidated.
+  assert_contains "$out" "'-oProxyCommand=x' is not a valid git branch name"
+}
+
+test_rejects_a_target_name_git_would_not_accept() {
+  local repo; repo="$(mkrepo targetbadname)"
+  local wscript="${TMP}/w-tbad.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-tbad.json" "$wscript" true
+  mkspec "$TMP/tbad.json" "$repo" nh/loop-tbad "true"
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/tbad.json" --routes "$TMP/routes-tbad.json" --target "main^" 2>&1) || rc=$?
+  assert_eq "$rc" "2" "an invalid target branch name is rejected at argument validation"
+  assert_contains "$out" "'main^' is not a valid git branch name"
+}
+
 run_tests

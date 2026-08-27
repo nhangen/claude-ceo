@@ -232,4 +232,15 @@ test_promotion_integration_branch_targets_always_promote() {
   assert_eq "$(ceo_promotion_gate high integration main "")" "promote"
 }
 
+test_branch_key_returns_deterministic_hash() {
+  local k1 k2 k3
+  k1="$(branch_key "nh/loop-test")"
+  k2="$(branch_key "nh/loop-test")"
+  k3="$(branch_key "nh/other-test")"
+  assert_eq "$k1" "$k2" "same branch produces identical key"
+  assert_fails "different branches produce different keys" test "$k1" = "$k3"
+  assert_eq "${#k1}" "40" "the key is a 40-character SHA-1"
+  assert_fails "the key is lowercase hex only" test -n "$(printf '%s' "$k1" | tr -d '0-9a-f')"
+}
+
 run_tests

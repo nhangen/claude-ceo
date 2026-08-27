@@ -101,20 +101,27 @@ require_field() { # <jq-path> <name>
   fi
   printf '%s' "$v"
 }
+valid_ref_name() { # <ref-name>
+  local r="$1"
+  # The branch name becomes both a git ref and a filesystem path, so it is
+  # validated before either is built from it. `check-ref-format` is the authority
+  # and covers the case that mattered: ".." reached the slash collapse below, WT
+  # resolved to $REPO_DIR, and the reclaim's `rm -rf` aimed at the repository root
+  # (#332). The one thing it accepts and should not is a leading dash — today only
+  # `checkout -b` happens to refuse that, and every other interpolation of the ref
+  # would read it as an option, so it is rejected here rather than left to luck.
+  if ! git check-ref-format "refs/heads/$r" 2>/dev/null \
+     || case "$r" in -*) true ;; *) false ;; esac; then
+    echo "ceo-loop: '$r' is not a valid git branch name — refusing to build a ref or a worktree path from it" >&2
+    exit 2
+  fi
+}
+valid_ref_name "$TARGET"
+valid_ref_name "$DEFAULT_BRANCH"
+
 REPO="$(require_field '.repo' 'repo' | tr '/' '-')" # keep state paths one level deep
 BRANCH="$(require_field '.branch' 'branch')"
-# The branch name becomes both a git ref and a filesystem path, so it is
-# validated before either is built from it. `check-ref-format` is the authority
-# and covers the case that mattered: ".." reached the slash collapse below, WT
-# resolved to $REPO_DIR, and the reclaim's `rm -rf` aimed at the repository root
-# (#332). The one thing it accepts and should not is a leading dash — today only
-# `checkout -b` happens to refuse that, and every other interpolation of $BRANCH
-# would read it as an option, so it is rejected here rather than left to luck.
-if ! git check-ref-format "refs/heads/$BRANCH" 2>/dev/null \
-   || case "$BRANCH" in -*) true ;; *) false ;; esac; then
-  echo "ceo-loop: '$BRANCH' is not a valid git branch name — refusing to build a ref or a worktree path from it" >&2
-  exit 2
-fi
+valid_ref_name "$BRANCH"
 SHAPE="$(jget '.shape // "bug-fix"')"
 VERIFY_CMD="$(require_field '.verify_cmd' 'verify_cmd')"
 
@@ -207,13 +214,6 @@ VERIFY_LOG=""
 # namespace cannot hold "topic" and "topic/sub" at once, and collapsing "/" to
 # "_" made nh/loop-x and the literal nh_loop-x share one worktree, so the second
 # run evicted the first run's checkout.
-branch_key() { # <branch-name> -> stable hex, whichever hasher this host has
-  local h
-  h="$(printf '%s' "$1" | shasum 2>/dev/null | awk '{print $1}')"
-  [ -n "$h" ] || h="$(printf '%s' "$1" | sha1sum 2>/dev/null | awk '{print $1}')"
-  [ -n "$h" ] || h="$(printf '%s' "$1" | cksum | awk '{print $1"-"$2}')"
-  printf '%s' "$h"
-}
 BRANCH_KEY="$(branch_key "$BRANCH")"
 
 if [ "$DRY_RUN" != "1" ]; then
