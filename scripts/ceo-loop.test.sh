@@ -766,4 +766,36 @@ test_loop_reclaim_clears_a_detached_leftover_registration() {
     "the leftover registration is cleared, not left to accumulate beside the new one"
 }
 
+test_loop_reclaim_leaves_a_human_checkout_of_its_branch_alone() {
+  # The loop owns the branch NAME, not every checkout of it. A person who checks
+  # the parked branch out to read it leaves the tip unmoved, so the ownership
+  # guard passes -- and an unscoped branch match would then hand their dirty
+  # worktree to `remove --force --force`, which deletes it without complaint.
+  local repo; repo="$(mkrepo humancheckout)"
+  local wscript="${TMP}/w-human.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-human.json" "$wscript" true
+  mkspec "$TMP/human.json" "$repo" nh/loop-human "true"
+
+  CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/human.json" \
+    --routes "$TMP/routes-human.json" --target main >/dev/null 2>&1 || true
+
+  # The loop's own worktree goes away; the branch stays parked at the tip the
+  # loop recorded, which is what makes the ownership guard pass on the next run.
+  rm -rf "$repo/.ceo-loop"
+  git -C "$repo" worktree prune
+
+  # A person checks that branch out somewhere of their own, with uncommitted work.
+  local human_wt="$TMP/human-review-$$"
+  git -C "$repo" worktree add -q "$human_wt" nh/loop-human
+  echo "notes I have not committed" > "$human_wt/notes.txt"
+
+  bash "$LOOP" run --spec "$TMP/human.json" --routes "$TMP/routes-human.json" \
+    --target main >/dev/null 2>&1 || true
+
+  assert_eq "$([ -f "$human_wt/notes.txt" ] && echo PRESENT || echo DESTROYED)" "PRESENT" \
+    "uncommitted work in a human's checkout of the branch is not deleted"
+  assert_eq "$(git -C "$human_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo BROKEN)" \
+    "nh/loop-human" "and their worktree is still a working checkout"
+}
+
 run_tests

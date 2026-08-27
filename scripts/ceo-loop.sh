@@ -258,17 +258,27 @@ if [ "$DRY_RUN" != "1" ]; then
   # is registered `detached`, and a branch filter is structurally blind to it --
   # those then accumulate one admin dir per run, silently, at exit 0. The
   # directory name catches them: it is ${BRANCH//\//_}-${BRANCH_KEY:0:12},
-  # unique to this branch, so the match stays scoped to what we own. Removing by
-  # the path `worktree list` reports, rather than by $WT, also sidesteps
-  # /var vs /private/var on macOS -- git refuses the uncanonicalized form as
-  # "not a working tree" once the directory is gone.
+  # unique to this branch.
+  #
+  # Both tests are confined to $REPO_DIR/.ceo-loop/, and the branch one has to
+  # be. The loop owns the branch NAME, not every checkout of it: a person who
+  # checks the parked branch out somewhere of their own to read it leaves the
+  # tip unmoved, so the ownership guard above passes, and an unscoped branch
+  # match would hand their dirty worktree to `remove --force --force`. Outside
+  # .ceo-loop/ the right answer is the `checkout -b` refusal further down.
+  #
+  # Removing by the path `worktree list` reports, rather than by $WT, is also
+  # strictly more robust: where the path has a symlinked prefix and a missing
+  # ancestor directory -- /var -> /private/var under $TMPDIR, which is the test
+  # fixture rather than any real repo -- git refuses the uncanonicalized form as
+  # "not a working tree".
   WT_BASE="/$(basename "$WT")"
-  git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null \
+  { git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
     | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
         /^worktree / { if (own && p != "") print p
                        p = substr($0, 10)
                        own = (substr(p, length(p) - length(base) + 1) == base) }
-        $0 == br     { own = 1 }
+        $0 == br     { if (p ~ /\/\.ceo-loop\//) own = 1 }
         END          { if (own && p != "") print p }
       ' \
     | while IFS= read -r WT_OWNED; do
