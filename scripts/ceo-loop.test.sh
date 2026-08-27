@@ -605,4 +605,60 @@ test_a_failed_stage_is_not_reported_as_accepted_work() {
     "the branch is empty — which is why the run must not claim otherwise"
 }
 
+test_exhausted_retries_exit_3_not_lock_contention() {
+  # #333: FINGERPRINTS_FILE aliases FINDINGS_TMP, so the requeue pass reads the
+  # raw reviewer JSON still sitting in that file as if each line were a ticket
+  # id. ceo_requeue_decide rejects them and exits 8, and FINAL_RC keeps the
+  # highest code it saw — so a plain exhausted run reports lock contention.
+  local repo; repo="$(mkrepo exitcontract)"
+  local wscript="${TMP}/w-ec.sh"; write_script "$wscript" 'cd "$WT" && mkdir -p src/lib && echo q > src/lib/util.sh'
+  local rscript="${TMP}/r-ec.sh"
+  cat > "$rscript" <<'EOF'
+#!/bin/bash
+echo '{"invariant":"helper stays pure","location":"src/lib/util.sh:7","severity":"MEDIUM"}'
+EOF
+  chmod +x "$rscript"
+  cat > "$TMP/routes-ec.json" <<JSON
+{"candidates": [{"provider": "ollama", "model": "qwen-test", "command": "$wscript"}],
+ "reviewers": [{"provider": "anthropic", "model": "claude-test", "command": "$rscript"}]}
+JSON
+  # verify_cmd fails and the only finding is MEDIUM, so nothing forces FINAL_RC=5.
+  mkspec "$TMP/ec.json" "$repo" nh/loop-ec "false"
+  git -C "$repo" branch integration
+  local out rc=0
+  out=$(CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/ec.json" \
+    --routes "$TMP/routes-ec.json" --target integration 2>&1) || rc=$?
+  assert_eq "$rc" "3" "exhausted retries are exit 3, not 8 (lock contention)"
+  assert_not_contains "$out" "unknown ticket"
+}
+
+test_the_requeue_pass_reads_ticket_ids_only() {
+  # The direct statement of the same invariant: whatever the requeue loop
+  # iterates holds ticket ids, never the raw finding JSON the reviewers emit.
+  # Both a review finding and the synthesized verification finding must land
+  # there, or one of the two stops reaching exhaustion.
+  local repo; repo="$(mkrepo ticketbuffer)"
+  local wscript="${TMP}/w-tb.sh"; write_script "$wscript" 'cd "$WT" && mkdir -p src/lib && echo q > src/lib/util.sh'
+  local rscript="${TMP}/r-tb.sh"
+  cat > "$rscript" <<'EOF'
+#!/bin/bash
+echo '{"invariant":"helper stays pure","location":"src/lib/util.sh:7","severity":"MEDIUM"}'
+EOF
+  chmod +x "$rscript"
+  cat > "$TMP/routes-tb.json" <<JSON
+{"candidates": [{"provider": "ollama", "model": "qwen-test", "command": "$wscript"}],
+ "reviewers": [{"provider": "anthropic", "model": "claude-test", "command": "$rscript"}]}
+JSON
+  mkspec "$TMP/tb.json" "$repo" nh/loop-tb "false"
+  git -C "$repo" branch integration
+  local out
+  out=$(CEO_LOOP_MAX_RETRIES=0 bash "$LOOP" run --spec "$TMP/tb.json" \
+    --routes "$TMP/routes-tb.json" --target integration 2>&1) || true
+  local exh
+  exh=$(find "$CEO_LOOP_STATE_ROOT" -path "*ticketbuffer*" -name exhausted.jsonl -exec cat {} \;)
+  assert_contains "$exh" "helper stays pure"
+  assert_contains "$exh" "verification failed"
+  assert_not_contains "$out" "unknown ticket"
+}
+
 run_tests
