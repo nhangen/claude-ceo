@@ -8,12 +8,21 @@ set -euo pipefail
 # Usage: ceo-cleanup.sh
 # Requires: CEO_VAULT env var or defaults to ~/Documents/Obsidian
 
-_CLEANUP_DIR="$(cd "$(dirname "$0")" && pwd)"
+_CLEANUP_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=ceo-config.sh
 source "$_CLEANUP_DIR/ceo-config.sh"
 # shellcheck source=ceo-loop-lib.sh
 source "$_CLEANUP_DIR/ceo-loop-lib.sh"
 ceo_require_vault
+
+# A branch name is usable as an ancestry target only if it resolves to a commit
+# on this host — as a remote-tracking ref or as a local branch. Used to reject a
+# stale origin/HEAD before it is trusted as the default branch.
+ceo_branch_resolves() { # <repo-path> <branch-name>
+  git -C "$1" rev-parse --verify -q "refs/remotes/origin/$2" >/dev/null 2>&1 \
+    || git -C "$1" rev-parse --verify -q "refs/heads/$2" >/dev/null 2>&1
+}
+
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 LOG_DIR="$CEO_DIR/log"
@@ -51,17 +60,30 @@ if [ -f "$REPOS_FILE" ]; then
 
     echo "REPO: $REPO_PATH"
 
-    # Resolve default branch: origin/HEAD -> main -> master
+    # Resolve default branch: origin/HEAD -> main -> master.
+    #
+    # `symbolic-ref` does not verify its target, and a remote that renames its
+    # default branch leaves the symref pointing at a ref that no longer exists.
+    # Accepting that name unchecked reproduces the bug this reaper exists to fix:
+    # both ancestry probes below reference a dead ref, both exit 128 into
+    # /dev/null, and nothing is ever reaped or reported (#341).
     DEFAULT_BRANCH="$(git -C "$REPO_PATH" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
+    if [ -n "$DEFAULT_BRANCH" ] \
+       && ! ceo_branch_resolves "$REPO_PATH" "$DEFAULT_BRANCH"; then
+      DEFAULT_BRANCH=""
+    fi
     if [ -z "$DEFAULT_BRANCH" ]; then
-      if git -C "$REPO_PATH" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1 \
-         || git -C "$REPO_PATH" rev-parse --verify -q refs/heads/main >/dev/null 2>&1; then
+      if ceo_branch_resolves "$REPO_PATH" main; then
         DEFAULT_BRANCH="main"
-      elif git -C "$REPO_PATH" rev-parse --verify -q refs/remotes/origin/master >/dev/null 2>&1 \
-           || git -C "$REPO_PATH" rev-parse --verify -q refs/heads/master >/dev/null 2>&1; then
+      elif ceo_branch_resolves "$REPO_PATH" master; then
         DEFAULT_BRANCH="master"
       else
-        DEFAULT_BRANCH="main"
+        # Inventing a name here would hand both ancestry probes a ref that
+        # resolves nowhere, so every branch reads as unmerged and the repo is
+        # silently skipped anyway — as an "all branches active" report rather
+        # than as the failure it is.
+        echo "  DEFAULT_BRANCH_UNRESOLVED: no origin/HEAD, main, or master"
+        continue
       fi
     fi
     echo "  DEFAULT_BRANCH: $DEFAULT_BRANCH"
@@ -89,14 +111,25 @@ if [ -f "$REPOS_FILE" ]; then
           git -C "$REPO_PATH" worktree remove "$WT_PATH" 2>/dev/null && echo "  WORKTREE_REMOVED: $WT_PATH" || echo "  WORKTREE_REMOVE_FAILED: $WT_PATH"
         fi
 
-        # Delete local branch
-        git -C "$REPO_PATH" branch -d "$BRANCH" 2>/dev/null && echo "  BRANCH_DELETED: $BRANCH" || echo "  BRANCH_DELETE_FAILED: $BRANCH"
-
-        # Delete loop ownership marker if present (#338)
-        BRANCH_KEY="$(branch_key "$BRANCH")"
-        OWNED_REF="refs/ceo-loop/owned/$BRANCH_KEY"
-        if git -C "$REPO_PATH" show-ref --verify -q "$OWNED_REF" 2>/dev/null; then
-          git -C "$REPO_PATH" update-ref -d "$OWNED_REF" 2>/dev/null || true
+        # Delete local branch, and only then its ownership marker (#338).
+        #
+        # The two judgments disagree: the ancestry probe above is answered by
+        # origin/$DEFAULT_BRANCH, while `branch -d` is answered by the local
+        # branch. In a clone whose local default branch lags the remote — the
+        # ordinary state — the first says merged and the second refuses. Deleting
+        # the marker there leaves the branch standing with no ownership record,
+        # and ceo-loop then reads it as a stranger's branch and refuses it
+        # forever (exit 6), recoverable only by a hand-written update-ref (#341).
+        if git -C "$REPO_PATH" branch -d "$BRANCH" 2>/dev/null; then
+          echo "  BRANCH_DELETED: $BRANCH"
+          OWNED_REF="refs/ceo-loop/owned/$(branch_key "$BRANCH")"
+          if git -C "$REPO_PATH" show-ref --verify -q "$OWNED_REF" 2>/dev/null; then
+            git -C "$REPO_PATH" update-ref -d "$OWNED_REF" 2>/dev/null \
+              && echo "  MARKER_DELETED: $OWNED_REF" \
+              || echo "  MARKER_DELETE_FAILED: $OWNED_REF"
+          fi
+        else
+          echo "  BRANCH_DELETE_FAILED: $BRANCH"
         fi
         MERGED_COUNT=$((MERGED_COUNT + 1))
       else
