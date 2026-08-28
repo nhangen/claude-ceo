@@ -189,6 +189,7 @@ Gates and their failure codes:
 | Branch name | `.branch` must satisfy `git check-ref-format` and must not begin with `-`; the name becomes both a ref and a worktree path, so it is validated before either is built | 2 |
 | Ownership | The loop reclaims a branch only while `refs/ceo-loop/owned/<key>` still records that branch's current tip. Anything else — a name it never created, or one that moved since — is refused, never deleted | 6 |
 | Worker output | Staging or committing the worker's output must succeed; either failing refuses the run. The changed-file list is read from the working tree, so output that never reaches the branch would otherwise be classified, reviewed, and reported as accepted work | 6 |
+| Delivery | Promotion via remote push or local fast-forward must succeed; on push/merge failure the isolated branch is preserved locally | 10 |
 
 The ownership marker is durable state: `refs/ceo-loop/owned/<key>` under the
 target repo, one ref per branch the loop created, where `<key>` is a hash of the

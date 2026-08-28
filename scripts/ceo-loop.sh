@@ -34,7 +34,7 @@
 # Exit codes: 0 ok · 2 bad usage / invalid spec · 3 retries exhausted ·
 # 4 routing failure · 5 review gate failure ·
 # 6 overlap, branch not owned, uncommittable worker output, or corrupt state ·
-# 7 premium-gate block · 8 lock contention · 9 stale base
+# 7 premium-gate block · 8 lock contention · 9 stale base · 10 delivery failure
 
 set -euo pipefail
 
@@ -508,34 +508,43 @@ fi
 
 PROMOTED=false
 PARKED=false
+SUMMARY_ACTION="blocked"
 if [ "$ACCEPTED" = "true" ] && [ "$GATE_RC" -eq 0 ] && [ -n "$ACTION" ]; then
   if [ "$ACTION" = "park-integration" ]; then
     # Parking IS keeping the isolated branch: unmerged, inspectable, not lost.
     PARKED=true
+    SUMMARY_ACTION="parked"
     echo "loop: parked — branch $BRANCH holds accepted work below ${TARGET} policy threshold"
   elif [ "$DRY_RUN" != "1" ]; then
-    PROMOTED=true
     if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1 && command -v gh >/dev/null 2>&1; then
       if git -C "$WT" push origin "$BRANCH" >/dev/null 2>&1; then
+        PROMOTED=true
         if (cd "$WT" && gh pr create --head "$BRANCH" --base "$TARGET" \
           --title "ceo-loop: $REPO/$BRANCH" \
           --body "Autonomous loop PR (#329). risk=$RISK worker=$WORKER_IDENTITY reviewer=$PASSING_REVIEWER") \
           >/dev/null 2>&1; then
+          SUMMARY_ACTION="promoted"
           echo "loop: PR opened against $TARGET"
         else
+          SUMMARY_ACTION="pushed"
           echo "loop: pushed $BRANCH (gh pr create failed — open one manually)" >&2
         fi
       else
+        FINAL_RC=10
+        SUMMARY_ACTION="delivery-failed"
         echo "loop: push failed — branch $BRANCH kept locally" >&2
       fi
     else
       # No remote: promote is a fast-forward-only ref update of the target.
       if git -C "$REPO_DIR" merge-base --is-ancestor "$TARGET" "$BRANCH" 2>/dev/null \
          && git -C "$REPO_DIR" update-ref "refs/heads/$TARGET" "$(git -C "$REPO_DIR" rev-parse "$BRANCH")"; then
+        PROMOTED=true
+        SUMMARY_ACTION="promoted"
         echo "loop: promoted $BRANCH into local $TARGET (fast-forward)"
       else
+        FINAL_RC=10
+        SUMMARY_ACTION="delivery-failed"
         echo "loop: could not fast-forward $TARGET — branch $BRANCH holds the work" >&2
-        PROMOTED=false
       fi
     fi
   fi
@@ -567,8 +576,5 @@ jq -nc \
 
 ceo_ledger_write_entry "ceo-loop" "$WORKER_IDENTITY" "loop:$REPO/$BRANCH" "$PWD" null "$ACCEPTED" >/dev/null || true
 
-if [ "$PROMOTED" = "true" ]; then SUMMARY_ACTION="promoted";
-elif [ "$PARKED" = "true" ]; then SUMMARY_ACTION="parked";
-else SUMMARY_ACTION="${ACTION:-blocked}"; fi
 echo "loop: done ($REPO/$BRANCH risk=$RISK action=$SUMMARY_ACTION attempts=$((ATTEMPT + 1)))"
 exit $FINAL_RC
