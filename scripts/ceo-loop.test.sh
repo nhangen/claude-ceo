@@ -34,8 +34,14 @@ mkrepo() { # <name> — a real git repo with one commit on main
   git -C "$dir" init -q -b main
   git -C "$dir" config user.email t@t
   git -C "$dir" config user.name t
+  # Without this the fixture inherits the machine's global core.hooksPath, and
+  # every arm that commits or checks out runs whatever the developer has wired
+  # there. Point it at the fixture's own hooks dir rather than /dev/null:
+  # test_a_rejected_commit_is_not_reported_as_accepted_work installs a repo-local
+  # pre-commit and needs it to fire.
+  git -C "$dir" config core.hooksPath "$dir/.git/hooks"
   echo base > "$dir/base.txt"
-  git -C "$dir" add -A && git -C "$dir" commit -qm init >/dev/null
+  git -C "$dir" add -A && git -C "$dir" commit -qm init
   echo "$dir"
 }
 
@@ -571,10 +577,13 @@ test_rejects_a_branch_name_that_would_be_read_as_an_option() {
   out=$(bash "$LOOP" run --spec "$TMP/dash.json" --routes "$TMP/routes-dash.json" --target main 2>&1) || rc=$?
   assert_eq "$rc" "2" "a branch name starting with - is rejected at spec validation"
   assert_contains "$out" "not a valid git branch name"
-  assert_eq "$(git -C "$repo" worktree list | grep -c "ProxyCommand" || true)" "0" \
-    "no worktree is registered when a dash branch name is rejected"
   assert_eq "$(git -C "$repo" worktree list | grep -c "\.ceo-loop" || true)" "0" \
-    "no worktree under .ceo-loop is left registered"
+    "no worktree is registered when a dash branch name is rejected"
+  # The registration grep cannot see a directory created but never registered,
+  # which is the shape a run killed between `worktree add` and `checkout -b`
+  # leaves behind.
+  assert_eq "$([ -d "$repo/.ceo-loop" ] && echo yes || echo no)" "no" \
+    "no worktree directory is created under .ceo-loop either"
 }
 
 test_a_rejected_commit_is_not_reported_as_accepted_work() {
@@ -961,18 +970,19 @@ test_marker_prune_drops_orphaned_ownership_ref() {
   local owned_ref="refs/ceo-loop/owned/$key"
   assert_eq "$(git -C "$repo" rev-parse --verify -q "$owned_ref" >/dev/null && echo yes || echo no)" "yes" \
     "ownership marker must exist after initial run"
-  # Delete worktree and the loop-created branch.
   git -C "$repo" worktree list --porcelain | awk '/^worktree .*\.ceo-loop/{print $2}' \
     | while read -r w; do git -C "$repo" worktree remove --force --force "$w" 2>/dev/null || true; done
   git -C "$repo" branch -D nh/loop-prune >/dev/null 2>&1 || true
   assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-prune >/dev/null && echo yes || echo no)" "no" \
     "branch must be deleted"
-  # Block worktree creation so the run aborts after the marker prune
-  # (line 236) but before recreating the worktree and re-claiming the branch (line 295).
-  mkdir -p "$repo/.ceo-loop"
-  chmod 500 "$repo/.ceo-loop"
+  # Abort the run after the marker prune but before `worktree add --detach`
+  # recreates the worktree and ceo_claim_branch re-writes the marker. A file
+  # where the directory must go blocks it for any uid; `chmod 500` does not,
+  # since mode bits are unenforced for root and CI may run as one.
+  rm -rf "$repo/.ceo-loop"
+  : > "$repo/.ceo-loop"
   bash "$LOOP" run --spec "$TMP/mp.json" --routes "$TMP/routes-mp.json" --target main >/dev/null 2>&1 || true
-  chmod 755 "$repo/.ceo-loop"
+  rm -f "$repo/.ceo-loop"
   assert_eq "$(git -C "$repo" rev-parse --verify -q "$owned_ref" >/dev/null && echo yes || echo no)" "no" \
     "orphaned ownership marker must be deleted by marker prune"
 }
