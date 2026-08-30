@@ -189,6 +189,7 @@ Gates and their failure codes:
 | Branch name | `.branch` must satisfy `git check-ref-format` and must not begin with `-`; the name becomes both a ref and a worktree path, so it is validated before either is built | 2 |
 | Ownership | The loop reclaims a branch only while `refs/ceo-loop/owned/<key>` still records that branch's current tip. Anything else — a name it never created, or one that moved since — is refused, never deleted | 6 |
 | Worker output | Staging or committing the worker's output must succeed; either failing refuses the run. The changed-file list is read from the working tree, so output that never reaches the branch would otherwise be classified, reviewed, and reported as accepted work | 6 |
+| Delivery | Promotion via remote push or local fast-forward must succeed; on push/merge failure the isolated branch is preserved locally | 10 |
 
 The ownership marker is durable state: `refs/ceo-loop/owned/<key>` under the
 target repo, one ref per branch the loop created, where `<key>` is a hash of the
@@ -206,7 +207,11 @@ HIGH. Finding fingerprints bind repo + base revision + invariant + normalized
 location + severity, so line-shifted equivalents collapse onto one ticket while
 a rebase legitimately reopens one. Every cycle appends a telemetry row
 (`telemetry.jsonl`) in the token-scope-ingestable contract plus a shared-ledger
-entry via `ceo-model-ledger.sh`.
+entry via `ceo-model-ledger.sh`. That row carries `action` and `delivery`
+separately and they are not the same thing: `action` is what the promotion gate
+recommended, `delivery` is what actually happened to the work. A row reading
+`action: promote, delivery: pushed` is a branch on the remote that no PR
+points at.
 
 ## Development
 

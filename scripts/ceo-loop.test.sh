@@ -141,6 +141,11 @@ EOF
   assert_contains "$row" '"external_id":null'
   # The HIGH-risk change was NOT promoted anywhere.
   if grep -q "promoted" <<<"$out"; then fail_test "HIGH finding must prevent promotion"; fi
+  # #343's second instance: the summary used to print the gate's RECOMMENDATION
+  # (`action=promote`) on a run that was blocked and exited 5, so a reader of
+  # the summary line saw a promotion that never happened.
+  assert_contains "$out" "action=blocked"
+  assert_not_contains "$out" "action=promote "
 }
 
 test_stale_base_stops_before_any_work() {
@@ -796,6 +801,144 @@ test_loop_reclaim_leaves_a_human_checkout_of_its_branch_alone() {
     "uncommitted work in a human's checkout of the branch is not deleted"
   assert_eq "$(git -C "$human_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo BROKEN)" \
     "nh/loop-human" "and their worktree is still a working checkout"
+}
+
+test_delivery_failure_on_local_fast_forward_sets_exit_10_and_telemetry() {
+  local repo; repo="$(mkrepo fffail)"
+  local wscript="${TMP}/w-fffail.sh"
+  # Worker writes feature file and concurrently advances main so fast-forward is impossible
+  cat > "$wscript" <<'EOF'
+#!/bin/bash
+cd "$WT" && echo feature > feature.txt
+git -C "$REPO_DIR" commit --allow-empty -qm "main advanced concurrently"
+EOF
+  chmod +x "$wscript"
+  mkroutes "$TMP/routes-fffail.json" "$wscript" true
+  mkspec "$TMP/fffail.json" "$repo" nh/loop-fffail "true"
+
+  local out rc=0
+  out=$(CEO_LOOP_ALLOW_MAIN=1 bash "$LOOP" run --spec "$TMP/fffail.json" \
+    --routes "$TMP/routes-fffail.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "10" "failed fast-forward delivery must exit 10"
+  assert_contains "$out" "could not fast-forward main"
+  assert_contains "$out" "action=delivery-failed"
+  # The pre-fix wording was `action=promote ` (the gate's recommendation printed
+  # as the outcome). `action=promoted` does not contain it, so the trailing
+  # space is what discriminates old from new.
+  assert_not_contains "$out" "action=promote "
+
+  # Telemetry check
+  local tel slug_dir
+  slug_dir=$(find "$CEO_LOOP_STATE_ROOT" -name telemetry.jsonl -path "*fffail*" | head -1)
+  [ -f "$slug_dir" ] || { fail_test "telemetry.jsonl must exist"; return 1; }
+  tel=$(cat "$slug_dir")
+  assert_eq "$(jq -r '.promoted' <<<"$tel")" "false" "telemetry promoted must be false"
+  assert_eq "$(jq -r '.accepted' <<<"$tel")" "true" "telemetry accepted must be true"
+  assert_eq "$(jq -r '.action' <<<"$tel")" "promote" "telemetry gate action remains promote"
+  assert_eq "$(jq -r '.delivery' <<<"$tel")" "delivery-failed" \
+    "telemetry must record the delivery outcome, not just the gate recommendation"
+}
+
+test_delivery_failure_on_remote_push_sets_exit_10_and_telemetry() {
+  local origin="$TMP/repos/origin-pushfail.git"
+  git init -q --bare -b main "$origin"
+  local repo; repo="$(mkrepo pushfail)"
+  git -C "$repo" remote add origin "$origin"
+  git -C "$repo" push -q -u origin main
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+
+  # Configure origin hook to reject pushes
+  mkdir -p "$origin/hooks"
+  printf '#!/bin/sh\nexit 1\n' > "$origin/hooks/pre-receive"
+  chmod +x "$origin/hooks/pre-receive"
+  git -C "$origin" config core.hooksPath "$origin/hooks"
+
+  # Stub gh on PATH
+  local stub_bin="$TMP/bin-pushfail"
+  mkdir -p "$stub_bin"
+  cat > "$stub_bin/gh" <<'EOF'
+#!/bin/bash
+case "$1 $2" in
+  "pr create") exit 0 ;;
+  *) echo "stub-gh: unexpected argv: $*" >&2; exit 1 ;;
+esac
+EOF
+  chmod +x "$stub_bin/gh"
+
+  local wscript="${TMP}/w-pushfail.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-pushfail.json" "$wscript" true
+  mkspec "$TMP/pushfail.json" "$repo" nh/loop-pushfail "true"
+
+  local out rc=0
+  out=$(PATH="$stub_bin:$PATH" CEO_LOOP_ALLOW_MAIN=1 bash "$LOOP" run \
+    --spec "$TMP/pushfail.json" --routes "$TMP/routes-pushfail.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "10" "failed remote push delivery must exit 10"
+  assert_contains "$out" "push failed — branch nh/loop-pushfail kept locally"
+  assert_not_contains "$out" "stub-gh: unexpected argv"
+  assert_contains "$out" "action=delivery-failed"
+  assert_not_contains "$out" "action=promoted"
+
+  # Telemetry check
+  local tel slug_dir
+  slug_dir=$(find "$CEO_LOOP_STATE_ROOT" -name telemetry.jsonl -path "*pushfail*" | head -1)
+  [ -f "$slug_dir" ] || { fail_test "telemetry.jsonl must exist"; return 1; }
+  tel=$(cat "$slug_dir")
+  assert_eq "$(jq -r '.promoted' <<<"$tel")" "false" "telemetry promoted must be false"
+  assert_eq "$(jq -r '.accepted' <<<"$tel")" "true" "telemetry accepted must be true"
+  assert_eq "$(jq -r '.delivery' <<<"$tel")" "delivery-failed" \
+    "telemetry must record the delivery outcome, not just the gate recommendation"
+
+  # Branch was NOT pushed to remote, but is kept locally
+  assert_eq "$(git -C "$origin" rev-parse --verify -q refs/heads/nh/loop-pushfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" "GONE"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-pushfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" "PRESENT"
+}
+
+test_degraded_delivery_on_pr_create_failure_sets_exit_0_action_pushed() {
+  local origin="$TMP/repos/origin-prfail.git"
+  git init -q --bare -b main "$origin"
+  local repo; repo="$(mkrepo prfail)"
+  git -C "$repo" remote add origin "$origin"
+  git -C "$repo" push -q -u origin main
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+
+  # Stub gh on PATH that fails on pr create
+  local stub_bin="$TMP/bin-prfail"
+  mkdir -p "$stub_bin"
+  cat > "$stub_bin/gh" <<'EOF'
+#!/bin/bash
+case "$1 $2" in
+  "pr create") exit 1 ;;
+  *) echo "stub-gh: unexpected argv: $*" >&2; exit 1 ;;
+esac
+EOF
+  chmod +x "$stub_bin/gh"
+
+  local wscript="${TMP}/w-prfail.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-prfail.json" "$wscript" true
+  mkspec "$TMP/prfail.json" "$repo" nh/loop-prfail "true"
+
+  local out rc=0
+  out=$(PATH="$stub_bin:$PATH" CEO_LOOP_ALLOW_MAIN=1 bash "$LOOP" run \
+    --spec "$TMP/prfail.json" --routes "$TMP/routes-prfail.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "0" "degraded push success with pr create failure must exit 0"
+  assert_contains "$out" "pushed nh/loop-prfail (gh pr create failed — open one manually)"
+  assert_not_contains "$out" "stub-gh: unexpected argv"
+  assert_contains "$out" "action=pushed"
+  assert_not_contains "$out" "action=delivery-failed"
+  assert_not_contains "$out" "action=promoted"
+
+  # Telemetry check
+  local tel slug_dir
+  slug_dir=$(find "$CEO_LOOP_STATE_ROOT" -name telemetry.jsonl -path "*prfail*" | head -1)
+  [ -f "$slug_dir" ] || { fail_test "telemetry.jsonl must exist"; return 1; }
+  tel=$(cat "$slug_dir")
+  assert_eq "$(jq -r '.promoted' <<<"$tel")" "true" "telemetry promoted must be true"
+  assert_eq "$(jq -r '.accepted' <<<"$tel")" "true" "telemetry accepted must be true"
+  assert_eq "$(jq -r '.delivery' <<<"$tel")" "pushed" \
+    "telemetry must distinguish a pushed-but-PR-less branch from an opened PR"
+
+  # Branch IS present on remote
+  assert_eq "$(git -C "$origin" rev-parse --verify -q refs/heads/nh/loop-prfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" "PRESENT"
 }
 
 run_tests
