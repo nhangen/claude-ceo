@@ -231,8 +231,9 @@ if [ "$DRY_RUN" != "1" ]; then
   BRANCH_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "refs/heads/$BRANCH" 2>/dev/null || true)"
   OWNED_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "$OWNED_REF" 2>/dev/null || true)"
   if [ -z "$BRANCH_TIP" ]; then
-    # No branch: a marker left behind by an earlier run vouches for nothing, and
-    # keeping it is what let the next holder of the name be deleted.
+    # No branch: once ownership is proved by tip, a stale marker cannot
+    # authorize a deletion. What the prune actually buys is that the ref
+    # stops pinning a dead branch's commits against gc.
     [ -z "$OWNED_TIP" ] || git -C "$REPO_DIR" update-ref -d "$OWNED_REF" 2>/dev/null || true
   elif [ "$BRANCH_TIP" != "$OWNED_TIP" ]; then
     if [ -z "$OWNED_TIP" ]; then
