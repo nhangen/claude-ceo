@@ -559,6 +559,7 @@ jq -nc \
   --arg repo "$REPO" --arg branch "$BRANCH" --arg model "$WORKER_IDENTITY" \
   --arg reviewer "$PASSING_REVIEWER" \
   --arg target "$TARGET" --arg risk "$RISK" --arg action "$ACTION" \
+  --arg delivery "$SUMMARY_ACTION" \
   --argjson promoted "${PROMOTED:-false}" --argjson parked "${PARKED:-false}" \
   --argjson accepted "$ACCEPTED" \
   --argjson seconds_to_passing "$((NOW_TS - START_TS))" \
@@ -567,6 +568,7 @@ jq -nc \
   --argjson high_findings "$HIGH_FINDINGS" \
   '{ts: $ts, writer: "ceo-loop", repo: $repo, branch: $branch, model: $model,
     reviewer: $reviewer, target: $target, risk: $risk, action: $action,
+    delivery: $delivery,
     promoted: $promoted, parked: $parked,
     accepted: $accepted, seconds_to_passing: $seconds_to_passing,
     retries_used: $retries_used, findings: $findings,

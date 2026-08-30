@@ -141,6 +141,11 @@ EOF
   assert_contains "$row" '"external_id":null'
   # The HIGH-risk change was NOT promoted anywhere.
   if grep -q "promoted" <<<"$out"; then fail_test "HIGH finding must prevent promotion"; fi
+  # #343's second instance: the summary used to print the gate's RECOMMENDATION
+  # (`action=promote`) on a run that was blocked and exited 5, so a reader of
+  # the summary line saw a promotion that never happened.
+  assert_contains "$out" "action=blocked"
+  assert_not_contains "$out" "action=promote "
 }
 
 test_stale_base_stops_before_any_work() {
@@ -817,8 +822,10 @@ EOF
   assert_eq "$rc" "10" "failed fast-forward delivery must exit 10"
   assert_contains "$out" "could not fast-forward main"
   assert_contains "$out" "action=delivery-failed"
-  assert_not_contains "$out" "action=promoted"
-  assert_not_contains "$out" "action=promote)"
+  # The pre-fix wording was `action=promote ` (the gate's recommendation printed
+  # as the outcome). `action=promoted` does not contain it, so the trailing
+  # space is what discriminates old from new.
+  assert_not_contains "$out" "action=promote "
 
   # Telemetry check
   local tel slug_dir
@@ -828,6 +835,8 @@ EOF
   assert_eq "$(jq -r '.promoted' <<<"$tel")" "false" "telemetry promoted must be false"
   assert_eq "$(jq -r '.accepted' <<<"$tel")" "true" "telemetry accepted must be true"
   assert_eq "$(jq -r '.action' <<<"$tel")" "promote" "telemetry gate action remains promote"
+  assert_eq "$(jq -r '.delivery' <<<"$tel")" "delivery-failed" \
+    "telemetry must record the delivery outcome, not just the gate recommendation"
 }
 
 test_delivery_failure_on_remote_push_sets_exit_10_and_telemetry() {
@@ -865,6 +874,7 @@ EOF
     --spec "$TMP/pushfail.json" --routes "$TMP/routes-pushfail.json" --target main 2>&1) || rc=$?
   assert_eq "$rc" "10" "failed remote push delivery must exit 10"
   assert_contains "$out" "push failed — branch nh/loop-pushfail kept locally"
+  assert_not_contains "$out" "stub-gh: unexpected argv"
   assert_contains "$out" "action=delivery-failed"
   assert_not_contains "$out" "action=promoted"
 
@@ -875,6 +885,8 @@ EOF
   tel=$(cat "$slug_dir")
   assert_eq "$(jq -r '.promoted' <<<"$tel")" "false" "telemetry promoted must be false"
   assert_eq "$(jq -r '.accepted' <<<"$tel")" "true" "telemetry accepted must be true"
+  assert_eq "$(jq -r '.delivery' <<<"$tel")" "delivery-failed" \
+    "telemetry must record the delivery outcome, not just the gate recommendation"
 
   # Branch was NOT pushed to remote, but is kept locally
   assert_eq "$(git -C "$origin" rev-parse --verify -q refs/heads/nh/loop-pushfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" "GONE"
@@ -910,6 +922,7 @@ EOF
     --spec "$TMP/prfail.json" --routes "$TMP/routes-prfail.json" --target main 2>&1) || rc=$?
   assert_eq "$rc" "0" "degraded push success with pr create failure must exit 0"
   assert_contains "$out" "pushed nh/loop-prfail (gh pr create failed — open one manually)"
+  assert_not_contains "$out" "stub-gh: unexpected argv"
   assert_contains "$out" "action=pushed"
   assert_not_contains "$out" "action=delivery-failed"
   assert_not_contains "$out" "action=promoted"
@@ -921,6 +934,8 @@ EOF
   tel=$(cat "$slug_dir")
   assert_eq "$(jq -r '.promoted' <<<"$tel")" "true" "telemetry promoted must be true"
   assert_eq "$(jq -r '.accepted' <<<"$tel")" "true" "telemetry accepted must be true"
+  assert_eq "$(jq -r '.delivery' <<<"$tel")" "pushed" \
+    "telemetry must distinguish a pushed-but-PR-less branch from an opened PR"
 
   # Branch IS present on remote
   assert_eq "$(git -C "$origin" rev-parse --verify -q refs/heads/nh/loop-prfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" "PRESENT"

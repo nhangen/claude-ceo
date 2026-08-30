@@ -207,7 +207,11 @@ HIGH. Finding fingerprints bind repo + base revision + invariant + normalized
 location + severity, so line-shifted equivalents collapse onto one ticket while
 a rebase legitimately reopens one. Every cycle appends a telemetry row
 (`telemetry.jsonl`) in the token-scope-ingestable contract plus a shared-ledger
-entry via `ceo-model-ledger.sh`.
+entry via `ceo-model-ledger.sh`. That row carries `action` and `delivery`
+separately and they are not the same thing: `action` is what the promotion gate
+recommended, `delivery` is what actually happened to the work. A row reading
+`action: promote, delivery: pushed` is a branch on the remote that no PR
+points at.
 
 ## Development
 
