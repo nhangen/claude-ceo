@@ -231,9 +231,24 @@ if [ "$DRY_RUN" != "1" ]; then
   BRANCH_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "refs/heads/$BRANCH" 2>/dev/null || true)"
   OWNED_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "$OWNED_REF" 2>/dev/null || true)"
   if [ -z "$BRANCH_TIP" ]; then
-    # No branch: a marker left behind by an earlier run vouches for nothing, and
-    # keeping it is what let the next holder of the name be deleted.
-    [ -z "$OWNED_TIP" ] || git -C "$REPO_DIR" update-ref -d "$OWNED_REF" 2>/dev/null || true
+    # No branch: the marker still matches anyone who later recreates the name at
+    # that same tip — restoring a deleted branch from the reflog reproduces the
+    # sha exactly — and the loop would then delete their branch on the strength
+    # of it. Dropping the marker is what makes the next run refuse instead.
+    # Also unpins the dead branch's commits from gc.
+    #
+    # The prune only has independent effect when a run dies between here and
+    # ceo_claim_branch below, since a run that gets that far re-points the
+    # marker anyway. That narrow window is the whole of its safety value, and
+    # it is what test_marker_prune_drops_orphaned_ownership_ref engineers.
+    #
+    # Not silenced: a marker that will not delete is the exact state that
+    # authorizes deleting someone else's branch on a later run, so the failure
+    # has to be visible even though it is not worth aborting over.
+    if [ -n "$OWNED_TIP" ] && ! git -C "$REPO_DIR" update-ref -d "$OWNED_REF"; then
+      echo "ceo-loop: could not prune the stale ownership marker $OWNED_REF" >&2
+      echo "  a branch later recreated at $OWNED_TIP would be treated as ours; check for a stale ref lock in $REPO_DIR" >&2
+    fi
   elif [ "$BRANCH_TIP" != "$OWNED_TIP" ]; then
     if [ -z "$OWNED_TIP" ]; then
       echo "ceo-loop: branch $BRANCH already exists and was not created by ceo-loop — refusing to delete it." >&2

@@ -27,12 +27,19 @@ fresh_state() { # isolate each test's loop state so order can never matter
 }
 
 mkrepo() { # <name> — a real git repo with one commit on main
-  fresh_state
   local dir="$TMP/repos/$1"
+  [ ! -e "$dir" ] || { echo "mkrepo: duplicate fixture name '$1'" >&2; return 1; }
+  fresh_state
   mkdir -p "$dir"
   git -C "$dir" init -q -b main
   git -C "$dir" config user.email t@t
   git -C "$dir" config user.name t
+  # Without this the fixture inherits the machine's global core.hooksPath, and
+  # every arm that commits or checks out runs whatever the developer has wired
+  # there. Point it at the fixture's own hooks dir rather than /dev/null:
+  # test_a_rejected_commit_is_not_reported_as_accepted_work installs a repo-local
+  # pre-commit and needs it to fire.
+  git -C "$dir" config core.hooksPath "$dir/.git/hooks"
   echo base > "$dir/base.txt"
   git -C "$dir" add -A && git -C "$dir" commit -qm init
   echo "$dir"
@@ -560,6 +567,8 @@ test_two_branch_names_never_share_one_worktree_directory() {
 test_rejects_a_branch_name_that_would_be_read_as_an_option() {
   # git check-ref-format accepts a leading dash; only `checkout -b` happens to
   # refuse it later, and every other interpolation of $BRANCH would not.
+  # Rejection at spec validation avoids leaving an orphaned worktree at
+  # .ceo-loop/-oProxyCommand=x-<hash>.
   local repo; repo="$(mkrepo dashname)"
   local wscript="${TMP}/w-dash.sh"; write_script "$wscript" "$WORKER_WRITE"
   mkroutes "$TMP/routes-dash.json" "$wscript" true
@@ -568,6 +577,13 @@ test_rejects_a_branch_name_that_would_be_read_as_an_option() {
   out=$(bash "$LOOP" run --spec "$TMP/dash.json" --routes "$TMP/routes-dash.json" --target main 2>&1) || rc=$?
   assert_eq "$rc" "2" "a branch name starting with - is rejected at spec validation"
   assert_contains "$out" "not a valid git branch name"
+  assert_eq "$(git -C "$repo" worktree list | grep -c "\.ceo-loop" || true)" "0" \
+    "no worktree is registered when a dash branch name is rejected"
+  # The registration grep cannot see a directory created but never registered,
+  # which is the shape a run killed between `worktree add` and `checkout -b`
+  # leaves behind.
+  assert_eq "$([ -d "$repo/.ceo-loop" ] && echo yes || echo no)" "no" \
+    "no worktree directory is created under .ceo-loop either"
 }
 
 test_a_rejected_commit_is_not_reported_as_accepted_work() {
@@ -939,6 +955,45 @@ EOF
 
   # Branch IS present on remote
   assert_eq "$(git -C "$origin" rev-parse --verify -q refs/heads/nh/loop-prfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" "PRESENT"
+}
+
+test_marker_prune_drops_orphaned_ownership_ref() {
+  # When a loop-created branch is deleted, its ownership marker in
+  # refs/ceo-loop/owned/ is orphaned. Running the loop for that branch
+  # must prune the marker so it stops pinning dead commits against gc.
+  local repo; repo="$(mkrepo markerprune)"
+  local wscript="${TMP}/w-mp.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-mp.json" "$wscript" true
+  mkspec "$TMP/mp.json" "$repo" nh/loop-prune "true"
+  bash "$LOOP" run --spec "$TMP/mp.json" --routes "$TMP/routes-mp.json" --target main >/dev/null 2>&1 || true
+  local key; key="$(branch_key "nh/loop-prune")"
+  local owned_ref="refs/ceo-loop/owned/$key"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q "$owned_ref" >/dev/null && echo yes || echo no)" "yes" \
+    "ownership marker must exist after initial run"
+  git -C "$repo" worktree list --porcelain | awk '/^worktree .*\.ceo-loop/{print $2}' \
+    | while read -r w; do git -C "$repo" worktree remove --force --force "$w" 2>/dev/null || true; done
+  git -C "$repo" branch -D nh/loop-prune >/dev/null 2>&1 || true
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-prune >/dev/null && echo yes || echo no)" "no" \
+    "branch must be deleted"
+  # Abort the run after the marker prune but before `worktree add --detach`
+  # recreates the worktree and ceo_claim_branch re-writes the marker. A file
+  # where the directory must go blocks it for any uid; `chmod 500` does not,
+  # since mode bits are unenforced for root and CI may run as one.
+  rm -rf "$repo/.ceo-loop"
+  : > "$repo/.ceo-loop"
+  bash "$LOOP" run --spec "$TMP/mp.json" --routes "$TMP/routes-mp.json" --target main >/dev/null 2>&1 || true
+  rm -f "$repo/.ceo-loop"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q "$owned_ref" >/dev/null && echo yes || echo no)" "no" \
+    "orphaned ownership marker must be deleted by marker prune"
+}
+
+test_mkrepo_rejects_duplicate_fixture_name() {
+  local repo; repo="$(mkrepo dupname)"
+  assert_file_exists "$repo/base.txt" "first mkrepo call must succeed"
+  local out rc=0
+  out=$(mkrepo dupname 2>&1) || rc=$?
+  assert_eq "$rc" "1" "mkrepo must return 1 when called with a duplicate fixture name"
+  assert_contains "$out" "duplicate fixture name 'dupname'"
 }
 
 run_tests
