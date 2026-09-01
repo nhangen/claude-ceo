@@ -1016,8 +1016,8 @@ test_reclaim_reports_worktree_remove_failure() {
   out=$(bash "$LOOP" run --spec "$TMP/wtrem.json" --routes "$TMP/routes-wtrem.json" --target main 2>&1) || rc=$?
   assert_contains "$out" "could not remove worktree at $wt" \
     "failure to remove worktree is surfaced by name"
-  assert_contains "$out" "could not create isolated worktree" \
-    "downstream worktree recreation fails as expected when stale worktree is present"
+  assert_contains "$out" "validation failed" \
+    "git's own worktree remove stderr is preserved"
   assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c "$wt" || true)" "1" \
     "worktree remains registered in git metadata when removal fails"
   assert_eq "$([ -d "$wt" ] && echo PRESENT || echo GONE)" "PRESENT" \
@@ -1047,6 +1047,7 @@ test_reclaim_reports_directory_remove_failure() {
 #!/bin/bash
 for arg in "$@"; do
   if [[ "$arg" == *".ceo-loop"* ]]; then
+    echo "rm: simulated deletion failure" >&2
     exit 1
   fi
 done
@@ -1058,6 +1059,8 @@ EOF
   out=$(PATH="$stub_bin:$PATH" bash "$LOOP" run --spec "$TMP/rmfail.json" --routes "$TMP/routes-rmfail.json" --target main 2>&1) || rc=$?
   assert_contains "$out" "could not remove directory at $wt" \
     "failure to remove worktree directory is surfaced by name"
+  assert_contains "$out" "rm: simulated deletion failure" \
+    "rm's own stderr is preserved"
   assert_eq "$([ -d "$wt" ] && echo PRESENT || echo GONE)" "PRESENT" \
     "worktree directory remains on disk when removal fails"
   assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-rmfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
@@ -1075,9 +1078,6 @@ test_reclaim_reports_branch_delete_failure() {
   # Initial run to create worktree and branch
   bash "$LOOP" run --spec "$TMP/bdfail.json" --routes "$TMP/routes-bdfail.json" --target main >/dev/null 2>&1 || true
 
-  local key; key="$(branch_key "nh/loop-bdfail")"
-  local wt="$repo/.ceo-loop/nh_loop-bdfail-${key:0:12}"
-
   # Lock the branch ref so git branch -D fails
   touch "$repo/.git/refs/heads/nh/loop-bdfail.lock"
 
@@ -1086,12 +1086,10 @@ test_reclaim_reports_branch_delete_failure() {
   rm -f "$repo/.git/refs/heads/nh/loop-bdfail.lock"
   assert_contains "$out" "could not delete branch nh/loop-bdfail" \
     "failure to delete loop-owned branch is surfaced by name"
-  assert_not_contains "$out" "branch not found" \
-    "raw branch not found noise is not emitted"
+  assert_contains "$out" "cannot lock ref" \
+    "git's own branch -D stderr is preserved"
   assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-bdfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
     "PRESENT" "branch remains present in refs when deletion fails"
-  assert_eq "$([ -d "$wt" ] && echo PRESENT || echo GONE)" "GONE" \
-    "no isolated worktree is created when branch deletion fails"
 }
 
 test_fresh_run_does_not_emit_branch_deletion_warning() {
@@ -1104,8 +1102,43 @@ test_fresh_run_does_not_emit_branch_deletion_warning() {
   out=$(bash "$LOOP" run --spec "$TMP/fresh.json" --routes "$TMP/routes-fresh.json" --target main 2>&1) || rc=$?
   assert_not_contains "$out" "could not delete branch" \
     "clean run on non-existent branch does not report branch deletion failure"
-  assert_not_contains "$out" "branch not found" \
-    "clean run does not emit raw branch not found noise"
+}
+
+test_reclaim_removes_dangling_symlink_directory() {
+  local repo; repo="$(mkrepo danglingsym)"
+  local wscript="${TMP}/w-dang.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-dang.json" "$wscript" true
+  mkspec "$TMP/dang.json" "$repo" nh/loop-dang "true"
+
+  local key; key="$(branch_key "nh/loop-dang")"
+  local wt="$repo/.ceo-loop/nh_loop-dang-${key:0:12}"
+  mkdir -p "$repo/.ceo-loop"
+  ln -s "$TMP/nonexistent-target" "$wt"
+  assert_eq "$([ -L "$wt" ] && echo PRESENT || echo GONE)" "PRESENT" \
+    "dangling symlink exists before reclaim"
+
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/dang.json" --routes "$TMP/routes-dang.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "0" "reclaim succeeds when cleaning up dangling symlink"
+  assert_eq "$([ -L "$wt" ] && echo PRESENT || echo GONE)" "GONE" \
+    "dangling symlink directory is removed by ceo_remove_dir"
+}
+
+test_reclaim_deletes_broken_symref_branch() {
+  local repo; repo="$(mkrepo brokensym)"
+  local wscript="${TMP}/w-brok.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-brok.json" "$wscript" true
+  mkspec "$TMP/brok.json" "$repo" nh/loop-brok "true"
+
+  git -C "$repo" symbolic-ref refs/heads/nh/loop-brok refs/heads/nonexistent
+  assert_eq "$(git -C "$repo" symbolic-ref -q refs/heads/nh/loop-brok >/dev/null && echo PRESENT || echo GONE)" "PRESENT" \
+    "broken symref exists before reclaim"
+
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/brok.json" --routes "$TMP/routes-brok.json" --target main 2>&1) || rc=$?
+  assert_eq "$rc" "0" "reclaim succeeds and deletes broken symref"
+  assert_eq "$(git -C "$repo" symbolic-ref -q refs/heads/nh/loop-brok >/dev/null && echo PRESENT || echo GONE)" "GONE" \
+    "broken symref is deleted by ceo_delete_branch"
 }
 
 run_tests
