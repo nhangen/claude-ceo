@@ -287,6 +287,36 @@ if [ "$DRY_RUN" != "1" ]; then
   # ancestor directory -- /var -> /private/var under $TMPDIR, which is the test
   # fixture rather than any real repo -- git refuses the uncanonicalized form as
   # "not a working tree".
+  ceo_remove_worktree() {
+    local target="$1"
+    [ -n "$target" ] || return 0
+    if ! git -C "$REPO_DIR" worktree remove --force --force "$target" 2>/dev/null; then
+      echo "ceo-loop: could not remove worktree at $target" >&2
+      return 1
+    fi
+    return 0
+  }
+
+  ceo_remove_dir() {
+    local target="$1"
+    if [ -e "$target" ] && ! rm -rf "$target" 2>/dev/null; then
+      echo "ceo-loop: could not remove directory at $target" >&2
+      return 1
+    fi
+    return 0
+  }
+
+  ceo_delete_branch() {
+    local target="$1"
+    if git -C "$REPO_DIR" rev-parse --verify -q "refs/heads/$target" >/dev/null 2>&1; then
+      if ! git -C "$REPO_DIR" branch -D "$target" >/dev/null 2>&1; then
+        echo "ceo-loop: could not delete branch $target" >&2
+        return 1
+      fi
+    fi
+    return 0
+  }
+
   WT_BASE="/$(basename "$WT")"
   { git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
     | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
@@ -297,10 +327,10 @@ if [ "$DRY_RUN" != "1" ]; then
         END          { if (own && p != "") print p }
       ' \
     | while IFS= read -r WT_OWNED; do
-        git -C "$REPO_DIR" worktree remove --force --force "$WT_OWNED" 2>/dev/null || true
+        ceo_remove_worktree "$WT_OWNED" || true
       done
-  rm -rf "$WT"
-  git -C "$REPO_DIR" branch -D "$BRANCH" 2>/dev/null || true
+  ceo_remove_dir "$WT" || true
+  ceo_delete_branch "$BRANCH" || true
   git -C "$REPO_DIR" worktree add --detach "$WT" "$CURRENT_BASE" >/dev/null 2>&1 \
     || { echo "ceo-loop: could not create isolated worktree at $WT" >&2; exit 6; }
   git -C "$WT" checkout -b "$BRANCH" "$CURRENT_BASE" >/dev/null 2>&1 \
