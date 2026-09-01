@@ -287,20 +287,59 @@ if [ "$DRY_RUN" != "1" ]; then
   # ancestor directory -- /var -> /private/var under $TMPDIR, which is the test
   # fixture rather than any real repo -- git refuses the uncanonicalized form as
   # "not a working tree".
+  ceo_remove_worktree() {
+    local target="$1"
+    [ -n "$target" ] || return 0
+    if ! git -C "$REPO_DIR" worktree remove --force --force "$target"; then
+      echo "ceo-loop: could not remove worktree at $target" >&2
+      return 1
+    fi
+    return 0
+  }
+
+  ceo_remove_dir() {
+    local target="$1"
+    if { [ -e "$target" ] || [ -L "$target" ]; } && ! rm -rf "$target"; then
+      echo "ceo-loop: could not remove directory at $target" >&2
+      return 1
+    fi
+    return 0
+  }
+
+  ceo_delete_branch() {
+    local target="$1"
+    if git -C "$REPO_DIR" rev-parse --verify -q "refs/heads/$target" >/dev/null 2>&1 \
+       || git -C "$REPO_DIR" symbolic-ref -q "refs/heads/$target" >/dev/null 2>&1; then
+      if ! git -C "$REPO_DIR" branch -D "$target" >/dev/null; then
+        echo "ceo-loop: could not delete branch $target" >&2
+        return 1
+      fi
+    fi
+    return 0
+  }
+
   WT_BASE="/$(basename "$WT")"
-  { git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
-    | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
-        /^worktree / { if (own && p != "") print p
-                       p = substr($0, 10)
-                       own = (substr(p, length(p) - length(base) + 1) == base) }
-        $0 == br     { if (p ~ /\/\.ceo-loop\//) own = 1 }
-        END          { if (own && p != "") print p }
-      ' \
-    | while IFS= read -r WT_OWNED; do
-        git -C "$REPO_DIR" worktree remove --force --force "$WT_OWNED" 2>/dev/null || true
-      done
-  rm -rf "$WT"
-  git -C "$REPO_DIR" branch -D "$BRANCH" 2>/dev/null || true
+  WT_REMOVED=true
+  while IFS= read -r WT_OWNED; do
+    [ -n "$WT_OWNED" ] || continue
+    ceo_remove_worktree "$WT_OWNED" || WT_REMOVED=false
+  done < <(
+    { git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
+      | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
+          /^worktree / { if (own && p != "") print p
+                         p = substr($0, 10)
+                         own = (substr(p, length(p) - length(base) + 1) == base) }
+          $0 == br     { if (p ~ /\/\.ceo-loop\//) own = 1 }
+          END          { if (own && p != "") print p }
+        '
+  )
+  DIR_REMOVED=true
+  if [ "$WT_REMOVED" = "true" ]; then
+    ceo_remove_dir "$WT" || DIR_REMOVED=false
+  fi
+  if [ "$WT_REMOVED" = "true" ] && [ "$DIR_REMOVED" = "true" ]; then
+    ceo_delete_branch "$BRANCH" || true
+  fi
   git -C "$REPO_DIR" worktree add --detach "$WT" "$CURRENT_BASE" >/dev/null 2>&1 \
     || { echo "ceo-loop: could not create isolated worktree at $WT" >&2; exit 6; }
   git -C "$WT" checkout -b "$BRANCH" "$CURRENT_BASE" >/dev/null 2>&1 \
