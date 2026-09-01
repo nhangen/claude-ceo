@@ -318,19 +318,36 @@ if [ "$DRY_RUN" != "1" ]; then
   }
 
   WT_BASE="/$(basename "$WT")"
-  { git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
-    | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
-        /^worktree / { if (own && p != "") print p
-                       p = substr($0, 10)
-                       own = (substr(p, length(p) - length(base) + 1) == base) }
-        $0 == br     { if (p ~ /\/\.ceo-loop\//) own = 1 }
-        END          { if (own && p != "") print p }
-      ' \
-    | while IFS= read -r WT_OWNED; do
-        ceo_remove_worktree "$WT_OWNED" || true
-      done
-  ceo_remove_dir "$WT" || true
-  ceo_delete_branch "$BRANCH" || true
+  WT_REMOVED=true
+  while IFS= read -r WT_OWNED; do
+    [ -n "$WT_OWNED" ] || continue
+    ceo_remove_worktree "$WT_OWNED" || WT_REMOVED=false
+  done < <(
+    { git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
+      | awk -v br="branch refs/heads/$BRANCH" -v base="$WT_BASE" '
+          /^worktree / { if (own && p != "") print p
+                         p = substr($0, 10)
+                         own = (substr(p, length(p) - length(base) + 1) == base) }
+          $0 == br     { if (p ~ /\/\.ceo-loop\//) own = 1 }
+          END          { if (own && p != "") print p }
+        '
+  )
+  DIR_REMOVED=true
+  if [ "$WT_REMOVED" = "true" ]; then
+    ceo_remove_dir "$WT" || DIR_REMOVED=false
+  fi
+  BRANCH_DELETED=true
+  if [ "$WT_REMOVED" = "true" ] && [ "$DIR_REMOVED" = "true" ]; then
+    ceo_delete_branch "$BRANCH" || BRANCH_DELETED=false
+  fi
+  if [ "$WT_REMOVED" != "true" ] || [ "$DIR_REMOVED" != "true" ]; then
+    echo "ceo-loop: could not create isolated worktree at $WT" >&2
+    exit 6
+  fi
+  if [ "$BRANCH_DELETED" != "true" ]; then
+    echo "ceo-loop: could not create branch $BRANCH" >&2
+    exit 6
+  fi
   git -C "$REPO_DIR" worktree add --detach "$WT" "$CURRENT_BASE" >/dev/null 2>&1 \
     || { echo "ceo-loop: could not create isolated worktree at $WT" >&2; exit 6; }
   git -C "$WT" checkout -b "$BRANCH" "$CURRENT_BASE" >/dev/null 2>&1 \

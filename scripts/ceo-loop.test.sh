@@ -1018,6 +1018,12 @@ test_reclaim_reports_worktree_remove_failure() {
     "failure to remove worktree is surfaced by name"
   assert_contains "$out" "could not create isolated worktree" \
     "downstream worktree recreation fails as expected when stale worktree is present"
+  assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c "$wt" || true)" "1" \
+    "worktree remains registered in git metadata when removal fails"
+  assert_eq "$([ -d "$wt" ] && echo PRESENT || echo GONE)" "PRESENT" \
+    "worktree directory is not deleted when worktree removal fails"
+  assert_not_contains "$out" "could not delete branch" \
+    "branch deletion is not attempted when worktree removal fails"
 }
 
 test_reclaim_reports_directory_remove_failure() {
@@ -1026,8 +1032,10 @@ test_reclaim_reports_directory_remove_failure() {
   mkroutes "$TMP/routes-rmfail.json" "$wscript" true
   mkspec "$TMP/rmfail.json" "$repo" nh/loop-rmfail "true"
 
-  # Create an unregistered leftover directory at the expected worktree path
+  # Create branch, ownership marker, and unregistered leftover directory
+  git -C "$repo" branch nh/loop-rmfail
   local key; key="$(branch_key "nh/loop-rmfail")"
+  git -C "$repo" update-ref "refs/ceo-loop/owned/$key" "$(git -C "$repo" rev-parse refs/heads/nh/loop-rmfail)"
   local wt="$repo/.ceo-loop/nh_loop-rmfail-${key:0:12}"
   mkdir -p "$wt"
   echo "leftover" > "$wt/leftover.txt"
@@ -1050,6 +1058,12 @@ EOF
   out=$(PATH="$stub_bin:$PATH" bash "$LOOP" run --spec "$TMP/rmfail.json" --routes "$TMP/routes-rmfail.json" --target main 2>&1) || rc=$?
   assert_contains "$out" "could not remove directory at $wt" \
     "failure to remove worktree directory is surfaced by name"
+  assert_eq "$([ -d "$wt" ] && echo PRESENT || echo GONE)" "PRESENT" \
+    "worktree directory remains on disk when removal fails"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-rmfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
+    "PRESENT" "branch is not deleted when directory removal fails"
+  assert_not_contains "$out" "could not delete branch" \
+    "branch deletion is not attempted when directory removal fails"
 }
 
 test_reclaim_reports_branch_delete_failure() {
@@ -1061,6 +1075,9 @@ test_reclaim_reports_branch_delete_failure() {
   # Initial run to create worktree and branch
   bash "$LOOP" run --spec "$TMP/bdfail.json" --routes "$TMP/routes-bdfail.json" --target main >/dev/null 2>&1 || true
 
+  local key; key="$(branch_key "nh/loop-bdfail")"
+  local wt="$repo/.ceo-loop/nh_loop-bdfail-${key:0:12}"
+
   # Lock the branch ref so git branch -D fails
   touch "$repo/.git/refs/heads/nh/loop-bdfail.lock"
 
@@ -1071,6 +1088,24 @@ test_reclaim_reports_branch_delete_failure() {
     "failure to delete loop-owned branch is surfaced by name"
   assert_not_contains "$out" "branch not found" \
     "raw branch not found noise is not emitted"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-bdfail >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
+    "PRESENT" "branch remains present in refs when deletion fails"
+  assert_eq "$([ -d "$wt" ] && echo PRESENT || echo GONE)" "GONE" \
+    "no isolated worktree is created when branch deletion fails"
+}
+
+test_fresh_run_does_not_emit_branch_deletion_warning() {
+  local repo; repo="$(mkrepo freshrun)"
+  local wscript="${TMP}/w-fresh.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-fresh.json" "$wscript" true
+  mkspec "$TMP/fresh.json" "$repo" nh/loop-fresh "true"
+
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/fresh.json" --routes "$TMP/routes-fresh.json" --target main 2>&1) || rc=$?
+  assert_not_contains "$out" "could not delete branch" \
+    "clean run on non-existent branch does not report branch deletion failure"
+  assert_not_contains "$out" "branch not found" \
+    "clean run does not emit raw branch not found noise"
 }
 
 run_tests
