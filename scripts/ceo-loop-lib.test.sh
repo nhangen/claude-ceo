@@ -243,4 +243,37 @@ test_branch_key_returns_deterministic_hash() {
   assert_fails "the key is lowercase hex only" test -n "$(printf '%s' "$k1" | tr -d '0-9a-f')"
 }
 
+test_worker_register_records_pid_and_rejects_in_flight_same_branch() {
+  local dir="$TMP/state-reg"
+  mkdir -p "$dir"
+  ceo_worker_register "$dir" "nh/b1" "base1" "f1.txt"
+  assert_eq "$(jq -r .pid "$dir/workers.jsonl")" "$$" "worker row records process PID"
+
+  local out rc=0
+  out=$(CEO_PID="$PPID" ceo_worker_register "$dir" "nh/b1" "base1" "f2.txt" 2>&1) || rc=$?
+  assert_eq "$rc" "6" "registering an in-flight branch with different live PID exits 6"
+  assert_contains "$out" "already has an in-flight worker"
+}
+
+test_worker_register_prunes_dead_pid_registration() {
+  local dir="$TMP/state-prune"
+  mkdir -p "$dir"
+  printf '%s\n' '{"branch":"nh/dead","base":"b","pid":99999999,"files":["d.txt"]}' > "$dir/workers.jsonl"
+  ceo_worker_register "$dir" "nh/live" "b" "l.txt"
+  assert_eq "$(jq -r 'select(.branch == "nh/dead")' "$dir/workers.jsonl")" "" \
+    "dead PID worker row is pruned on subsequent registration"
+  assert_eq "$(jq -r .branch "$dir/workers.jsonl")" "nh/live" \
+    "live worker is registered"
+}
+
+test_worker_register_allows_same_process_to_update_file_list() {
+  local dir="$TMP/state-upsert"
+  mkdir -p "$dir"
+  ceo_worker_register "$dir" "nh/b1" "base1" "f1.txt"
+  ceo_worker_register "$dir" "nh/b1" "base1" "f1.txt" "f2.txt"
+  assert_eq "$(wc -l < "$dir/workers.jsonl" | tr -d ' ')" "1" "single row kept for branch"
+  assert_eq "$(jq -c .files "$dir/workers.jsonl")" '["f1.txt","f2.txt"]' \
+    "same process updates its own file list"
+}
+
 run_tests

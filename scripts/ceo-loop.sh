@@ -148,7 +148,7 @@ ceo_loop_cleanup() {
   # A dead or blocked run frees its serialization slot but LEAVES the worktree
   # and branch for inspection — deleting evidence of what a worker did would
   # hide the very state a repair ticket needs.
-  [ -n "$WT" ] && ceo_worker_release "$DIR" "$BRANCH" 2>/dev/null || true
+  ceo_worker_release "$DIR" "$BRANCH" 2>/dev/null || true
 }
 trap ceo_loop_cleanup EXIT
 START_TS="$(date +%s)"
@@ -217,6 +217,12 @@ VERIFY_LOG=""
 BRANCH_KEY="$(branch_key "$BRANCH")"
 
 if [ "$DRY_RUN" != "1" ]; then
+  # Early registration under state lock before any destructive reclaim or worktree
+  # creation: records the branch and PID so concurrent loops on the same branch or
+  # overlapping declared files refuse fast before touching the working directory.
+  mapfile -t DECLARED_FILES < <(jq -r '.files[]?' "$SPEC" 2>/dev/null || true)
+  ceo_worker_register "$DIR" "$BRANCH" "$CURRENT_BASE" "${DECLARED_FILES[@]}" || exit $?
+
   WT="$REPO_DIR/.ceo-loop/${BRANCH//\//_}-${BRANCH_KEY:0:12}"
   OWNED_REF="refs/ceo-loop/owned/$BRANCH_KEY"
   # The marker records the tip it vouches for, and is re-pointed every time the
@@ -344,16 +350,10 @@ if [ "$DRY_RUN" != "1" ]; then
     || { echo "ceo-loop: could not create isolated worktree at $WT" >&2; exit 6; }
   git -C "$WT" checkout -b "$BRANCH" "$CURRENT_BASE" >/dev/null 2>&1 \
     || { echo "ceo-loop: could not create branch $BRANCH" >&2; exit 6; }
-  # Claim it in the same step that creates it, so a run killed later still
-  # leaves a branch the next run is allowed to reclaim.
-  ceo_claim_branch
-fi
-
-# Early registration with declared intent (if any) so concurrent loops on the
-# same repo serialize before doing work; replaced by diff-derived files below.
-mapfile -t DECLARED_FILES < <(jq -r '.files[]?' "$SPEC" 2>/dev/null || true)
-if [ "${#DECLARED_FILES[@]}" -gt 0 ] && [ -n "${DECLARED_FILES[0]}" ]; then
-  ceo_worker_register "$DIR" "$BRANCH" "$CURRENT_BASE" "${DECLARED_FILES[@]}" || exit $?
+  # Note: do not claim ownership marker here. The loop only claims ownership
+  # when it actually commits worker output below. Claiming $CURRENT_BASE before
+  # committing aliases the target branch tip, which would match any human branch
+  # cut from main on a later run (#336).
 fi
 
 while [ "$ATTEMPT" -le "$MAX_RETRIES" ]; do
