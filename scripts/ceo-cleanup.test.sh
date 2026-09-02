@@ -534,4 +534,23 @@ test_cleanup_reports_every_reason_a_human_is_needed() {
   assert_contains "$out" "AI_NEEDED: yes"
 }
 
+test_mkrepo_cleanup_rejects_duplicate_fixture_name() {
+  local repo; repo="$(mkrepo_cleanup dupname-mkrepo main)"
+  assert_file_exists "$repo/base.txt" "first mkrepo_cleanup call must succeed"
+  local out rc=0
+  out=$(mkrepo_cleanup dupname-mkrepo main 2>&1) || rc=$?
+  assert_eq "$rc" "1" "mkrepo_cleanup must return 1 on duplicate fixture name"
+  assert_contains "$out" "mkrepo_cleanup: duplicate fixture name 'dupname-mkrepo'"
+}
+
+test_mkclone_cleanup_rejects_duplicate_fixture_name() {
+  local repo; repo="$(mkclone_cleanup dupname-clone main ceo/dup no_lag)"
+  assert_file_exists "$repo/base.txt" "first mkclone_cleanup call must succeed"
+  local out rc=0
+  out=$(mkclone_cleanup dupname-clone main ceo/dup no_lag 2>&1) || rc=$?
+  assert_eq "$rc" "1" "mkclone_cleanup must return 1 on duplicate fixture name"
+  assert_contains "$out" "mkclone_cleanup: duplicate fixture name 'dupname-clone'"
+}
+
 run_tests
+
