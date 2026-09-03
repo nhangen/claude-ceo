@@ -1141,4 +1141,185 @@ test_reclaim_deletes_broken_symref_branch() {
     "broken symref is deleted by ceo_delete_branch"
 }
 
+test_in_flight_worker_on_same_branch_refuses_before_reclaim() {
+  # Issue #336: Reclaim must not destroy an in-flight worker on the same branch.
+  local repo; repo="$(mkrepo inflight)"
+  local wscript="${TMP}/w-inflight.sh"
+  write_script "$wscript" 'cd "$WT" && echo step1 > f.txt && sleep 2 && echo step2 >> f.txt'
+  mkroutes "$TMP/routes-inflight.json" "$wscript" true
+  mkspec "$TMP/inflight.json" "$repo" nh/loop-inflight "true"
+
+  # Launch Run 1 in the background
+  local out1_log="$TMP/run1.log"
+  bash "$LOOP" run --spec "$TMP/inflight.json" --routes "$TMP/routes-inflight.json" --target main > "$out1_log" 2>&1 &
+  local pid1=$!
+
+  # Wait for Run 1 to register and create its worktree
+  local wt1=""
+  for _ in $(seq 1 50); do
+    wt1="$(git -C "$repo" worktree list --porcelain | awk '/^worktree .*\.ceo-loop/{print $2}' | head -1)"
+    if [ -n "$wt1" ] && [ -d "$wt1" ]; then break; fi
+    sleep 0.1
+  done
+  [ -n "$wt1" ] || { fail_test "run 1 worktree must be registered"; wait "$pid1" || true; return 1; }
+
+  # Run 2 targeting the same branch while Run 1 is in-flight
+  local out2 rc2=0
+  out2=$(bash "$LOOP" run --spec "$TMP/inflight.json" --routes "$TMP/routes-inflight.json" --target main 2>&1) || rc2=$?
+  assert_eq "$rc2" "6" "concurrent run on same branch exits 6"
+  assert_contains "$out2" "already has an in-flight worker" \
+    "in-flight worker conflict is surfaced by name"
+
+  # Assert Run 1's worktree was NOT destroyed by Run 2
+  assert_eq "$([ -d "$wt1" ] && echo PRESENT || echo GONE)" "PRESENT" \
+    "in-flight worktree is not deleted by concurrent run"
+  assert_eq "$(git -C "$repo" worktree list --porcelain | grep -c "$wt1" || true)" "1" \
+    "in-flight worktree remains registered in git metadata"
+
+  # Wait for Run 1 to complete cleanly
+  local rc1=0
+  wait "$pid1" || rc1=$?
+  assert_eq "$rc1" "0" "in-flight run completes successfully without interruption"
+}
+
+test_uncommitted_run_does_not_authorize_deleting_human_branch_at_main() {
+  # Issue #336: A run that dies before committing leaves no marker pointing at
+  # the target tip, so a human branch at main is never matched and deleted.
+  local repo; repo="$(mkrepo humanguard)"
+  local wscript="${TMP}/w-fail.sh"
+  write_script "$wscript" 'exit 1'
+  mkroutes "$TMP/routes-fail.json" "$wscript" "$wscript"
+  mkspec "$TMP/fail.json" "$repo" nh/loop-humanguard "true"
+
+  local out1 rc1=0
+  out1=$(bash "$LOOP" run --spec "$TMP/fail.json" --routes "$TMP/routes-fail.json" --target main 2>&1) || rc1=$?
+  assert_eq "$rc1" "4" "worker failure exits 4 before committing"
+  assert_contains "$out1" "every routed candidate failed"
+
+  # Cleanup worktree and branch from the failed run
+  git -C "$repo" worktree list --porcelain | awk '/^worktree .*\.ceo-loop/{print $2}' \
+    | while read -r w; do git -C "$repo" worktree remove --force --force "$w" 2>/dev/null || true; done
+  git -C "$repo" branch -D nh/loop-humanguard >/dev/null 2>&1 || true
+
+  # A human now creates a branch from main with the same name
+  git -C "$repo" branch nh/loop-humanguard main
+  local human_sha; human_sha="$(git -C "$repo" rev-parse refs/heads/nh/loop-humanguard)"
+
+  local out2 rc2=0
+  out2=$(bash "$LOOP" run --spec "$TMP/fail.json" --routes "$TMP/routes-fail.json" --target main 2>&1) || rc2=$?
+  assert_eq "$rc2" "6" "loop refuses to delete human branch at base tip"
+  assert_contains "$out2" "already exists and was not created by ceo-loop"
+  assert_eq "$(git -C "$repo" rev-parse refs/heads/nh/loop-humanguard 2>/dev/null)" "$human_sha" \
+    "human branch remains untouched at its commit"
+}
+
+test_early_registration_without_declared_files_prevents_same_branch_collision() {
+  # Issue #336: Specs without declared files must still register under state lock
+  # to prevent same-branch concurrency races.
+  local repo; repo="$(mkrepo nofiles)"
+  local wscript="${TMP}/w-nofiles.sh"
+  write_script "$wscript" 'cd "$WT" && echo work > w.txt && sleep 2'
+  mkroutes "$TMP/routes-nofiles.json" "$wscript" true
+  # Spec explicitly omits .files
+  mkspec "$TMP/nofiles.json" "$repo" nh/loop-nofiles "true"
+
+  bash "$LOOP" run --spec "$TMP/nofiles.json" --routes "$TMP/routes-nofiles.json" --target main > "$TMP/nofiles1.log" 2>&1 &
+  local pid1=$!
+
+  local repo_slug; repo_slug="$(jq -r .repo "$TMP/nofiles.json" | tr '/' '-')"
+  local sdir; sdir="$(ceo_loop_state_dir "$repo_slug")"
+  for _ in $(seq 1 50); do
+    if [ -s "$sdir/workers.jsonl" ]; then break; fi
+    sleep 0.1
+  done
+
+  local out2 rc2=0
+  out2=$(bash "$LOOP" run --spec "$TMP/nofiles.json" --routes "$TMP/routes-nofiles.json" --target main 2>&1) || rc2=$?
+  assert_eq "$rc2" "6" "concurrent run without declared files exits 6 on same branch"
+  assert_contains "$out2" "already has an in-flight worker"
+
+  wait "$pid1" || true
+}
+
+test_a_failed_runs_leftover_branch_is_reclaimed_by_the_next_run() {
+  # An ordinary worker failure — no kill needed — leaves a branch and worktree
+  # with no ownership marker, because the marker is only written once output is
+  # committed. If nothing distinguishes that leftover from a human's branch at
+  # the same tip, every failed run wedges its branch until a person intervenes.
+  local repo; repo="$(mkrepo selfheal)"
+  local failing="${TMP}/w-selfheal-fail.sh"
+  write_script "$failing" 'exit 1'
+  mkroutes "$TMP/routes-selfheal-fail.json" "$failing" "$failing"
+  mkspec "$TMP/selfheal.json" "$repo" nh/loop-selfheal "true"
+
+  local rc1=0
+  bash "$LOOP" run --spec "$TMP/selfheal.json" --routes "$TMP/routes-selfheal-fail.json" --target main >/dev/null 2>&1 || rc1=$?
+  assert_eq "$rc1" "4" "the worker fails before anything is committed"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-selfheal >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
+    "PRESENT" "the failed run leaves its branch behind"
+  assert_eq "$(git -C "$repo" for-each-ref --format='%(refname)' 'refs/ceo-loop/owned/**' | wc -l | tr -d ' ')" "0" \
+    "and leaves no ownership marker, because nothing was committed"
+
+  # The next run must reclaim its own leftover rather than refuse forever.
+  local working="${TMP}/w-selfheal-ok.sh"
+  write_script "$working" 'cd "$WT" && echo ok > f.txt'
+  mkroutes "$TMP/routes-selfheal-ok.json" "$working" true
+  local out2 rc2=0
+  out2=$(bash "$LOOP" run --spec "$TMP/selfheal.json" --routes "$TMP/routes-selfheal-ok.json" --target main 2>&1) || rc2=$?
+  assert_eq "$rc2" "0" "the next run reclaims the leftover instead of wedging"
+  assert_not_contains "$out2" "was not created by ceo-loop" \
+    "the loop does not mistake its own leftover for a human's branch"
+}
+
+test_a_refused_run_leaves_the_incumbent_registration_intact() {
+  # The refused run still runs its EXIT cleanup. If that release matched on the
+  # branch name alone it would delete the incumbent's row, so the guard would
+  # fire once and then wave the next run straight through.
+  local repo; repo="$(mkrepo refused)"
+  local wscript="${TMP}/w-refused.sh"
+  write_script "$wscript" 'cd "$WT" && echo a > f.txt && sleep 6'
+  mkroutes "$TMP/routes-refused.json" "$wscript" true
+  mkspec "$TMP/refused.json" "$repo" nh/loop-refused "true"
+
+  bash "$LOOP" run --spec "$TMP/refused.json" --routes "$TMP/routes-refused.json" --target main > "$TMP/refused1.log" 2>&1 &
+  local pid1=$!
+  local slug; slug="$(jq -r .repo "$TMP/refused.json" | tr '/' '-')"
+  local sdir; sdir="$(ceo_loop_state_dir "$slug")"
+  for _ in $(seq 1 60); do [ -s "$sdir/workers.jsonl" ] && break; sleep 0.1; done
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl" | head -1)" "nh/loop-refused" "the incumbent is registered"
+
+  local rc2=0
+  bash "$LOOP" run --spec "$TMP/refused.json" --routes "$TMP/routes-refused.json" --target main >/dev/null 2>&1 || rc2=$?
+  assert_eq "$rc2" "6" "the second run is refused"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl" | head -1)" "nh/loop-refused" \
+    "the incumbent's registration row survives the refused run's cleanup"
+  wait "$pid1" || true
+}
+
+test_a_run_that_exits_before_registering_leaves_the_incumbent_row() {
+  # Every exit between the cleanup trap being installed and registration — a
+  # stale base, an unresolvable target, no candidate configured — used to reach
+  # the same unconditional release, so a run that never registered could still
+  # free somebody else's slot.
+  local repo; repo="$(mkrepo neverreg)"
+  local wscript="${TMP}/w-neverreg.sh"
+  write_script "$wscript" 'cd "$WT" && echo a > f.txt && sleep 6'
+  mkroutes "$TMP/routes-neverreg.json" "$wscript" true
+  mkspec "$TMP/neverreg.json" "$repo" nh/loop-neverreg "true"
+
+  bash "$LOOP" run --spec "$TMP/neverreg.json" --routes "$TMP/routes-neverreg.json" --target main > "$TMP/neverreg1.log" 2>&1 &
+  local pid1=$!
+  local slug; slug="$(jq -r .repo "$TMP/neverreg.json" | tr '/' '-')"
+  local sdir; sdir="$(ceo_loop_state_dir "$slug")"
+  for _ in $(seq 1 60); do [ -s "$sdir/workers.jsonl" ] && break; sleep 0.1; done
+
+  echo '{"candidates":[]}' > "$TMP/routes-empty.json"
+  local rc2=0
+  bash "$LOOP" run --spec "$TMP/neverreg.json" --routes "$TMP/routes-empty.json" --target main >/dev/null 2>&1 || rc2=$?
+  assert_eq "$rc2" "4" "the second run dies before it ever registers"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl" | head -1)" "nh/loop-neverreg" \
+    "a run that never registered does not free the incumbent's slot"
+  wait "$pid1" || true
+}
+
 run_tests

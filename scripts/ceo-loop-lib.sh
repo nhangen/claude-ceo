@@ -221,12 +221,13 @@ ceo_review_gate() {
 
 # ceo_worker_register <state-dir> <branch> <base-sha> <file>... — records an
 # in-flight worker. Exits 6 on overlap with a registered worker sharing any
-# file, migration path, or declared dependency, naming the conflict.
+# file, migration path, or declared dependency, or if an in-flight worker is
+# already active on the same branch.
 ceo_worker_register() {
   local dir="$1" branch="$2" base="$3"; shift 3
   mkdir -p "$dir"
   touch "$dir/workers.jsonl"
-  CEO_LOCK_DIR="$dir" CEO_BRANCH="$branch" CEO_BASE="$base" \
+  CEO_LOCK_DIR="$dir" CEO_BRANCH="$branch" CEO_BASE="$base" CEO_PID="${CEO_PID:-$$}" \
     CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash -s "$@" <<'REGISTER_INNER'
 set -euo pipefail
 lock="$CEO_LOCK_DIR/.lock"; waited=0
@@ -240,6 +241,7 @@ done
 trap 'rmdir "$lock" 2>/dev/null || true' EXIT
 file="$CEO_LOCK_DIR/workers.jsonl"
 lineno=0
+live_rows=()
 while IFS= read -r row; do
   lineno=$((lineno + 1))
   [ -n "$row" ] || continue
@@ -249,33 +251,102 @@ while IFS= read -r row; do
     echo "ceo-workers: corrupt row at line $lineno of $file — fix or remove it before registering" >&2
     exit 6
   fi
-  for f in "$@"; do
-    if echo "$row" | jq -e --arg f "$f" --arg b "$CEO_BRANCH" \
-      'select(.branch != $b) | (.files | index($f))' >/dev/null 2>&1; then
-      conflict="$(echo "$row" | jq -r .branch)"
-      echo "ceo-workers: '$CEO_BRANCH' overlaps in-flight worker '$conflict' on file $f — serialize or rebase" >&2
+  row_branch="$(echo "$row" | jq -r .branch)"
+  row_pid="$(echo "$row" | jq -r 'if .pid then (.pid | tostring) else empty end')"
+
+  # Prune only a row we can positively confirm dead. `kill -0` returns 1 for
+  # three different things and the difference is only in its stderr: ESRCH (the
+  # process is gone), EPERM (it is alive and owned by another uid), and a
+  # syntactically invalid pid. Discarding that stderr collapses all three into
+  # "dead", which prunes a LIVE foreign-uid worker and drops both guards with
+  # it. Anything we cannot confirm dead is treated as live.
+  row_dead=false
+  if [ -n "$row_pid" ]; then
+    kill_err="$(kill -0 "$row_pid" 2>&1)" || {
+      case "$kill_err" in
+        *"No such process"*) row_dead=true ;;
+      esac
+    }
+  fi
+  if [ "$row_dead" = "true" ]; then
+    continue
+  fi
+
+  # In-flight worker on the same branch. A row with no `.pid` predates PID
+  # tracking, so its liveness is unknowable — refuse rather than wave it
+  # through. Every row written before PID tracking landed is pid-less, so the
+  # permissive reading would turn the gate off for the whole upgrade window.
+  if [ "$row_branch" = "$CEO_BRANCH" ]; then
+    if [ -z "$row_pid" ]; then
+      echo "ceo-workers: '$CEO_BRANCH' has a registration with no PID in $file — its liveness cannot be" >&2
+      echo "  determined, so it is treated as in-flight. Remove that row once you have confirmed no run holds the branch." >&2
       exit 6
     fi
-  done
+    if [ "$row_pid" != "$CEO_PID" ]; then
+      echo "ceo-workers: '$CEO_BRANCH' already has an in-flight worker (PID $row_pid) — serialize or choose another branch" >&2
+      exit 6
+    fi
+  else
+    for f in "$@"; do
+      if echo "$row" | jq -e --arg f "$f" '(.files | index($f))' >/dev/null 2>&1; then
+        conflict="$row_branch"
+        echo "ceo-workers: '$CEO_BRANCH' overlaps in-flight worker '$conflict' on file $f — serialize or rebase" >&2
+        exit 6
+      fi
+    done
+  fi
+  live_rows+=("$row")
 done < "$file"
+
+files_json="[]"
+if [ "$#" -gt 0 ] && [ -n "${1:-}" ]; then
+  files_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
+fi
+
+# A pid that is not a positive integer would be written verbatim and then read
+# back as "dead" on the next run, so the guard's refusal would be
+# indistinguishable from its absence. Reject it at the write instead.
+case "$CEO_PID" in
+  ''|*[!0-9]*)
+    echo "ceo-workers: refusing to register with a non-numeric PID '$CEO_PID'" >&2
+    exit 6 ;;
+esac
+
+# One write, at the end. The pruned rows and the new row are assembled in a temp
+# file and moved into place once: truncating $file here and appending afterwards
+# leaves a window where a kill loses every row AND strands the lock (the rmdir
+# trap does not run on SIGKILL), so later runs exit 8 until someone clears it.
+tmp="$file.tmp.$$"
+if [ "${#live_rows[@]}" -gt 0 ]; then
+  printf '%s\n' "${live_rows[@]}" > "$tmp"
+else
+  : > "$tmp"
+fi
 # Upsert: a branch registering twice replaces its own row instead of stacking
 # duplicates (a later release of one duplicate would orphan the other).
 jq -nc --arg b "$CEO_BRANCH" --arg base "$CEO_BASE" \
-  --argjson files "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
-  '{branch: $b, base: $base, files: $files}' >> "$file"
+  --arg pid "$CEO_PID" \
+  --argjson files "$files_json" \
+  '{branch: $b, base: $base, pid: ($pid | tonumber), files: $files}' >> "$tmp"
 # Keep exactly one row per branch: the upsert drops earlier rows for it.
-jq -cs 'sort_by(.branch) | group_by(.branch) | map(last) | .[]' "$file" \
-  > "$file.dedup" && mv "$file.dedup" "$file"
+jq -cs 'sort_by(.branch) | group_by(.branch) | map(last) | .[]' "$tmp" \
+  > "$tmp.dedup" && mv "$tmp.dedup" "$tmp"
+mv "$tmp" "$file"
 REGISTER_INNER
 }
 
 # ceo_worker_release <state-dir> <branch> — removes the branch's row under the
 # state lock so a concurrent registration between read and rename survives.
+# ceo_worker_release <state-dir> <branch> [pid] — drops the caller's OWN row for
+# a branch. The pid defaults to this process. Matching on the branch name alone
+# would let a run that was refused registration delete the row belonging to the
+# worker that refused it, which disarms the guard on its first use and hands the
+# next run a branch somebody is still holding.
 ceo_worker_release() {
-  local dir="$1" branch="$2"
+  local dir="$1" branch="$2" pid="${3:-${CEO_PID:-$$}}"
   local file="$dir/workers.jsonl"
   [ -f "$file" ] || return 0
-  CEO_LOCK_DIR="$dir" CEO_BRANCH="$branch" CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash <<'RELEASE_INNER'
+  CEO_LOCK_DIR="$dir" CEO_BRANCH="$branch" CEO_PID="$pid" CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash <<'RELEASE_INNER'
 set -euo pipefail
 lock="$CEO_LOCK_DIR/.lock"; waited=0
 until mkdir "$lock" 2>/dev/null; do
@@ -289,7 +360,9 @@ until mkdir "$lock" 2>/dev/null; do
 done
 trap 'rmdir "$lock" 2>/dev/null || true' EXIT
 file="$CEO_LOCK_DIR/workers.jsonl"
-jq -c --arg b "$CEO_BRANCH" 'select(.branch != $b)' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+jq -c --arg b "$CEO_BRANCH" --arg pid "$CEO_PID" \
+  'select((.branch != $b) or ((.pid // -1) | tostring) != $pid)' \
+  "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 RELEASE_INNER
 }
 
