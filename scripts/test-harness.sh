@@ -213,12 +213,42 @@ run_tests() {
     export TEST_FAILS_TMP
     true > "$TEST_FAILS_TMP"
 
+    # Backgrounded, then reaped with an explicit `wait … || true`, rather than
+    # `( … ) || true` directly: bash suppresses errexit for the *left operand of
+    # `||` itself*, and that suppression reaches inside the subshell — an inner
+    # `false` there would fall through instead of tripping the EXIT trap, which
+    # silently disarms every hand-rolled `set -e`-reliant body (#349). A
+    # backgrounded subshell keeps its own inherited errexit live; only the
+    # outer `wait`'s exit status (which mirrors the job's) needs shielding from
+    # run_tests' own `set -e`, and `|| true` on `wait` does exactly that without
+    # touching the subshell's semantics.
+    #
+    # The sweep and the assertion-count write live in the trap itself, not as
+    # statements after "$fn" — statements after "$fn" never run when the body
+    # aborts via `exit N`, so a bare `FAILS=$((FAILS + 1))` before the abort was
+    # discarded and a real assertion that ran was reported as
+    # "NO ASSERTIONS RAN" (#322). The trap fires on every exit path, abort or
+    # clean, so both run either way. `rc` is captured before either call so
+    # their own exit statuses (a `wc -l` of an empty count, echo's own status)
+    # can't overwrite the code the abort check needs.
+    #
+    # The trailing `exit $rc` is trap hygiene, not a guard, and no arm pins it:
+    # `wait "$!" || true` discards the subshell's status, and an abort travels
+    # to the loop as a line in $TEST_FAILS_TMP rather than as an exit code, so
+    # removing it changes nothing observable. It stays because a status that
+    # says what happened is worth more than one that is always 1 on a pass, but
+    # do not read it as protected.
     (
-      trap 'rc=$?; [ $rc -ne 0 ] && _record_test_abort "$CURRENT_TEST" $rc' EXIT
+      trap '
+        rc=$?
+        _record_hand_rolled_fails "$fails_before"
+        echo "$ASSERTION_COUNT" > "$assertions_tmp"
+        [ $rc -ne 0 ] && _record_test_abort "$CURRENT_TEST" $rc
+        exit $rc
+      ' EXIT
       "$fn"
-      _record_hand_rolled_fails "$fails_before"
-      echo "$ASSERTION_COUNT" > "$assertions_tmp"
-    )
+    ) &
+    wait "$!" || true
 
     if [ -s "$TEST_FAILS_TMP" ]; then
       FAILS=$((FAILS + $(wc -l < "$TEST_FAILS_TMP")))
@@ -250,6 +280,11 @@ run_tests() {
     count=$((count + 1))
   done
   rm -f "$body_fails_tmp" "$assertions_tmp" "$parent_fails_tmp"
+
+  if [ "$count" -eq 0 ]; then
+    echo "FAILED: no tests discovered"
+    exit 1
+  fi
 
   echo ""
   if [ "$FAILS" -eq 0 ]; then
