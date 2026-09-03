@@ -22,6 +22,11 @@ mkrepo_cleanup() {
   # A second call on the same name re-inits, and `git commit` then writes
   # "nothing to commit" to STDOUT, which is captured into the returned path.
   # Every later `git -C "$repo"` dies on it and the arm still reports pass.
+  #
+  # Convention (#351): a fixture-builder guard is tested beside its builder, in
+  # the suite that defines it — not in test-harness.test.sh. The three builders
+  # are three different functions in two suites, so moving the arms without
+  # moving the builders would separate each guard from the thing it guards.
   [ ! -e "$dir" ] || { echo "mkrepo_cleanup: duplicate fixture name '$name'" >&2; return 1; }
   mkdir -p "$dir"
   git -C "$dir" init -q -b "$default_branch"
@@ -203,6 +208,8 @@ test_cleanup_deletes_owned_ref_for_merged_branch() {
 mkclone_cleanup() { # <name> <default-branch> <ceo-branch> <local_lag|no_lag>
   local name="$1" default_branch="$2" ceo_branch="$3" mode="$4"
   local origin="$TMP/repos/$name.git" clone="$TMP/repos/$name"
+  # Guarded and tested beside the builder, per the convention noted at
+  # mkrepo_cleanup above (#351).
   [ ! -e "$clone" ] || { echo "mkclone_cleanup: duplicate fixture name '$name'" >&2; return 1; }
   git init -q --bare -b "$default_branch" "$origin"
   git clone -q "$origin" "$clone" 2>/dev/null
@@ -537,20 +544,39 @@ test_cleanup_reports_every_reason_a_human_is_needed() {
 test_mkrepo_cleanup_rejects_duplicate_fixture_name() {
   local repo; repo="$(mkrepo_cleanup dupname-mkrepo main)"
   assert_file_exists "$repo/base.txt" "first mkrepo_cleanup call must succeed"
-  local out rc=0
-  out=$(mkrepo_cleanup dupname-mkrepo main 2>&1) || rc=$?
+
+  # Capture stdout and stderr separately. The harm the guard prevents is on
+  # stdout: without it the second call re-inits, `git commit` writes "nothing to
+  # commit" to STDOUT, and that text is returned to the caller as part of the
+  # path. An arm that merges the streams cannot tell the refusal from the harm.
+  local err out rc=0
+  err="$TMP/dupname-mkrepo.err"
+  out=$(mkrepo_cleanup dupname-mkrepo main 2>"$err") || rc=$?
   assert_eq "$rc" "1" "mkrepo_cleanup must return 1 on duplicate fixture name"
-  assert_contains "$out" "mkrepo_cleanup: duplicate fixture name 'dupname-mkrepo'"
+  assert_eq "$out" "" "a refused call returns no path on stdout"
+  assert_contains "$(cat "$err")" "mkrepo_cleanup: duplicate fixture name 'dupname-mkrepo'"
+
+  # And the first fixture is untouched by the refusal, not merely un-returned.
+  assert_eq "$(cat "$repo/base.txt")" "init" "the first fixture's content survives"
+  assert_eq "$(git -C "$repo" rev-list --count HEAD)" "1" \
+    "the first fixture still has exactly its one init commit"
 }
 
 test_mkclone_cleanup_rejects_duplicate_fixture_name() {
   local repo; repo="$(mkclone_cleanup dupname-clone main ceo/dup no_lag)"
   assert_file_exists "$repo/base.txt" "first mkclone_cleanup call must succeed"
-  local out rc=0
-  out=$(mkclone_cleanup dupname-clone main ceo/dup no_lag 2>&1) || rc=$?
+  local before; before="$(git -C "$repo" rev-parse HEAD)"
+
+  local err out rc=0
+  err="$TMP/dupname-clone.err"
+  out=$(mkclone_cleanup dupname-clone main ceo/dup no_lag 2>"$err") || rc=$?
   assert_eq "$rc" "1" "mkclone_cleanup must return 1 on duplicate fixture name"
-  assert_contains "$out" "mkclone_cleanup: duplicate fixture name 'dupname-clone'"
+  assert_eq "$out" "" "a refused call returns no path on stdout"
+  assert_contains "$(cat "$err")" "mkclone_cleanup: duplicate fixture name 'dupname-clone'"
+
+  assert_eq "$(git -C "$repo" rev-parse HEAD)" "$before" \
+    "the first fixture's HEAD is unmoved by the refusal"
+  assert_eq "$(cat "$repo/base.txt")" "init" "the first fixture's content survives"
 }
 
 run_tests
-
