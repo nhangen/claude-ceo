@@ -28,6 +28,9 @@ fresh_state() { # isolate each test's loop state so order can never matter
 
 mkrepo() { # <name> — a real git repo with one commit on main
   local dir="$TMP/repos/$1"
+  # Convention (#351): a fixture-builder guard is tested beside its builder, in
+  # the suite that defines it. The sibling guards are mkrepo_cleanup and
+  # mkclone_cleanup in ceo-cleanup.test.sh, each with its own arm there.
   [ ! -e "$dir" ] || { echo "mkrepo: duplicate fixture name '$1'" >&2; return 1; }
   fresh_state
   mkdir -p "$dir"
