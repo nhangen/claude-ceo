@@ -1241,5 +1241,85 @@ test_early_registration_without_declared_files_prevents_same_branch_collision() 
   wait "$pid1" || true
 }
 
-run_tests
+test_a_failed_runs_leftover_branch_is_reclaimed_by_the_next_run() {
+  # An ordinary worker failure — no kill needed — leaves a branch and worktree
+  # with no ownership marker, because the marker is only written once output is
+  # committed. If nothing distinguishes that leftover from a human's branch at
+  # the same tip, every failed run wedges its branch until a person intervenes.
+  local repo; repo="$(mkrepo selfheal)"
+  local failing="${TMP}/w-selfheal-fail.sh"
+  write_script "$failing" 'exit 1'
+  mkroutes "$TMP/routes-selfheal-fail.json" "$failing" "$failing"
+  mkspec "$TMP/selfheal.json" "$repo" nh/loop-selfheal "true"
 
+  local rc1=0
+  bash "$LOOP" run --spec "$TMP/selfheal.json" --routes "$TMP/routes-selfheal-fail.json" --target main >/dev/null 2>&1 || rc1=$?
+  assert_eq "$rc1" "4" "the worker fails before anything is committed"
+  assert_eq "$(git -C "$repo" rev-parse --verify -q refs/heads/nh/loop-selfheal >/dev/null 2>&1 && echo PRESENT || echo GONE)" \
+    "PRESENT" "the failed run leaves its branch behind"
+  assert_eq "$(git -C "$repo" for-each-ref --format='%(refname)' 'refs/ceo-loop/owned/**' | wc -l | tr -d ' ')" "0" \
+    "and leaves no ownership marker, because nothing was committed"
+
+  # The next run must reclaim its own leftover rather than refuse forever.
+  local working="${TMP}/w-selfheal-ok.sh"
+  write_script "$working" 'cd "$WT" && echo ok > f.txt'
+  mkroutes "$TMP/routes-selfheal-ok.json" "$working" true
+  local out2 rc2=0
+  out2=$(bash "$LOOP" run --spec "$TMP/selfheal.json" --routes "$TMP/routes-selfheal-ok.json" --target main 2>&1) || rc2=$?
+  assert_eq "$rc2" "0" "the next run reclaims the leftover instead of wedging"
+  assert_not_contains "$out2" "was not created by ceo-loop" \
+    "the loop does not mistake its own leftover for a human's branch"
+}
+
+test_a_refused_run_leaves_the_incumbent_registration_intact() {
+  # The refused run still runs its EXIT cleanup. If that release matched on the
+  # branch name alone it would delete the incumbent's row, so the guard would
+  # fire once and then wave the next run straight through.
+  local repo; repo="$(mkrepo refused)"
+  local wscript="${TMP}/w-refused.sh"
+  write_script "$wscript" 'cd "$WT" && echo a > f.txt && sleep 6'
+  mkroutes "$TMP/routes-refused.json" "$wscript" true
+  mkspec "$TMP/refused.json" "$repo" nh/loop-refused "true"
+
+  bash "$LOOP" run --spec "$TMP/refused.json" --routes "$TMP/routes-refused.json" --target main > "$TMP/refused1.log" 2>&1 &
+  local pid1=$!
+  local slug; slug="$(jq -r .repo "$TMP/refused.json" | tr '/' '-')"
+  local sdir; sdir="$(ceo_loop_state_dir "$slug")"
+  for _ in $(seq 1 60); do [ -s "$sdir/workers.jsonl" ] && break; sleep 0.1; done
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl" | head -1)" "nh/loop-refused" "the incumbent is registered"
+
+  local rc2=0
+  bash "$LOOP" run --spec "$TMP/refused.json" --routes "$TMP/routes-refused.json" --target main >/dev/null 2>&1 || rc2=$?
+  assert_eq "$rc2" "6" "the second run is refused"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl" | head -1)" "nh/loop-refused" \
+    "the incumbent's registration row survives the refused run's cleanup"
+  wait "$pid1" || true
+}
+
+test_a_run_that_exits_before_registering_leaves_the_incumbent_row() {
+  # Every exit between the cleanup trap being installed and registration — a
+  # stale base, an unresolvable target, no candidate configured — used to reach
+  # the same unconditional release, so a run that never registered could still
+  # free somebody else's slot.
+  local repo; repo="$(mkrepo neverreg)"
+  local wscript="${TMP}/w-neverreg.sh"
+  write_script "$wscript" 'cd "$WT" && echo a > f.txt && sleep 6'
+  mkroutes "$TMP/routes-neverreg.json" "$wscript" true
+  mkspec "$TMP/neverreg.json" "$repo" nh/loop-neverreg "true"
+
+  bash "$LOOP" run --spec "$TMP/neverreg.json" --routes "$TMP/routes-neverreg.json" --target main > "$TMP/neverreg1.log" 2>&1 &
+  local pid1=$!
+  local slug; slug="$(jq -r .repo "$TMP/neverreg.json" | tr '/' '-')"
+  local sdir; sdir="$(ceo_loop_state_dir "$slug")"
+  for _ in $(seq 1 60); do [ -s "$sdir/workers.jsonl" ] && break; sleep 0.1; done
+
+  echo '{"candidates":[]}' > "$TMP/routes-empty.json"
+  local rc2=0
+  bash "$LOOP" run --spec "$TMP/neverreg.json" --routes "$TMP/routes-empty.json" --target main >/dev/null 2>&1 || rc2=$?
+  assert_eq "$rc2" "4" "the second run dies before it ever registers"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl" | head -1)" "nh/loop-neverreg" \
+    "a run that never registered does not free the incumbent's slot"
+  wait "$pid1" || true
+}
+
+run_tests

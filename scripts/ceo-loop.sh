@@ -148,7 +148,13 @@ ceo_loop_cleanup() {
   # A dead or blocked run frees its serialization slot but LEAVES the worktree
   # and branch for inspection — deleting evidence of what a worker did would
   # hide the very state a repair ticket needs.
-  ceo_worker_release "$DIR" "$BRANCH" 2>/dev/null || true
+  # Release only THIS process's row. The pid argument is what makes that true,
+  # and it is why this can run unconditionally: every exit between here and the
+  # registration below — a stale base, an unresolvable target, no candidate
+  # configured, and the same-branch refusal itself — reaches this line without
+  # having registered anything, and must not free the slot of whichever run is
+  # legitimately holding the branch.
+  ceo_worker_release "$DIR" "$BRANCH" "$$" 2>/dev/null || true
 }
 trap ceo_loop_cleanup EXIT
 START_TS="$(date +%s)"
@@ -220,8 +226,19 @@ if [ "$DRY_RUN" != "1" ]; then
   # Early registration under state lock before any destructive reclaim or worktree
   # creation: records the branch and PID so concurrent loops on the same branch or
   # overlapping declared files refuse fast before touching the working directory.
-  mapfile -t DECLARED_FILES < <(jq -r '.files[]?' "$SPEC" 2>/dev/null || true)
-  ceo_worker_register "$DIR" "$BRANCH" "$CURRENT_BASE" "${DECLARED_FILES[@]}" || exit $?
+  # `mapfile` plus "${arr[@]}" needs bash >= 4.4 to survive `set -u` on an empty
+  # array, and the guard the old code used for that was dropped when this moved
+  # here. A read loop needs neither.
+  #
+  # No error branch: `.files[]?` cannot fail on a spec that parsed, and one that
+  # did not parse never reaches this line — require_field '.branch' rejects it
+  # two hundred lines earlier.
+  DECLARED_FILES=()
+  while IFS= read -r declared_file; do
+    [ -n "$declared_file" ] || continue
+    DECLARED_FILES+=("$declared_file")
+  done < <(jq -r '.files[]?' "$SPEC")
+  ceo_worker_register "$DIR" "$BRANCH" "$CURRENT_BASE" ${DECLARED_FILES+"${DECLARED_FILES[@]}"} || exit $?
 
   WT="$REPO_DIR/.ceo-loop/${BRANCH//\//_}-${BRANCH_KEY:0:12}"
   OWNED_REF="refs/ceo-loop/owned/$BRANCH_KEY"
@@ -233,6 +250,19 @@ if [ "$DRY_RUN" != "1" ]; then
   ceo_claim_branch() {
     git -C "$REPO_DIR" update-ref "$OWNED_REF" "$(git -C "$WT" rev-parse HEAD)" \
       || { echo "ceo-loop: could not record ownership of $BRANCH" >&2; exit 6; }
+  }
+  # True when a worktree under .ceo-loop/ is registered for this branch key —
+  # i.e. this branch is a leftover of an earlier ceo-loop run, not a human's.
+  ceo_has_own_leftover_worktree() {
+    local suffix wt_path
+    suffix="/$(basename "$WT")"
+    while IFS= read -r wt_path; do
+      case "$wt_path" in
+        */.ceo-loop/*) [ "${wt_path%"$suffix"}" != "$wt_path" ] && return 0 ;;
+      esac
+    done < <({ git -C "$REPO_DIR" worktree list --porcelain 2>/dev/null || true; } \
+               | awk '/^worktree /{print substr($0, 10)}')
+    return 1
   }
   BRANCH_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "refs/heads/$BRANCH" 2>/dev/null || true)"
   OWNED_TIP="$(git -C "$REPO_DIR" rev-parse --verify -q "$OWNED_REF" 2>/dev/null || true)"
@@ -256,13 +286,29 @@ if [ "$DRY_RUN" != "1" ]; then
       echo "  a branch later recreated at $OWNED_TIP would be treated as ours; check for a stale ref lock in $REPO_DIR" >&2
     fi
   elif [ "$BRANCH_TIP" != "$OWNED_TIP" ]; then
-    if [ -z "$OWNED_TIP" ]; then
-      echo "ceo-loop: branch $BRANCH already exists and was not created by ceo-loop — refusing to delete it." >&2
+    # Is this our own leftover? The discriminator is the WORKTREE, not the tip.
+    # #336 asked to make the first claim distinguishable from the base tip, and
+    # no ref can be: a run that dies before its worker commits leaves the branch
+    # sitting at the base tip, which is exactly where a human's
+    # `git branch <same-name> main` puts theirs. A registered worktree under
+    # .ceo-loop/ named for this branch key is something only ceo-loop creates,
+    # so it separates the two cases a tip comparison cannot.
+    #
+    # Liveness is already settled by then: registration above refuses if another
+    # run holds this branch, so reaching here means nobody does.
+    if [ -z "$OWNED_TIP" ] && ceo_has_own_leftover_worktree; then
+      : # our own uncommitted leftover — reclaimed below rather than wedged
     else
-      echo "ceo-loop: branch $BRANCH has moved since ceo-loop last wrote it ($OWNED_TIP -> $BRANCH_TIP) — refusing to delete it." >&2
+      if [ -z "$OWNED_TIP" ]; then
+        echo "ceo-loop: branch $BRANCH already exists and was not created by ceo-loop — refusing to delete it." >&2
+      else
+        echo "ceo-loop: branch $BRANCH has moved since ceo-loop last wrote it ($OWNED_TIP -> $BRANCH_TIP) — refusing to delete it." >&2
+      fi
+      echo "  Choose a different .branch in the spec, or delete the branch yourself if it is disposable." >&2
+      echo "  If a worktree still holds it, git refuses the delete until you remove that first:" >&2
+      echo "    git -C $REPO_DIR worktree remove --force --force <path>   # git branch -D names it" >&2
+      exit 6
     fi
-    echo "  Choose a different .branch in the spec, or delete the branch yourself if it is disposable." >&2
-    exit 6
   fi
   # Reclaim leftovers from prior attempts: deregister every worktree
   # registration this branch owns (a branch checked out in a registered worktree

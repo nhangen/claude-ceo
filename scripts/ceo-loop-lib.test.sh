@@ -276,4 +276,71 @@ test_worker_register_allows_same_process_to_update_file_list() {
     "same process updates its own file list"
 }
 
+test_worker_register_treats_a_live_foreign_uid_pid_as_live() {
+  # PID 1 is alive and root-owned, so `kill -0 1` fails with EPERM — the same
+  # exit status as "no such process". Reading that as dead prunes a live
+  # worker's row and drops both guards with it.
+  local dir="$TMP/state-eperm"
+  mkdir -p "$dir"
+  printf '%s\n' '{"branch":"other/b","base":"a","pid":1,"files":["a.txt"]}' > "$dir/workers.jsonl"
+  local out rc=0
+  out=$(ceo_worker_register "$dir" "nh/x" "def" "a.txt" 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a row whose process cannot be confirmed dead still blocks on file overlap"
+  assert_contains "$out" "overlaps in-flight worker 'other/b'"
+  assert_eq "$(jq -r .branch "$dir/workers.jsonl")" "other/b" \
+    "the unconfirmable row is not pruned"
+}
+
+test_worker_register_refuses_a_pidless_row_on_the_same_branch() {
+  # Every row written before PID tracking has no .pid. Treating those as absent
+  # turns the branch gate off for the whole upgrade window.
+  local dir="$TMP/state-legacy"
+  mkdir -p "$dir"
+  printf '%s\n' '{"branch":"nh/x","base":"a","files":["a.txt"]}' > "$dir/workers.jsonl"
+  local out rc=0
+  out=$(ceo_worker_register "$dir" "nh/x" "def" "a.txt" 2>&1) || rc=$?
+  # rc alone cannot pin this: with the pid-less branch dropped, the row falls
+  # into the numeric compare below it and still exits 6, on a message naming an
+  # empty PID. The message assertion is the one doing the work here.
+  assert_eq "$rc" "6" "a pid-less row on the same branch is treated as in-flight"
+  assert_contains "$out" "registration with no PID"
+  assert_eq "$(jq -r '.base' "$dir/workers.jsonl")" "a" \
+    "the pid-less row is left intact rather than overwritten"
+}
+
+test_worker_register_rejects_a_non_numeric_pid() {
+  # A string pid is written verbatim and then read back as dead on the next
+  # run, so the guard's refusal becomes indistinguishable from its absence.
+  local dir="$TMP/state-badpid"
+  mkdir -p "$dir"
+  local out rc=0
+  out=$(CEO_PID="abc" ceo_worker_register "$dir" "nh/x" "def" "a.txt" 2>&1) || rc=$?
+  assert_eq "$rc" "6" "a non-numeric PID is refused at the write"
+  assert_contains "$out" "non-numeric PID"
+  assert_eq "$(wc -l < "$dir/workers.jsonl" | tr -d ' ')" "0" "nothing is registered"
+}
+
+test_worker_release_only_drops_the_callers_own_row() {
+  # A run refused registration still runs its cleanup. Releasing by branch name
+  # alone would delete the row of the worker that refused it, so the guard would
+  # fire exactly once per branch and then wave everyone through.
+  local dir="$TMP/state-release-scope"
+  mkdir -p "$dir"
+  sleep 30 & local incumbent=$!
+  CEO_PID="$incumbent" ceo_worker_register "$dir" "nh/x" "base" "shared.sh"
+
+  local rc=0
+  CEO_PID=99999 ceo_worker_release "$dir" "nh/x" 99999 || rc=$?
+  assert_eq "$rc" "0" "release succeeds"
+  assert_eq "$(jq -r .pid "$dir/workers.jsonl")" "$incumbent" \
+    "another process's row for the same branch is left alone"
+
+  # And the file-overlap guard the surviving row provides still holds.
+  local out rc2=0
+  sleep 30 & local other=$!
+  out=$(CEO_PID="$other" ceo_worker_register "$dir" "nh/y" "base" "shared.sh" 2>&1) || rc2=$?
+  assert_eq "$rc2" "6" "the incumbent still blocks an overlapping branch"
+  kill "$incumbent" "$other" 2>/dev/null || true
+}
+
 run_tests
