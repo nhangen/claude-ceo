@@ -109,6 +109,11 @@ test_a_best_seller_outranks_an_unranked_page_in_the_decline_list() {
 }
 
 test_a_page_new_this_week_is_not_counted_as_a_decline() {
+  # This pins the behaviour, not a particular line: `[ -n "$p" ] || continue`
+  # and the `[ "$d" -lt 0 ] || continue` below it both exclude a page absent
+  # from the prior window, since an empty prior coerces to 0 and clicks are
+  # never negative. The first guard is the explicit statement of the rule and
+  # stays; do not read this arm as proof that deleting it would be caught.
   _empty_all
   _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/brand-new\t5\t100\t0.05\t12')"
   _fixture httpsshoptest prior page ""
@@ -166,7 +171,7 @@ test_a_new_query_is_reported_and_a_returning_one_is_not() {
   _fixture httpsshoptest prior query "$(printf 'old demand\t8\t380\t0.02\t9')"
   _run
   local newsec
-  newsec=$(printf '%s\n' "$OUT" | sed -n '/New queries in the top 25/,/^## \|^### Pages/p')
+  newsec=$(printf '%s\n' "$OUT" | sed -n '/New queries this week/,/^## \|^### Pages/p')
   assert_contains "$newsec" 'fresh demand' "a query absent last week is new"
   assert_not_contains "$newsec" 'old demand' "one present last week is not"
 }
@@ -221,6 +226,49 @@ test_a_missing_credential_fails_loudly_rather_than_reporting_nothing() {
     "no credential is a failure, not an empty report"
   assert_contains "$err" "GA_SERVICE_ACCOUNT_JSON" "and names the variable to set"
   export CEO_ANALYTICS_FIXTURE_DIR="$FIXTURES"
+}
+
+test_a_new_query_that_is_a_suffix_of_an_old_one_is_still_new() {
+  # The membership test used to be an unanchored `grep -qF`, so a new query
+  # that appeared inside last week's longer query read as returning and was
+  # dropped. On a store where "bpc-157" and "buy bpc-157" both rank, that is
+  # the ordinary shape of the data rather than an edge case.
+  _empty_all
+  _fixture httpsshoptest cur   query "$(printf 'alpha peptide\t3\t500\t0.006\t12')"
+  _fixture httpsshoptest prior query "$(printf 'buy alpha peptide\t9\t400\t0.02\t9')"
+  _run
+  local newsec
+  newsec=$(printf '%s\n' "$OUT" | sed -n '/New queries this week/,/^## \|^### Pages/p')
+  assert_contains "$newsec" 'alpha peptide' \
+    "a query is new unless last week carried that exact query"
+}
+
+test_a_query_just_under_the_impression_floor_is_not_a_ctr_opportunity() {
+  # The floor was pinned only from the qualifying side, so loosening it to
+  # i>=0 kept every arm green and a query with three impressions would have
+  # been reported as a title/meta opportunity.
+  _empty_all
+  _fixture httpsshoptest cur query "$(printf 'barely seen\t0\t99\t0.0\t8')"
+  _run
+  assert_not_contains "$(_ctr_section)" 'barely seen' \
+    "99 impressions is below the floor — there is nothing to conclude from it"
+}
+
+test_a_query_at_the_ctr_ceiling_is_not_an_opportunity() {
+  # Same one-sided problem on the CTR side: ctr<1 passed every arm.
+  _empty_all
+  _fixture httpsshoptest cur query "$(printf 'already converting\t60\t1000\t0.06\t8')"
+  _run
+  assert_not_contains "$(_ctr_section)" 'already converting' \
+    "6% CTR is not a weak click rate — the list is for the ones people skip"
+}
+
+test_a_page_just_under_the_zero_click_floor_is_not_reported() {
+  _empty_all
+  _fixture httpsshoptest cur page "$(printf 'https://shop.test/p/faint\t0\t49\t0.0\t30')"
+  _run
+  assert_not_contains "$OUT" "p/faint" \
+    "49 impressions with no clicks is noise, not a listing people refuse"
 }
 
 run_tests

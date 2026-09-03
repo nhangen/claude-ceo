@@ -26,10 +26,12 @@ per site:
 1. Pages losing clicks week-over-week.
 2. Queries sitting at position 5–20 with ≥100 impressions and CTR under 2% — the title/meta fix list.
 3. Pages with ≥50 impressions and zero clicks.
-4. Queries newly entering the top 25 by impressions.
+4. Queries that did not appear last week, the ten with the most impressions.
 
-On the **money site** every finding is ordered by the revenue rank of the page it points at, so a
-small decline on a best seller outranks a large decline on a page that has never sold. Other sites are
+On the **money site** the two page-dimension findings — declines and zero-click pages — are ordered by
+the revenue rank of the page they point at, so a small decline on a best seller outranks a large
+decline on a page that has never sold. The two query-dimension findings are ordered by impressions:
+a query is not a page, so there is no rank to sort it by. Other sites are
 reported unweighted and labelled as such.
 
 ## Why traffic, and not revenue

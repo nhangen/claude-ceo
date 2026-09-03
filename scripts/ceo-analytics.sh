@@ -194,7 +194,11 @@ _new_queries() {
   local cur="$1" prior="$2" q i
   while IFS=$'\t' read -r q _ i _ _; do
     [ -n "$q" ] || continue
-    grep -qF "$(printf '%s\t' "$q")" "$prior" && continue
+    # Exact field match, matching _clicks_lost's idiom above. `grep -qF` is
+    # unanchored, so a new query that is a SUFFIX of last week's query read as
+    # returning and was dropped: "alpha peptide" vanished because "buy alpha
+    # peptide" ranked last week. That is the ordinary shape of query data.
+    awk -F'\t' -v q="$q" '$1==q {found=1; exit} END{exit !found}' "$prior" && continue
     printf '%s\t%s\n' "$i" "$q"
   done < "$cur" | sort -t$'\t' -k1,1nr | head -10
 }
@@ -244,7 +248,7 @@ _render_site() {
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 
-  printf '### New queries in the top 25\n\n'
+  printf '### New queries this week, by impressions\n\n'
   n=0
   while IFS=$'\t' read -r i q; do
     n=$((n + 1))
