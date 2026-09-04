@@ -197,8 +197,12 @@ run_tests() {
       # MARK_A and then nothing — no FAILED line, no test count, no summary
       # at all, which is strictly worse than the #349 output this file exists
       # to fix, because nothing even names the cause. 34 suites define one of
-      # these and 8 of those run under `set -e`, so a `grep` with no match or
-      # a false `[ -f ... ]` as the last statement is enough.
+      # these, and 3 of them set errexit at suite top level (ceo-gather,
+      # ceo-gather-truncation, ceo-git-monitor), so a `grep` with no match or
+      # a false `[ -f ... ]` as the last statement is enough. An earlier
+      # version of this note said 8, counting the child-suite heredocs written
+      # inside test bodies; the guard is worth having on 3, but the number
+      # justifying it should be the real one.
       #
       # `||` here, NOT the `& wait` the body uses. A subshell would isolate
       # setup's variable assignments from the test that needs them, and the
