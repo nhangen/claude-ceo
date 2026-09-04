@@ -306,6 +306,7 @@ test_a_row_with_a_null_metric_field_is_dropped_not_misread() {
 # test process; sourcing (not `bash "$ANALYTICS" ...`) is what makes a
 # function below main() reachable at all, since main() runs the whole report.
 _source_analytics() {
+  # shellcheck source=/dev/null
   ( source "$ANALYTICS" >/dev/null 2>&1; "$@" )
 }
 
@@ -378,6 +379,7 @@ test_the_bearer_token_never_reaches_curls_argv() {
   ( export PATH="$STUBDIR:$PATH" ACCESS_TOKEN="super-secret-bearer-xyz" \
       CEO_ANALYTICS_FIXTURE_DIR=""
     unset CEO_ANALYTICS_FIXTURE_DIR
+    # shellcheck source=/dev/null
     source "$ANALYTICS" >/dev/null 2>&1
     _gsc_query "https://shop.test/" "2026-01-01" "2026-01-07" page >/dev/null
   )
