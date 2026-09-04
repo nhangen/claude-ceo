@@ -33,14 +33,17 @@ setup() {
 
   export CEO_ANALYTICS_RANK_FILE="$TEST_HOME/product-revenue.tsv"
 
-  # Window starts the script will compute from CEO_ANALYTICS_TODAY is relative to
-  # *now*, not to that variable, so resolve them the same way the script does and
-  # name the fixtures accordingly.
-  if date -v-1d +%Y-%m-%d >/dev/null 2>&1; then
-    CUR_START=$(date -v-9d +%Y-%m-%d);  PRIOR_START=$(date -v-16d +%Y-%m-%d)
-  else
-    CUR_START=$(date -d '9 days ago' +%Y-%m-%d); PRIOR_START=$(date -d '16 days ago' +%Y-%m-%d)
-  fi
+  # The four window dates main() computes are relative to *now*, not to
+  # CEO_ANALYTICS_TODAY, so fixtures have to be keyed on whatever `_days_ago`
+  # actually returns today. This used to re-derive "-9d"/"-16d" by hand
+  # instead of calling `_days_ago` — a silent second copy of the arithmetic
+  # that could drift from the real one, and did nothing to pin cur_end/
+  # prior_end at all (see _fixture below). Source the real helper instead of
+  # re-implementing the BSD/GNU probe.
+  CUR_END=$(_source_analytics _days_ago "$CEO_ANALYTICS_LAG_DAYS")
+  CUR_START=$(_source_analytics _days_ago $((CEO_ANALYTICS_LAG_DAYS + 6)))
+  PRIOR_END=$(_source_analytics _days_ago $((CEO_ANALYTICS_LAG_DAYS + 7)))
+  PRIOR_START=$(_source_analytics _days_ago $((CEO_ANALYTICS_LAG_DAYS + 13)))
 }
 
 teardown() {
@@ -49,10 +52,17 @@ teardown() {
 }
 
 # _fixture <site-slug> <window: cur|prior> <dim> <rows...>
+# Filename carries both start AND end date — _gsc_query's fixture path used to
+# key on start+dim only, so mutating cur_end/prior_end (a wrong comparison
+# window) never missed a fixture and every arm stayed green. See the header
+# comment on _gsc_query in ceo-analytics.sh.
 _fixture() {
   local slug="$1" window="$2" dim="$3"; shift 3
-  local start; [ "$window" = cur ] && start="$CUR_START" || start="$PRIOR_START"
-  printf '%s\n' "$@" > "$FIXTURES/$slug-$start-$dim.tsv"
+  local start end
+  if [ "$window" = cur ]; then start="$CUR_START"; end="$CUR_END"
+  else start="$PRIOR_START"; end="$PRIOR_END"
+  fi
+  printf '%s\n' "$@" > "$FIXTURES/$slug-$start-$end-$dim.tsv"
 }
 
 _run() {
@@ -67,6 +77,14 @@ _ctr_section() {
   printf '%s\n' "$OUT" | sed -n '/Title\/meta opportunities/,/^###/p'
 }
 
+# Same idea as _ctr_section: a URL excluded from "Pages losing clicks" can
+# legitimately still show up under "Pages with impressions and zero clicks"
+# (they are different findings on the same page), so a whole-report
+# assert_not_contains proves nothing specific to the decline finder.
+_clicks_lost_section() {
+  printf '%s\n' "$OUT" | sed -n '/Pages losing clicks/,/^###/p'
+}
+
 # Every site needs all four fixtures or the run reports on empty input, which
 # would make an assertion about "none" pass for the wrong reason.
 _empty_all() {
@@ -75,18 +93,6 @@ _empty_all() {
     _fixture "$slug" cur page ""; _fixture "$slug" prior page ""
     _fixture "$slug" cur query ""; _fixture "$slug" prior query ""
   done
-}
-
-test_a_page_losing_clicks_is_reported_with_its_revenue_rank() {
-  _empty_all
-  printf 'https://shop.test/p/alpha\t1\n' > "$CEO_ANALYTICS_RANK_FILE"
-  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7.1')"
-  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6.4')"
-  _run
-  assert_eq "$RC" "0" "dry run exits clean"
-  assert_contains "$OUT" "https://shop.test/p/alpha — 40 clicks (was 100, -60)" \
-    "the decline is reported with both windows and the delta"
-  assert_contains "$OUT" "revenue rank 1" "and carries the page's revenue rank"
 }
 
 test_a_best_seller_outranks_an_unranked_page_in_the_decline_list() {
@@ -120,6 +126,20 @@ test_a_page_new_this_week_is_not_counted_as_a_decline() {
   _run
   assert_not_contains "$OUT" "p/brand-new — 5 clicks" \
     "absent from the prior window means new, not a fall from zero"
+}
+
+# --- T2: the comparison window itself has coverage, not just its fixtures --
+
+test_the_report_header_states_the_actual_comparison_window() {
+  # cur_end/prior_end had no coverage at all: the fixture path used to key on
+  # start+dim only, so `cur_end=$(_days_ago 0)` (today instead of the lagged
+  # end) or a prior_end overlapping the current window both still resolved to
+  # the same fixture and left every arm green. Pinning the exact window
+  # string in the header catches either mutation directly.
+  _empty_all
+  _run
+  assert_contains "$OUT" "This week $CUR_START → $CUR_END, compared against $PRIOR_START → $PRIOR_END." \
+    "the header states the exact four-date window the run computed"
 }
 
 test_a_missing_rank_file_is_disclosed_not_silently_ignored() {
@@ -300,6 +320,59 @@ test_a_row_with_a_null_metric_field_is_dropped_not_misread() {
     "the impressions figure must never be printed as a click count"
 }
 
+# --- T4: _valid_rows only had coverage for a null-clicks-field shape -------
+
+test_a_row_with_too_many_fields_is_rejected() {
+  # Every malformed fixture elsewhere in this suite is the same shape (a null
+  # clicks field, still 5 tab-separated fields). A row SHORTER than 5 fields
+  # is not actually a distinct case for `NF != 5`: awk reads a missing
+  # trailing field as empty, and empty already fails every numeric check
+  # below it (`https://shop.test/p/short\t5\t100` is caught by the $4 check
+  # alone, with or without the NF guard — confirmed by running the reduced
+  # awk program both ways). A row LONGER than 5 fields is the one shape only
+  # `NF != 5` catches: fields 2-5 all look valid, so nothing else rejects it,
+  # and removing that guard left it silently accepted as good.
+  _empty_all
+  _fixture httpsshoptest cur page \
+    "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')" \
+    "$(printf 'https://shop.test/p/toolong\t5\t100\t0.05\t7\tEXTRA')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  assert_eq "$RC" "0" "one good row alongside an over-long row is not a fatal reject"
+  local shopsec
+  shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^### Pages losing/p')
+  assert_contains "$shopsec" "1 row(s) rejected as malformed" \
+    "a row with more than 5 fields is rejected outright, not silently accepted with its extra field ignored"
+}
+
+test_a_row_with_non_numeric_impressions_is_rejected() {
+  _empty_all
+  _fixture httpsshoptest cur page \
+    "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')" \
+    "$(printf 'https://shop.test/p/badimp\t5\tNaN\t0.05\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  assert_eq "$RC" "0" "one good row alongside a bad-impressions row is not a fatal reject"
+  assert_not_contains "$OUT" "p/badimp" "a non-numeric impressions field is rejected outright"
+  local shopsec
+  shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^### Pages losing/p')
+  assert_contains "$shopsec" "1 row(s) rejected as malformed" "the bad-impressions row counts as a reject"
+}
+
+test_a_row_with_non_numeric_position_is_rejected() {
+  _empty_all
+  _fixture httpsshoptest cur page \
+    "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')" \
+    "$(printf 'https://shop.test/p/badpos\t5\t100\t0.05\tN/A')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  assert_eq "$RC" "0" "one good row alongside a bad-position row is not a fatal reject"
+  assert_not_contains "$OUT" "p/badpos" "a non-numeric position field is rejected outright"
+  local shopsec
+  shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^### Pages losing/p')
+  assert_contains "$shopsec" "1 row(s) rejected as malformed" "the bad-position row counts as a reject"
+}
+
 test_a_reject_in_the_prior_query_window_marks_the_new_query_section_unverified() {
   # Rejects are not symmetric. Every other finder loses a finding when a row is
   # dropped, and the site banner ("findings below may be incomplete") is the
@@ -422,6 +495,55 @@ test_the_bearer_token_never_reaches_curls_argv() {
     "the token is present somewhere (in the config content) — not simply lost"
 }
 
+test_the_jwt_assertion_never_reaches_curls_argv() {
+  # Sibling to the bearer-token arm above: the signed JWT assertion is the
+  # other secret _access_token builds, and it goes to curl via
+  # `--data-urlencode assertion@-` on stdin, never `assertion=$assertion` on
+  # argv. `_install_curl_stub` already logs stdin whenever argv carries
+  # `assertion@-` — that half of the stub existed and nothing asserted
+  # against it.
+  local keydir keyfile
+  keydir=$(mktemp -d)
+  openssl genrsa -out "$keydir/key.pem" 2048 >/dev/null 2>&1
+  keyfile="$keydir/sa.json"
+  jq -Rs --arg email "test@example.iam.gserviceaccount.com" \
+    '{client_email: $email, private_key: .}' "$keydir/key.pem" > "$keyfile"
+
+  local log; log=$(mktemp)
+  _install_curl_stub "$log"
+
+  # The JWT header segment (`{"alg":"RS256","typ":"JWT"}`, base64url-encoded)
+  # is fixed content independent of the key or the clock, so it is a known
+  # fragment of whatever assertion this run builds — a probe that doesn't
+  # depend on capturing the real, time-varying assertion out of the run.
+  local header
+  # shellcheck source=/dev/null
+  header=$(source "$ANALYTICS" >/dev/null 2>&1; printf '{"alg":"RS256","typ":"JWT"}' | _b64url)
+
+  local token rc
+  token=$(
+    export PATH="$STUBDIR:$PATH" GA_SERVICE_ACCOUNT_JSON="$keyfile" CEO_ANALYTICS_FIXTURE_DIR=""
+    unset CEO_ANALYTICS_FIXTURE_DIR
+    # shellcheck source=/dev/null
+    source "$ANALYTICS" >/dev/null 2>&1
+    _access_token
+  )
+  rc=$?
+  local recorded; recorded=$(cat "$log")
+  rm -rf "$STUBDIR" "$keydir"; rm -f "$log"
+
+  assert_eq "$rc" "0" "the token request succeeds against the stub"
+  assert_eq "$token" "stub-token-123" "and returns the token from the response"
+
+  local argv_line; argv_line=$(printf '%s\n' "$recorded" | grep '^ARGV:')
+  assert_not_contains "$argv_line" "$header" \
+    "the assertion's header segment must not appear in curl's argv"
+  local stdin_section
+  stdin_section=$(printf '%s\n' "$recorded" | sed -n '/^STDIN_START$/,/^STDIN_END$/p')
+  assert_contains "$stdin_section" "$header" \
+    "the assertion is delivered to curl via stdin (assertion@-), not argv"
+}
+
 test_a_malformed_rank_file_fails_the_run_rather_than_truncating_it() {
   # _rank_of returning 0 is also its "unranked" answer, so a rank file that
   # HAS an entry for this url but a garbage rank column must not read the
@@ -457,6 +579,26 @@ test_a_non_money_site_never_shows_a_revenue_rank_even_on_a_coincidental_match() 
     "no finding in the unweighted section may carry a revenue rank, even on a URL that matches the rank file"
 }
 
+# --- T3: _zero_click_pages' weighted gate is unpinned ----------------------
+
+test_a_non_money_sites_zero_click_page_never_shows_a_revenue_rank_either() {
+  # The arm above pins the `weighted` gate for _clicks_lost only; calling
+  # _rank_of unconditionally inside _zero_click_pages left every existing arm
+  # green, because the only zero-click fixture in the suite lives on the
+  # money site (where a rank IS wanted). Same coincidental-match shape as
+  # above, applied to the zero-click finder instead.
+  _empty_all
+  printf 'https://blog.test/zero\t2\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsblogtest cur page "$(printf 'https://blog.test/zero\t0\t80\t0.0\t15')"
+  _run
+  local blogsec
+  blogsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/blog.test\//,/^## /p')
+  assert_contains "$blogsec" "https://blog.test/zero — 80 impressions, 0 clicks" \
+    "the zero-click finding itself still appears"
+  assert_not_contains "$blogsec" "revenue rank" \
+    "a zero-click page on the unweighted site must not carry a revenue rank either"
+}
+
 test_a_money_site_still_keeps_its_revenue_rank_alongside_the_gate() {
   # Companion to the arm above, the other direction: gating on `weighted`
   # must not also silence ranking on the site it's supposed to apply to.
@@ -473,12 +615,28 @@ test_a_money_site_still_keeps_its_revenue_rank_alongside_the_gate() {
 test_a_page_gaining_clicks_is_not_reported_as_losing_them() {
   # Pins `[ "$d" -lt 0 ] || continue` in _clicks_lost: a page whose clicks
   # went UP week over week must never appear under "Pages losing clicks".
+  # Scoped to that section (T6): removing the ZERO-CLICK guard in a wholly
+  # unrelated function (_zero_click_pages) also renders "p/growing" — under a
+  # different section — so a whole-report assert_not_contains here used to
+  # fail for the wrong reason and wasn't evidence about this guard at all.
   _empty_all
   _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/growing\t100\t900\t0.11\t5')"
   _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/growing\t50\t850\t0.06\t6')"
   _run
-  assert_not_contains "$OUT" "p/growing" \
+  assert_not_contains "$(_clicks_lost_section)" "p/growing" \
     "clicks went from 50 to 100 — a gain, never a decline"
+}
+
+test_a_flat_week_page_is_not_reported_as_losing_clicks() {
+  # `[ "$d" -lt 0 ]` is the boundary the sibling arm above doesn't reach:
+  # delta == 0 (clicks unchanged) is flat, not a decline, and `-le 0` in
+  # place of `-lt 0` also passes every existing arm.
+  _empty_all
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/flat\t40\t900\t0.044\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/flat\t40\t900\t0.044\t7')"
+  _run
+  assert_not_contains "$(_clicks_lost_section)" "p/flat" \
+    "clicks unchanged week over week (40 -> 40, delta 0) is flat, not a decline"
 }
 
 test_a_page_with_real_clicks_is_not_a_zero_click_finding() {
@@ -717,7 +875,7 @@ test_a_missing_fixture_fails_loudly_rather_than_reporting_an_empty_week() {
   # missing file here (a fixture typo, not a real empty week) must not be
   # indistinguishable from `- none`.
   _empty_all
-  rm -f "$FIXTURES/httpsshoptest-$CUR_START-page.tsv"
+  rm -f "$FIXTURES/httpsshoptest-$CUR_START-$CUR_END-page.tsv"
   _run
   assert_eq "$([ "$RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
     "a missing fixture must fail the run"

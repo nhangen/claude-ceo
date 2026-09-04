@@ -138,7 +138,11 @@ _gsc_query() {
   if [ -n "${CEO_ANALYTICS_FIXTURE_DIR:-}" ]; then
     local slug
     slug=$(printf '%s' "$site" | tr -cd 'a-zA-Z0-9')
-    local f="$CEO_ANALYTICS_FIXTURE_DIR/$slug-$start-$dim.tsv"
+    # Keyed on start AND end: keying on start+dim alone let cur_end/prior_end
+    # drift to any value (even an overlapping or same-day window) and still
+    # resolve to the same fixture, so the comparison window itself had no
+    # test coverage — see docs/playbooks/analytics.md and LAG_DAYS above.
+    local f="$CEO_ANALYTICS_FIXTURE_DIR/$slug-$start-$end-$dim.tsv"
     # A missing fixture used to yield empty output at exit 0 — indistinguishable
     # from a legitimate empty week. This is the only ingress the whole suite
     # exercises, so that swallow could green-light an assertion about "- none"

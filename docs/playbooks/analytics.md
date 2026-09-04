@@ -114,16 +114,23 @@ and the thresholds have proven quiet.
 
 ## Tests
 
-`scripts/ceo-analytics.test.sh` — 34 tests. The fixture seam sits at `_gsc_query`, so the ranking,
+`scripts/ceo-analytics.test.sh` — 51 tests. The fixture seam sits at `_gsc_query`, so the ranking,
 delta, threshold and rendering logic under test is the same code production runs; nothing stubs the
-logic being checked. Covered: revenue rank beating a larger raw decline, a new page not counted as a
-fall from zero, both edges of the 5–20 position band, the missing-rank-file disclosure, the
-no-attribution guarantee, `--dry-run` leaving the vault untouched (including the directory itself),
-the artifact landing at the declared path, a missing credential failing loudly rather than producing
-an empty report, a malformed data row being rejected outright rather than half-read, a Search Console
-error body failing the run instead of reporting "none", the bearer token never reaching curl's argv,
-a malformed rank file failing the run instead of truncating it, revenue rank never leaking onto a
-non-money site, and the new-queries cap and ordering.
+logic being checked. Covered: revenue rank beating a larger raw decline, both edges of the 5–20
+position band, the missing-rank-file disclosure, the no-attribution guarantee, `--dry-run` leaving
+the vault untouched (including the directory itself), the artifact landing at the declared path, a
+missing credential failing loudly rather than producing an empty report, a malformed data row being
+rejected outright rather than half-read (a short row, an over-long row, and a non-numeric field in
+each of clicks/impressions/position), a Search Console error body failing the run instead of
+reporting "none", the bearer token AND the JWT assertion never reaching curl's argv, a malformed
+rank file failing the run instead of truncating it, revenue rank never leaking onto a non-money
+site (for both the clicks-lost and zero-click findings), the new-queries cap and ordering, and the
+exact comparison window (start/end of both windows) landing in the report header.
+
+A page absent from the prior window is not counted as a fall from zero, but that behavior is
+guarded twice over (`_clicks_lost` skips it both for having no prior row and for a resulting
+non-negative delta) — deleting either guard alone still passes the suite, so treat that pairing as
+behavior-level coverage, not a mutation-pinned line.
 
 ## Known gaps
 
