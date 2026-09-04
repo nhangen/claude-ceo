@@ -353,12 +353,21 @@ _new_queries() {
     # identical, which is how an arm claiming to pin this came to be deleted
     # as vacuous; it is back, and it runs the production caller shape.
     #
-    # End to end this is still belt-and-braces: _render_site's reject ledger
-    # re-reads all four inputs as a bare simple command and trips `set -e`
-    # before the finders run. That stops being true the moment the ledger loop
-    # moves below them, which is why the check stays. The unguarded twin in
-    # _clicks_lost is covered by the same ledger and by its own `set -e`,
-    # since it is not on the left of an `||`.
+    # End to end this is still belt-and-braces, and the reason is worth
+    # stating precisely because an earlier version of this comment got it
+    # wrong twice. _render_site's reject ledger re-reads all four inputs as a
+    # bare simple command and trips `set -e`. It runs AFTER the finder calls,
+    # not before them — the saving property is that it precedes all output, so
+    # a swallowed read aborts the run before anything false is printed. That
+    # holds only while no section prints above the ledger.
+    #
+    # The unguarded twin in _clicks_lost is covered by that ordering and by
+    # nothing else. It is NOT covered by its own `set -e`: errexit is
+    # suppressed throughout a command substitution whose assignment sits on
+    # the left of an `||`, which is the whole point three lines above, and
+    # `_clicks_lost` is invoked in exactly that shape. Measured: with an
+    # unreadable prior window it returns 0 and an empty list, hiding a real
+    # decline. Only the ledger stops that reaching the report.
     seen=$(_valid_rows "$prior" | awk -F'\t' -v q="$q" '$1==q {found=1; exit} END{print (found?1:0)}') || return 1
     [ "$seen" = "1" ] && continue
     printf '%s\t%s\n' "$i" "$q"
