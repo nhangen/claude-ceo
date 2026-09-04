@@ -371,7 +371,11 @@ RELEASE_INNER
 # that can be positively confirmed gone:
 #   1. The PID is dead — kill -0 fails with ESRCH, not EPERM.
 #   2. The row carries no PID and is older than max-age-secs (default 7 days).
-# Prints each dropped row to stdout as REAPED|<branch>|<reason>.
+# Prints each dropped row to stdout as REAPED|<reason>|<branch>. The branch
+# goes last because `IFS='|' read` hands the trailing field the remainder of
+# the line verbatim, and git check-ref-format permits `|` in a branch name --
+# with the branch in the middle, `feat/a|b` parsed as branch `feat/a` and
+# corrupted the reason with the rest.
 #
 # There was a third rule here and it is deliberately gone: "no .ceo-loop/
 # worktree exists for this branch key". It deleted live workers. ceo-loop.sh
@@ -416,6 +420,13 @@ until mkdir "$lock" 2>/dev/null; do
     exit 8
   fi
 done
+# Preserves the status rather than `|| true`. Measured, this is second-line
+# defense for the same failure the ${arr+...} guard below prevents: on bash 3.2
+# a `set -u` abort inside a trap ending in a succeeding command exits 0, so a
+# crashed reap read as a clean sweep. No test pins this line independently, and
+# deliberately so -- the only abort that distinguishes the two forms is the one
+# the guard makes unreachable, and a redirect or command failure propagates
+# identically either way (checked on 3.2 and 5.x). Two defenses, one class.
 trap 'rc=$?; rmdir "$lock" 2>/dev/null; exit $rc' EXIT
 
 # A missing jq would send every row down the malformed-row path below and the
@@ -429,7 +440,11 @@ now_epoch="$(date +%s)"
 surviving_rows=()
 reaped_reports=()
 
-while IFS= read -r row; do
+# `|| [ -n "$row" ]`: read returns non-zero on a final line with no trailing
+# newline, so without it the body never ran for that row -- it was neither
+# reaped nor carried into surviving_rows, and the rename below dropped it.
+# Silent, and it lands on exactly the truncated write that wedges a file.
+while IFS= read -r row || [ -n "$row" ]; do
   [ -n "$row" ] || continue
   # An unparseable row is kept, deliberately: a reaper that deleted rows it
   # could not read would be the worst failure available to it. This is the one
@@ -450,11 +465,23 @@ while IFS= read -r row; do
   # ESRCH from EPERM without reading kill's message -- that message is
   # strerror() and glibc translates it, so matching "No such process" made the
   # check a no-op under a non-English locale on the WSL host.
-  if [ -n "$row_pid" ] \
-     && ! kill -0 "$row_pid" 2>/dev/null \
-     && ! ps -p "$row_pid" -o pid= >/dev/null 2>&1; then
-    reap_reason="pid $row_pid is not running"
-  fi
+  #
+  # The digit check is load-bearing, not defensive. jq's tostring passes through
+  # anything truthy, so a hand-edited `"pid": 1234.0` or `"pid": "abc"` reached
+  # kill and ps as an unparseable token, both failed, and the row was reaped
+  # reporting "is not running" while that process was alive. A pid that cannot
+  # be read is not a dead pid -- it is an unreadable row, and this function keeps
+  # those. ceo_worker_register's `tonumber` constrains what it writes, not what
+  # the reaper reads back off disk.
+  case "$row_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if ! kill -0 "$row_pid" 2>/dev/null \
+         && ! ps -p "$row_pid" -o pid= >/dev/null 2>&1; then
+        reap_reason="pid $row_pid is not running"
+      fi
+      ;;
+  esac
 
   # Candidate 2: no PID to check, and old enough that nothing is coming back.
   if [ -z "$reap_reason" ] && [ -z "$row_pid" ] && [ -n "$row_ts" ]; then
@@ -470,7 +497,7 @@ while IFS= read -r row; do
   fi
 
   if [ -n "$reap_reason" ]; then
-    reaped_reports+=("$row_branch|$reap_reason")
+    reaped_reports+=("$reap_reason|$row_branch")
   else
     surviving_rows+=("$row")
   fi

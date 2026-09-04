@@ -73,11 +73,11 @@ _reap_worker_rows() {
       echo "  WORKER_REAP_FAILED: $sdir (rc=$reap_rc) — $(printf '%s' "$reap_out" | tr '\n' ' ' | cut -c1-160)"
       STALE_STATE_COUNT=$((STALE_STATE_COUNT + 1))
     elif [ -n "$reap_out" ]; then
-      while IFS='|' read -r pfx branch reason; do
+      while IFS='|' read -r pfx reason branch; do
         # Anything that is not a REAPED record is the inner shell talking to
         # stderr; surface it rather than dropping it on the floor.
         if [ "$pfx" != "REAPED" ]; then
-          [ -n "$pfx" ] && echo "  WORKER_REAP_NOTE: $pfx$branch$reason"
+          [ -n "$pfx" ] && echo "  WORKER_REAP_NOTE: $pfx$reason$branch"
           continue
         fi
         echo "  WORKER_REAPED: $branch ($reason)"
