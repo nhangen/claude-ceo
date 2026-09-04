@@ -222,18 +222,28 @@ _rank_of() {
 _sort_key() { local r="$1"; [ "$r" = "0" ] && printf '9999' || printf '%s' "$r"; }
 
 # --- findings -----------------------------------------------------------------
-# _clicks_lost <cur.tsv> <prior.tsv> -> rank_key url cur_clicks prior_clicks delta
+# _clicks_lost <cur.tsv> <prior.tsv> [weighted=1] -> rank_key url cur_clicks prior_clicks delta
 # Emits only real declines. A page absent from the prior window is new, not
 # down, so it is skipped rather than counted as a fall from zero.
+#
+# `weighted` gates the _rank_of call rather than leaving it unconditional: a
+# non-money site's disclosure says "findings are unweighted", but a page URL
+# on that site could still coincidentally match an entry in the (money-site)
+# rank file, and an unconditional call would print a revenue rank the
+# disclosure right above it just said didn't apply.
 _clicks_lost() {
-  local cur="$1" prior="$2" url c p d rk
+  local cur="$1" prior="$2" weighted="${3:-1}" url c p d rk
   while IFS=$'\t' read -r url c _ _ _; do
     [ -n "$url" ] || continue
     p=$(_valid_rows "$prior" | awk -F'\t' -v u="$url" '$1==u {print $2; exit}')
     [ -n "$p" ] || continue
     d=$(awk -v a="$c" -v b="$p" 'BEGIN{printf "%.0f", a-b}')
     [ "$d" -lt 0 ] || continue
-    rk=$(_rank_of "$url") || return 1
+    if [ "$weighted" = 1 ]; then
+      rk=$(_rank_of "$url") || return 1
+    else
+      rk=0
+    fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$c" "$p" "$d"
   done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k5,5n
 }
@@ -251,13 +261,18 @@ _ctr_opportunities() {
 }
 
 # Impressions but no clicks at all — a listing people see and refuse.
+# `weighted` gates _rank_of for the same reason it does in _clicks_lost above.
 _zero_click_pages() {
-  local cur="$1" url c i rk
+  local cur="$1" weighted="${2:-1}" url c i rk
   while IFS=$'\t' read -r url c i _ _; do
     [ -n "$url" ] || continue
     [ "${c%%.*}" -eq 0 ] 2>/dev/null || continue
     awk -v i="$i" 'BEGIN{exit !(i>=50)}' || continue
-    rk=$(_rank_of "$url") || return 1
+    if [ "$weighted" = 1 ]; then
+      rk=$(_rank_of "$url") || return 1
+    else
+      rk=0
+    fi
     printf '%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$i"
   done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k3,3nr
 }
@@ -299,7 +314,7 @@ _render_site() {
 
   printf '### Pages losing clicks\n\n'
   n=0
-  out=$(_clicks_lost "$pc" "$pp") || { echo "ERROR: clicks-lost findings failed for $site" >&2; return 1; }
+  out=$(_clicks_lost "$pc" "$pp" "$weighted") || { echo "ERROR: clicks-lost findings failed for $site" >&2; return 1; }
   if [ -n "$out" ]; then
     while IFS=$'\t' read -r rk url c p d; do
       n=$((n + 1))
@@ -325,7 +340,7 @@ _render_site() {
 
   printf '### Pages with impressions and zero clicks\n\n'
   n=0
-  out=$(_zero_click_pages "$pc") || { echo "ERROR: zero-click findings failed for $site" >&2; return 1; }
+  out=$(_zero_click_pages "$pc" "$weighted") || { echo "ERROR: zero-click findings failed for $site" >&2; return 1; }
   if [ -n "$out" ]; then
     while IFS=$'\t' read -r rk url i; do
       n=$((n + 1))

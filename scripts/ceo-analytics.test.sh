@@ -400,4 +400,36 @@ test_a_malformed_rank_file_fails_the_run_rather_than_truncating_it() {
     "a non-numeric revenue rank must fail the run, not print a partial report"
 }
 
+test_a_non_money_site_never_shows_a_revenue_rank_even_on_a_coincidental_match() {
+  # _rank_of used to be called unconditionally, so a page on a non-money site
+  # that happens to share a URL with an entry in the (money-site) rank file
+  # would print a "revenue rank" suffix right under the disclosure that says
+  # findings here are unweighted — the report would contradict itself in the
+  # same section. Gate the call on `weighted` instead of hoping for no match.
+  _empty_all
+  printf 'https://blog.test/post\t3\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsblogtest cur   page "$(printf 'https://blog.test/post\t3\t200\t0.015\t18')"
+  _fixture httpsblogtest prior page "$(printf 'https://blog.test/post\t30\t210\t0.14\t17')"
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/ignored\t0\t800\t0.0\t11')"
+  _run
+  local blogsec
+  blogsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/blog.test\//,/^## /p')
+  assert_contains "$blogsec" "No commerce on this site" "the section still discloses unweighted"
+  assert_not_contains "$blogsec" "revenue rank" \
+    "no finding in the unweighted section may carry a revenue rank, even on a URL that matches the rank file"
+}
+
+test_a_money_site_still_keeps_its_revenue_rank_alongside_the_gate() {
+  # Companion to the arm above, the other direction: gating on `weighted`
+  # must not also silence ranking on the site it's supposed to apply to.
+  _empty_all
+  printf 'https://shop.test/p/alpha\t1\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  local shopsec
+  shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^## /p')
+  assert_contains "$shopsec" "revenue rank 1" "the money site keeps its rank"
+}
+
 run_tests
