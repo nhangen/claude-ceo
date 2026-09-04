@@ -360,4 +360,158 @@ test_c() { assert_eq a a "passes"; }'
   assert_contains "$CHILD_OUT" "FAILED: 2" "both failures are counted, not just one"
 }
 
+# --- #349: an aborting arm must not kill the loop under a `set -e` caller ---
+#
+# ceo-loop.test.sh, ceo-loop-lib.test.sh, and ceo-cleanup.test.sh all source this
+# harness under `set -euo pipefail`. _run_child's driver above only ever used
+# `set -uo pipefail`, so every existing case in this file — including the abort
+# case above — ran with errexit off and never exercised this. `) || true` on the
+# per-test subshell looks like the fix and is not: bash disables errexit for the
+# *left operand of `||`* itself, and that suppression reaches inside the
+# subshell, so an aborting body's own `set -e` reliance (a bare `false`/nonzero
+# command it expects to stop it) is silently disarmed, and worse, that same `||`
+# on the *outer* run_tests loop trips on the aborting subshell's own nonzero
+# status and kills every remaining test — the abort record prints and nothing
+# after it runs.
+test_a_failing_setup_under_errexit_does_not_kill_the_run() {
+  # The #349 invariant applied to the other two call sites, and they were
+  # missed on the first pass. Before this, a `setup` that returned non-zero
+  # under the suite's own `set -e` killed the loop outright: the first arm
+  # printed, then nothing — no FAILED line, no test count, no summary at all.
+  # That is worse than the bug #349 fixes, because nothing even names the
+  # cause. 34 suites in this repo define setup or teardown and 8 of those run
+  # under `set -e`, so a `grep` with no match as the last statement is enough.
+  _run_child_errexit '
+setup() { [ "${CURRENT_TEST:-}" = "test_b" ] && return 1; return 0; }
+test_a() { assert_eq a a "A"; echo MARK_A; }
+test_b() { assert_eq b b "B"; echo MARK_B; }
+test_c() { assert_eq c c "C"; echo MARK_C; }'
+  assert_contains "$CHILD_OUT" "setup for test_b" \
+    "a failing setup is named rather than silently ending the run"
+  assert_contains "$CHILD_OUT" "MARK_C" \
+    "and every later arm still runs"
+  assert_not_contains "$CHILD_OUT" "All tests passed" \
+    "while the suite still goes red"
+}
+
+test_a_failing_teardown_under_errexit_does_not_kill_the_run() {
+  # Same call site problem on the way out. A teardown ending on a failing
+  # command took the rest of the suite with it and printed no summary.
+  _run_child_errexit '
+teardown() { [ "${CURRENT_TEST:-}" = "test_b" ] && return 1; return 0; }
+test_a() { assert_eq a a "A"; echo MARK_A; }
+test_b() { assert_eq b b "B"; echo MARK_B; }
+test_c() { assert_eq c c "C"; echo MARK_C; }'
+  assert_contains "$CHILD_OUT" "teardown for test_b" \
+    "a failing teardown is named rather than silently ending the run"
+  assert_contains "$CHILD_OUT" "MARK_C" \
+    "and every later arm still runs"
+}
+
+test_a_test_body_reads_eof_rather_than_the_harness_stdin() {
+  # A consequence of running the body as a background job: a non-interactive
+  # shell hands one /dev/null on stdin. Pinned rather than merely documented,
+  # because the alternative it replaced — a foreground body inheriting the
+  # harness's stdin — is what makes a stray `read` hang the whole run, and
+  # nothing else here would notice a move back to it.
+  local suite; suite=$(mktemp)
+  {
+    echo '#!/bin/bash'
+    echo 'set -uo pipefail'
+    echo "source '$HARNESS'"
+    echo 'test_stdin() { local x; x=$(cat); assert_eq "$x" "" "body stdin is EOF"; }'
+    echo 'run_tests'
+  } > "$suite"
+  local out; out=$(echo HELLO | bash "$suite" 2>&1)
+  rm -f "$suite"
+  assert_contains "$out" "All tests passed" \
+    "the body reads EOF, not the string piped into the suite"
+}
+
+_run_child_errexit() {
+  local body="$1"
+  {
+    echo '#!/bin/bash'
+    echo 'set -euo pipefail'
+    echo "source '$HARNESS'"
+    echo "$body"
+    echo 'run_tests'
+  } > "$TMP/child.sh"
+  CHILD_OUT=$(bash "$TMP/child.sh" 2>&1)
+  CHILD_RC=$?
+}
+
+test_349_an_abort_under_errexit_does_not_kill_later_tests() {
+  _run_child_errexit '
+test_a_aborts() { assert_eq a a "before abort"; exit 7; }
+test_b_after() { assert_eq a a "b runs"; echo MARKER_B; }
+test_c_after() { assert_eq a a "c runs"; echo MARKER_C; }'
+  assert_contains "$CHILD_OUT" "MARKER_B" \
+    "test_b_after must run — a killed loop stops after the abort record"
+  assert_contains "$CHILD_OUT" "MARKER_C" \
+    "test_c_after must run too, not just the one right after the abort"
+  assert_eq "$CHILD_RC" "1" "the abort still fails the run"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "only the abort itself is a failure"
+}
+
+# The two arms above pin the loop surviving an *explicit* `exit N` — but `exit`
+# always unwinds immediately regardless of errexit, so they cannot tell the
+# correct fix apart from the naive `) || true` guard the ticket warns against.
+# That guard disables errexit for the *contents* of the subshell too (proven at
+# the top of #349's fix commit), so a body relying on ambient `set -e` to stop
+# it before a dangerous next line — no explicit `exit` — would silently run
+# past the failure instead of aborting. This is the case that distinguishes them.
+test_349_ambient_errexit_inside_the_body_still_aborts_it() {
+  _run_child_errexit '
+test_x() {
+  assert_eq a a "before the failing command"
+  false
+  fail_test "must never run — ambient set -e should have aborted first"
+}'
+  assert_contains "$CHILD_OUT" "aborted or exited with non-zero code" \
+    "the bare false must trip the body'\''s own inherited errexit"
+  assert_not_contains "$CHILD_OUT" "must never run" \
+    "the naive ) || true guard disables errexit inside the subshell and reaches this line"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "counted once, as an abort"
+}
+
+# --- #322: an aborting body must still run the hand-rolled sweep and assertion count ---
+#
+# _record_hand_rolled_fails and the assertion-count write used to be plain
+# statements after "$fn" — code an `exit N` inside the body skips entirely,
+# since `exit` unwinds the subshell immediately. That discarded a bare `FAILS`
+# increment made before the abort, and reported "NO ASSERTIONS RAN" even though
+# a real assertion had run, because the trap that fires on abort never touched
+# ASSERTION_COUNT. Moving both into the EXIT trap runs them on every exit path.
+
+test_322_a_bare_increment_before_an_abort_is_counted_once() {
+  _run_child '
+test_x() { assert_eq a a "ok"; FAILS=$((FAILS + 1)); exit 3; }'
+  # One durable failure from the bare increment, one abort record — not zero
+  # (the increment silently dropped) and not one (either channel alone).
+  assert_contains "$CHILD_OUT" "FAILED: 2" \
+    "the bare increment and the abort record are both counted"
+  assert_not_contains "$CHILD_OUT" "NO ASSERTIONS RAN" \
+    "a real assertion ran before the abort; the sweep must see it"
+}
+
+test_322_a_clean_exit_still_counts_a_bare_increment() {
+  _run_child '
+test_x() { assert_eq a a "ok"; FAILS=$((FAILS + 1)); }'
+  # The non-abort path must keep working once the sweep moves into the trap —
+  # this is the ordinary #310 case, re-pinned here because moving the call site
+  # is exactly the kind of edit that silently breaks the path it did not target.
+  assert_contains "$CHILD_OUT" "FAILED: 1" "a clean-exit bare increment still counts"
+  assert_not_contains "$CHILD_OUT" "NO ASSERTIONS RAN" "and the assertion was seen"
+}
+
+# --- #285: zero discovered tests must not report success ---
+
+test_285_zero_discovered_tests_is_a_failure() {
+  _run_child ''
+  assert_eq "$CHILD_RC" "1" "a suite with no test_* functions must fail, not pass"
+  assert_contains "$CHILD_OUT" "no tests discovered" "and say why"
+  assert_not_contains "$CHILD_OUT" "All tests passed" "never reported as success"
+}
+
 run_tests
