@@ -43,6 +43,7 @@ echo ""
 # --- Process each cloned repo ---
 MERGED_COUNT=0
 REAP_FAILED_COUNT=0
+WORKER_REAPED_COUNT=0
 STALE_STATE_COUNT=0
 ORPHAN_BRANCHES=""
 HAS_REPOS=false
@@ -51,7 +52,8 @@ if [ -f "$REPOS_FILE" ]; then
   if ! head -1 "$REPOS_FILE" | grep -q "Local Path"; then
     echo "WARNING: repos.md header doesn't contain 'Local Path' column — column parsing may be wrong"
   fi
-  while IFS= read -r REPO_PATH; do
+  while IFS='|' read -r REPO_IDENT REPO_PATH; do
+    REPO_IDENT=$(echo "$REPO_IDENT" | xargs)
     REPO_PATH=$(echo "$REPO_PATH" | xargs)
     [ -z "$REPO_PATH" ] && continue
     HAS_REPOS=true
@@ -61,6 +63,7 @@ if [ -f "$REPOS_FILE" ]; then
     fi
 
     echo "REPO: $REPO_PATH"
+    REPO_NAME=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/' | sed 's/.*github.com[:/]\(.*\)/\1/' || echo "unknown")
 
     # Resolve default branch: origin/HEAD -> main -> master.
     #
@@ -113,10 +116,8 @@ if [ -f "$REPOS_FILE" ]; then
 
     if [ -z "$CEO_BRANCHES" ]; then
       echo "  BRANCHES: none"
-      continue
-    fi
-
-    for BRANCH in $CEO_BRANCHES; do
+    else
+      for BRANCH in $CEO_BRANCHES; do
       # Check if branch is merged into default branch (origin or local)
       if git -C "$REPO_PATH" merge-base --is-ancestor "$BRANCH" "origin/$DEFAULT_BRANCH" 2>/dev/null \
          || git -C "$REPO_PATH" merge-base --is-ancestor "$BRANCH" "$DEFAULT_BRANCH" 2>/dev/null; then
@@ -170,7 +171,6 @@ if [ -f "$REPOS_FILE" ]; then
         fi
       else
         # Check if branch has an open PR
-        REPO_NAME=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/' | sed 's/.*github.com[:/]\(.*\)/\1/' || echo "unknown")
         HAS_PR=$(gh pr list --repo "$REPO_NAME" --head "$BRANCH" --state open --limit 1 --json number 2>/dev/null || echo "[]")
 
         # Check last commit date
@@ -188,8 +188,37 @@ if [ -f "$REPOS_FILE" ]; then
         fi
       fi
     done
+    fi
+
+    # Reap wedged worker rows in state directories for this repo
+    candidate_slugs=()
+    [ -n "$REPO_IDENT" ] && candidate_slugs+=("$(printf '%s' "$REPO_IDENT" | tr '/' '-')")
+    candidate_slugs+=("$(basename "$REPO_PATH")")
+    if [ -n "$REPO_NAME" ] && [ "$REPO_NAME" != "unknown" ]; then
+      candidate_slugs+=("$(printf '%s' "$REPO_NAME" | tr '/' '-')")
+    fi
+    checked_sdirs=()
+    for slug in "${candidate_slugs[@]}"; do
+      sdir="$(ceo_loop_state_dir "$slug")"
+      case " ${checked_sdirs[*]:-} " in *" $sdir "*) continue ;; esac
+      checked_sdirs+=("$sdir")
+      [ -f "$sdir/workers.jsonl" ] || continue
+      reap_out=""
+      reap_rc=0
+      reap_out=$(ceo_workers_reap "$sdir" "$REPO_PATH" 2>&1) || reap_rc=$?
+      if [ "$reap_rc" -ne 0 ]; then
+        echo "  WORKER_REAP_FAILED: $sdir"
+        STALE_STATE_COUNT=$((STALE_STATE_COUNT + 1))
+      elif [ -n "$reap_out" ]; then
+        while IFS='|' read -r pfx branch reason; do
+          [ "$pfx" = "REAPED" ] || continue
+          echo "  WORKER_REAPED: $branch ($reason)"
+          WORKER_REAPED_COUNT=$((WORKER_REAPED_COUNT + 1))
+        done <<< "$reap_out"
+      fi
+    done
     echo ""
-  done < <(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---\|No repos" | awk -F'|' '{print $3}')
+  done < <(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---\|No repos" | awk -F'|' '{print $2 "|" $3}')
 fi
 
 if [ "$HAS_REPOS" = false ]; then
@@ -198,6 +227,7 @@ fi
 
 echo "MERGED_TOTAL: $MERGED_COUNT"
 echo "REAP_FAILED: $REAP_FAILED_COUNT"
+echo "WORKER_ROWS_REAPED: $WORKER_REAPED_COUNT"
 echo "STALE_STATE: $STALE_STATE_COUNT"
 
 # --- Sync conflicts ---
@@ -227,7 +257,7 @@ fi
 AI_REASONS=""
 [ -n "$ORPHAN_BRANCHES" ] && AI_REASONS="$AI_REASONS; review orphaned branches and decide whether to propose deletion"
 [ "$REAP_FAILED_COUNT" -gt 0 ] && AI_REASONS="$AI_REASONS; $REAP_FAILED_COUNT merged branch(es) failed to reap (check worktree or local branch lag)"
-[ "$STALE_STATE_COUNT" -gt 0 ] && AI_REASONS="$AI_REASONS; $STALE_STATE_COUNT stale-state warning(s) — see FETCH_FAILED / MARKER_DELETE_FAILED above"
+[ "$STALE_STATE_COUNT" -gt 0 ] && AI_REASONS="$AI_REASONS; $STALE_STATE_COUNT stale-state warning(s) — see FETCH_FAILED / MARKER_DELETE_FAILED / WORKER_REAP_FAILED above"
 
 echo ""
 if [ -n "$AI_REASONS" ]; then

@@ -16,6 +16,9 @@ CEO_VAULT="$TMP/vault"
 export CEO_VAULT
 mkdir -p "$CEO_VAULT/CEO/log"
 
+CEO_LOOP_STATE_ROOT="$TMP/state"
+export CEO_LOOP_STATE_ROOT
+
 mkrepo_cleanup() {
   local name="$1" default_branch="$2"
   local dir="$TMP/repos/$name"
@@ -577,6 +580,95 @@ test_mkclone_cleanup_rejects_duplicate_fixture_name() {
   assert_eq "$(git -C "$repo" rev-parse HEAD)" "$before" \
     "the first fixture's HEAD is unmoved by the refusal"
   assert_eq "$(cat "$repo/base.txt")" "init" "the first fixture's content survives"
+}
+
+test_cleanup_reaps_worker_row_with_dead_pid() {
+  local repo; repo="$(mkrepo_cleanup deadpid main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "deadpid")"
+  mkdir -p "$sdir"
+
+  # Create worktrees for both rows so Candidate 3 does not reap either of them.
+  local bkey_dead; bkey_dead="$(branch_key "ceo/dead-run")"
+  mkdir -p "$repo/.ceo-loop/ceo_dead-run-${bkey_dead:0:12}"
+  local bkey_foreign; bkey_foreign="$(branch_key "ceo/foreign-run")"
+  mkdir -p "$repo/.ceo-loop/ceo_foreign-run-${bkey_foreign:0:12}"
+
+  # Seed a dead PID and a foreign-UID live PID (1).
+  printf '%s\n' \
+    '{"branch":"ceo/dead-run","base":"aaa","pid":99999999,"files":["a.txt"],"ts":1000}' \
+    '{"branch":"ceo/foreign-run","base":"aaa","pid":1,"files":["b.txt"],"ts":1000}' \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKER_REAPED: ceo/dead-run (pid 99999999 dead: No such process)" \
+    "a worker row with a dead PID must be reaped"
+  assert_contains "$out" "WORKER_ROWS_REAPED: 1" "reaped worker count is reported in summary"
+  assert_not_contains "$out" "WORKER_REAPED: ceo/foreign-run" \
+    "a worker row with a live foreign-UID PID (EPERM) must NOT be reaped"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/foreign-run" \
+    "only the dead worker row is removed from workers.jsonl"
+}
+
+test_cleanup_reaps_pidless_worker_row_older_than_threshold() {
+  local repo; repo="$(mkrepo_cleanup pidless main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "pidless")"
+  mkdir -p "$sdir"
+
+  # Create worktrees for both branches so Candidate 3 does not reap them.
+  local bkey_old; bkey_old="$(branch_key "ceo/pidless-old")"
+  mkdir -p "$repo/.ceo-loop/ceo_pidless-old-${bkey_old:0:12}"
+  local bkey_fresh; bkey_fresh="$(branch_key "ceo/pidless-fresh")"
+  mkdir -p "$repo/.ceo-loop/ceo_pidless-fresh-${bkey_fresh:0:12}"
+
+  local now; now="$(date +%s)"
+  local old_ts=$((now - 864000)) # 10 days old (> 7 days)
+  printf '%s\n' \
+    "{\"branch\":\"ceo/pidless-old\",\"base\":\"aaa\",\"files\":[\"a.txt\"],\"ts\":$old_ts}" \
+    "{\"branch\":\"ceo/pidless-fresh\",\"base\":\"aaa\",\"files\":[\"b.txt\"],\"ts\":$now}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKER_REAPED: ceo/pidless-old (pid-less row older than" \
+    "an old pid-less worker row must be reaped"
+  assert_not_contains "$out" "WORKER_REAPED: ceo/pidless-fresh" \
+    "a fresh pid-less worker row must NOT be reaped"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/pidless-fresh" \
+    "only the old pid-less worker row is removed"
+}
+
+test_cleanup_reaps_worker_row_when_no_worktree_exists() {
+  local repo; repo="$(mkrepo_cleanup noworktree main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "noworktree")"
+  mkdir -p "$sdir"
+
+  # Both rows use current shell PID ($$), which is alive, so Candidate 1 does not fire.
+  # Create a worktree for row 2, but not row 1.
+  local bkey_active; bkey_active="$(branch_key "ceo/active-worker")"
+  mkdir -p "$repo/.ceo-loop/ceo_active-worker-${bkey_active:0:12}"
+
+  local now; now="$(date +%s)"
+  local ts=$((now - 120)) # outside 60s startup grace window
+  printf '%s\n' \
+    "{\"branch\":\"ceo/abandoned-worker\",\"base\":\"aaa\",\"pid\":$$,\"files\":[\"a.txt\"],\"ts\":$ts}" \
+    "{\"branch\":\"ceo/active-worker\",\"base\":\"aaa\",\"pid\":$$,\"files\":[\"b.txt\"],\"ts\":$ts}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKER_REAPED: ceo/abandoned-worker (no .ceo-loop worktree for branch key" \
+    "a worker row with no .ceo-loop worktree must be reaped even if PID is alive (recycled PID)"
+  assert_not_contains "$out" "WORKER_REAPED: ceo/active-worker" \
+    "a worker row with an existing .ceo-loop worktree must survive"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/active-worker" \
+    "only the abandoned worker row without a worktree is removed"
 }
 
 run_tests

@@ -326,8 +326,9 @@ fi
 # duplicates (a later release of one duplicate would orphan the other).
 jq -nc --arg b "$CEO_BRANCH" --arg base "$CEO_BASE" \
   --arg pid "$CEO_PID" \
+  --arg ts "${CEO_TS:-$(date +%s)}" \
   --argjson files "$files_json" \
-  '{branch: $b, base: $base, pid: ($pid | tonumber), files: $files}' >> "$tmp"
+  '{branch: $b, base: $base, pid: ($pid | tonumber), files: $files, ts: ($ts | tonumber)}' >> "$tmp"
 # Keep exactly one row per branch: the upsert drops earlier rows for it.
 jq -cs 'sort_by(.branch) | group_by(.branch) | map(last) | .[]' "$tmp" \
   > "$tmp.dedup" && mv "$tmp.dedup" "$tmp"
@@ -364,6 +365,133 @@ jq -c --arg b "$CEO_BRANCH" --arg pid "$CEO_PID" \
   'select((.branch != $b) or ((.pid // -1) | tostring) != $pid)' \
   "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 RELEASE_INNER
+}
+
+# ceo_workers_reap <state-dir> <repo-dir> [max-age-secs] — reaps wedged worker
+# rows under the state lock that can be positively confirmed dead or abandoned:
+#   1. PID is dead (kill -0 fails with "No such process", not EPERM).
+#   2. Pid-less row older than max-age-secs (default 7 days).
+#   3. No .ceo-loop/ worktree exists on disk or in git worktree list for its branch key.
+# Prints dropped rows to stdout as REAPED:<branch>|<reason>.
+ceo_workers_reap() {
+  local dir="$1" repo_dir="$2" max_age="${3:-604800}"
+  local file="$dir/workers.jsonl"
+  [ -f "$file" ] || return 0
+  [ -s "$file" ] || return 0
+
+  CEO_LOCK_DIR="$dir" CEO_REPO_DIR="$repo_dir" CEO_MAX_AGE="$max_age" \
+    CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash <<'REAP_INNER'
+set -euo pipefail
+lock="$CEO_LOCK_DIR/.lock"; waited=0
+until mkdir "$lock" 2>/dev/null; do
+  sleep 0.2; waited=$((waited + 1))
+  if [ "$waited" -ge $((CEO_LOCK_WAIT * 5)) ]; then
+    echo "ceo-lock: state lock at $lock held too long — skipping worker reap" >&2
+    exit 8
+  fi
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+
+file="$CEO_LOCK_DIR/workers.jsonl"
+[ -f "$file" ] || exit 0
+
+now_epoch="$(date +%s)"
+surviving_rows=()
+reaped_reports=()
+
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  if ! echo "$row" | jq -e '(.branch | type == "string") and (.files | type == "array")' >/dev/null 2>&1; then
+    surviving_rows+=("$row")
+    continue
+  fi
+
+  row_branch="$(echo "$row" | jq -r .branch)"
+  row_pid="$(echo "$row" | jq -r 'if .pid then (.pid | tostring) else empty end')"
+  row_ts="$(echo "$row" | jq -r 'if .ts then (.ts | tostring) elif .registered_at then (.registered_at | tostring) else empty end')"
+
+  reap_reason=""
+
+  # Candidate 1: PID is dead (ESRCH, not EPERM)
+  if [ -n "$row_pid" ]; then
+    kill_err="$(kill -0 "$row_pid" 2>&1)" || {
+      case "$kill_err" in
+        *"No such process"*) reap_reason="pid $row_pid dead: No such process" ;;
+      esac
+    }
+  fi
+
+  # Candidate 2: pid-less row AND older than max_age
+  if [ -z "$reap_reason" ] && [ -z "$row_pid" ] && [ -n "$row_ts" ]; then
+    case "$row_ts" in
+      ''|*[!0-9]*) ;;
+      *)
+        age=$((now_epoch - row_ts))
+        if [ "$age" -ge "$CEO_MAX_AGE" ]; then
+          reap_reason="pid-less row older than $((age / 86400))d"
+        fi
+        ;;
+    esac
+  fi
+
+  # Candidate 3: no .ceo-loop/ worktree exists for its branch key
+  if [ -z "$reap_reason" ]; then
+    row_fresh=false
+    if [ -n "$row_ts" ] && [ -n "$row_pid" ]; then
+      case "$row_ts" in
+        ''|*[!0-9]*) ;;
+        *) [ $((now_epoch - row_ts)) -lt 60 ] && row_fresh=true ;;
+      esac
+    fi
+
+    if [ "$row_fresh" = "false" ]; then
+      bkey="$(printf '%s' "$row_branch" | shasum | awk '{print $1}')"
+      bkey_pfx="${bkey:0:12}"
+      sanitized="${row_branch//\//_}"
+      wt_name="${sanitized}-${bkey_pfx}"
+
+      has_wt=false
+      if [ -d "$CEO_REPO_DIR/.ceo-loop/$wt_name" ]; then
+        has_wt=true
+      fi
+      if [ "$has_wt" = "false" ] && [ -d "$CEO_REPO_DIR/.ceo-loop" ]; then
+        for d in "$CEO_REPO_DIR/.ceo-loop/"*"-${bkey_pfx}"; do
+          [ -d "$d" ] && { has_wt=true; break; }
+        done
+      fi
+      if [ "$has_wt" = "false" ]; then
+        while IFS= read -r wt_line; do
+          case "$wt_line" in
+            *"/.ceo-loop/"*"-$bkey_pfx"*) has_wt=true; break ;;
+          esac
+        done < <(git -C "$CEO_REPO_DIR" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')
+      fi
+
+      if [ "$has_wt" = "false" ]; then
+        reap_reason="no .ceo-loop worktree for branch key ($bkey_pfx)"
+      fi
+    fi
+  fi
+
+  if [ -n "$reap_reason" ]; then
+    reaped_reports+=("$row_branch|$reap_reason")
+  else
+    surviving_rows+=("$row")
+  fi
+done < "$file"
+
+tmp="$file.tmp.$$"
+if [ "${#surviving_rows[@]}" -gt 0 ]; then
+  printf '%s\n' "${surviving_rows[@]}" > "$tmp"
+else
+  : > "$tmp"
+fi
+mv "$tmp" "$file"
+
+for rep in "${reaped_reports[@]}"; do
+  echo "REAPED|$rep"
+done
+REAP_INNER
 }
 
 # ceo_base_stale <recorded-base> <current-base> — 0 when equal, 1 when stale.

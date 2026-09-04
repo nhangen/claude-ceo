@@ -248,6 +248,7 @@ test_worker_register_records_pid_and_rejects_in_flight_same_branch() {
   mkdir -p "$dir"
   ceo_worker_register "$dir" "nh/b1" "base1" "f1.txt"
   assert_eq "$(jq -r .pid "$dir/workers.jsonl")" "$$" "worker row records process PID"
+  assert_eq "$([ "$(jq -r .ts "$dir/workers.jsonl")" -gt 0 ] && echo ok)" "ok" "worker row records numeric timestamp"
 
   local out rc=0
   out=$(CEO_PID="$PPID" ceo_worker_register "$dir" "nh/b1" "base1" "f2.txt" 2>&1) || rc=$?
