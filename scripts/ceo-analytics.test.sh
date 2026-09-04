@@ -435,6 +435,44 @@ PROBE
     "an unreadable prior window must fail, not read as 'this query is new'"
 }
 
+test_a_row_with_an_empty_key_field_is_rejected_not_shifted() {
+  # The last live instance of this file's recurring bug, and the one the
+  # consecutive-tab fix did not cover. Tab is IFS whitespace even when IFS is
+  # tab, so a LEADING tab is stripped rather than delimited: a row whose key
+  # is empty has NF==5 and four numeric metrics, so it passed _valid_rows as
+  # good, and every consumer then read clicks as the key and CTR as
+  # impressions. The report printed a 500-clicks row as "500 impressions", at
+  # exit 0, with no reject and no banner.
+  #
+  # _gsc_parse_body emits this shape for a Search Console row whose keys array
+  # is empty or absent, so it is a live API shape rather than a contrived one.
+  _empty_all
+  _fixture httpsshoptest cur query "$(printf '\t500\t0.01\t7\t9')"
+  _run
+  assert_eq "$RC" "1" \
+    "an all-empty-key input is every row rejected, which must fail the run"
+  assert_not_contains "$OUT" "500" \
+    "and a clicks figure is never printed as a query or an impression count"
+}
+
+test_a_truncated_new_query_list_says_how_many_it_dropped() {
+  # The cap was the one omission in this file with no disclosure, while every
+  # other dropped row earns a banner. Three of the four sections are
+  # untruncated, so a reader had no way to tell this list was short: 50 new
+  # queries rendered as exactly 10 bullets at exit 0, with nothing saying 40
+  # were dropped.
+  _empty_all
+  local rows="" j
+  for j in $(seq 1 50); do
+    rows="$rows$(printf 'q%02d\t1\t%d\t0.01\t9\n' "$j" $((100 + j)))"$'\n'
+  done
+  _fixture httpsshoptest cur query "$(printf '%s' "$rows")"
+  _run
+  assert_eq "$RC" "0" "fifty new queries is a normal week, not a failure"
+  assert_contains "$OUT" "50 new queries this week; the 10 with the most impressions are listed" \
+    "the report says how many it dropped rather than silently showing ten"
+}
+
 # _source_analytics <fn> [args...] — call an internal function of the real
 # script in a subshell, sourced rather than executed. A subshell keeps
 # `set -euo pipefail`, the EXIT trap, and the top-level config load out of the

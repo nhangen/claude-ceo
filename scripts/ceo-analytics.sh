@@ -213,6 +213,16 @@ _valid_rows() {
   awk -F'\t' -v f="$file" '
     NF == 0 { next }
     NF != 5 { bad++; next }
+    # Field 1 needs its own check. Tab is IFS whitespace even when IFS is set
+    # to tab, so a LEADING tab is stripped rather than delimited: a row whose
+    # key is empty has NF==5 and four numeric metrics, passes as good, and
+    # then every consumer read shifts all five fields left. Measured: a row
+    # holding 500 clicks and 0.01 impressions printed as 500 impressions, at
+    # exit 0 with no reject and no banner. _gsc_parse_body emits that shape
+    # for a Search Console row with an empty or absent keys array. The
+    # consecutive-tab case is caught by the numeric checks below because the
+    # shifted-in field comes back empty; a leading tab is not.
+    $1 == "" { bad++; next }
     $2 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
     $3 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
     $4 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
@@ -318,7 +328,8 @@ _zero_click_pages() {
 }
 
 _new_queries() {
-  local cur="$1" prior="$2" q i seen
+  local cur="$1" prior="$2" q i seen tmp_all
+  tmp_all=$(mktemp)
   while IFS=$'\t' read -r q _ i _ _; do
     [ -n "$q" ] || continue
     # Exact field match, matching _clicks_lost's idiom above. `grep -qF` is
@@ -351,7 +362,23 @@ _new_queries() {
     seen=$(_valid_rows "$prior" | awk -F'\t' -v q="$q" '$1==q {found=1; exit} END{print (found?1:0)}') || return 1
     [ "$seen" = "1" ] && continue
     printf '%s\t%s\n' "$i" "$q"
-  done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1nr | head -10
+  done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1nr > "$tmp_all" || {
+    # The status check is explicit for the same reason the `seen` probe above
+    # carries one: this function is invoked as `out=$(_new_queries ...) || {}`,
+    # which suppresses errexit inside the substitution. Without it the TOTAL
+    # line below would still print after a failed read, turning a hard failure
+    # into a report saying zero new queries.
+    rm -f "$tmp_all"; return 1
+  }
+  # The cap is the one omission in this file that had no banner, while every
+  # other dropped row earns one. Three of the four sections are untruncated,
+  # so a reader has no way to tell this list is short: 50 new queries rendered
+  # as exactly 10 bullets at exit 0 with nothing saying 40 were dropped.
+  # Report the true total alongside the capped list rather than dropping the
+  # cap, since an unbounded list is what the cap exists to prevent.
+  printf 'TOTAL\t%s\n' "$(wc -l < "$tmp_all" | tr -d ' ')"
+  head -10 "$tmp_all"
+  rm -f "$tmp_all"
 }
 
 # --- report -------------------------------------------------------------------
@@ -488,11 +515,17 @@ _render_site() {
       "$rej_prior_q"
   fi
   n=0
+  local new_total=0
   if [ -n "$out_new" ]; then
     while IFS=$'\t' read -r i q; do
+      if [ "$i" = "TOTAL" ]; then new_total="$q"; continue; fi
       n=$((n + 1))
       printf -- '- `%s` — %s impressions\n' "$q" "$i"
     done <<< "$out_new"
+  fi
+  if [ "$new_total" -gt "$n" ] 2>/dev/null; then
+    printf -- '\n(%s new queries this week; the %s with the most impressions are listed.)\n' \
+      "$new_total" "$n"
   fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
@@ -540,7 +573,7 @@ main() {
     done < <(printf '%s,' "$SITES")
   } > "$tmp/report.md"
 
-  # ceo-cron.sh (:1558) exports CEO_RUNNER_OUTCOME_FILE so a script-runner
+  # ceo-cron.sh (:1559) exports CEO_RUNNER_OUTCOME_FILE so a script-runner
   # playbook can say more than exit-0-success. A degraded run (rows rejected,
   # disclosed in the report above but not fatal) still exits 0 — a discarded
   # read is disclosed, never promoted to a failure — but it is not a clean
@@ -553,6 +586,13 @@ main() {
   # and its test both claimed a consumer that does not exist, and the signal
   # went nowhere. `fired` is the channel's existing word for "this tick did
   # real work worth surfacing", which is exactly what a degraded run is.
+  #
+  # Be clear about what this buys today: the per-trigger default at
+  # ceo-cron.sh:258-261 is already SUCCESS_NOTIFY=1 for every playbook except
+  # disk-monitor, so a degraded run currently notifies exactly as a clean one
+  # does. Writing `fired` states the outcome in the channel's own vocabulary
+  # rather than a word nothing matches; it does not, on its own, make anyone
+  # look. Telling the two apart needs a third arm in that `case`.
   if [ "$_SITE_DEGRADED" = 1 ] && [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
     printf 'fired' > "$CEO_RUNNER_OUTCOME_FILE"
   fi
