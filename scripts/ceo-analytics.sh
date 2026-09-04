@@ -199,11 +199,24 @@ _valid_rows() {
 
 # --- ranking ------------------------------------------------------------------
 # Rank of the page a finding points at. 0 = unranked (never sold, or no rank
-# file). Lower is better, so unranked sorts last via the 9999 substitution.
+# file, or present but not in it). Lower is better, so unranked sorts last via
+# the 9999 substitution. A rank file that HAS an entry for this url but a
+# garbage rank column is a distinct, third case: not "unranked", a data
+# problem, and it must fail rather than return 0 and look unranked.
 _rank_of() {
-  local url="$1"
+  local url="$1" val
   [ -f "$RANK_FILE" ] || { printf '0'; return 0; }
-  awk -F'\t' -v u="$url" '$1==u {print $2; found=1; exit} END{if(!found) print 0}' "$RANK_FILE"
+  val=$(awk -F'\t' -v u="$url" '$1==u {print $2; found=1; exit} END{if(!found) print 0}' "$RANK_FILE") || {
+    echo "ERROR: failed to read revenue rank file $RANK_FILE" >&2
+    return 1
+  }
+  case "$val" in
+    ''|*[!0-9]*)
+      echo "ERROR: non-numeric revenue rank '$val' for $url in $RANK_FILE" >&2
+      return 1
+      ;;
+  esac
+  printf '%s' "$val"
 }
 
 _sort_key() { local r="$1"; [ "$r" = "0" ] && printf '9999' || printf '%s' "$r"; }
@@ -220,7 +233,7 @@ _clicks_lost() {
     [ -n "$p" ] || continue
     d=$(awk -v a="$c" -v b="$p" 'BEGIN{printf "%.0f", a-b}')
     [ "$d" -lt 0 ] || continue
-    rk=$(_rank_of "$url")
+    rk=$(_rank_of "$url") || return 1
     printf '%s\t%s\t%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$c" "$p" "$d"
   done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k5,5n
 }
@@ -244,7 +257,7 @@ _zero_click_pages() {
     [ -n "$url" ] || continue
     [ "${c%%.*}" -eq 0 ] 2>/dev/null || continue
     awk -v i="$i" 'BEGIN{exit !(i>=50)}' || continue
-    rk=$(_rank_of "$url")
+    rk=$(_rank_of "$url") || return 1
     printf '%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$i"
   done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k3,3nr
 }
@@ -263,10 +276,17 @@ _new_queries() {
 }
 
 # --- report -------------------------------------------------------------------
+# Each finder's output is captured into a variable and its exit status is
+# checked explicitly, rather than consumed with `while ... done < <(finder)`.
+# A process-substitution consumer never sees the substituted command's exit
+# status — bash simply discards it — so a finder that fails partway (e.g.
+# _rank_of hitting a malformed rank file) used to have its own internal
+# `set -e`/pipefail failure swallowed here, and the report printed whatever
+# partial output had already been produced as if it were complete.
 _render_site() {
   local site="$1" cur_end="$2" cur_start="$3" prior_end="$4" prior_start="$5"
   local pc="$6" pp="$7" qc="$8" qp="$9"
-  local weighted=0 n
+  local weighted=0 n out
   [ "$site" = "$MONEY_SITE" ] && weighted=1
 
   printf '## %s\n\n' "$site"
@@ -279,40 +299,52 @@ _render_site() {
 
   printf '### Pages losing clicks\n\n'
   n=0
-  while IFS=$'\t' read -r rk url c p d; do
-    n=$((n + 1))
-    printf -- '- %s — %s clicks (was %s, %s)%s\n' "$url" "$c" "$p" "$d" \
-      "$([ "$rk" != 9999 ] && printf ' — revenue rank %s' "$rk")"
-  done < <(_clicks_lost "$pc" "$pp")
+  out=$(_clicks_lost "$pc" "$pp") || { echo "ERROR: clicks-lost findings failed for $site" >&2; return 1; }
+  if [ -n "$out" ]; then
+    while IFS=$'\t' read -r rk url c p d; do
+      n=$((n + 1))
+      printf -- '- %s — %s clicks (was %s, %s)%s\n' "$url" "$c" "$p" "$d" \
+        "$([ "$rk" != 9999 ] && printf ' — revenue rank %s' "$rk")"
+    done <<< "$out"
+  fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 
   printf '### Title/meta opportunities (position 5-20, weak click rate)\n\n'
   n=0
-  while IFS=$'\t' read -r i q c ctr pos; do
-    n=$((n + 1))
-    printf -- '- `%s` — position %.1f, %s impressions, %s clicks, CTR %.2f%%\n' \
-      "$q" "$pos" "$i" "$c" "$(awk -v c="$ctr" 'BEGIN{print c*100}')"
-  done < <(_ctr_opportunities "$qc")
+  out=$(_ctr_opportunities "$qc") || { echo "ERROR: CTR-opportunity findings failed for $site" >&2; return 1; }
+  if [ -n "$out" ]; then
+    while IFS=$'\t' read -r i q c ctr pos; do
+      n=$((n + 1))
+      printf -- '- `%s` — position %.1f, %s impressions, %s clicks, CTR %.2f%%\n' \
+        "$q" "$pos" "$i" "$c" "$(awk -v c="$ctr" 'BEGIN{print c*100}')"
+    done <<< "$out"
+  fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 
   printf '### Pages with impressions and zero clicks\n\n'
   n=0
-  while IFS=$'\t' read -r rk url i; do
-    n=$((n + 1))
-    printf -- '- %s — %s impressions, 0 clicks%s\n' "$url" "$i" \
-      "$([ "$rk" != 9999 ] && printf ' — revenue rank %s' "$rk")"
-  done < <(_zero_click_pages "$pc")
+  out=$(_zero_click_pages "$pc") || { echo "ERROR: zero-click findings failed for $site" >&2; return 1; }
+  if [ -n "$out" ]; then
+    while IFS=$'\t' read -r rk url i; do
+      n=$((n + 1))
+      printf -- '- %s — %s impressions, 0 clicks%s\n' "$url" "$i" \
+        "$([ "$rk" != 9999 ] && printf ' — revenue rank %s' "$rk")"
+    done <<< "$out"
+  fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 
   printf '### New queries this week, by impressions\n\n'
   n=0
-  while IFS=$'\t' read -r i q; do
-    n=$((n + 1))
-    printf -- '- `%s` — %s impressions\n' "$q" "$i"
-  done < <(_new_queries "$qc" "$qp")
+  out=$(_new_queries "$qc" "$qp") || { echo "ERROR: new-query findings failed for $site" >&2; return 1; }
+  if [ -n "$out" ]; then
+    while IFS=$'\t' read -r i q; do
+      n=$((n + 1))
+      printf -- '- `%s` — %s impressions\n' "$q" "$i"
+    done <<< "$out"
+  fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 }

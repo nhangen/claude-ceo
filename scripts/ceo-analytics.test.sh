@@ -384,4 +384,20 @@ test_the_bearer_token_never_reaches_curls_argv() {
     "the token is present somewhere (in the config content) — not simply lost"
 }
 
+test_a_malformed_rank_file_fails_the_run_rather_than_truncating_it() {
+  # _rank_of returning 0 is also its "unranked" answer, so a rank file that
+  # HAS an entry for this url but a garbage rank column must not read the
+  # same as "unranked" or "no rank file" — and the failure must actually
+  # reach the caller: `while ... done < <(finder)` discards a process
+  # substitution's exit status, so a finder that fails partway used to leave
+  # the report silently short instead of failing the run.
+  _empty_all
+  printf 'https://shop.test/p/alpha\tNaN\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  assert_eq "$([ "$RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a non-numeric revenue rank must fail the run, not print a partial report"
+}
+
 run_tests
