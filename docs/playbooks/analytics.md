@@ -96,7 +96,8 @@ Verify without credentials or a network call:
 CEO_ANALYTICS_FIXTURE_DIR=/path/to/fixtures scripts/ceo-analytics.sh --dry-run
 ```
 
-`--dry-run` prints the report to stdout and writes nothing to the vault.
+`--dry-run` prints the report to stdout and writes nothing to the vault — it doesn't even
+create the `reports/analytics/` directory.
 
 ## Scheduling
 
@@ -113,12 +114,16 @@ and the thresholds have proven quiet.
 
 ## Tests
 
-`scripts/ceo-analytics.test.sh` — 15 tests. The fixture seam sits at `_gsc_query`, so the ranking,
+`scripts/ceo-analytics.test.sh` — 34 tests. The fixture seam sits at `_gsc_query`, so the ranking,
 delta, threshold and rendering logic under test is the same code production runs; nothing stubs the
 logic being checked. Covered: revenue rank beating a larger raw decline, a new page not counted as a
 fall from zero, both edges of the 5–20 position band, the missing-rank-file disclosure, the
-no-attribution guarantee, `--dry-run` leaving the vault untouched, the artifact landing at the
-declared path, and a missing credential failing loudly rather than producing an empty report.
+no-attribution guarantee, `--dry-run` leaving the vault untouched (including the directory itself),
+the artifact landing at the declared path, a missing credential failing loudly rather than producing
+an empty report, a malformed data row being rejected outright rather than half-read, a Search Console
+error body failing the run instead of reporting "none", the bearer token never reaching curl's argv,
+a malformed rank file failing the run instead of truncating it, revenue rank never leaking onto a
+non-money site, and the new-queries cap and ordering.
 
 ## Known gaps
 

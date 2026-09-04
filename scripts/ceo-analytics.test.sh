@@ -217,7 +217,7 @@ test_a_real_run_writes_the_declared_artifact_path() {
   OUT=$(bash "$ANALYTICS" 2>/dev/null); RC=$?
   assert_eq "$RC" "0" "the run succeeds"
   assert_file_exists "$CEO_VAULT/CEO/reports/analytics/$CEO_ANALYTICS_TODAY.md" \
-    "written where the playbook's artifact: field declares (ceo doctor cross-checks this)"
+    "written where the playbook's artifact: field declares (the playbook is status: draft, so ceo doctor does not cross-check this yet)"
 }
 
 test_the_report_carries_frontmatter() {
