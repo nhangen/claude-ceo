@@ -18,6 +18,21 @@ test_test_all_sweeps_all_registered_playbooks() {
 }
 
 
+# The test registry must hold only the fixtures an arm created. `ceo playbook
+# scan` also scans $CEO_REPO_PLAYBOOK_DIR, so without the harness isolating that
+# to an empty dir every scan pulls in the production docs/playbooks tree and each
+# --test-all arm fans out over the lot (#358). That leak used to be observable
+# only as a >600s hang caught by the shared CI job timeout, which names neither
+# the suite nor the cause; the registry itself shows it in under a second.
+test_scan_does_not_leak_repo_playbooks_into_the_test_registry() {
+  _register_pb_sched iso-only "3 9 * * *"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local names
+  names=$(jq -r '[.playbooks[].name] | sort | join(",")' "$REGISTRY_FILE" 2>/dev/null)
+  assert_eq "$names" "iso-only" "registry must hold only this arm's fixture, not the repo playbooks (#358)"
+}
+
+
 # --test-all implies dry-run: no playbook may leave a real side effect —
 # no .last-run stamp, no cron-runs.log append, and no notify/Discord dispatch
 # (the dry-run chokepoints short-circuit before ceo-notify.sh).
@@ -128,7 +143,9 @@ test_depth_requires_dry_run_or_test_all() {
 test_test_all_preflight_dependency_failure_is_failed_not_skip() {
   _register_pb_sched ta-dep "5 9 * * *" has_prs_to_review
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  # No gh on PATH in tests → has_prs_to_review records a failure and returns 1.
+  # The stubbed gh exits non-zero on `auth status` (see ceo-cron-test-common.sh),
+  # so has_prs_to_review records a failure and returns 1. Before that stub this
+  # arm depended on the host's real gh auth state.
   bash "$CRON" --test-all >/dev/null 2>&1 || true
   local body; body=$(cat "$(_test_all_report)" 2>/dev/null)
   assert_contains "$body" "ta-dep | FAILED" "a preflight dependency failure must classify as FAILED"
