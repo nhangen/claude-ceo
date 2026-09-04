@@ -312,11 +312,14 @@ test_a_reject_in_the_prior_query_window_marks_the_new_query_section_unverified()
   # the whole point: the all-rejected case already fails the run, so this
   # partial case is the only one that can still reach the renderer.
   _empty_all
-  _fixture httpsshoptest prior query "$(printf 'alpha\t5\t400\t\t8\nbeta\t3\t200\t0.015\t9')"
+  #
+  # Two malformed prior rows, and the count is asserted: matching the sentence
+  # alone passes with the number hardcoded, and the number is the disclosure.
+  _fixture httpsshoptest prior query "$(printf 'alpha\t5\t400\t\t8\ngamma\t1\t50\t\t11\nbeta\t3\t200\t0.015\t9')"
   _fixture httpsshoptest cur   query "$(printf 'alpha\t9\t100\t0.09\t6\nbeta\t4\t150\t0.026\t9')"
   _run
-  assert_contains "$OUT" "prior query window were malformed" \
-    "a reject in the prior query window is disclosed on the new-query section itself"
+  assert_contains "$OUT" "2 row(s) of the prior query window were malformed" \
+    "the note says how many prior rows were dropped, not merely that some were"
   assert_contains "$OUT" "Treat this section as unverified" \
     "the note says the listed queries may be wrong, not merely missing"
 }
@@ -562,16 +565,22 @@ test_a_partially_rejected_input_discloses_the_reject_count() {
   # not the "every row rejected" case), but the report must say so above the
   # sections rather than silently rendering as if nothing were dropped.
   _empty_all
+  #
+  # TWO malformed rows, not one, and the count is asserted. An arm that only
+  # matches "rejected as malformed" passes with the count hardcoded to any
+  # constant, which is the message-not-the-harm shape this suite keeps
+  # producing: the banner's whole job is the number.
   _fixture httpsshoptest cur page \
     "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')" \
-    "$(printf 'https://shop.test/p/broken\t\t500\t0.01\t7')"
+    "$(printf 'https://shop.test/p/broken\t\t500\t0.01\t7')" \
+    "$(printf 'https://shop.test/p/short\t5\t100')"
   _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
   _run
-  assert_eq "$RC" "0" "one good row alongside one bad one is not a fatal reject"
+  assert_eq "$RC" "0" "one good row alongside two bad ones is not a fatal reject"
   local shopsec
   shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^### Pages losing/p')
-  assert_contains "$shopsec" "rejected as malformed" \
-    "the site banner discloses that some input was dropped"
+  assert_contains "$shopsec" "2 row(s) rejected as malformed" \
+    "the banner discloses how many rows were dropped, not merely that some were"
 }
 
 test_an_empty_input_is_a_quiet_week_not_a_reject() {
@@ -582,31 +591,6 @@ test_an_empty_input_is_a_quiet_week_not_a_reject() {
   assert_eq "$RC" "0" "an empty week is not a failure"
   assert_not_contains "$OUT" "rejected as malformed" \
     "an empty input never triggers the reject banner — it dropped nothing"
-}
-
-test_an_unreadable_prior_window_fails_new_queries_rather_than_fabricating_one() {
-  # R2: `_valid_rows "$prior"` failing outright (not merely rejecting a row)
-  # used to be swallowed by `... && continue`, so a query legitimately absent
-  # from an UNREADABLE prior window was reported as new — the worst direction
-  # of this bug, since a fabricated new query reads as a real signal instead
-  # of an obviously empty section.
-  #
-  # Called directly (via _source_analytics), not through a full `_run`:
-  # `_render_site`'s own reject-ledger loop (R1) also touches every one of a
-  # site's four input files unconditionally and would independently fail the
-  # whole run on this same unreadable file, which would make a full-report
-  # assertion pass even with the R2 fix reverted. Calling `_new_queries`
-  # directly isolates the one code path this arm exists to pin.
-  local cur; cur=$(mktemp)
-  printf 'alpha\t5\t100\t0.05\t8\n' > "$cur"
-  local out rc
-  out=$(_source_analytics _new_queries "$cur" "/nonexistent/prior.tsv" 2>/dev/null)
-  rc=$?
-  rm -f "$cur"
-  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
-    "an unreadable prior window must fail rather than read as 'not found'"
-  assert_not_contains "$out" "alpha" \
-    "and must never fabricate the current query as new along the way"
 }
 
 # --- R3: the unranked disclosure must reflect what happened, not the file's mere existence ---

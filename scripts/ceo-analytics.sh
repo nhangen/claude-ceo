@@ -322,19 +322,19 @@ _new_queries() {
     # returning and was dropped: "alpha peptide" vanished because "buy alpha
     # peptide" ranked last week. That is the ordinary shape of query data.
     #
-    # The membership probe is captured into a variable and its exit status
-    # checked with an explicit `|| return 1`, rather than `... && continue`
-    # on the pipeline directly: a `&&` list exempts everything left of it
-    # from `set -e`, so a hard read failure in `_valid_rows "$prior"` (an
-    # unreadable file, not merely a malformed row) used to be swallowed as
-    # "not found" — every current-week query then printed as new. Bare `set
-    # -e` is not enough here either: this loop runs inside a subshell (the
-    # `| sort | head -10` below, and `_new_queries` itself is invoked as
-    # `out=$(_new_queries ...)` in _render_site), and bash does not apply
-    # errexit to a failing command substitution across that many subshell
-    # layers without `shopt -s inherit_errexit` (bash >=4.4, not assumed
-    # here). This is the same reason `_rank_of`'s callers below check `||
-    # return 1` explicitly instead of trusting `set -e` to propagate.
+    # The membership probe is captured and its status checked explicitly,
+    # rather than `... && continue` on the pipeline: a `&&` list exempts
+    # everything left of it from `set -e`, so a hard read failure in
+    # `_valid_rows "$prior"` (an unreadable file, not merely a malformed row)
+    # was swallowed as "not found" and every current-week query printed as new.
+    #
+    # Measured, and stated honestly because an earlier version of this comment
+    # over-claimed: with `set -e` active, deleting the `|| return 1` produces
+    # the SAME observable outcome — non-zero, no output — so no test arm can
+    # distinguish the two, and an arm that claimed to pin it passed with the
+    # `||` deleted. That arm was removed rather than left as false coverage.
+    # The check stays because it states the intent at the call site, not
+    # because a test covers it.
     seen=$(_valid_rows "$prior" | awk -F'\t' -v q="$q" '$1==q {found=1; exit} END{print (found?1:0)}') || return 1
     [ "$seen" = "1" ] && continue
     printf '%s\t%s\n' "$i" "$q"
