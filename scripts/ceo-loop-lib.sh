@@ -326,8 +326,9 @@ fi
 # duplicates (a later release of one duplicate would orphan the other).
 jq -nc --arg b "$CEO_BRANCH" --arg base "$CEO_BASE" \
   --arg pid "$CEO_PID" \
+  --arg ts "${CEO_TS:-$(date +%s)}" \
   --argjson files "$files_json" \
-  '{branch: $b, base: $base, pid: ($pid | tonumber), files: $files}' >> "$tmp"
+  '{branch: $b, base: $base, pid: ($pid | tonumber), files: $files, ts: ($ts | tonumber)}' >> "$tmp"
 # Keep exactly one row per branch: the upsert drops earlier rows for it.
 jq -cs 'sort_by(.branch) | group_by(.branch) | map(last) | .[]' "$tmp" \
   > "$tmp.dedup" && mv "$tmp.dedup" "$tmp"
@@ -364,6 +365,161 @@ jq -c --arg b "$CEO_BRANCH" --arg pid "$CEO_PID" \
   'select((.branch != $b) or ((.pid // -1) | tostring) != $pid)' \
   "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 RELEASE_INNER
+}
+
+# ceo_workers_reap <state-dir> [max-age-secs] — drops rows under the state lock
+# that can be positively confirmed gone:
+#   1. The PID is dead — kill -0 fails with ESRCH, not EPERM.
+#   2. The row carries no PID and is older than max-age-secs (default 7 days).
+# Prints each dropped row to stdout as REAPED|<reason>|<branch>. The branch
+# goes last because `IFS='|' read` hands the trailing field the remainder of
+# the line verbatim, and git check-ref-format permits `|` in a branch name --
+# with the branch in the middle, `feat/a|b` parsed as branch `feat/a` and
+# corrupted the reason with the rest.
+#
+# There was a third rule here and it is deliberately gone: "no .ceo-loop/
+# worktree exists for this branch key". It deleted live workers. ceo-loop.sh
+# registers the row (:241) well before it creates the worktree (:395), and
+# between those sits a teardown that can run `worktree remove --force --force`,
+# `rm -rf` and `branch -D`; the 60-second grace guarding that window is a wall
+# clock the worker does not control, and every row written before the `ts` field
+# existed had no grace at all. Measured: a row whose PID was a running process,
+# registered 61s earlier, was reaped while the process kept running. The row is
+# what reserves the branch and its files, so losing it lets the next loop read
+# the live worker's worktree as its own leftover and rm -rf it.
+#
+# The rule it was reaching for is a recycled PID — alive, but belonging to some
+# unrelated process. That case is NOT handled here, and it is the one #355
+# names. It cannot be settled by asking whether a worktree exists, because
+# ceo_loop_cleanup leaves the worktree standing for inspection; it needs an age
+# bound on a pid-bearing row, which needs a definition of "too old to be real"
+# that nobody has agreed yet. Absent that, this reaps only what it can prove.
+#
+# No repo directory is consulted. Both surviving rules are repo-independent (a
+# dead PID is dead whoever asks), and the state root is host-local
+# (~/.local/state/ceo-loop), so there is no cross-host PID ambiguity. That is
+# what makes ceo-cleanup.sh's slug guessing safe here: the worst case is
+# reaping another repo's genuinely dead row.
+ceo_workers_reap() {
+  local dir="$1" max_age="${2:-604800}"
+  local file="$dir/workers.jsonl"
+  [ -f "$file" ] || return 0
+  [ -s "$file" ] || return 0
+
+  CEO_LOCK_DIR="$dir" CEO_MAX_AGE="$max_age" \
+    CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" "${BASH:-bash}" <<'REAP_INNER'
+set -euo pipefail
+# Preserve the real exit status across the trap. A bare `|| true` here lets a
+# `set -u` abort exit 0 on bash 3.2, which is /bin/bash on macOS -- the caller
+# then reads a crashed reap as a clean one.
+lock="$CEO_LOCK_DIR/.lock"; waited=0
+until mkdir "$lock" 2>/dev/null; do
+  sleep 0.2; waited=$((waited + 1))
+  if [ "$waited" -ge $((CEO_LOCK_WAIT * 5)) ]; then
+    echo "ceo-lock: state lock at $lock held too long — skipping worker reap" >&2
+    exit 8
+  fi
+done
+# Preserves the status rather than `|| true`. Measured, this is second-line
+# defense for the same failure the ${arr+...} guard below prevents: on bash 3.2
+# a `set -u` abort inside a trap ending in a succeeding command exits 0, so a
+# crashed reap read as a clean sweep. No test pins this line independently, and
+# deliberately so -- the only abort that distinguishes the two forms is the one
+# the guard makes unreachable, and a redirect or command failure propagates
+# identically either way (checked on 3.2 and 5.x). Two defenses, one class.
+trap 'rc=$?; rmdir "$lock" 2>/dev/null; exit $rc' EXIT
+
+# A missing jq would send every row down the malformed-row path below and the
+# run would report a clean sweep having examined nothing. Probe once, loudly.
+command -v jq >/dev/null 2>&1 || { echo "ceo-workers: jq not found — refusing to reap" >&2; exit 9; }
+
+file="$CEO_LOCK_DIR/workers.jsonl"
+[ -f "$file" ] || exit 0
+
+now_epoch="$(date +%s)"
+surviving_rows=()
+reaped_reports=()
+
+# `|| [ -n "$row" ]`: read returns non-zero on a final line with no trailing
+# newline, so without it the body never ran for that row -- it was neither
+# reaped nor carried into surviving_rows, and the rename below dropped it.
+# Silent, and it lands on exactly the truncated write that wedges a file.
+while IFS= read -r row || [ -n "$row" ]; do
+  [ -n "$row" ] || continue
+  # An unparseable row is kept, deliberately: a reaper that deleted rows it
+  # could not read would be the worst failure available to it. This is the one
+  # place it diverges from ceo_worker_register, which hard-errors on the same
+  # shape -- a gate refusing to run is safe, a reaper refusing to think is not.
+  if ! echo "$row" | jq -e '(.branch | type == "string") and (.files | type == "array")' >/dev/null 2>&1; then
+    surviving_rows+=("$row")
+    continue
+  fi
+
+  row_branch="$(echo "$row" | jq -r .branch)"
+  row_pid="$(echo "$row" | jq -r 'if .pid then (.pid | tostring) else empty end')"
+  row_ts="$(echo "$row" | jq -r 'if .ts then (.ts | tostring) else empty end')"
+
+  reap_reason=""
+
+  # Candidate 1: the PID is gone. `ps -p` answers for any UID, so it separates
+  # ESRCH from EPERM without reading kill's message -- that message is
+  # strerror() and glibc translates it, so matching "No such process" made the
+  # check a no-op under a non-English locale on the WSL host.
+  #
+  # The digit check is load-bearing, not defensive. jq's tostring passes through
+  # anything truthy, so a hand-edited `"pid": 1234.0` or `"pid": "abc"` reached
+  # kill and ps as an unparseable token, both failed, and the row was reaped
+  # reporting "is not running" while that process was alive. A pid that cannot
+  # be read is not a dead pid -- it is an unreadable row, and this function keeps
+  # those. ceo_worker_register's `tonumber` constrains what it writes, not what
+  # the reaper reads back off disk.
+  case "$row_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if ! kill -0 "$row_pid" 2>/dev/null \
+         && ! ps -p "$row_pid" -o pid= >/dev/null 2>&1; then
+        reap_reason="pid $row_pid is not running"
+      fi
+      ;;
+  esac
+
+  # Candidate 2: no PID to check, and old enough that nothing is coming back.
+  if [ -z "$reap_reason" ] && [ -z "$row_pid" ] && [ -n "$row_ts" ]; then
+    case "$row_ts" in
+      ''|*[!0-9]*) ;;
+      *)
+        age=$((now_epoch - row_ts))
+        if [ "$age" -ge "$CEO_MAX_AGE" ]; then
+          reap_reason="pid-less row older than $((age / 86400))d"
+        fi
+        ;;
+    esac
+  fi
+
+  if [ -n "$reap_reason" ]; then
+    reaped_reports+=("$reap_reason|$row_branch")
+  else
+    surviving_rows+=("$row")
+  fi
+done < "$file"
+
+# Assemble and rename once, never truncate-then-append: a kill mid-write would
+# otherwise lose every row and strand the lock.
+tmp="$file.tmp.$$"
+if [ "${#surviving_rows[@]}" -gt 0 ]; then
+  printf '%s\n' "${surviving_rows[@]}" > "$tmp"
+else
+  : > "$tmp"
+fi
+mv "$tmp" "$file"
+
+# ${arr+"${arr[@]}"}, not "${arr[@]}": the latter is an unbound-variable abort
+# on an empty array under `set -u` in bash 3.2, and the healthy case -- nothing
+# to reap -- is exactly when this array is empty.
+for rep in ${reaped_reports+"${reaped_reports[@]}"}; do
+  echo "REAPED|$rep"
+done
+REAP_INNER
 }
 
 # ceo_base_stale <recorded-base> <current-base> — 0 when equal, 1 when stale.
