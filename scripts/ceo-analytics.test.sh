@@ -984,4 +984,55 @@ test_a_degraded_run_writes_the_outcome_file_for_ceo_cron() {
   rm -f "$outcome_file"
 }
 
+# --- Search Console rowLimit disclosure (issue #357) -----------------------
+
+test_a_capped_current_query_window_discloses_the_row_limit() {
+  _empty_all
+  local -a qrows=()
+  local j
+  for j in $(seq 1 250); do
+    qrows+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))")
+  done
+  _fixture httpsshoptest cur query "${qrows[@]}"
+  _run
+  assert_eq "$RC" "0" "a capped query window is valid and must succeed"
+  assert_contains "$OUT" "Search Console query limit (250) reached for current week" \
+    "the report discloses when the current query window reaches the row limit"
+  assert_contains "$OUT" "250+ new queries this week (capped at 250); the 10 with the most impressions are listed." \
+    "the subtitle discloses the lower-bound total rather than stating a capped number as absolute"
+}
+
+test_a_capped_prior_query_window_discloses_potential_false_new_queries() {
+  _empty_all
+  local -a qrows=()
+  local j
+  for j in $(seq 1 250); do
+    qrows+=("$(printf 'old%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))")
+  done
+  _fixture httpsshoptest prior query "${qrows[@]}"
+  _fixture httpsshoptest cur query "$(printf 'brandnew\t1\t100\t0.01\t5')"
+  _run
+  assert_eq "$RC" "0" "run must succeed"
+  assert_contains "$OUT" "Search Console query limit (250) reached for prior week" \
+    "the report discloses when the prior query window reaches the row limit"
+  assert_contains "$OUT" "queries ranking outside the top 250 by clicks last week may be falsely reported as new" \
+    "the banner explains why prior-window capping causes unverified new query reporting"
+}
+
+test_an_uncapped_query_window_under_row_limit_prints_no_cap_banner() {
+  _empty_all
+  local -a qrows=()
+  local j
+  for j in $(seq 1 249); do
+    qrows+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))")
+  done
+  _fixture httpsshoptest cur query "${qrows[@]}"
+  _run
+  assert_eq "$RC" "0" "run must succeed"
+  assert_not_contains "$OUT" "Search Console query limit" \
+    "no row limit banner should be printed when queries are below the row limit"
+  assert_contains "$OUT" "249 new queries this week; the 10 with the most impressions are listed." \
+    "the subtitle states the exact uncapped total when under the limit"
+}
+
 run_tests

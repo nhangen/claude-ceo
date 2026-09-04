@@ -54,6 +54,9 @@ RANK_FILE="${CEO_ANALYTICS_RANK_FILE:-$REPORT_DIR/product-revenue.tsv}"
 # Comparing a fresh window against a settled one manufactures a decline.
 LAG_DAYS="${CEO_ANALYTICS_LAG_DAYS:-3}"
 
+# Search Console API row limit per query request.
+ROW_LIMIT="${CEO_ANALYTICS_ROW_LIMIT:-250}"
+
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
@@ -152,8 +155,8 @@ _gsc_query() {
     return 0
   fi
 
-  body=$(jq -nc --arg s "$start" --arg e "$end" --arg d "$dim" \
-    '{startDate:$s,endDate:$e,dimensions:[$d],rowLimit:250}')
+  body=$(jq -nc --arg s "$start" --arg e "$end" --arg d "$dim" --argjson l "$ROW_LIMIT" \
+    '{startDate:$s,endDate:$e,dimensions:[$d],rowLimit:$l}')
   # The bearer token goes in via `--config <(...)`, not `-H` on argv: a
   # `-H "Authorization: Bearer $TOKEN"` argument is readable by any process on
   # the box via `ps`, and process substitution hands curl a fd path instead
@@ -425,6 +428,7 @@ _render_site() {
   # Run it once more per file here so the ledger is complete regardless of
   # which finders happened to visit which input.
   local f bad good rej_total=0 rej_fatal=0 rej_prior_q=0
+  local cap_cur_q=0 cap_prior_q=0
   for f in "$pc" "$pp" "$qc" "$qp"; do
     _valid_rows "$f" >/dev/null
     read -r bad good < "$f.rejects"
@@ -437,6 +441,10 @@ _render_site() {
     # into a headline. The banner below says findings may be missing, which is
     # the wrong warning for a line that is present and wrong.
     [ "$f" = "$qp" ] && rej_prior_q="$bad"
+    if [ "$((bad + good))" -ge "$ROW_LIMIT" ]; then
+      [ "$f" = "$qc" ] && cap_cur_q=1
+      [ "$f" = "$qp" ] && cap_prior_q=1
+    fi
   done
   if [ "$rej_fatal" -eq 1 ]; then
     echo "ERROR: every row of an input for $site was malformed — refusing to report a clean week" >&2
@@ -523,6 +531,14 @@ _render_site() {
     printf -- '%d row(s) of the prior query window were malformed, so a query listed here may have ranked last week after all. Treat this section as unverified.\n\n' \
       "$rej_prior_q"
   fi
+  if [ "$cap_prior_q" -eq 1 ]; then
+    printf -- 'Search Console query limit (%d) reached for prior week; queries ranking outside the top %d by clicks last week may be falsely reported as new.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
+  if [ "$cap_cur_q" -eq 1 ]; then
+    printf -- 'Search Console query limit (%d) reached for current week; only the top %d queries by clicks were evaluated, so new-query findings and totals are a lower bound.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
   n=0
   local new_total=0
   if [ -n "$out_new" ]; then
@@ -533,8 +549,13 @@ _render_site() {
     done <<< "$out_new"
   fi
   if [ "$new_total" -gt "$n" ] 2>/dev/null; then
-    printf -- '\n(%s new queries this week; the %s with the most impressions are listed.)\n' \
-      "$new_total" "$n"
+    if [ "$cap_cur_q" -eq 1 ]; then
+      printf -- '\n(%s+ new queries this week (capped at %s); the %s with the most impressions are listed.)\n' \
+        "$new_total" "$ROW_LIMIT" "$n"
+    else
+      printf -- '\n(%s new queries this week; the %s with the most impressions are listed.)\n' \
+        "$new_total" "$n"
+    fi
   fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
