@@ -138,6 +138,28 @@ _gsc_query() {
 
 _urlencode() { jq -rn --arg v "$1" '$v|@uri'; }
 
+# _valid_rows <file> -> the file's rows that are exactly 5 tab-separated fields
+# with numeric metrics, in order. `IFS=$'\t' read` collapses *consecutive* tabs
+# because tab is IFS whitespace, so a row with a null metric
+# ("page\t\t500\t0.01\t7") silently shifts every later field left and every
+# consumer misreads impressions as clicks. awk -F'\t' does not collapse, so a
+# short or malformed row is rejected outright here instead of half-read by
+# each of the four consumers individually. Blank lines (an empty fixture) are
+# not malformed and are dropped without counting against the reject total.
+_valid_rows() {
+  local file="$1"
+  awk -F'\t' -v f="$file" '
+    NF == 0 { next }
+    NF != 5 { bad++; next }
+    $2 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
+    $3 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
+    $4 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
+    $5 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
+    { print }
+    END { if (bad > 0) printf "WARN: rejected %d malformed row(s) in %s\n", bad, f > "/dev/stderr" }
+  ' "$file"
+}
+
 # --- ranking ------------------------------------------------------------------
 # Rank of the page a finding points at. 0 = unranked (never sold, or no rank
 # file). Lower is better, so unranked sorts last via the 9999 substitution.
@@ -157,13 +179,13 @@ _clicks_lost() {
   local cur="$1" prior="$2" url c p d rk
   while IFS=$'\t' read -r url c _ _ _; do
     [ -n "$url" ] || continue
-    p=$(awk -F'\t' -v u="$url" '$1==u {print $2; exit}' "$prior")
+    p=$(_valid_rows "$prior" | awk -F'\t' -v u="$url" '$1==u {print $2; exit}')
     [ -n "$p" ] || continue
     d=$(awk -v a="$c" -v b="$p" 'BEGIN{printf "%.0f", a-b}')
     [ "$d" -lt 0 ] || continue
     rk=$(_rank_of "$url")
     printf '%s\t%s\t%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$c" "$p" "$d"
-  done < "$cur" | sort -t$'\t' -k1,1n -k5,5n
+  done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k5,5n
 }
 
 # Position 5-20 with impressions and a weak click rate: the title/meta tag list.
@@ -175,7 +197,7 @@ _ctr_opportunities() {
     awk -v p="$pos" -v i="$i" -v ctr="$ctr" \
       'BEGIN{exit !(p>=5 && p<=20 && i>=100 && ctr<0.02)}' || continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$i" "$q" "$c" "$ctr" "$pos"
-  done < "$cur" | sort -t$'\t' -k1,1nr
+  done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1nr
 }
 
 # Impressions but no clicks at all — a listing people see and refuse.
@@ -187,7 +209,7 @@ _zero_click_pages() {
     awk -v i="$i" 'BEGIN{exit !(i>=50)}' || continue
     rk=$(_rank_of "$url")
     printf '%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$i"
-  done < "$cur" | sort -t$'\t' -k1,1n -k3,3nr
+  done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k3,3nr
 }
 
 _new_queries() {
@@ -198,9 +220,9 @@ _new_queries() {
     # unanchored, so a new query that is a SUFFIX of last week's query read as
     # returning and was dropped: "alpha peptide" vanished because "buy alpha
     # peptide" ranked last week. That is the ordinary shape of query data.
-    awk -F'\t' -v q="$q" '$1==q {found=1; exit} END{exit !found}' "$prior" && continue
+    _valid_rows "$prior" | awk -F'\t' -v q="$q" '$1==q {found=1; exit} END{exit !found}' && continue
     printf '%s\t%s\n' "$i" "$q"
-  done < "$cur" | sort -t$'\t' -k1,1nr | head -10
+  done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1nr | head -10
 }
 
 # --- report -------------------------------------------------------------------

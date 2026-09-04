@@ -271,4 +271,21 @@ test_a_page_just_under_the_zero_click_floor_is_not_reported() {
     "49 impressions with no clicks is noise, not a listing people refuse"
 }
 
+test_a_row_with_a_null_metric_field_is_dropped_not_misread() {
+  # Tab is IFS whitespace, so `IFS=$'\t' read` collapses a *consecutive* tab
+  # pair and every field after it shifts left. A row with an empty clicks
+  # field ("page\t\t500\t0.01\t7") used to be read as clicks=500 — the
+  # impressions figure reported as a click count. The fix rejects the row
+  # outright rather than half-reading it, so this must produce no finding at
+  # all: not the real numbers, and not the fabricated ones either.
+  _empty_all
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/broken\t\t500\t0.01\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/broken\t900\t950\t0.95\t2')"
+  _run
+  assert_not_contains "$OUT" "https://shop.test/p/broken" \
+    "a malformed row is dropped, not reported with shifted fields"
+  assert_not_contains "$OUT" "500 clicks" \
+    "the impressions figure must never be printed as a click count"
+}
+
 run_tests
