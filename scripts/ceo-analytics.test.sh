@@ -432,4 +432,26 @@ test_a_money_site_still_keeps_its_revenue_rank_alongside_the_gate() {
   assert_contains "$shopsec" "revenue rank 1" "the money site keeps its rank"
 }
 
+test_a_page_gaining_clicks_is_not_reported_as_losing_them() {
+  # Pins `[ "$d" -lt 0 ] || continue` in _clicks_lost: a page whose clicks
+  # went UP week over week must never appear under "Pages losing clicks".
+  _empty_all
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/growing\t100\t900\t0.11\t5')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/growing\t50\t850\t0.06\t6')"
+  _run
+  assert_not_contains "$OUT" "p/growing" \
+    "clicks went from 50 to 100 — a gain, never a decline"
+}
+
+test_a_page_with_real_clicks_is_not_a_zero_click_finding() {
+  # Pins `[ "${c%%.*}" -eq 0 ] ... || continue` in _zero_click_pages: a page
+  # with real clicks must never appear in the "impressions and zero clicks"
+  # list just because it also has plenty of impressions.
+  _empty_all
+  _fixture httpsshoptest cur page "$(printf 'https://shop.test/p/converting\t12\t800\t0.015\t9')"
+  _run
+  assert_not_contains "$OUT" "p/converting" \
+    "12 clicks is not zero clicks, regardless of impression volume"
+}
+
 run_tests
