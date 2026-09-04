@@ -136,7 +136,12 @@ _gsc_query() {
     local slug
     slug=$(printf '%s' "$site" | tr -cd 'a-zA-Z0-9')
     local f="$CEO_ANALYTICS_FIXTURE_DIR/$slug-$start-$dim.tsv"
-    [ -f "$f" ] && cat "$f"
+    # A missing fixture used to yield empty output at exit 0 — indistinguishable
+    # from a legitimate empty week. This is the only ingress the whole suite
+    # exercises, so that swallow could green-light an assertion about "- none"
+    # that a fixture typo, not a quiet week, actually produced.
+    [ -f "$f" ] || { echo "ERROR: no fixture at $f" >&2; return 1; }
+    cat "$f"
     return 0
   fi
 

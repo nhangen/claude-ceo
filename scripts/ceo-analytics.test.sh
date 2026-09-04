@@ -590,4 +590,17 @@ STUB
     "Google's error_description reaches the operator instead of being withheld"
 }
 
+# --- R6: a missing fixture must fail loudly, not read as an empty week -----
+
+test_a_missing_fixture_fails_loudly_rather_than_reporting_an_empty_week() {
+  # The fixture seam is the only ingress the whole suite exercises, so a
+  # missing file here (a fixture typo, not a real empty week) must not be
+  # indistinguishable from `- none`.
+  _empty_all
+  rm -f "$FIXTURES/httpsshoptest-$CUR_START-page.tsv"
+  _run
+  assert_eq "$([ "$RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a missing fixture must fail the run"
+}
+
 run_tests
