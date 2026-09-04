@@ -211,6 +211,13 @@ test_the_report_never_claims_revenue_attribution() {
   assert_contains "$OUT" "no query is credited with a sale" \
     "the report states the attribution limit rather than leaving it implied"
   assert_not_contains "$OUT" "ROAS" "and never prints a figure the stack cannot support"
+  # The ranking claim was narrowed in the playbook and the script header but
+  # not, for three rounds, in the sentence a human actually reads. Two of the
+  # four sections sort on impressions and print no rank at all, so an
+  # unqualified "findings are ordered by revenue rank" is false in the
+  # artifact even while both docs are correct.
+  assert_contains "$OUT" "query-dimension findings are ordered by impressions" \
+    "the report scopes its ranking claim to the sections that actually rank"
 }
 
 test_a_dry_run_writes_nothing_to_the_vault() {
@@ -395,6 +402,37 @@ test_a_reject_in_the_prior_query_window_marks_the_new_query_section_unverified()
     "the note says how many prior rows were dropped, not merely that some were"
   assert_contains "$OUT" "Treat this section as unverified" \
     "the note says the listed queries may be wrong, not merely missing"
+}
+
+test_an_unreadable_prior_window_fails_new_queries_rather_than_fabricating_one() {
+  # R2. A hard read failure on the prior window (an unreadable file, not merely
+  # a malformed row) must fail rather than read as "this query was not there",
+  # which would print every current-week query as new.
+  #
+  # The caller shape is the whole test, and getting it wrong is why an earlier
+  # version of this arm was deleted as vacuous. _render_site invokes the finder
+  # as `out_new=$(_new_queries ...) || { ... }` — an assignment on the LEFT of
+  # `||`, which suppresses errexit inside the command substitution. Call it any
+  # other way and errexit aborts on its own, both versions look identical, and
+  # the arm proves nothing. Measured in this shape: with the guard, rc=1 and no
+  # output; without it, rc=0 and a fabricated "400  alpha peptide".
+  #
+  # Run through a child bash rather than _source_analytics, because that
+  # helper's own subshell is one of the shapes that hides the difference.
+  local probe out; probe=$(mktemp)
+  cat > "$probe" <<PROBE
+source "$ANALYTICS" >/dev/null 2>&1
+d=\$(mktemp -d)
+printf 'alpha peptide\t5\t400\t0.0125\t8\n' > "\$d/qc"
+: > "\$d/qp"; chmod 000 "\$d/qp"
+out_new=\$(_new_queries "\$d/qc" "\$d/qp") || { echo "CAUGHT"; chmod 644 "\$d/qp"; exit 0; }
+echo "FABRICATED:[\$out_new]"
+chmod 644 "\$d/qp"
+PROBE
+  out=$(bash "$probe" 2>/dev/null)
+  rm -f "$probe"
+  assert_eq "$out" "CAUGHT" \
+    "an unreadable prior window must fail, not read as 'this query is new'"
 }
 
 # _source_analytics <fn> [args...] — call an internal function of the real
@@ -885,9 +923,15 @@ test_a_missing_fixture_fails_loudly_rather_than_reporting_an_empty_week() {
 
 test_a_degraded_run_writes_the_outcome_file_for_ceo_cron() {
   # ceo-cron.sh (:1558) exports CEO_RUNNER_OUTCOME_FILE; this script never
-  # wrote to it. A run with disclosed-but-non-fatal rejects should mark
-  # itself degraded there so the cron layer can tell a clean week from one
-  # with dropped data, without parsing the report body.
+  # wrote to it. A run with disclosed-but-non-fatal rejects should surface
+  # itself there so the cron layer notices dropped data without parsing the
+  # report body.
+  #
+  # The expected value is `fired` because that is a word ceo-cron.sh:262-272
+  # actually matches — its `case` has arms for `fired` and `noop` and nothing
+  # else. This arm previously expected `degraded`, and passed, while the
+  # value it asserted fell through cron's `case` to the per-trigger default:
+  # a green arm pinning a string no consumer reads.
   _empty_all
   _fixture httpsshoptest cur page \
     "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')" \
@@ -897,8 +941,8 @@ test_a_degraded_run_writes_the_outcome_file_for_ceo_cron() {
   rm -f "$outcome_file"
   CEO_RUNNER_OUTCOME_FILE="$outcome_file" _run
   assert_eq "$RC" "0" "a degraded-but-not-fatal run still succeeds"
-  assert_eq "$(cat "$outcome_file" 2>/dev/null)" "degraded" \
-    "the outcome file records the degraded state for ceo-cron to consult"
+  assert_eq "$(cat "$outcome_file" 2>/dev/null)" "fired" \
+    "the outcome file uses a word ceo-cron actually matches, so the run notifies"
   rm -f "$outcome_file"
 }
 

@@ -332,13 +332,22 @@ _new_queries() {
     # `_valid_rows "$prior"` (an unreadable file, not merely a malformed row)
     # was swallowed as "not found" and every current-week query printed as new.
     #
-    # Measured, and stated honestly because an earlier version of this comment
-    # over-claimed: with `set -e` active, deleting the `|| return 1` produces
-    # the SAME observable outcome — non-zero, no output — so no test arm can
-    # distinguish the two, and an arm that claimed to pin it passed with the
-    # `||` deleted. That arm was removed rather than left as false coverage.
-    # The check stays because it states the intent at the call site, not
-    # because a test covers it.
+    # The caller shape is what makes this load-bearing, and an earlier version
+    # of this comment got it wrong twice over. _render_site invokes the finder
+    # as `out_new=$(_new_queries ...) || { ... }`, and an assignment on the
+    # LEFT of `||` suppresses errexit inside the command substitution — so
+    # `set -e` is NOT active here and cannot stand in for the check. Measured
+    # in that shape: with it, rc=1 and no output; without it, rc=0 and a
+    # fabricated `400\talpha peptide`. Probed in any OTHER shape the two look
+    # identical, which is how an arm claiming to pin this came to be deleted
+    # as vacuous; it is back, and it runs the production caller shape.
+    #
+    # End to end this is still belt-and-braces: _render_site's reject ledger
+    # re-reads all four inputs as a bare simple command and trips `set -e`
+    # before the finders run. That stops being true the moment the ledger loop
+    # moves below them, which is why the check stays. The unguarded twin in
+    # _clicks_lost is covered by the same ledger and by its own `set -e`,
+    # since it is not on the left of an `||`.
     seen=$(_valid_rows "$prior" | awk -F'\t' -v q="$q" '$1==q {found=1; exit} END{print (found?1:0)}') || return 1
     [ "$seen" = "1" ] && continue
     printf '%s\t%s\n' "$i" "$q"
@@ -432,7 +441,7 @@ _render_site() {
   fi
   if [ "$rank_disclose" -eq 1 ]; then
     printf 'Findings are **unranked** — no product-revenue file at `%s`, or none of its entries matched a page in this run — so this is ordered by traffic, not dollars.\n\n' \
-      "${RANK_FILE/#$VAULT\//}"
+      "${RANK_FILE/#"$VAULT"\//}"
   elif [ "$weighted" = 0 ]; then
     printf 'No commerce on this site; findings are unweighted.\n\n'
   fi
@@ -515,7 +524,7 @@ main() {
     printf '# Search Console — week of %s\n\n' "$cur_start"
     printf 'This week %s → %s, compared against %s → %s. Search Console lags ~%s days.\n\n' \
       "$cur_start" "$cur_end" "$prior_start" "$prior_end" "$LAG_DAYS"
-    printf 'Traffic only. No revenue figure is computed here and no query is credited with a sale — payment happens off-site, so that attribution does not exist. Findings on the money site are ordered by the revenue rank of the page they point at.\n\n'
+    printf 'Traffic only. No revenue figure is computed here and no query is credited with a sale — payment happens off-site, so that attribution does not exist. Page-dimension findings on the money site are ordered by the revenue rank of the page they point at; query-dimension findings are ordered by impressions, since a query has no page to rank.\n\n'
 
     local site slug
     while IFS=',' read -r -d, site || [ -n "$site" ]; do
@@ -531,26 +540,32 @@ main() {
     done < <(printf '%s,' "$SITES")
   } > "$tmp/report.md"
 
-  # ceo-cron.sh (:1558) exports CEO_RUNNER_OUTCOME_FILE for a script-runner
-  # playbook to report an outcome finer than exit-0-success; this script
-  # never wrote to it before. A degraded run (some rejected rows, disclosed
-  # above but not fatal) still exits 0 — it should still be exit 0, per the
-  # invariant that a discarded read is disclosed, not promoted to a failure —
-  # but it is not a clean week either, and the outcome channel is where that
-  # distinction belongs.
+  # ceo-cron.sh (:1558) exports CEO_RUNNER_OUTCOME_FILE so a script-runner
+  # playbook can say more than exit-0-success. A degraded run (rows rejected,
+  # disclosed in the report above but not fatal) still exits 0 — a discarded
+  # read is disclosed, never promoted to a failure — but it is not a clean
+  # week and somebody should look at it.
+  #
+  # The word is `fired`, not a new one. That channel's vocabulary is exactly
+  # two values (ceo-cron.sh:262-272): `fired` notifies, `noop` stays silent,
+  # and anything else falls through to the per-trigger default. An earlier
+  # version wrote `degraded`, which no `case` arm matches — so the comment
+  # and its test both claimed a consumer that does not exist, and the signal
+  # went nowhere. `fired` is the channel's existing word for "this tick did
+  # real work worth surfacing", which is exactly what a degraded run is.
   if [ "$_SITE_DEGRADED" = 1 ] && [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
-    printf 'degraded\n' > "$CEO_RUNNER_OUTCOME_FILE"
+    printf 'fired' > "$CEO_RUNNER_OUTCOME_FILE"
   fi
 
   if [ "$DRY_RUN" = 1 ]; then
     cat "$tmp/report.md"
-    printf '\n(dry run — not written to %s)\n' "${REPORT_FILE/#$VAULT\//}" >&2
+    printf '\n(dry run — not written to %s)\n' "${REPORT_FILE/#"$VAULT"\//}" >&2
     return 0
   fi
 
   mkdir -p "$REPORT_DIR"
   mv "$tmp/report.md" "$REPORT_FILE"
-  printf 'ok %s\n' "${REPORT_FILE/#$VAULT\//}"
+  printf 'ok %s\n' "${REPORT_FILE/#"$VAULT"\//}"
 }
 
 # Tests source this file to reach internal functions (_gsc_parse_body,

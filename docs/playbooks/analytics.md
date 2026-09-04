@@ -70,6 +70,7 @@ Each of these is a decision, not an omission:
 | `CEO_ANALYTICS_RANK_FILE` | `CEO/reports/analytics/product-revenue.tsv` | `url<TAB>rank`, lowest rank = best seller |
 | `CEO_ANALYTICS_LAG_DAYS` | `3` | How far back "this week" ends. GSC reports on a 2–3 day lag |
 | `CEO_ANALYTICS_FIXTURE_DIR` | unset | Test-only: replaces the API call with recorded TSVs |
+| `CEO_ANALYTICS_TODAY` | today | Test-only: pins the report date and filename |
 
 The rank file is currently maintained by hand from norx-operations' aggregate product totals. **Its
 absence does not fail the run** — the report says "unranked" and falls back to traffic ordering,
@@ -114,7 +115,7 @@ and the thresholds have proven quiet.
 
 ## Tests
 
-`scripts/ceo-analytics.test.sh` — 51 tests. The fixture seam sits at `_gsc_query`, so the ranking,
+`scripts/ceo-analytics.test.sh` — 52 tests. The fixture seam sits at `_gsc_query`, so the ranking,
 delta, threshold and rendering logic under test is the same code production runs; nothing stubs the
 logic being checked. Covered: revenue rank beating a larger raw decline, both edges of the 5–20
 position band, the missing-rank-file disclosure, the no-attribution guarantee, `--dry-run` leaving
