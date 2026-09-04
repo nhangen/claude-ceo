@@ -116,7 +116,7 @@ and the thresholds have proven quiet.
 
 ## Tests
 
-`scripts/ceo-analytics.test.sh` — 64 tests. The fixture seam sits at `_gsc_query`, so the ranking,
+`scripts/ceo-analytics.test.sh` — 65 tests. The fixture seam sits at `_gsc_query`, so the ranking,
 delta, threshold and rendering logic under test is the same code production runs; nothing stubs the
 logic being checked. Covered: revenue rank beating a larger raw decline, both edges of the 5–20
 position band, the missing-rank-file disclosure, the no-attribution guarantee, `--dry-run` leaving

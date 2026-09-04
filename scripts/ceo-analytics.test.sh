@@ -1103,6 +1103,26 @@ test_a_capped_prior_page_window_discloses_missing_declines() {
   assert_eq "$RC" "0" "run must succeed"
   assert_contains "$(_clicks_lost_section)" "reached for the prior page window" \
     "a capped prior page window must disclose that real declines may be missing"
+  assert_not_contains "$(_clicks_lost_section)" "reached for the current page window" \
+    "a capped prior window must not raise the current-window banner"
+}
+
+test_a_capped_current_page_window_discloses_it_in_the_decline_section() {
+  # The converse of the arm above. The two banners are adjacent ifs reading
+  # sibling flags, so without both directions a swapped condition survives.
+  _empty_all
+  local -a cur=() prior=()
+  local j
+  for j in $(seq 1 5); do cur+=("$(printf 'https://shop.test/p/%03d\t%d\t900\t0.04\t7' "$j" "$j")"); done
+  for j in $(seq 1 2); do prior+=("$(printf 'https://shop.test/p/%03d\t50\t900\t0.05\t7' "$j")"); done
+  _fixture httpsshoptest cur page "${cur[@]}"
+  _fixture httpsshoptest prior page "${prior[@]}"
+  _run_capped 5
+  assert_eq "$RC" "0" "run must succeed"
+  assert_contains "$(_clicks_lost_section)" "reached for the current page window" \
+    "a capped current page window must disclose that only the top N pages were evaluated"
+  assert_not_contains "$(_clicks_lost_section)" "reached for the prior page window" \
+    "an uncapped prior window must not raise the prior-window banner"
 }
 
 test_a_capped_window_marks_the_run_degraded_for_ceo_cron() {
@@ -1170,12 +1190,24 @@ test_a_non_numeric_row_limit_is_rejected_rather_than_silently_disabling_the_cap(
   assert_contains "$err" "CEO_ANALYTICS_ROW_LIMIT must be a positive integer" \
     "the refusal names the variable and what it expected"
   local z
-  for z in 0 000; do
+  for z in 0 000 00; do
     rc=0
     err=$(CEO_ANALYTICS_ROW_LIMIT="$z" bash "$ANALYTICS" --dry-run 2>&1 >/dev/null) || rc=$?
     assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
       "a zero row limit ('$z') must fail too -- it would mark every window capped"
   done
+  # The refusal must quote what the caller typed. 10# normalization wraps this
+  # value negative, so a message built from the normalized number reported
+  # "got '0'" for an input nobody wrote -- this file's own defect class, in its
+  # own error message.
+  rc=0
+  err=$(CEO_ANALYTICS_ROW_LIMIT=9223372036854775808 bash "$ANALYTICS" --dry-run 2>&1 >/dev/null) || rc=$?
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a row limit that overflows to negative must fail"
+  assert_contains "$err" "got '9223372036854775808'" \
+    "the refusal quotes the value the caller actually passed, not a normalized one"
+  assert_not_contains "$err" "got '0'" \
+    "the refusal must never name a number the caller did not type"
 }
 
 run_tests

@@ -69,8 +69,13 @@ LAG_DAYS="${CEO_ANALYTICS_LAG_DAYS:-3}"
 # stop. LAG_DAYS is equally unvalidated but visibly so: it is printed into the
 # report header at the bottom of _render_site.
 ROW_LIMIT="${CEO_ANALYTICS_ROW_LIMIT:-250}"
+# Kept for the error messages below: after the 10# normalization ROW_LIMIT no
+# longer holds what the caller typed, and reporting a value they never wrote is
+# the same defect this file exists to stop -- an overflowing input used to be
+# refused with "got '0'".
+_row_limit_raw="$ROW_LIMIT"
 case "$ROW_LIMIT" in
-  ''|*[!0-9]*) echo "ERROR: CEO_ANALYTICS_ROW_LIMIT must be a positive integer, got '$ROW_LIMIT'" >&2; exit 1 ;;
+  *[!0-9]*) echo "ERROR: CEO_ANALYTICS_ROW_LIMIT must be a positive integer, got '$_row_limit_raw'" >&2; exit 1 ;;
 esac
 # Normalize the base before anything reads it. `0250` passes the digit check
 # above and is then read four different ways: jq --argjson and `[ -ge ]` take it
@@ -79,7 +84,7 @@ esac
 # a third -- one limit, three numbers, exit 0. `10#` pins every reader to
 # decimal. The zero check follows the normalization so `000` is caught too.
 ROW_LIMIT=$((10#$ROW_LIMIT))
-[ "$ROW_LIMIT" -gt 0 ] || { echo "ERROR: CEO_ANALYTICS_ROW_LIMIT must be a positive integer, got '0'" >&2; exit 1; }
+[ "$ROW_LIMIT" -gt 0 ] || { echo "ERROR: CEO_ANALYTICS_ROW_LIMIT must be a positive integer, got '$_row_limit_raw'" >&2; exit 1; }
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
