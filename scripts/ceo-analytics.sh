@@ -54,6 +54,38 @@ RANK_FILE="${CEO_ANALYTICS_RANK_FILE:-$REPORT_DIR/product-revenue.tsv}"
 # Comparing a fresh window against a settled one manufactures a decline.
 LAG_DAYS="${CEO_ANALYTICS_LAG_DAYS:-3}"
 
+# Search Console API row limit per request. #357 chose disclosure over
+# pagination: a `startRow` loop makes the request count unbounded in the size of
+# the property, and _new_queries:389 already treats an unbounded list as the
+# thing the cap exists to prevent. A disclosed lower bound is the cheaper honest
+# answer; if a property outgrows it the cure is pagination, not a bigger number.
+#
+# Validated here rather than at the use sites, because every one of them fails
+# OPEN. `[ "$n" -ge "$ROW_LIMIT" ]` on a non-numeric value prints "integer
+# expected" to stderr and evaluates FALSE, so the disclosure silently never
+# fires; `printf %d` renders it as 0. Neither trips `set -e` -- a failing `[`
+# inside an `if` condition does not. So a typo'd override would turn the whole
+# feature off and still exit 0, which is the defect class this file exists to
+# stop. LAG_DAYS is equally unvalidated but visibly so: it is printed into the
+# report header at the bottom of _render_site.
+ROW_LIMIT="${CEO_ANALYTICS_ROW_LIMIT:-250}"
+# Kept for the error messages below: after the 10# normalization ROW_LIMIT no
+# longer holds what the caller typed, and reporting a value they never wrote is
+# the same defect this file exists to stop -- an overflowing input used to be
+# refused with "got '0'".
+_row_limit_raw="$ROW_LIMIT"
+case "$ROW_LIMIT" in
+  *[!0-9]*) echo "ERROR: CEO_ANALYTICS_ROW_LIMIT must be a positive integer, got '$_row_limit_raw'" >&2; exit 1 ;;
+esac
+# Normalize the base before anything reads it. `0250` passes the digit check
+# above and is then read four different ways: jq --argjson and `[ -ge ]` take it
+# as decimal 250, printf %d as OCTAL 168, printf %s as the literal `0250`. The
+# report would name two of those in its own banners while the API was asked for
+# a third -- one limit, three numbers, exit 0. `10#` pins every reader to
+# decimal. The zero check follows the normalization so `000` is caught too.
+ROW_LIMIT=$((10#$ROW_LIMIT))
+[ "$ROW_LIMIT" -gt 0 ] || { echo "ERROR: CEO_ANALYTICS_ROW_LIMIT must be a positive integer, got '$_row_limit_raw'" >&2; exit 1; }
+
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
@@ -152,8 +184,8 @@ _gsc_query() {
     return 0
   fi
 
-  body=$(jq -nc --arg s "$start" --arg e "$end" --arg d "$dim" \
-    '{startDate:$s,endDate:$e,dimensions:[$d],rowLimit:250}')
+  body=$(jq -nc --arg s "$start" --arg e "$end" --arg d "$dim" --argjson l "$ROW_LIMIT" \
+    '{startDate:$s,endDate:$e,dimensions:[$d],rowLimit:$l}')
   # The bearer token goes in via `--config <(...)`, not `-H` on argv: a
   # `-H "Authorization: Bearer $TOKEN"` argument is readable by any process on
   # the box via `ps`, and process substitution hands curl a fd path instead
@@ -425,6 +457,7 @@ _render_site() {
   # Run it once more per file here so the ledger is complete regardless of
   # which finders happened to visit which input.
   local f bad good rej_total=0 rej_fatal=0 rej_prior_q=0
+  local cap_cur_q=0 cap_prior_q=0 cap_cur_p=0 cap_prior_p=0 cap_any=0
   for f in "$pc" "$pp" "$qc" "$qp"; do
     _valid_rows "$f" >/dev/null
     read -r bad good < "$f.rejects"
@@ -437,12 +470,41 @@ _render_site() {
     # into a headline. The banner below says findings may be missing, which is
     # the wrong warning for a line that is present and wrong.
     [ "$f" = "$qp" ] && rej_prior_q="$bad"
+    # A response holding exactly ROW_LIMIT rows is indistinguishable from one
+    # the API truncated, so `-ge` treats both as capped. `-eq` would be
+    # equivalent today (the API cannot return more than it was asked for) but
+    # would silently stop detecting if a caller ever merged windows.
+    #
+    # All four windows, not just the query pair. Every one of them goes through
+    # the same rowLimit on the same request builder, and a report that discloses
+    # truncation in one section while staying silent in three teaches the reader
+    # that silence means untruncated -- turning an unknown into a false
+    # negative. _zero_click_pages is where that bites hardest: the API sorts
+    # rows by clicks descending and takes the top ROW_LIMIT, so zero-click pages
+    # sort last and are the first thing a cap removes. The section would render
+    # "- none", which reads as good news.
+    if [ "$((bad + good))" -ge "$ROW_LIMIT" ]; then
+      cap_any=1
+      [ "$f" = "$qc" ] && cap_cur_q=1
+      [ "$f" = "$qp" ] && cap_prior_q=1
+      [ "$f" = "$pc" ] && cap_cur_p=1
+      [ "$f" = "$pp" ] && cap_prior_p=1
+    fi
   done
   if [ "$rej_fatal" -eq 1 ]; then
     echo "ERROR: every row of an input for $site was malformed — refusing to report a clean week" >&2
     return 1
   fi
   [ "$rej_total" -gt 0 ] && _SITE_DEGRADED=1
+  # A capped window degrades report fidelity exactly as a rejected row does, so
+  # it takes the same flag -- and on the prior windows it is the worse class,
+  # fabricating findings rather than omitting them, at up to ROW_LIMIT rows
+  # against the single row a reject costs. Withholding it from the machine
+  # channel would leave the prose banners as the only signal, which is the state
+  # every earlier fix in this file was undoing. A property permanently over the
+  # limit therefore reports degraded every week: that is the honest reading, and
+  # the cure is pagination (see ROW_LIMIT above), not silence.
+  [ "$cap_any" -eq 1 ] && _SITE_DEGRADED=1
 
   # The rank file is hand-maintained, so present-but-stale (a site migration,
   # a truncated edit, a wrong column order) is its likeliest failure mode, and
@@ -483,6 +545,14 @@ _render_site() {
   fi
 
   printf '### Pages losing clicks\n\n'
+  if [ "$cap_prior_p" -eq 1 ]; then
+    printf -- 'Search Console row limit (%d) reached for the prior page window; a page that ranked outside the top %d by clicks last week has no prior row, and a page with no prior row is read as new rather than down -- so real declines may be missing here. Treat this section as incomplete.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
+  if [ "$cap_cur_p" -eq 1 ]; then
+    printf -- 'Search Console row limit (%d) reached for the current page window; only the top %d pages by clicks were evaluated. Treat this section as incomplete.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
   n=0
   if [ -n "$out_clicks" ]; then
     while IFS=$'\t' read -r rk url c p d rawrk; do
@@ -495,6 +565,10 @@ _render_site() {
   printf '\n'
 
   printf '### Title/meta opportunities (position 5-20, weak click rate)\n\n'
+  if [ "$cap_cur_q" -eq 1 ]; then
+    printf -- 'Search Console row limit (%d) reached for the current query window. The API returns the top %d queries by clicks, and this section looks for queries whose click rate is weak -- so they are among the first rows a cap removes. Treat this section as incomplete.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
   n=0
   if [ -n "$out_ctr" ]; then
     while IFS=$'\t' read -r i q c ctr pos; do
@@ -507,6 +581,10 @@ _render_site() {
   printf '\n'
 
   printf '### Pages with impressions and zero clicks\n\n'
+  if [ "$cap_cur_p" -eq 1 ]; then
+    printf -- 'Search Console row limit (%d) reached for the current page window. The API returns the top %d pages by clicks, and the pages this section looks for have none -- so they are the first rows a cap removes, and an empty list here is not evidence of an empty result. Treat this section as unverified.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
   n=0
   if [ -n "$out_zero" ]; then
     while IFS=$'\t' read -r rk url i rawrk; do
@@ -523,6 +601,14 @@ _render_site() {
     printf -- '%d row(s) of the prior query window were malformed, so a query listed here may have ranked last week after all. Treat this section as unverified.\n\n' \
       "$rej_prior_q"
   fi
+  if [ "$cap_prior_q" -eq 1 ]; then
+    printf -- 'Search Console row limit (%d) reached for the prior query window; a query ranking outside the top %d by clicks last week has no prior row, so it may be falsely reported as new below. Treat this section as unverified.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
+  if [ "$cap_cur_q" -eq 1 ]; then
+    printf -- 'Search Console row limit (%d) reached for the current query window; at most the top %d queries by clicks were evaluated, so the findings and totals below may be a lower bound.\n\n' \
+      "$ROW_LIMIT" "$ROW_LIMIT"
+  fi
   n=0
   local new_total=0
   if [ -n "$out_new" ]; then
@@ -532,9 +618,21 @@ _render_site() {
       printf -- '- `%s` — %s impressions\n' "$q" "$i"
     done <<< "$out_new"
   fi
+  # new_total is the size of a set difference, not the size of the window, so
+  # the cap is attributed to the window rather than to the count: "50 new
+  # queries, capped at 250" claims 50 was capped at 250, which is false. The
+  # marker also has to escape the `-gt "$n"` guard -- that guard exists to skip
+  # a redundant "3 new queries; the 3 with the most impressions are listed", but
+  # on a capped run a total of <= n is precisely where the reader most needs to
+  # know the number is a floor.
   if [ "$new_total" -gt "$n" ] 2>/dev/null; then
-    printf -- '\n(%s new queries this week; the %s with the most impressions are listed.)\n' \
+    printf -- '\n(%s new queries this week; the %s with the most impressions are listed.' \
       "$new_total" "$n"
+    [ "$cap_cur_q" -eq 1 ] && printf -- ' The current query window hit the %s-row limit, so the true total is higher.' "$ROW_LIMIT"
+    printf -- ')\n'
+  elif [ "$cap_cur_q" -eq 1 ]; then
+    printf -- '\n(%s new queries found, but the current query window hit the %s-row limit, so the true total is higher.)\n' \
+      "$new_total" "$ROW_LIMIT"
   fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'

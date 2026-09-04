@@ -69,6 +69,7 @@ Each of these is a decision, not an omission:
 | `CEO_ANALYTICS_MONEY_SITE` | `https://norxpeptides.com/` | The one site whose findings are revenue-weighted |
 | `CEO_ANALYTICS_RANK_FILE` | `CEO/reports/analytics/product-revenue.tsv` | `url<TAB>rank`, lowest rank = best seller |
 | `CEO_ANALYTICS_LAG_DAYS` | `3` | How far back "this week" ends. GSC reports on a 2–3 day lag |
+| `CEO_ANALYTICS_ROW_LIMIT` | `250` | Rows requested per Search Console query. A window that comes back full is disclosed as truncated, not paginated |
 | `CEO_ANALYTICS_FIXTURE_DIR` | unset | Test-only: replaces the API call with recorded TSVs |
 | `CEO_ANALYTICS_TODAY` | today | Test-only: pins the report date and filename |
 
@@ -115,7 +116,7 @@ and the thresholds have proven quiet.
 
 ## Tests
 
-`scripts/ceo-analytics.test.sh` — 54 tests. The fixture seam sits at `_gsc_query`, so the ranking,
+`scripts/ceo-analytics.test.sh` — 65 tests. The fixture seam sits at `_gsc_query`, so the ranking,
 delta, threshold and rendering logic under test is the same code production runs; nothing stubs the
 logic being checked. Covered: revenue rank beating a larger raw decline, both edges of the 5–20
 position band, the missing-rank-file disclosure, the no-attribution guarantee, `--dry-run` leaving
@@ -125,8 +126,12 @@ rejected outright rather than half-read (a short row, an over-long row, and a no
 each of clicks/impressions/position), a Search Console error body failing the run instead of
 reporting "none", the bearer token AND the JWT assertion never reaching curl's argv, a malformed
 rank file failing the run instead of truncating it, revenue rank never leaking onto a non-money
-site (for both the clicks-lost and zero-click findings), the new-queries cap and ordering, and the
-exact comparison window (start/end of both windows) landing in the report header.
+site (for both the clicks-lost and zero-click findings), the new-queries cap and ordering, the
+row-limit disclosure on all four windows and every section built from them (including that a
+capped run marks itself degraded for
+`ceo-cron`, that a non-numeric or zero `CEO_ANALYTICS_ROW_LIMIT` fails the run rather than silently
+switching the disclosure off, and that a zero-padded one is read as decimal by every consumer), and the exact comparison window (start/end of both windows) landing
+in the report header.
 
 A page absent from the prior window is not counted as a fall from zero, but that behavior is
 guarded twice over (`_clicks_lost` skips it both for having no prior row and for a resulting
@@ -135,6 +140,11 @@ behavior-level coverage, not a mutation-pinned line.
 
 ## Known gaps
 
+- **A capped window is disclosed, not paginated.** Every Search Console request asks for
+  `CEO_ANALYTICS_ROW_LIMIT` rows and the API returns the top N by clicks, so on a property with more
+  rows than that the report is a lower bound in every section, and it says so. The cure is a
+  `startRow` loop; #357 chose disclosure because pagination makes the request count unbounded in the
+  size of the property. Revisit when a real property actually trips the banners week after week.
 - **Ads spend is not in the expense set**, and 62 Mercury debits totalling $15,413.50 are
   uncategorized in norx-operations. So "am I profitable" stays unanswerable regardless of this
   report — that is bookkeeping, not analytics, and it is the higher-dollar item.

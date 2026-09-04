@@ -30,15 +30,35 @@ setup() {
   # Isolate cron lock to this test invocation
   export CEO_LOCK_FILE="$TEST_HOME/ceo-cron.lock"
 
-  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports" "$HOME/.ceo"
+  # Isolate repo playbooks so `ceo playbook scan` only scans the test fixtures
+  # created in $CEO_DIR/playbooks, rather than leaking the production repo playbooks.
+  export CEO_REPO_PLAYBOOK_DIR="$TEST_HOME/empty-repo-playbooks"
+
+  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports" "$CEO_REPO_PLAYBOOK_DIR" "$HOME/.ceo"
   : > "$CEO_DIR/AGENTS.md"
   : > "$CEO_DIR/IDENTITY.md"
   : > "$CEO_DIR/TRAINING.md"
   : > "$CEO_DIR/inbox.md"
   echo "- [ ] test task" > "$CEO_DIR/approvals/pending.md"
 
-  # Stub crontab so playbook scan's cron install can't touch the user's real crontab.
+  # Stub gh: PR search must not hit real GitHub or the keychain in tests. Per
+  # stub-cli-argv-validation it matches the argv production actually emits and
+  # exits loudly on any other shape. `auth status` exits non-zero on purpose --
+  # the unauthenticated branch is what the preflight arms assert against.
   mkdir -p "$TEST_HOME/.bun/bin"
+  cat > "$TEST_HOME/.bun/bin/gh" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$HOME/gh-invoked.txt"
+case "$1 ${2:-}" in
+  "auth status") echo "gh stub: not logged in" >&2; exit 1 ;;
+  "auth token")  echo "gh stub: no token for '${4:-}'" >&2; exit 1 ;;
+  "search prs")  echo "gh stub: unauthenticated" >&2; exit 1 ;;
+  *) echo "gh stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/gh"
+
+  # Stub crontab so playbook scan's cron install can't touch the user's real crontab.
   cat > "$TEST_HOME/.bun/bin/crontab" << 'STUB'
 #!/bin/bash
 # no-op stub for tests
