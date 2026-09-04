@@ -375,12 +375,19 @@ _render_site() {
   # `$pc` short-circuits `_clicks_lost`'s loop before it ever touches `$pp`).
   # Run it once more per file here so the ledger is complete regardless of
   # which finders happened to visit which input.
-  local f bad good rej_total=0 rej_fatal=0
+  local f bad good rej_total=0 rej_fatal=0 rej_prior_q=0
   for f in "$pc" "$pp" "$qc" "$qp"; do
     _valid_rows "$f" >/dev/null
     read -r bad good < "$f.rejects"
     rej_total=$((rej_total + bad))
     [ "$bad" -gt 0 ] && [ "$good" -eq 0 ] && rej_fatal=1
+    # The prior query window is tracked separately because rejects there are
+    # the one direction that FABRICATES rather than omits. Every other finder
+    # drops a row and loses a finding; _new_queries decides "new" by absence
+    # from this file, so a dropped row turns a query that ranked last week
+    # into a headline. The banner below says findings may be missing, which is
+    # the wrong warning for a line that is present and wrong.
+    [ "$f" = "$qp" ] && rej_prior_q="$bad"
   done
   if [ "$rej_fatal" -eq 1 ]; then
     echo "ERROR: every row of an input for $site was malformed — refusing to report a clean week" >&2
@@ -417,7 +424,7 @@ _render_site() {
 
   printf '## %s\n\n' "$site"
   if [ "$rej_total" -gt 0 ]; then
-    printf '%d row(s) rejected as malformed; findings below are incomplete.\n\n' "$rej_total"
+    printf '%d row(s) rejected as malformed; findings below may be incomplete.\n\n' "$rej_total"
   fi
   if [ "$rank_disclose" -eq 1 ]; then
     printf 'Findings are **unranked** — no product-revenue file at `%s`, or none of its entries matched a page in this run — so this is ordered by traffic, not dollars.\n\n' \
@@ -463,6 +470,10 @@ _render_site() {
   printf '\n'
 
   printf '### New queries this week, by impressions\n\n'
+  if [ "$rej_prior_q" -gt 0 ]; then
+    printf -- '%d row(s) of the prior query window were malformed, so a query listed here may have ranked last week after all. Treat this section as unverified.\n\n' \
+      "$rej_prior_q"
+  fi
   n=0
   if [ -n "$out_new" ]; then
     while IFS=$'\t' read -r i q; do

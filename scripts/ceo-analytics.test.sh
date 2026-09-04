@@ -300,6 +300,27 @@ test_a_row_with_a_null_metric_field_is_dropped_not_misread() {
     "the impressions figure must never be printed as a click count"
 }
 
+test_a_reject_in_the_prior_query_window_marks_the_new_query_section_unverified() {
+  # Rejects are not symmetric. Every other finder loses a finding when a row is
+  # dropped, and the site banner ("findings below may be incomplete") is the
+  # right warning for that. _new_queries decides "new" by ABSENCE from the
+  # prior window, so a dropped prior row promotes a query that ranked last week
+  # into a headline — a line that is present and wrong, which "incomplete" does
+  # not describe. The prior query window therefore earns its own section note.
+  #
+  # A second good row in the prior window keeps the reject non-fatal, which is
+  # the whole point: the all-rejected case already fails the run, so this
+  # partial case is the only one that can still reach the renderer.
+  _empty_all
+  _fixture httpsshoptest prior query "$(printf 'alpha\t5\t400\t\t8\nbeta\t3\t200\t0.015\t9')"
+  _fixture httpsshoptest cur   query "$(printf 'alpha\t9\t100\t0.09\t6\nbeta\t4\t150\t0.026\t9')"
+  _run
+  assert_contains "$OUT" "prior query window were malformed" \
+    "a reject in the prior query window is disclosed on the new-query section itself"
+  assert_contains "$OUT" "Treat this section as unverified" \
+    "the note says the listed queries may be wrong, not merely missing"
+}
+
 # _source_analytics <fn> [args...] — call an internal function of the real
 # script in a subshell, sourced rather than executed. A subshell keeps
 # `set -euo pipefail`, the EXIT trap, and the top-level config load out of the
