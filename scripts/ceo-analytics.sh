@@ -4,8 +4,11 @@
 # Traffic is the revenue lever on this stack: payment happens off-site through a
 # Zoho/Stripe link, so no GA4 purchase event exists and per-query attribution is
 # not computable. What *is* actionable is the top of the funnel, which is what
-# Search Console measures. So this reports traffic and orders it by the revenue
-# rank of the page it points at — it never claims a query earned a dollar.
+# Search Console measures. So this reports traffic — it never claims a query
+# earned a dollar. Page-dimension findings (pages losing clicks, pages with
+# impressions and zero clicks) on the money site are ordered by the revenue
+# rank of the page they point at; the two query-dimension findings (title/meta
+# opportunities, new queries) have no page to rank and sort by impressions.
 #
 # Deliberately absent, and each absence is load-bearing:
 #   - No WooCommerce /orders read. That endpoint returns customer names, emails
@@ -194,6 +197,13 @@ _gsc_parse_body() {
 # short or malformed row is rejected outright here instead of half-read by
 # each of the four consumers individually. Blank lines (an empty fixture) are
 # not malformed and are dropped without counting against the reject total.
+#
+# The reject/good counts are also written to "$file.rejects" (bad<TAB>good),
+# overwritten every call — deterministic for a given file, so the six call
+# sites calling this more than once (some in a loop) never disagree. This is
+# the one place that knows a row was dropped; nothing downstream re-parses the
+# input, so _render_site reads this sidecar rather than each of its six
+# callers threading a reject count through separately.
 _valid_rows() {
   local file="$1"
   awk -F'\t' -v f="$file" '
@@ -203,8 +213,11 @@ _valid_rows() {
     $3 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
     $4 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
     $5 !~ /^-?[0-9]+(\.[0-9]+)?$/ { bad++; next }
-    { print }
-    END { if (bad > 0) printf "WARN: rejected %d malformed row(s) in %s\n", bad, f > "/dev/stderr" }
+    { good++; print }
+    END {
+      if (bad > 0) printf "WARN: rejected %d malformed row(s) in %s\n", bad, f > "/dev/stderr"
+      printf "%d\t%d\n", bad+0, good+0 > (f ".rejects")
+    }
   ' "$file"
 }
 
@@ -230,10 +243,15 @@ _rank_of() {
   printf '%s' "$val"
 }
 
+# _sort_key <raw-rank> -> a key that sorts unranked (0) last. 9999 is a sort
+# device only — never treated as data past this point. A page's actual rank is
+# carried separately (see the finders below), because a page genuinely ranked
+# 9999 is legal input and must not render as unranked just because the sort
+# key for "unranked" happens to look the same.
 _sort_key() { local r="$1"; [ "$r" = "0" ] && printf '9999' || printf '%s' "$r"; }
 
 # --- findings -----------------------------------------------------------------
-# _clicks_lost <cur.tsv> <prior.tsv> [weighted=1] -> rank_key url cur_clicks prior_clicks delta
+# _clicks_lost <cur.tsv> <prior.tsv> [weighted=1] -> sort_key url cur_clicks prior_clicks delta raw_rank
 # Emits only real declines. A page absent from the prior window is new, not
 # down, so it is skipped rather than counted as a fall from zero.
 #
@@ -242,6 +260,11 @@ _sort_key() { local r="$1"; [ "$r" = "0" ] && printf '9999' || printf '%s' "$r";
 # on that site could still coincidentally match an entry in the (money-site)
 # rank file, and an unconditional call would print a revenue rank the
 # disclosure right above it just said didn't apply.
+#
+# The row carries both the sort key AND the raw rank as separate trailing
+# fields — never just the sort key — so a caller checking "is this unranked"
+# tests the raw rank (0), not the sort key (9999), which a real rank-9999 page
+# would also produce.
 _clicks_lost() {
   local cur="$1" prior="$2" weighted="${3:-1}" url c p d rk
   while IFS=$'\t' read -r url c _ _ _; do
@@ -255,7 +278,7 @@ _clicks_lost() {
     else
       rk=0
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$c" "$p" "$d"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$c" "$p" "$d" "$rk"
   done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k5,5n
 }
 
@@ -273,6 +296,8 @@ _ctr_opportunities() {
 
 # Impressions but no clicks at all — a listing people see and refuse.
 # `weighted` gates _rank_of for the same reason it does in _clicks_lost above.
+# Carries sort_key AND raw_rank as separate trailing fields — see the comment
+# on _clicks_lost above for why the raw rank can't be recovered from the key.
 _zero_click_pages() {
   local cur="$1" weighted="${2:-1}" url c i rk
   while IFS=$'\t' read -r url c i _ _; do
@@ -284,7 +309,7 @@ _zero_click_pages() {
     else
       rk=0
     fi
-    printf '%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$i"
+    printf '%s\t%s\t%s\t%s\n' "$(_sort_key "$rk")" "$url" "$i" "$rk"
   done < <(_valid_rows "$cur") | sort -t$'\t' -k1,1n -k3,3nr
 }
 
@@ -324,14 +349,78 @@ _new_queries() {
 # _rank_of hitting a malformed rank file) used to have its own internal
 # `set -e`/pipefail failure swallowed here, and the report printed whatever
 # partial output had already been produced as if it were complete.
+#
+# Findings are computed BEFORE anything is printed. `_valid_rows` (see its own
+# header) leaves a `<file>.rejects` sidecar recording how much of an input it
+# dropped, and this is the one place — not each of `_valid_rows`'s six call
+# sites — that has to consult it: a report line reading `- none`, or a finding
+# missing its revenue rank, must always reflect the data and never a discarded
+# read. A dimension whose input rows were *all* rejected fails the run outright
+# rather than rendering a clean week; an empty input is a legitimate quiet week
+# and still succeeds.
 _render_site() {
   local site="$1" pc="$2" pp="$3" qc="$4" qp="$5"
-  local weighted=0 n out
+  local weighted=0 n
   [ "$site" = "$MONEY_SITE" ] && weighted=1
 
+  local out_clicks out_ctr out_zero out_new
+  out_clicks=$(_clicks_lost "$pc" "$pp" "$weighted") || { echo "ERROR: clicks-lost findings failed for $site" >&2; return 1; }
+  out_ctr=$(_ctr_opportunities "$qc") || { echo "ERROR: CTR-opportunity findings failed for $site" >&2; return 1; }
+  out_zero=$(_zero_click_pages "$pc" "$weighted") || { echo "ERROR: zero-click findings failed for $site" >&2; return 1; }
+  out_new=$(_new_queries "$qc" "$qp") || { echo "ERROR: new-query findings failed for $site" >&2; return 1; }
+
+  # The finders above already ran `_valid_rows` over these four files at least
+  # once (idempotent — same file, same content, same counts), but not every
+  # file is guaranteed to have gone through every finder (e.g. an all-rejected
+  # `$pc` short-circuits `_clicks_lost`'s loop before it ever touches `$pp`).
+  # Run it once more per file here so the ledger is complete regardless of
+  # which finders happened to visit which input.
+  local f bad good rej_total=0 rej_fatal=0
+  for f in "$pc" "$pp" "$qc" "$qp"; do
+    _valid_rows "$f" >/dev/null
+    read -r bad good < "$f.rejects"
+    rej_total=$((rej_total + bad))
+    [ "$bad" -gt 0 ] && [ "$good" -eq 0 ] && rej_fatal=1
+  done
+  if [ "$rej_fatal" -eq 1 ]; then
+    echo "ERROR: every row of an input for $site was malformed — refusing to report a clean week" >&2
+    return 1
+  fi
+  [ "$rej_total" -gt 0 ] && _SITE_DEGRADED=1
+
+  # The rank file is hand-maintained, so present-but-stale (a site migration,
+  # a truncated edit, a wrong column order) is its likeliest failure mode, and
+  # `[ ! -f "$RANK_FILE" ]` alone never catches it — every lookup then resolves
+  # to the unranked sentinel and the report degrades to an impressions
+  # ordering with no annotation. Judge staleness from what this run actually
+  # produced: among this site's weighted findings, did ANY of them resolve to
+  # a real rank? A mix of ranked and never-sold (rank 0) pages is the ordinary
+  # shape of a real catalog and must not trip this; zero matches across every
+  # weighted finding is the stale-file signature.
+  local rank_disclose=0
+  if [ "$weighted" = 1 ]; then
+    if [ ! -f "$RANK_FILE" ]; then
+      rank_disclose=1
+    else
+      # $NF, not $1: $1 is the *sort key*, which collapses "unranked" and a
+      # real rank of 9999 onto the same value (see _sort_key). The raw rank
+      # is always the last field regardless of which finder's row this is.
+      local stale
+      stale=$(printf '%s\n%s\n' "$out_clicks" "$out_zero" | awk -F'\t' '
+        NF==0 { next }
+        { rows++; if ($NF != 0) hit=1 }
+        END { print (rows > 0 && !hit) ? 1 : 0 }
+      ')
+      [ "$stale" = "1" ] && rank_disclose=1
+    fi
+  fi
+
   printf '## %s\n\n' "$site"
-  if [ "$weighted" = 1 ] && [ ! -f "$RANK_FILE" ]; then
-    printf 'Findings are **unranked** — no product-revenue file at `%s`, so this is ordered by traffic, not dollars.\n\n' \
+  if [ "$rej_total" -gt 0 ]; then
+    printf '%d row(s) rejected as malformed; findings below are incomplete.\n\n' "$rej_total"
+  fi
+  if [ "$rank_disclose" -eq 1 ]; then
+    printf 'Findings are **unranked** — no product-revenue file at `%s`, or none of its entries matched a page in this run — so this is ordered by traffic, not dollars.\n\n' \
       "${RANK_FILE/#$VAULT\//}"
   elif [ "$weighted" = 0 ]; then
     printf 'No commerce on this site; findings are unweighted.\n\n'
@@ -339,51 +428,47 @@ _render_site() {
 
   printf '### Pages losing clicks\n\n'
   n=0
-  out=$(_clicks_lost "$pc" "$pp" "$weighted") || { echo "ERROR: clicks-lost findings failed for $site" >&2; return 1; }
-  if [ -n "$out" ]; then
-    while IFS=$'\t' read -r rk url c p d; do
+  if [ -n "$out_clicks" ]; then
+    while IFS=$'\t' read -r rk url c p d rawrk; do
       n=$((n + 1))
       printf -- '- %s — %s clicks (was %s, %s)%s\n' "$url" "$c" "$p" "$d" \
-        "$([ "$rk" != 9999 ] && printf ' — revenue rank %s' "$rk")"
-    done <<< "$out"
+        "$([ "$rawrk" != 0 ] && printf ' — revenue rank %s' "$rawrk")"
+    done <<< "$out_clicks"
   fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 
   printf '### Title/meta opportunities (position 5-20, weak click rate)\n\n'
   n=0
-  out=$(_ctr_opportunities "$qc") || { echo "ERROR: CTR-opportunity findings failed for $site" >&2; return 1; }
-  if [ -n "$out" ]; then
+  if [ -n "$out_ctr" ]; then
     while IFS=$'\t' read -r i q c ctr pos; do
       n=$((n + 1))
       printf -- '- `%s` — position %.1f, %s impressions, %s clicks, CTR %.2f%%\n' \
         "$q" "$pos" "$i" "$c" "$(awk -v c="$ctr" 'BEGIN{print c*100}')"
-    done <<< "$out"
+    done <<< "$out_ctr"
   fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 
   printf '### Pages with impressions and zero clicks\n\n'
   n=0
-  out=$(_zero_click_pages "$pc" "$weighted") || { echo "ERROR: zero-click findings failed for $site" >&2; return 1; }
-  if [ -n "$out" ]; then
-    while IFS=$'\t' read -r rk url i; do
+  if [ -n "$out_zero" ]; then
+    while IFS=$'\t' read -r rk url i rawrk; do
       n=$((n + 1))
       printf -- '- %s — %s impressions, 0 clicks%s\n' "$url" "$i" \
-        "$([ "$rk" != 9999 ] && printf ' — revenue rank %s' "$rk")"
-    done <<< "$out"
+        "$([ "$rawrk" != 0 ] && printf ' — revenue rank %s' "$rawrk")"
+    done <<< "$out_zero"
   fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
 
   printf '### New queries this week, by impressions\n\n'
   n=0
-  out=$(_new_queries "$qc" "$qp") || { echo "ERROR: new-query findings failed for $site" >&2; return 1; }
-  if [ -n "$out" ]; then
+  if [ -n "$out_new" ]; then
     while IFS=$'\t' read -r i q; do
       n=$((n + 1))
       printf -- '- `%s` — %s impressions\n' "$q" "$i"
-    done <<< "$out"
+    done <<< "$out_new"
   fi
   [ "$n" -eq 0 ] && printf -- '- none\n'
   printf '\n'
@@ -403,6 +488,12 @@ main() {
 
   _WORKDIR=$(mktemp -d)
   local tmp="$_WORKDIR"
+
+  # Set by _render_site when any site's input had rejected rows. Global,
+  # matching _WORKDIR above: the while loop below shares this shell (no `|`
+  # after `done`, so no subshell), and this is read once, after every site
+  # has rendered, to decide the run's outcome signal.
+  _SITE_DEGRADED=0
 
   {
     printf -- '---\ndate: %s\ntype: report\ntags: [analytics, search-console]\nsource: ceo-analytics\n---\n\n' "$TODAY"
@@ -424,6 +515,17 @@ main() {
         "$tmp/$slug-pc.tsv" "$tmp/$slug-pp.tsv" "$tmp/$slug-qc.tsv" "$tmp/$slug-qp.tsv"
     done < <(printf '%s,' "$SITES")
   } > "$tmp/report.md"
+
+  # ceo-cron.sh (:1558) exports CEO_RUNNER_OUTCOME_FILE for a script-runner
+  # playbook to report an outcome finer than exit-0-success; this script
+  # never wrote to it before. A degraded run (some rejected rows, disclosed
+  # above but not fatal) still exits 0 — it should still be exit 0, per the
+  # invariant that a discarded read is disclosed, not promoted to a failure —
+  # but it is not a clean week either, and the outcome channel is where that
+  # distinction belongs.
+  if [ "$_SITE_DEGRADED" = 1 ] && [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
+    printf 'degraded\n' > "$CEO_RUNNER_OUTCOME_FILE"
+  fi
 
   if [ "$DRY_RUN" = 1 ]; then
     cat "$tmp/report.md"

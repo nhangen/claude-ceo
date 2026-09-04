@@ -522,8 +522,121 @@ test_new_queries_are_ordered_by_impressions_descending() {
     "the higher-impression new query is listed first"
 }
 
+# --- R1: a fully-rejected input must fail the run, not report a clean week --
+
+test_a_fully_rejected_current_window_fails_the_run_rather_than_reporting_clean() {
+  # Every row in the current-window page fixture is malformed (a null clicks
+  # field). A run that silently drops all of them and prints "- none" is
+  # reporting a discarded read as a real quiet week — the exact invariant
+  # this fix exists to hold.
+  _empty_all
+  _fixture httpsshoptest cur page "$(printf 'https://shop.test/p/alpha\t\t900\t0.04\t7')"
+  _run
+  assert_eq "$([ "$RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a 100%-rejected input must fail the run, not exit clean"
+}
+
+test_a_partially_rejected_input_discloses_the_reject_count() {
+  # One good row and one malformed row: the run must still succeed (this is
+  # not the "every row rejected" case), but the report must say so above the
+  # sections rather than silently rendering as if nothing were dropped.
+  _empty_all
+  _fixture httpsshoptest cur page \
+    "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')" \
+    "$(printf 'https://shop.test/p/broken\t\t500\t0.01\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  assert_eq "$RC" "0" "one good row alongside one bad one is not a fatal reject"
+  local shopsec
+  shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^### Pages losing/p')
+  assert_contains "$shopsec" "rejected as malformed" \
+    "the site banner discloses that some input was dropped"
+}
+
+test_an_empty_input_is_a_quiet_week_not_a_reject() {
+  # The companion boundary: zero rows is not the same as "every row
+  # rejected." An empty fixture must succeed with no reject banner at all.
+  _empty_all
+  _run
+  assert_eq "$RC" "0" "an empty week is not a failure"
+  assert_not_contains "$OUT" "rejected as malformed" \
+    "an empty input never triggers the reject banner — it dropped nothing"
+}
+
+test_an_unreadable_prior_window_fails_new_queries_rather_than_fabricating_one() {
+  # R2: `_valid_rows "$prior"` failing outright (not merely rejecting a row)
+  # used to be swallowed by `... && continue`, so a query legitimately absent
+  # from an UNREADABLE prior window was reported as new — the worst direction
+  # of this bug, since a fabricated new query reads as a real signal instead
+  # of an obviously empty section.
+  #
+  # Called directly (via _source_analytics), not through a full `_run`:
+  # `_render_site`'s own reject-ledger loop (R1) also touches every one of a
+  # site's four input files unconditionally and would independently fail the
+  # whole run on this same unreadable file, which would make a full-report
+  # assertion pass even with the R2 fix reverted. Calling `_new_queries`
+  # directly isolates the one code path this arm exists to pin.
+  local cur; cur=$(mktemp)
+  printf 'alpha\t5\t100\t0.05\t8\n' > "$cur"
+  local out rc
+  out=$(_source_analytics _new_queries "$cur" "/nonexistent/prior.tsv" 2>/dev/null)
+  rc=$?
+  rm -f "$cur"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "an unreadable prior window must fail rather than read as 'not found'"
+  assert_not_contains "$out" "alpha" \
+    "and must never fabricate the current query as new along the way"
+}
+
+# --- R3: the unranked disclosure must reflect what happened, not the file's mere existence ---
+
+test_a_rank_file_present_but_never_matching_is_disclosed_as_unranked() {
+  # Sibling to test_a_missing_rank_file_is_disclosed_not_silently_ignored:
+  # the file EXISTS this time, but every entry in it is for a different page
+  # than anything found this run — the shape of a stale file after a site
+  # migration or a truncated edit. Every lookup resolves to the unranked
+  # sentinel, and that must be disclosed exactly like a missing file is.
+  _empty_all
+  printf 'https://shop.test/p/other\t1\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  assert_contains "$OUT" "unranked" \
+    "a present-but-never-matching rank file discloses unranked, the same as a missing one"
+}
+
+test_a_mix_of_ranked_and_never_sold_pages_does_not_trigger_the_stale_disclosure() {
+  # The other direction: a real catalog legitimately has pages that never
+  # sold (rank 0) alongside ones that did. That mix must NOT read as a stale
+  # file — the disclosure fires only when NOTHING this run matched.
+  _empty_all
+  printf 'https://shop.test/p/best\t1\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsshoptest cur page \
+    "$(printf 'https://shop.test/p/never-sold\t1\t500\t0.002\t9')" \
+    "$(printf 'https://shop.test/p/best\t50\t800\t0.06\t6')"
+  _fixture httpsshoptest prior page \
+    "$(printf 'https://shop.test/p/never-sold\t90\t520\t0.17\t8')" \
+    "$(printf 'https://shop.test/p/best\t60\t810\t0.07\t6')"
+  _run
+  local shopsec
+  shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^### Pages losing/p')
+  assert_not_contains "$shopsec" "unranked" \
+    "one matching page among several is a normal catalog, not a stale file"
+}
+
+# --- R7: a page genuinely ranked 9999 is not the unranked sentinel ---
+
+test_a_page_genuinely_ranked_9999_still_shows_its_rank() {
+  _empty_all
+  printf 'https://shop.test/p/alpha\t9999\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  _run
+  assert_contains "$OUT" "revenue rank 9999" \
+    "a real rank of 9999 must print, not be swallowed by the unranked sentinel"
+}
+
 # --- R4: a Search Console query failure must include the response body -----
-# --- R5: a token-request failure must report Google's error_description ----
 
 test_a_search_console_query_failure_includes_the_response_body() {
   STUBDIR=$(mktemp -d)
@@ -552,6 +665,8 @@ STUB
   assert_contains "$err" "sufficient permission" \
     "the response body — the only thing that distinguishes a permission error from a timeout — reaches the error message"
 }
+
+# --- R5: a token-request failure must report Google's error_description ----
 
 test_a_token_request_failure_reports_the_error_description() {
   local keydir keyfile
@@ -603,31 +718,25 @@ test_a_missing_fixture_fails_loudly_rather_than_reporting_an_empty_week() {
     "a missing fixture must fail the run"
 }
 
-# --- R2: a malformed prior row must not fabricate a new query -------------
+# --- R1: the outcome channel reports a degraded (non-fatal) reject ---------
 
-test_an_unreadable_prior_window_fails_new_queries_rather_than_fabricating_one() {
-  # R2: `_valid_rows "$prior"` failing outright (not merely rejecting a row)
-  # used to be swallowed by `... && continue`, so a query legitimately absent
-  # from an UNREADABLE prior window was reported as new — the worst direction
-  # of this bug, since a fabricated new query reads as a real signal instead
-  # of an obviously empty section.
-  #
-  # Called directly (via _source_analytics), not through a full `_run`:
-  # `_render_site`'s own reject-ledger loop (R1) also touches every one of a
-  # site's four input files unconditionally and would independently fail the
-  # whole run on this same unreadable file, which would make a full-report
-  # assertion pass even with the R2 fix reverted. Calling `_new_queries`
-  # directly isolates the one code path this arm exists to pin.
-  local cur; cur=$(mktemp)
-  printf 'alpha\t5\t100\t0.05\t8\n' > "$cur"
-  local out rc
-  out=$(_source_analytics _new_queries "$cur" "/nonexistent/prior.tsv" 2>/dev/null)
-  rc=$?
-  rm -f "$cur"
-  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
-    "an unreadable prior window must fail rather than read as 'not found'"
-  assert_not_contains "$out" "alpha" \
-    "and must never fabricate the current query as new along the way"
+test_a_degraded_run_writes_the_outcome_file_for_ceo_cron() {
+  # ceo-cron.sh (:1558) exports CEO_RUNNER_OUTCOME_FILE; this script never
+  # wrote to it. A run with disclosed-but-non-fatal rejects should mark
+  # itself degraded there so the cron layer can tell a clean week from one
+  # with dropped data, without parsing the report body.
+  _empty_all
+  _fixture httpsshoptest cur page \
+    "$(printf 'https://shop.test/p/alpha\t40\t900\t0.044\t7')" \
+    "$(printf 'https://shop.test/p/broken\t\t500\t0.01\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/alpha\t100\t1000\t0.1\t6')"
+  local outcome_file; outcome_file=$(mktemp)
+  rm -f "$outcome_file"
+  CEO_RUNNER_OUTCOME_FILE="$outcome_file" _run
+  assert_eq "$RC" "0" "a degraded-but-not-fatal run still succeeds"
+  assert_eq "$(cat "$outcome_file" 2>/dev/null)" "degraded" \
+    "the outcome file records the degraded state for ceo-cron to consult"
+  rm -f "$outcome_file"
 }
 
 run_tests
