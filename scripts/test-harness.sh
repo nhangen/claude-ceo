@@ -190,7 +190,25 @@ run_tests() {
       HARNESS_PARENT_SCOPE=1
       export TEST_FAILS_TMP HARNESS_PARENT_SCOPE
       true > "$TEST_FAILS_TMP"
-      setup
+      # Guarded for the same reason the test body below is, and it was missed
+      # here on the first pass: a `setup`/`teardown` that ends on a failing
+      # command under the suite's own `set -e` kills the whole run. Measured
+      # before this: a setup returning 1 on the second of three arms printed
+      # MARK_A and then nothing — no FAILED line, no test count, no summary
+      # at all, which is strictly worse than the #349 output this file exists
+      # to fix, because nothing even names the cause. 34 suites define one of
+      # these and 8 of those run under `set -e`, so a `grep` with no match or
+      # a false `[ -f ... ]` as the last statement is enough.
+      #
+      # `||` here, NOT the `& wait` the body uses. A subshell would isolate
+      # setup's variable assignments from the test that needs them, and the
+      # harness's own suite goes 84-red on that change. The trade is real and
+      # worth stating: `||` suppresses errexit INSIDE setup, so a failing
+      # command midway no longer aborts it and the rest of the function runs.
+      # For a fixture builder that is the lesser evil — the alternative on
+      # offer is not "abort setup cleanly", it is "kill the entire run with
+      # no summary", which is what this replaces.
+      setup || _record_test_abort "setup for $CURRENT_TEST" $?
       HARNESS_PARENT_SCOPE=0
       _fold_parent_scope "$parent_fails_tmp"
     fi
@@ -239,16 +257,46 @@ run_tests() {
     # says what happened is worth more than one that is always 1 on a pass, but
     # do not read it as protected.
     (
+      # The two bookkeeping calls carry `|| true`, and the order is load-bearing
+      # in both directions. Errexit is live inside an EXIT trap, so without the
+      # `|| true` a failure in either one ends the trap before the abort record
+      # runs: measured with an unwritable assertions file, the "aborted or
+      # exited with non-zero code" line vanished entirely and the run stayed red
+      # only because NO ASSERTIONS RAN happened to fire on the same arm.
+      #
+      # Moving the abort record to the front instead — the obvious fix — breaks
+      # the #322 accounting, because _record_hand_rolled_fails measures a delta
+      # the abort record has by then already changed: the suite reports FAILED:
+      # 1 where it should report 2. So the order stays and the guards are what
+      # make the record unreachable-by-failure.
+      #
+      # No arm pins these two `|| true`s, and that is stated rather than
+      # papered over. `assertions_tmp` is derived from an mktemp path the
+      # parent computed before the subshell starts, so a test body cannot
+      # reach the directory in time to make the write fail; an arm written
+      # against a read-only TMPDIR passed with the guards removed. Rather
+      # than ship an arm that survives its own mutation, the guards stand on
+      # the measurement above — an unwritable assertions file did drop the
+      # abort record — and this note records that the coverage is absent.
       trap '
         rc=$?
-        _record_hand_rolled_fails "$fails_before"
-        echo "$ASSERTION_COUNT" > "$assertions_tmp"
+        _record_hand_rolled_fails "$fails_before" || true
+        echo "$ASSERTION_COUNT" > "$assertions_tmp" || true
         [ $rc -ne 0 ] && _record_test_abort "$CURRENT_TEST" $rc
         exit $rc
       ' EXIT
       "$fn"
     ) &
     wait "$!" || true
+    # Documented because the 26-line note above explains everything else about
+    # this construct and missed it: a background job in a non-interactive
+    # shell gets /dev/null on stdin, so every test body now reads EOF instead
+    # of the harness's stdin. Measured — a body doing `x=$(cat)` under
+    # `echo HELLO | bash suite.sh` saw HELLO before and sees '' now. No suite
+    # in this repo depends on it, and EOF is the safer default (a stray `read`
+    # returns rather than hanging the run), but it is a real change across all
+    # 53 suites and a future move back to a foreground form would silently
+    # restore the hang.
 
     if [ -s "$TEST_FAILS_TMP" ]; then
       FAILS=$((FAILS + $(wc -l < "$TEST_FAILS_TMP")))
@@ -272,7 +320,8 @@ run_tests() {
       HARNESS_PARENT_SCOPE=1
       export TEST_FAILS_TMP HARNESS_PARENT_SCOPE
       true > "$TEST_FAILS_TMP"
-      teardown
+      # Same guard and same trade as setup above; see the note there.
+      teardown || _record_test_abort "teardown for $CURRENT_TEST" $?
       HARNESS_PARENT_SCOPE=0
       _fold_parent_scope "$parent_fails_tmp"
       unset TEST_FAILS_TMP

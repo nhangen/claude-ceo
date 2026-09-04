@@ -373,6 +373,61 @@ test_c() { assert_eq a a "passes"; }'
 # on the *outer* run_tests loop trips on the aborting subshell's own nonzero
 # status and kills every remaining test — the abort record prints and nothing
 # after it runs.
+test_a_failing_setup_under_errexit_does_not_kill_the_run() {
+  # The #349 invariant applied to the other two call sites, and they were
+  # missed on the first pass. Before this, a `setup` that returned non-zero
+  # under the suite's own `set -e` killed the loop outright: the first arm
+  # printed, then nothing — no FAILED line, no test count, no summary at all.
+  # That is worse than the bug #349 fixes, because nothing even names the
+  # cause. 34 suites in this repo define setup or teardown and 8 of those run
+  # under `set -e`, so a `grep` with no match as the last statement is enough.
+  _run_child_errexit '
+setup() { [ "${CURRENT_TEST:-}" = "test_b" ] && return 1; return 0; }
+test_a() { assert_eq a a "A"; echo MARK_A; }
+test_b() { assert_eq b b "B"; echo MARK_B; }
+test_c() { assert_eq c c "C"; echo MARK_C; }'
+  assert_contains "$CHILD_OUT" "setup for test_b" \
+    "a failing setup is named rather than silently ending the run"
+  assert_contains "$CHILD_OUT" "MARK_C" \
+    "and every later arm still runs"
+  assert_not_contains "$CHILD_OUT" "All tests passed" \
+    "while the suite still goes red"
+}
+
+test_a_failing_teardown_under_errexit_does_not_kill_the_run() {
+  # Same call site problem on the way out. A teardown ending on a failing
+  # command took the rest of the suite with it and printed no summary.
+  _run_child_errexit '
+teardown() { [ "${CURRENT_TEST:-}" = "test_b" ] && return 1; return 0; }
+test_a() { assert_eq a a "A"; echo MARK_A; }
+test_b() { assert_eq b b "B"; echo MARK_B; }
+test_c() { assert_eq c c "C"; echo MARK_C; }'
+  assert_contains "$CHILD_OUT" "teardown for test_b" \
+    "a failing teardown is named rather than silently ending the run"
+  assert_contains "$CHILD_OUT" "MARK_C" \
+    "and every later arm still runs"
+}
+
+test_a_test_body_reads_eof_rather_than_the_harness_stdin() {
+  # A consequence of running the body as a background job: a non-interactive
+  # shell hands one /dev/null on stdin. Pinned rather than merely documented,
+  # because the alternative it replaced — a foreground body inheriting the
+  # harness's stdin — is what makes a stray `read` hang the whole run, and
+  # nothing else here would notice a move back to it.
+  local suite; suite=$(mktemp)
+  {
+    echo '#!/bin/bash'
+    echo 'set -uo pipefail'
+    echo "source '$HARNESS'"
+    echo 'test_stdin() { local x; x=$(cat); assert_eq "$x" "" "body stdin is EOF"; }'
+    echo 'run_tests'
+  } > "$suite"
+  local out; out=$(echo HELLO | bash "$suite" 2>&1)
+  rm -f "$suite"
+  assert_contains "$out" "All tests passed" \
+    "the body reads EOF, not the string piped into the suite"
+}
+
 _run_child_errexit() {
   local body="$1"
   {
@@ -397,18 +452,6 @@ test_c_after() { assert_eq a a "c runs"; echo MARKER_C; }'
     "test_c_after must run too, not just the one right after the abort"
   assert_eq "$CHILD_RC" "1" "the abort still fails the run"
   assert_contains "$CHILD_OUT" "FAILED: 1" "only the abort itself is a failure"
-}
-
-test_349_the_summary_prints_after_an_abort_under_errexit() {
-  _run_child_errexit '
-test_a_aborts() { assert_eq a a "before abort"; exit 7; }
-test_b_after() { assert_eq a a "b runs"; }'
-  # A killed loop never reaches the `echo ""` / FAILED lines at the bottom of
-  # run_tests — under the fully unguarded original, the whole child process
-  # dies mid-loop with no summary at all, which "checked git status" -style
-  # output would misread as a crash rather than a reported failure.
-  assert_contains "$CHILD_OUT" "FAILED: 1" \
-    "the summary line must still print after an abort under errexit"
 }
 
 # The two arms above pin the loop surviving an *explicit* `exit N` — but `exit`
