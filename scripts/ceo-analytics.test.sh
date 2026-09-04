@@ -85,6 +85,10 @@ _clicks_lost_section() {
   printf '%s\n' "$OUT" | sed -n '/Pages losing clicks/,/^###/p'
 }
 
+_zero_click_section() {
+  printf '%s\n' "$OUT" | sed -n '/Pages with impressions and zero clicks/,/^###/p'
+}
+
 # Every site needs all four fixtures or the run reports on empty input, which
 # would make an assertion about "none" pass for the wrong reason.
 _empty_all() {
@@ -985,54 +989,193 @@ test_a_degraded_run_writes_the_outcome_file_for_ceo_cron() {
 }
 
 # --- Search Console rowLimit disclosure (issue #357) -----------------------
+#
+# Every arm below drives CEO_ANALYTICS_ROW_LIMIT rather than the 250 default.
+# That is not only for speed. The first version of these arms built 250-row
+# fixtures against an empty prior window, so new_total was 250 -- numerically
+# identical to ROW_LIMIT -- and the assertion could not tell the real total from
+# the constant. Printing the cap in place of the total left the suite green.
+# Driving the knob makes the two numbers differ by construction, and gives the
+# knob its only coverage: the fixture seam returns before the request body is
+# built, so nothing else exercises the --argjson threading.
 
-test_a_capped_current_query_window_discloses_the_row_limit() {
+_run_capped() {
+  CEO_ANALYTICS_ROW_LIMIT="$1" _run
+}
+
+test_a_capped_current_query_window_reports_a_total_that_is_not_the_cap() {
   _empty_all
-  local -a qrows=()
+  local -a cur=() prior=()
   local j
-  for j in $(seq 1 250); do
-    qrows+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))")
-  done
-  _fixture httpsshoptest cur query "${qrows[@]}"
-  _run
-  assert_eq "$RC" "0" "a capped query window is valid and must succeed"
-  assert_contains "$OUT" "Search Console query limit (250) reached for current week" \
-    "the report discloses when the current query window reaches the row limit"
-  assert_contains "$OUT" "250+ new queries this week (capped at 250); the 10 with the most impressions are listed." \
-    "the subtitle discloses the lower-bound total rather than stating a capped number as absolute"
+  for j in $(seq 1 20); do cur+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  for j in $(seq 1 5); do prior+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  _fixture httpsshoptest cur query "${cur[@]}"
+  _fixture httpsshoptest prior query "${prior[@]}"
+  _run_capped 20
+  assert_eq "$RC" "0" "a capped query window is valid input and must succeed"
+  assert_contains "$OUT" "Search Console row limit (20) reached for the current query window" \
+    "the report discloses that the current query window was truncated"
+  # 15 new, cap 20: the two numbers differ, so this pins the total rather than
+  # the constant. The cap is attributed to the window, not to the count -- "15
+  # new queries, capped at 20" would claim 15 was capped at 20, which is false.
+  assert_contains "$OUT" "(15 new queries this week; the 10 with the most impressions are listed. The current query window hit the 20-row limit, so the true total is higher.)" \
+    "the subtitle states the real new-query total and attributes the cap to the window"
+  assert_not_contains "$OUT" "(20 new queries this week" \
+    "the cap must never be printed in place of the total"
+}
+
+test_a_capped_window_with_few_new_queries_still_marks_the_total_a_floor() {
+  # The `new_total -gt n` guard skips a redundant subtitle when everything found
+  # is already listed. On a capped run that is exactly where the reader most
+  # needs to know the number is a floor, so the capped marker escapes the guard.
+  _empty_all
+  local -a cur=() prior=()
+  local j
+  for j in $(seq 1 5); do cur+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  for j in $(seq 1 3); do prior+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  _fixture httpsshoptest cur query "${cur[@]}"
+  _fixture httpsshoptest prior query "${prior[@]}"
+  _run_capped 5
+  assert_eq "$RC" "0" "run must succeed"
+  assert_contains "$OUT" "(2 new queries found, but the current query window hit the 5-row limit, so the true total is higher.)" \
+    "a capped run whose new-query total fits the listing still discloses the total is a floor"
 }
 
 test_a_capped_prior_query_window_discloses_potential_false_new_queries() {
   _empty_all
-  local -a qrows=()
+  local -a prior=()
   local j
-  for j in $(seq 1 250); do
-    qrows+=("$(printf 'old%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))")
-  done
-  _fixture httpsshoptest prior query "${qrows[@]}"
+  for j in $(seq 1 5); do prior+=("$(printf 'old%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  _fixture httpsshoptest prior query "${prior[@]}"
   _fixture httpsshoptest cur query "$(printf 'brandnew\t1\t100\t0.01\t5')"
-  _run
+  _run_capped 5
   assert_eq "$RC" "0" "run must succeed"
-  assert_contains "$OUT" "Search Console query limit (250) reached for prior week" \
+  assert_contains "$OUT" "Search Console row limit (5) reached for the prior query window" \
     "the report discloses when the prior query window reaches the row limit"
-  assert_contains "$OUT" "queries ranking outside the top 250 by clicks last week may be falsely reported as new" \
-    "the banner explains why prior-window capping causes unverified new query reporting"
+  assert_contains "$OUT" "may be falsely reported as new below. Treat this section as unverified." \
+    "the fabrication banner carries the same directive as its malformed-row sibling"
+  # The two banners are adjacent ifs reading sibling flags; without this the
+  # pairing is unpinned and a swapped condition survives.
+  assert_not_contains "$OUT" "reached for the current query window" \
+    "a capped prior window must not raise the current-window banner"
 }
 
 test_an_uncapped_query_window_under_row_limit_prints_no_cap_banner() {
   _empty_all
-  local -a qrows=()
+  local -a cur=()
   local j
-  for j in $(seq 1 249); do
-    qrows+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))")
-  done
-  _fixture httpsshoptest cur query "${qrows[@]}"
-  _run
+  for j in $(seq 1 4); do cur+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  _fixture httpsshoptest cur query "${cur[@]}"
+  _run_capped 5
   assert_eq "$RC" "0" "run must succeed"
-  assert_not_contains "$OUT" "Search Console query limit" \
-    "no row limit banner should be printed when queries are below the row limit"
-  assert_contains "$OUT" "249 new queries this week; the 10 with the most impressions are listed." \
-    "the subtitle states the exact uncapped total when under the limit"
+  assert_not_contains "$OUT" "Search Console row limit" \
+    "no row limit banner may print when every window is under the limit"
+  assert_not_contains "$OUT" "the true total is higher" \
+    "an uncapped run must not mark its total a floor"
+}
+
+test_a_capped_current_page_window_marks_the_zero_click_section_unverified() {
+  # The API sorts rows by clicks descending and returns the top ROW_LIMIT, so
+  # pages with zero clicks are the first rows a cap removes. Without a banner
+  # this section renders "- none", which reads as good news on exactly the
+  # properties too large for the cap.
+  _empty_all
+  local -a cur=()
+  local j
+  for j in $(seq 1 5); do cur+=("$(printf 'https://shop.test/p/%03d\t%d\t900\t0.04\t7' "$j" $((10 + j)))"); done
+  _fixture httpsshoptest cur page "${cur[@]}"
+  _run_capped 5
+  assert_eq "$RC" "0" "run must succeed"
+  assert_contains "$OUT" "an empty list here is not evidence of an empty result" \
+    "a capped current page window must disclose that the zero-click section is unverified"
+  assert_contains "$(_zero_click_section)" "- none" \
+    "the section is empty here, which is precisely why the banner has to be present"
+}
+
+test_a_capped_prior_page_window_discloses_missing_declines() {
+  _empty_all
+  local -a prior=()
+  local j
+  for j in $(seq 1 5); do prior+=("$(printf 'https://shop.test/p/%03d\t%d\t900\t0.04\t7' "$j" $((10 + j)))"); done
+  _fixture httpsshoptest prior page "${prior[@]}"
+  _fixture httpsshoptest cur page "$(printf 'https://shop.test/p/001\t2\t900\t0.01\t7')"
+  _run_capped 5
+  assert_eq "$RC" "0" "run must succeed"
+  assert_contains "$(_clicks_lost_section)" "reached for the prior page window" \
+    "a capped prior page window must disclose that real declines may be missing"
+}
+
+test_a_capped_window_marks_the_run_degraded_for_ceo_cron() {
+  # A capped window degrades fidelity exactly as a rejected row does, and on the
+  # prior windows it fabricates rather than omits. Disclosing it only in prose
+  # would leave the machine channel silent -- the state every earlier fix in
+  # this file was undoing.
+  _empty_all
+  local -a cur=()
+  local j
+  for j in $(seq 1 5); do cur+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  _fixture httpsshoptest cur query "${cur[@]}"
+  local outcome_file; outcome_file=$(mktemp)
+  rm -f "$outcome_file"
+  CEO_RUNNER_OUTCOME_FILE="$outcome_file" CEO_ANALYTICS_ROW_LIMIT=5 _run
+  assert_eq "$RC" "0" "a capped run is degraded, not fatal"
+  assert_eq "$(cat "$outcome_file" 2>/dev/null)" "fired" \
+    "a capped window writes the outcome word ceo-cron matches, so the run notifies"
+  rm -f "$outcome_file"
+}
+
+test_a_capped_query_window_marks_the_ctr_section_incomplete() {
+  # _ctr_opportunities reads the same $qc the cap is detected on, and its
+  # predicate (weak click rate) selects exactly the tail a clicks-ordered cap
+  # removes. It was the last section still reading a truncated window in
+  # silence, with the flag already three lines away.
+  _empty_all
+  local -a cur=()
+  local j
+  for j in $(seq 1 5); do cur+=("$(printf 'q%03d\t1\t%d\t0.004\t8' "$j" $((500 + j)))"); done
+  _fixture httpsshoptest cur query "${cur[@]}"
+  _run_capped 5
+  assert_eq "$RC" "0" "run must succeed"
+  assert_contains "$(_ctr_section)" "this section looks for queries whose click rate is weak" \
+    "a capped current query window must mark the CTR section incomplete"
+}
+
+test_a_leading_zero_row_limit_is_read_as_decimal_by_every_consumer() {
+  # `0010` passes a bare digit check and is then read three ways: jq --argjson
+  # and `[ -ge ]` take decimal 10, printf %d takes OCTAL 8. Unnormalized, the
+  # report names a limit that is not the one it asked the API for.
+  _empty_all
+  local -a cur=()
+  local j
+  for j in $(seq 1 10); do cur+=("$(printf 'q%03d\t1\t%d\t0.01\t9' "$j" $((500 + j)))"); done
+  _fixture httpsshoptest cur query "${cur[@]}"
+  _run_capped 0010
+  assert_eq "$RC" "0" "a zero-padded limit is valid input"
+  assert_contains "$OUT" "row limit (10) reached" \
+    "the banner names the decimal limit that was actually applied"
+  assert_not_contains "$OUT" "row limit (8) reached" \
+    "the limit must never be re-read as octal"
+}
+
+test_a_non_numeric_row_limit_is_rejected_rather_than_silently_disabling_the_cap() {
+  # Every use site fails open: `[ "$n" -ge "$ROW_LIMIT" ]` on junk prints
+  # "integer expected" and evaluates false, and printf %d renders it 0. Neither
+  # trips set -e from inside an `if` condition, so an unvalidated typo would
+  # turn the disclosure off and still exit 0.
+  _empty_all
+  local err rc=0
+  err=$(CEO_ANALYTICS_ROW_LIMIT=abc bash "$ANALYTICS" --dry-run 2>&1 >/dev/null) || rc=$?
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a non-numeric row limit must fail the run, not silently disable the cap"
+  assert_contains "$err" "CEO_ANALYTICS_ROW_LIMIT must be a positive integer" \
+    "the refusal names the variable and what it expected"
+  local z
+  for z in 0 000; do
+    rc=0
+    err=$(CEO_ANALYTICS_ROW_LIMIT="$z" bash "$ANALYTICS" --dry-run 2>&1 >/dev/null) || rc=$?
+    assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+      "a zero row limit ('$z') must fail too -- it would mark every window capped"
+  done
 }
 
 run_tests
