@@ -299,8 +299,7 @@ _new_queries() {
 # `set -e`/pipefail failure swallowed here, and the report printed whatever
 # partial output had already been produced as if it were complete.
 _render_site() {
-  local site="$1" cur_end="$2" cur_start="$3" prior_end="$4" prior_start="$5"
-  local pc="$6" pp="$7" qc="$8" qp="$9"
+  local site="$1" pc="$2" pp="$3" qc="$4" qp="$5"
   local weighted=0 n out
   [ "$site" = "$MONEY_SITE" ] && weighted=1
 
@@ -365,8 +364,6 @@ _render_site() {
 }
 
 main() {
-  mkdir -p "$REPORT_DIR"
-
   local cur_end cur_start prior_end prior_start
   cur_end=$(_days_ago "$LAG_DAYS")
   cur_start=$(_days_ago $((LAG_DAYS + 6)))
@@ -397,7 +394,7 @@ main() {
       _gsc_query "$site" "$prior_start" "$prior_end" page  > "$tmp/$slug-pp.tsv"
       _gsc_query "$site" "$cur_start"   "$cur_end"   query > "$tmp/$slug-qc.tsv"
       _gsc_query "$site" "$prior_start" "$prior_end" query > "$tmp/$slug-qp.tsv"
-      _render_site "$site" "$cur_end" "$cur_start" "$prior_end" "$prior_start" \
+      _render_site "$site" \
         "$tmp/$slug-pc.tsv" "$tmp/$slug-pp.tsv" "$tmp/$slug-qc.tsv" "$tmp/$slug-qp.tsv"
     done < <(printf '%s,' "$SITES")
   } > "$tmp/report.md"
@@ -408,6 +405,7 @@ main() {
     return 0
   fi
 
+  mkdir -p "$REPORT_DIR"
   mv "$tmp/report.md" "$REPORT_FILE"
   printf 'ok %s\n' "${REPORT_FILE/#$VAULT\//}"
 }

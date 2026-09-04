@@ -200,6 +200,18 @@ test_a_dry_run_writes_nothing_to_the_vault() {
     "--dry-run prints the report and leaves the vault alone"
 }
 
+test_a_dry_run_creates_no_vault_directory_either() {
+  # The .md-count check above passes even if `mkdir -p "$REPORT_DIR"` ran
+  # before the --dry-run return, since an empty directory still globs to
+  # zero files. Pin the directory itself: a dry run must not touch the
+  # filesystem at all, not just "not write the report file."
+  _empty_all
+  rm -rf "$CEO_VAULT/CEO/reports"
+  _run
+  assert_eq "$([ -d "$CEO_VAULT/CEO/reports/analytics" ] && echo exists || echo absent)" "absent" \
+    "--dry-run must not create the reports/analytics directory"
+}
+
 test_a_real_run_writes_the_declared_artifact_path() {
   _empty_all
   OUT=$(bash "$ANALYTICS" 2>/dev/null); RC=$?
@@ -452,6 +464,60 @@ test_a_page_with_real_clicks_is_not_a_zero_click_finding() {
   _run
   assert_not_contains "$OUT" "p/converting" \
     "12 clicks is not zero clicks, regardless of impression volume"
+}
+
+test_an_unranked_page_on_the_money_site_shows_no_revenue_rank_suffix() {
+  # The rank file exists (so the "unranked" disclosure doesn't fire) and has
+  # an entry for a DIFFERENT page, so this page's rank resolves to the
+  # sentinel 9999. `[ "$rk" != 9999 ]` is what keeps that sentinel from
+  # printing as a literal "revenue rank 9999".
+  _empty_all
+  printf 'https://shop.test/p/other\t1\n' > "$CEO_ANALYTICS_RANK_FILE"
+  _fixture httpsshoptest cur   page "$(printf 'https://shop.test/p/never-ranked\t5\t900\t0.044\t7')"
+  _fixture httpsshoptest prior page "$(printf 'https://shop.test/p/never-ranked\t50\t910\t0.1\t6')"
+  _run
+  assert_contains "$OUT" "https://shop.test/p/never-ranked — 5 clicks (was 50, -45)" \
+    "the finding itself is unaffected"
+  assert_not_contains "$OUT" "revenue rank 9999" \
+    "the unranked sentinel must never print as a literal rank"
+}
+
+test_a_site_with_no_findings_shows_none_for_every_section() {
+  _empty_all
+  _run
+  local shopsec none_count
+  shopsec=$(printf '%s\n' "$OUT" | sed -n '/## https:\/\/shop.test\//,/^## /p')
+  none_count=$(printf '%s\n' "$shopsec" | grep -c '^- none$')
+  assert_eq "$none_count" "4" "all four sections report none when there is no data"
+}
+
+test_new_queries_are_capped_at_ten_by_impressions() {
+  local rows=() i
+  for i in 01 02 03 04 05 06 07 08 09 10 11; do
+    rows+=("$(printf 'query-%s\t1\t%d\t0.01\t10' "$i" "$((1100 - 10#$i))")")
+  done
+  _empty_all
+  _fixture httpsshoptest cur query "${rows[@]}"
+  _run
+  local newsec
+  newsec=$(printf '%s\n' "$OUT" | sed -n '/New queries this week/,/^## \|^### Pages/p')
+  assert_contains "$newsec" "query-01" "the highest-impression query is included"
+  assert_not_contains "$newsec" "query-11" \
+    "the eleventh query (lowest impressions) is dropped past the cap of 10"
+}
+
+test_new_queries_are_ordered_by_impressions_descending() {
+  _empty_all
+  _fixture httpsshoptest cur query \
+    "$(printf 'low volume\t1\t150\t0.01\t10')" \
+    "$(printf 'high volume\t2\t900\t0.02\t9')"
+  _run
+  local newsec low_pos high_pos
+  newsec=$(printf '%s\n' "$OUT" | sed -n '/New queries this week/,/^## \|^### Pages/p')
+  low_pos=$(printf '%s\n' "$newsec" | grep -n 'low volume' | head -1 | cut -d: -f1)
+  high_pos=$(printf '%s\n' "$newsec" | grep -n 'high volume' | head -1 | cut -d: -f1)
+  assert_eq "$([ "$high_pos" -lt "$low_pos" ] && echo yes || echo no)" "yes" \
+    "the higher-impression new query is listed first"
 }
 
 run_tests
