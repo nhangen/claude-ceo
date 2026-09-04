@@ -603,4 +603,31 @@ test_a_missing_fixture_fails_loudly_rather_than_reporting_an_empty_week() {
     "a missing fixture must fail the run"
 }
 
+# --- R2: a malformed prior row must not fabricate a new query -------------
+
+test_an_unreadable_prior_window_fails_new_queries_rather_than_fabricating_one() {
+  # R2: `_valid_rows "$prior"` failing outright (not merely rejecting a row)
+  # used to be swallowed by `... && continue`, so a query legitimately absent
+  # from an UNREADABLE prior window was reported as new — the worst direction
+  # of this bug, since a fabricated new query reads as a real signal instead
+  # of an obviously empty section.
+  #
+  # Called directly (via _source_analytics), not through a full `_run`:
+  # `_render_site`'s own reject-ledger loop (R1) also touches every one of a
+  # site's four input files unconditionally and would independently fail the
+  # whole run on this same unreadable file, which would make a full-report
+  # assertion pass even with the R2 fix reverted. Calling `_new_queries`
+  # directly isolates the one code path this arm exists to pin.
+  local cur; cur=$(mktemp)
+  printf 'alpha\t5\t100\t0.05\t8\n' > "$cur"
+  local out rc
+  out=$(_source_analytics _new_queries "$cur" "/nonexistent/prior.tsv" 2>/dev/null)
+  rc=$?
+  rm -f "$cur"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "an unreadable prior window must fail rather than read as 'not found'"
+  assert_not_contains "$out" "alpha" \
+    "and must never fabricate the current query as new along the way"
+}
+
 run_tests
