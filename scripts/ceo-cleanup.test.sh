@@ -588,12 +588,6 @@ test_cleanup_reaps_worker_row_with_dead_pid() {
   local sdir; sdir="$(ceo_loop_state_dir "deadpid")"
   mkdir -p "$sdir"
 
-  # Create worktrees for both rows so Candidate 3 does not reap either of them.
-  local bkey_dead; bkey_dead="$(branch_key "ceo/dead-run")"
-  mkdir -p "$repo/.ceo-loop/ceo_dead-run-${bkey_dead:0:12}"
-  local bkey_foreign; bkey_foreign="$(branch_key "ceo/foreign-run")"
-  mkdir -p "$repo/.ceo-loop/ceo_foreign-run-${bkey_foreign:0:12}"
-
   # Seed a dead PID and a foreign-UID live PID (1).
   printf '%s\n' \
     '{"branch":"ceo/dead-run","base":"aaa","pid":99999999,"files":["a.txt"],"ts":1000}' \
@@ -603,9 +597,9 @@ test_cleanup_reaps_worker_row_with_dead_pid() {
   local out rc=0
   out=$(bash "$CLEANUP" 2>&1) || rc=$?
   assert_eq "$rc" "0" "cleanup must succeed"
-  assert_contains "$out" "WORKER_REAPED: ceo/dead-run (pid 99999999 dead: No such process)" \
+  assert_contains "$out" "WORKER_REAPED: ceo/dead-run (pid 99999999 is not running)" \
     "a worker row with a dead PID must be reaped"
-  assert_contains "$out" "WORKER_ROWS_REAPED: 1" "reaped worker count is reported in summary"
+  assert_contains "$out" "WORKER_REAPED: 1" "reaped worker count is reported in summary"
   assert_not_contains "$out" "WORKER_REAPED: ceo/foreign-run" \
     "a worker row with a live foreign-UID PID (EPERM) must NOT be reaped"
   assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/foreign-run" \
@@ -617,12 +611,6 @@ test_cleanup_reaps_pidless_worker_row_older_than_threshold() {
   set_repos_md "$repo"
   local sdir; sdir="$(ceo_loop_state_dir "pidless")"
   mkdir -p "$sdir"
-
-  # Create worktrees for both branches so Candidate 3 does not reap them.
-  local bkey_old; bkey_old="$(branch_key "ceo/pidless-old")"
-  mkdir -p "$repo/.ceo-loop/ceo_pidless-old-${bkey_old:0:12}"
-  local bkey_fresh; bkey_fresh="$(branch_key "ceo/pidless-fresh")"
-  mkdir -p "$repo/.ceo-loop/ceo_pidless-fresh-${bkey_fresh:0:12}"
 
   local now; now="$(date +%s)"
   local old_ts=$((now - 864000)) # 10 days old (> 7 days)
@@ -642,33 +630,144 @@ test_cleanup_reaps_pidless_worker_row_older_than_threshold() {
     "only the old pid-less worker row is removed"
 }
 
-test_cleanup_reaps_worker_row_when_no_worktree_exists() {
-  local repo; repo="$(mkrepo_cleanup noworktree main)"
+# The arm that used to sit here asserted the opposite of this one: it seeded
+# $$ -- the live test shell -- as the PID, called it a "recycled PID", and
+# required the row be reaped for having no worktree. That rule deleted the state
+# of running workers (ceo-loop.sh registers at :241, creates the worktree at
+# :395), so the rule is gone and this pins its absence.
+test_cleanup_never_reaps_a_row_whose_pid_is_alive() {
+  local repo; repo="$(mkrepo_cleanup livepid main)"
   set_repos_md "$repo"
-  local sdir; sdir="$(ceo_loop_state_dir "noworktree")"
+  local sdir; sdir="$(ceo_loop_state_dir "livepid")"
   mkdir -p "$sdir"
 
-  # Both rows use current shell PID ($$), which is alive, so Candidate 1 does not fire.
-  # Create a worktree for row 2, but not row 1.
-  local bkey_active; bkey_active="$(branch_key "ceo/active-worker")"
-  mkdir -p "$repo/.ceo-loop/ceo_active-worker-${bkey_active:0:12}"
+  # A real running process, not $$ -- the test shell's own PID would also pass,
+  # but a backgrounded sleep is the honest stand-in for a worker mid-run.
+  sleep 60 &
+  local live_pid=$!
 
+  # No worktree for either branch, and both rows are far outside any startup
+  # grace: this is exactly the shape the deleted rule reaped.
   local now; now="$(date +%s)"
-  local ts=$((now - 120)) # outside 60s startup grace window
   printf '%s\n' \
-    "{\"branch\":\"ceo/abandoned-worker\",\"base\":\"aaa\",\"pid\":$$,\"files\":[\"a.txt\"],\"ts\":$ts}" \
-    "{\"branch\":\"ceo/active-worker\",\"base\":\"aaa\",\"pid\":$$,\"files\":[\"b.txt\"],\"ts\":$ts}" \
+    "{\"branch\":\"ceo/live-no-worktree\",\"base\":\"aaa\",\"pid\":$live_pid,\"files\":[\"a.txt\"],\"ts\":$((now - 3600))}" \
+    "{\"branch\":\"ceo/live-legacy-no-ts\",\"base\":\"aaa\",\"pid\":$live_pid,\"files\":[\"b.txt\"]}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  kill "$live_pid" 2>/dev/null || true
+
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_not_contains "$out" "WORKER_REAPED: ceo/live-no-worktree" \
+    "a row whose PID is alive must never be reaped, worktree or not"
+  # A row written before the ts field existed has no timestamp. The deleted
+  # rule gave those no grace at all, so a live legacy worker was reaped on sight.
+  assert_not_contains "$out" "WORKER_REAPED: ceo/live-legacy-no-ts" \
+    "a live pid-bearing row with no ts must never be reaped"
+  assert_eq "$(wc -l < "$sdir/workers.jsonl" | tr -d ' ')" "2" \
+    "both live rows survive in workers.jsonl"
+}
+
+# The healthy steady state -- a workers.jsonl with nothing to reap -- was the one
+# case no arm covered, and the one that crashed: `"${reaped_reports[@]}"` on an
+# empty array aborts under set -u on bash 3.2, and the EXIT trap zeroed the
+# status so the caller read the crash as a clean sweep.
+test_cleanup_reports_a_clean_sweep_when_there_is_nothing_to_reap() {
+  local repo; repo="$(mkrepo_cleanup nothingtoreap main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "nothingtoreap")"
+  mkdir -p "$sdir"
+
+  sleep 60 &
+  local live_pid=$!
+  local now; now="$(date +%s)"
+  printf '%s\n' \
+    "{\"branch\":\"ceo/healthy\",\"base\":\"aaa\",\"pid\":$live_pid,\"files\":[\"a.txt\"],\"ts\":$now}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  kill "$live_pid" 2>/dev/null || true
+
+  assert_eq "$rc" "0" "cleanup must succeed with nothing to reap"
+  assert_contains "$out" "WORKER_REAPED: 0" "a sweep that reaps nothing reports zero"
+  assert_not_contains "$out" "WORKER_REAP_FAILED" "a healthy sweep is not a failure"
+  assert_not_contains "$out" "unbound variable" \
+    "the reaper must not abort on an empty reaped-reports array"
+  assert_eq "$(wc -l < "$sdir/workers.jsonl" | tr -d ' ')" "1" "the healthy row survives"
+}
+
+# The empty-array guard's failure mode is bash-3.2-only, and CI runs 5.x, so the
+# healthy-path arm above cannot pin it there. The reap invokes its inner shell as
+# "${BASH:-bash}", which lets this arm force 3.2 when the host has it -- macOS,
+# where Nathan actually runs cleanup. Skips silently on a 4+/5.x /bin/bash.
+test_the_reaper_survives_an_empty_reap_set_on_bash_3_2() {
+  local legacy=/bin/bash
+  case "$("$legacy" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)" in
+    3) ;;
+    *) assert_eq "skipped" "skipped" "no bash 3.2 at $legacy — guard unverifiable on this host"; return 0 ;;
+  esac
+
+  local sdir; sdir="$(mktemp -d)"
+  sleep 60 &
+  local live_pid=$!
+  printf '%s\n' \
+    "{\"branch\":\"ceo/healthy\",\"base\":\"aaa\",\"pid\":$live_pid,\"files\":[\"a.txt\"],\"ts\":$(date +%s)}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(BASH="$legacy" ceo_workers_reap "$sdir" 2>&1) || rc=$?
+  kill "$live_pid" 2>/dev/null || true
+
+  assert_eq "$rc" "0" "a reap with nothing to report must succeed on bash 3.2"
+  assert_eq "$out" "" "a reap with nothing to report emits nothing"
+  assert_eq "$(wc -l < "$sdir/workers.jsonl" | tr -d ' ')" "1" "the healthy row survives"
+}
+
+# A reap that fails must name why. Printing the path alone made a lock timeout,
+# a missing jq and a failed mv indistinguishable to whoever reads the output.
+test_a_failed_reap_reports_its_reason_not_just_the_path() {
+  local repo; repo="$(mkrepo_cleanup lockedstate main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "lockedstate")"
+  mkdir -p "$sdir"
+  printf '%s\n' '{"branch":"ceo/x","base":"aaa","pid":99999999,"files":["a.txt"],"ts":1000}' \
+    > "$sdir/workers.jsonl"
+  # Strand the lock the way a SIGKILLed worker would, so the reap times out.
+  mkdir -p "$sdir/.lock"
+
+  local out rc=0
+  out=$(CEO_LOCK_TIMEOUT_SECS=1 bash "$CLEANUP" 2>&1) || rc=$?
+  rmdir "$sdir/.lock" 2>/dev/null || true
+
+  assert_eq "$rc" "0" "a failed reap degrades the run, it does not abort it"
+  assert_contains "$out" "WORKER_REAP_FAILED: $sdir" "the failure names the state dir"
+  assert_contains "$out" "held too long" \
+    "the failure carries the reason, not just the path"
+  assert_contains "$out" "STALE_STATE: 1" "a failed reap counts as stale state"
+  assert_eq "$(wc -l < "$sdir/workers.jsonl" | tr -d ' ')" "1" \
+    "a reap that could not take the lock changes nothing"
+}
+
+# A malformed row is preserved deliberately, and a reap that cannot run at all
+# must say so rather than reporting a clean sweep over rows it never read.
+test_cleanup_preserves_unparseable_worker_rows() {
+  local repo; repo="$(mkrepo_cleanup badrows main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "badrows")"
+  mkdir -p "$sdir"
+  printf '%s\n' \
+    'not json at all' \
+    '{"branch":"ceo/dead","base":"aaa","pid":99999999,"files":["a.txt"],"ts":1000}' \
     > "$sdir/workers.jsonl"
 
   local out rc=0
   out=$(bash "$CLEANUP" 2>&1) || rc=$?
   assert_eq "$rc" "0" "cleanup must succeed"
-  assert_contains "$out" "WORKER_REAPED: ceo/abandoned-worker (no .ceo-loop worktree for branch key" \
-    "a worker row with no .ceo-loop worktree must be reaped even if PID is alive (recycled PID)"
-  assert_not_contains "$out" "WORKER_REAPED: ceo/active-worker" \
-    "a worker row with an existing .ceo-loop worktree must survive"
-  assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/active-worker" \
-    "only the abandoned worker row without a worktree is removed"
+  assert_contains "$out" "WORKER_REAPED: ceo/dead" "the dead row is still reaped"
+  assert_contains "$(cat "$sdir/workers.jsonl")" "not json at all" \
+    "an unparseable row is preserved, never deleted on a shape it could not read"
 }
 
 run_tests

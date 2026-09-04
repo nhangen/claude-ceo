@@ -367,21 +367,47 @@ jq -c --arg b "$CEO_BRANCH" --arg pid "$CEO_PID" \
 RELEASE_INNER
 }
 
-# ceo_workers_reap <state-dir> <repo-dir> [max-age-secs] — reaps wedged worker
-# rows under the state lock that can be positively confirmed dead or abandoned:
-#   1. PID is dead (kill -0 fails with "No such process", not EPERM).
-#   2. Pid-less row older than max-age-secs (default 7 days).
-#   3. No .ceo-loop/ worktree exists on disk or in git worktree list for its branch key.
-# Prints dropped rows to stdout as REAPED:<branch>|<reason>.
+# ceo_workers_reap <state-dir> [max-age-secs] — drops rows under the state lock
+# that can be positively confirmed gone:
+#   1. The PID is dead — kill -0 fails with ESRCH, not EPERM.
+#   2. The row carries no PID and is older than max-age-secs (default 7 days).
+# Prints each dropped row to stdout as REAPED|<branch>|<reason>.
+#
+# There was a third rule here and it is deliberately gone: "no .ceo-loop/
+# worktree exists for this branch key". It deleted live workers. ceo-loop.sh
+# registers the row (:241) well before it creates the worktree (:395), and
+# between those sits a teardown that can run `worktree remove --force --force`,
+# `rm -rf` and `branch -D`; the 60-second grace guarding that window is a wall
+# clock the worker does not control, and every row written before the `ts` field
+# existed had no grace at all. Measured: a row whose PID was a running process,
+# registered 61s earlier, was reaped while the process kept running. The row is
+# what reserves the branch and its files, so losing it lets the next loop read
+# the live worker's worktree as its own leftover and rm -rf it.
+#
+# The rule it was reaching for is a recycled PID — alive, but belonging to some
+# unrelated process. That case is NOT handled here, and it is the one #355
+# names. It cannot be settled by asking whether a worktree exists, because
+# ceo_loop_cleanup leaves the worktree standing for inspection; it needs an age
+# bound on a pid-bearing row, which needs a definition of "too old to be real"
+# that nobody has agreed yet. Absent that, this reaps only what it can prove.
+#
+# No repo directory is consulted. Both surviving rules are repo-independent (a
+# dead PID is dead whoever asks), and the state root is host-local
+# (~/.local/state/ceo-loop), so there is no cross-host PID ambiguity. That is
+# what makes ceo-cleanup.sh's slug guessing safe here: the worst case is
+# reaping another repo's genuinely dead row.
 ceo_workers_reap() {
-  local dir="$1" repo_dir="$2" max_age="${3:-604800}"
+  local dir="$1" max_age="${2:-604800}"
   local file="$dir/workers.jsonl"
   [ -f "$file" ] || return 0
   [ -s "$file" ] || return 0
 
-  CEO_LOCK_DIR="$dir" CEO_REPO_DIR="$repo_dir" CEO_MAX_AGE="$max_age" \
-    CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" bash <<'REAP_INNER'
+  CEO_LOCK_DIR="$dir" CEO_MAX_AGE="$max_age" \
+    CEO_LOCK_WAIT="$CEO_LOCK_TIMEOUT_SECS" "${BASH:-bash}" <<'REAP_INNER'
 set -euo pipefail
+# Preserve the real exit status across the trap. A bare `|| true` here lets a
+# `set -u` abort exit 0 on bash 3.2, which is /bin/bash on macOS -- the caller
+# then reads a crashed reap as a clean one.
 lock="$CEO_LOCK_DIR/.lock"; waited=0
 until mkdir "$lock" 2>/dev/null; do
   sleep 0.2; waited=$((waited + 1))
@@ -390,7 +416,11 @@ until mkdir "$lock" 2>/dev/null; do
     exit 8
   fi
 done
-trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+trap 'rc=$?; rmdir "$lock" 2>/dev/null; exit $rc' EXIT
+
+# A missing jq would send every row down the malformed-row path below and the
+# run would report a clean sweep having examined nothing. Probe once, loudly.
+command -v jq >/dev/null 2>&1 || { echo "ceo-workers: jq not found — refusing to reap" >&2; exit 9; }
 
 file="$CEO_LOCK_DIR/workers.jsonl"
 [ -f "$file" ] || exit 0
@@ -401,6 +431,10 @@ reaped_reports=()
 
 while IFS= read -r row; do
   [ -n "$row" ] || continue
+  # An unparseable row is kept, deliberately: a reaper that deleted rows it
+  # could not read would be the worst failure available to it. This is the one
+  # place it diverges from ceo_worker_register, which hard-errors on the same
+  # shape -- a gate refusing to run is safe, a reaper refusing to think is not.
   if ! echo "$row" | jq -e '(.branch | type == "string") and (.files | type == "array")' >/dev/null 2>&1; then
     surviving_rows+=("$row")
     continue
@@ -408,20 +442,21 @@ while IFS= read -r row; do
 
   row_branch="$(echo "$row" | jq -r .branch)"
   row_pid="$(echo "$row" | jq -r 'if .pid then (.pid | tostring) else empty end')"
-  row_ts="$(echo "$row" | jq -r 'if .ts then (.ts | tostring) elif .registered_at then (.registered_at | tostring) else empty end')"
+  row_ts="$(echo "$row" | jq -r 'if .ts then (.ts | tostring) else empty end')"
 
   reap_reason=""
 
-  # Candidate 1: PID is dead (ESRCH, not EPERM)
-  if [ -n "$row_pid" ]; then
-    kill_err="$(kill -0 "$row_pid" 2>&1)" || {
-      case "$kill_err" in
-        *"No such process"*) reap_reason="pid $row_pid dead: No such process" ;;
-      esac
-    }
+  # Candidate 1: the PID is gone. `ps -p` answers for any UID, so it separates
+  # ESRCH from EPERM without reading kill's message -- that message is
+  # strerror() and glibc translates it, so matching "No such process" made the
+  # check a no-op under a non-English locale on the WSL host.
+  if [ -n "$row_pid" ] \
+     && ! kill -0 "$row_pid" 2>/dev/null \
+     && ! ps -p "$row_pid" -o pid= >/dev/null 2>&1; then
+    reap_reason="pid $row_pid is not running"
   fi
 
-  # Candidate 2: pid-less row AND older than max_age
+  # Candidate 2: no PID to check, and old enough that nothing is coming back.
   if [ -z "$reap_reason" ] && [ -z "$row_pid" ] && [ -n "$row_ts" ]; then
     case "$row_ts" in
       ''|*[!0-9]*) ;;
@@ -434,45 +469,6 @@ while IFS= read -r row; do
     esac
   fi
 
-  # Candidate 3: no .ceo-loop/ worktree exists for its branch key
-  if [ -z "$reap_reason" ]; then
-    row_fresh=false
-    if [ -n "$row_ts" ] && [ -n "$row_pid" ]; then
-      case "$row_ts" in
-        ''|*[!0-9]*) ;;
-        *) [ $((now_epoch - row_ts)) -lt 60 ] && row_fresh=true ;;
-      esac
-    fi
-
-    if [ "$row_fresh" = "false" ]; then
-      bkey="$(printf '%s' "$row_branch" | shasum | awk '{print $1}')"
-      bkey_pfx="${bkey:0:12}"
-      sanitized="${row_branch//\//_}"
-      wt_name="${sanitized}-${bkey_pfx}"
-
-      has_wt=false
-      if [ -d "$CEO_REPO_DIR/.ceo-loop/$wt_name" ]; then
-        has_wt=true
-      fi
-      if [ "$has_wt" = "false" ] && [ -d "$CEO_REPO_DIR/.ceo-loop" ]; then
-        for d in "$CEO_REPO_DIR/.ceo-loop/"*"-${bkey_pfx}"; do
-          [ -d "$d" ] && { has_wt=true; break; }
-        done
-      fi
-      if [ "$has_wt" = "false" ]; then
-        while IFS= read -r wt_line; do
-          case "$wt_line" in
-            *"/.ceo-loop/"*"-$bkey_pfx"*) has_wt=true; break ;;
-          esac
-        done < <(git -C "$CEO_REPO_DIR" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')
-      fi
-
-      if [ "$has_wt" = "false" ]; then
-        reap_reason="no .ceo-loop worktree for branch key ($bkey_pfx)"
-      fi
-    fi
-  fi
-
   if [ -n "$reap_reason" ]; then
     reaped_reports+=("$row_branch|$reap_reason")
   else
@@ -480,6 +476,8 @@ while IFS= read -r row; do
   fi
 done < "$file"
 
+# Assemble and rename once, never truncate-then-append: a kill mid-write would
+# otherwise lose every row and strand the lock.
 tmp="$file.tmp.$$"
 if [ "${#surviving_rows[@]}" -gt 0 ]; then
   printf '%s\n' "${surviving_rows[@]}" > "$tmp"
@@ -488,7 +486,10 @@ else
 fi
 mv "$tmp" "$file"
 
-for rep in "${reaped_reports[@]}"; do
+# ${arr+"${arr[@]}"}, not "${arr[@]}": the latter is an unbound-variable abort
+# on an empty array under `set -u` in bash 3.2, and the healthy case -- nothing
+# to reap -- is exactly when this array is empty.
+for rep in ${reaped_reports+"${reaped_reports[@]}"}; do
   echo "REAPED|$rep"
 done
 REAP_INNER

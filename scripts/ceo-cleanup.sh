@@ -44,6 +44,48 @@ echo ""
 MERGED_COUNT=0
 REAP_FAILED_COUNT=0
 WORKER_REAPED_COUNT=0
+
+# _reap_worker_rows <repo-path> <repo-ident> <repo-name> — reaps wedged worker
+# rows in every state dir this repo might have registered under. The slug is
+# caller-supplied at registration (ceo-loop.sh --repo) and never derived from
+# the path, so it has to be guessed; that is safe because both surviving reap
+# rules are repo-independent, and the worst case is reaping another repo's
+# genuinely dead row. Mutates WORKER_REAPED_COUNT / STALE_STATE_COUNT.
+_reap_worker_rows() {
+  local repo_path="$1" repo_ident="$2" repo_name="$3"
+  local candidate_slugs=() checked_sdirs=() slug sdir reap_out reap_rc
+  [ -n "$repo_ident" ] && candidate_slugs+=("$(printf '%s' "$repo_ident" | tr '/' '-')")
+  candidate_slugs+=("$(basename "$repo_path")")
+  if [ -n "$repo_name" ] && [ "$repo_name" != "unknown" ]; then
+    candidate_slugs+=("$(printf '%s' "$repo_name" | tr '/' '-')")
+  fi
+  for slug in "${candidate_slugs[@]}"; do
+    sdir="$(ceo_loop_state_dir "$slug")"
+    case " ${checked_sdirs[*]:-} " in *" $sdir "*) continue ;; esac
+    checked_sdirs+=("$sdir")
+    [ -f "$sdir/workers.jsonl" ] || continue
+    reap_out=""
+    reap_rc=0
+    reap_out=$(ceo_workers_reap "$sdir" 2>&1) || reap_rc=$?
+    if [ "$reap_rc" -ne 0 ]; then
+      # Carry the reason, matching FETCH_FAILED above. Printing the path alone
+      # made a lock timeout, a missing jq and a failed mv indistinguishable.
+      echo "  WORKER_REAP_FAILED: $sdir (rc=$reap_rc) — $(printf '%s' "$reap_out" | tr '\n' ' ' | cut -c1-160)"
+      STALE_STATE_COUNT=$((STALE_STATE_COUNT + 1))
+    elif [ -n "$reap_out" ]; then
+      while IFS='|' read -r pfx branch reason; do
+        # Anything that is not a REAPED record is the inner shell talking to
+        # stderr; surface it rather than dropping it on the floor.
+        if [ "$pfx" != "REAPED" ]; then
+          [ -n "$pfx" ] && echo "  WORKER_REAP_NOTE: $pfx$branch$reason"
+          continue
+        fi
+        echo "  WORKER_REAPED: $branch ($reason)"
+        WORKER_REAPED_COUNT=$((WORKER_REAPED_COUNT + 1))
+      done <<< "$reap_out"
+    fi
+  done
+}
 STALE_STATE_COUNT=0
 ORPHAN_BRANCHES=""
 HAS_REPOS=false
@@ -63,7 +105,13 @@ if [ -f "$REPOS_FILE" ]; then
     fi
 
     echo "REPO: $REPO_PATH"
-    REPO_NAME=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/' | sed 's/.*github.com[:/]\(.*\)/\1/' || echo "unknown")
+    # The userinfo strip comes first and is not optional: both seds below anchor
+    # on github.com, so any other host passes through untouched and REPO_NAME
+    # keeps an embedded credential -- which then becomes a slug, a state dir,
+    # and a path this script echoes (no-secrets-in-logs).
+    REPO_NAME=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null \
+      | sed 's|://[^/@]*@|://|' \
+      | sed 's/.*github.com[:/]\(.*\)\.git/\1/' | sed 's/.*github.com[:/]\(.*\)/\1/' || echo "unknown")
 
     # Resolve default branch: origin/HEAD -> main -> master.
     #
@@ -88,6 +136,11 @@ if [ -f "$REPOS_FILE" ]; then
         # silently skipped anyway — as an "all branches active" report rather
         # than as the failure it is.
         echo "  DEFAULT_BRANCH_UNRESOLVED: no origin/HEAD, main, or master"
+        # Reap before bailing. Worker-row liveness has nothing to do with
+        # default-branch resolution, and a repo this degraded is likelier to be
+        # holding wedged rows than a healthy one.
+        _reap_worker_rows "$REPO_PATH" "$REPO_IDENT" "$REPO_NAME"
+        echo ""
         continue
       fi
     fi
@@ -190,33 +243,7 @@ if [ -f "$REPOS_FILE" ]; then
     done
     fi
 
-    # Reap wedged worker rows in state directories for this repo
-    candidate_slugs=()
-    [ -n "$REPO_IDENT" ] && candidate_slugs+=("$(printf '%s' "$REPO_IDENT" | tr '/' '-')")
-    candidate_slugs+=("$(basename "$REPO_PATH")")
-    if [ -n "$REPO_NAME" ] && [ "$REPO_NAME" != "unknown" ]; then
-      candidate_slugs+=("$(printf '%s' "$REPO_NAME" | tr '/' '-')")
-    fi
-    checked_sdirs=()
-    for slug in "${candidate_slugs[@]}"; do
-      sdir="$(ceo_loop_state_dir "$slug")"
-      case " ${checked_sdirs[*]:-} " in *" $sdir "*) continue ;; esac
-      checked_sdirs+=("$sdir")
-      [ -f "$sdir/workers.jsonl" ] || continue
-      reap_out=""
-      reap_rc=0
-      reap_out=$(ceo_workers_reap "$sdir" "$REPO_PATH" 2>&1) || reap_rc=$?
-      if [ "$reap_rc" -ne 0 ]; then
-        echo "  WORKER_REAP_FAILED: $sdir"
-        STALE_STATE_COUNT=$((STALE_STATE_COUNT + 1))
-      elif [ -n "$reap_out" ]; then
-        while IFS='|' read -r pfx branch reason; do
-          [ "$pfx" = "REAPED" ] || continue
-          echo "  WORKER_REAPED: $branch ($reason)"
-          WORKER_REAPED_COUNT=$((WORKER_REAPED_COUNT + 1))
-        done <<< "$reap_out"
-      fi
-    done
+    _reap_worker_rows "$REPO_PATH" "$REPO_IDENT" "$REPO_NAME"
     echo ""
   done < <(grep "^|" "$REPOS_FILE" | grep -v "^| Repo\|^|---\|No repos" | awk -F'|' '{print $2 "|" $3}')
 fi
@@ -227,7 +254,7 @@ fi
 
 echo "MERGED_TOTAL: $MERGED_COUNT"
 echo "REAP_FAILED: $REAP_FAILED_COUNT"
-echo "WORKER_ROWS_REAPED: $WORKER_REAPED_COUNT"
+echo "WORKER_REAPED: $WORKER_REAPED_COUNT"
 echo "STALE_STATE: $STALE_STATE_COUNT"
 
 # --- Sync conflicts ---
