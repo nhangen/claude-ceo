@@ -288,4 +288,100 @@ test_a_row_with_a_null_metric_field_is_dropped_not_misread() {
     "the impressions figure must never be printed as a click count"
 }
 
+# _source_analytics <fn> [args...] — call an internal function of the real
+# script in a subshell, sourced rather than executed. A subshell keeps
+# `set -euo pipefail`, the EXIT trap, and the top-level config load out of the
+# test process; sourcing (not `bash "$ANALYTICS" ...`) is what makes a
+# function below main() reachable at all, since main() runs the whole report.
+_source_analytics() {
+  ( source "$ANALYTICS" >/dev/null 2>&1; "$@" )
+}
+
+test_a_200_response_carrying_an_error_body_fails_loudly() {
+  # {"error":{...}} on a 200 used to hit `.rows[]?`, which emits nothing and
+  # returns 0 — the report then printed "- none" for a query that actually
+  # failed, indistinguishable from a real empty week.
+  local out err rc
+  out=$(_source_analytics _gsc_parse_body '{"error":{"code":403,"message":"quota exceeded"}}' site page 2>/tmp/gsc_err.$$)
+  rc=$?
+  err=$(cat /tmp/gsc_err.$$); rm -f /tmp/gsc_err.$$
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "an error-carrying body must fail rather than report nothing"
+  assert_eq "$out" "" "no rows are emitted from an error body"
+  assert_contains "$err" "quota exceeded" "the error message reaches stderr"
+}
+
+test_a_legitimate_empty_week_still_succeeds() {
+  local out rc
+  out=$(_source_analytics _gsc_parse_body '{"rows":[]}' site page)
+  rc=$?
+  assert_eq "$rc" "0" "rows: [] is a real empty week, not a failure"
+  assert_eq "$out" "" "and emits no rows"
+}
+
+test_a_body_missing_the_rows_field_entirely_fails_loudly() {
+  # Distinct from rows:[] — this shape carries neither an error nor a rows
+  # key at all, which is not a week with no data, it's an unrecognized
+  # response that must not be read as "nothing happened."
+  local err rc
+  err=$(_source_analytics _gsc_parse_body '{"unexpected":"shape"}' site page 2>&1 >/dev/null)
+  rc=$?
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a body with no rows field and no error field must still fail"
+  assert_contains "$err" "no rows field" "and says why"
+}
+
+# _install_curl_stub <log_file> — a curl replacement that records its argv,
+# the content of any --config file/fd, and anything piped to it on stdin,
+# then returns a canned body. Used to prove a secret reaches curl only via
+# stdin/--config and never as a literal argv token (readable via `ps`).
+_install_curl_stub() {
+  local log="$1"
+  STUBDIR=$(mktemp -d)
+  cat > "$STUBDIR/curl" <<STUB
+#!/bin/bash
+{ printf 'ARGV: %s\n' "\$*"; } >> "$log"
+prev=""
+for arg in "\$@"; do
+  if [ "\$prev" = "--config" ]; then
+    { echo "CONFIG_START"; cat "\$arg" 2>/dev/null; echo "CONFIG_END"; } >> "$log"
+  fi
+  prev="\$arg"
+done
+if printf '%s\n' "\$*" | grep -q -- 'assertion@-'; then
+  { echo "STDIN_START"; cat; echo "STDIN_END"; } >> "$log"
+fi
+case " \$* " in
+  *'oauth2.googleapis.com/token'*) printf '%s' '{"access_token":"stub-token-123"}' ;;
+  *'searchAnalytics/query'*) printf '%s' '{"rows":[]}' ;;
+  *) printf '{}' ;;
+esac
+STUB
+  chmod +x "$STUBDIR/curl"
+}
+
+test_the_bearer_token_never_reaches_curls_argv() {
+  local log; log=$(mktemp)
+  _install_curl_stub "$log"
+  ( export PATH="$STUBDIR:$PATH" ACCESS_TOKEN="super-secret-bearer-xyz" \
+      CEO_ANALYTICS_FIXTURE_DIR=""
+    unset CEO_ANALYTICS_FIXTURE_DIR
+    source "$ANALYTICS" >/dev/null 2>&1
+    _gsc_query "https://shop.test/" "2026-01-01" "2026-01-07" page >/dev/null
+  )
+  local recorded; recorded=$(cat "$log")
+  rm -rf "$STUBDIR"; rm -f "$log"
+  assert_not_contains "$recorded" "super-secret-bearer-xyz -H" \
+    "the token must never be adjacent to -H in curl's argv"
+  # A plain `assert_not_contains "$recorded" "super-secret-bearer-xyz"` would
+  # also match the value inside CONFIG_START/CONFIG_END, which is exactly
+  # where it is supposed to live — so assert on the ARGV line alone.
+  local argv_line; argv_line=$(printf '%s\n' "$recorded" | grep '^ARGV:')
+  assert_not_contains "$argv_line" "super-secret-bearer-xyz" \
+    "curl's argv line must not carry the bearer token"
+  assert_contains "$recorded" "CONFIG_START" "the header is delivered via --config"
+  assert_contains "$recorded" "super-secret-bearer-xyz" \
+    "the token is present somewhere (in the config content) — not simply lost"
+}
+
 run_tests

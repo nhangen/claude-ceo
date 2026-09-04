@@ -20,7 +20,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# BASH_SOURCE, not $0: tests source this file to reach _gsc_parse_body
+# directly, and $0 under `source` is the caller's path, not this file's.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=ceo-config.sh
 source "$SCRIPT_DIR/ceo-config.sh"
 
@@ -72,8 +74,11 @@ _days_ago() {
 }
 
 # --- auth ---------------------------------------------------------------------
-# The key is referenced by path and never echoed; no response body is logged.
-# See no-secrets-in-logs.
+# Three separate secrets, three separate exposures: the private key never
+# touches a temp file (piped to openssl on a process-substitution fd below),
+# the signed assertion and the bearer token never appear in curl's argv
+# (stdin/`--config`, not `-d`/`-H`, since argv is readable via `ps` by any
+# process on the box), and no response body is logged. See no-secrets-in-logs.
 _b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
 _access_token() {
@@ -95,9 +100,13 @@ _access_token() {
     | _b64url)
   assertion="$unsigned.$sig"
 
-  resp=$(curl -sS --fail-with-body -X POST https://oauth2.googleapis.com/token \
+  # The assertion (a signed JWT) goes to curl via `--data-urlencode assertion@-`
+  # on stdin, not as `assertion=$assertion` on argv — argv is readable by any
+  # process on the box via `ps`, and that was the actual exposure here, not
+  # the key file (see the comment above `_b64url`).
+  resp=$(printf '%s' "$assertion" | curl -sS --fail-with-body -X POST https://oauth2.googleapis.com/token \
     -d grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer \
-    --data-urlencode "assertion=$assertion" 2>&1) || {
+    --data-urlencode assertion@- 2>&1) || {
     echo "ERROR: token request failed (response withheld: may echo the assertion)" >&2
     return 1
   }
@@ -127,16 +136,44 @@ _gsc_query() {
 
   body=$(jq -nc --arg s "$start" --arg e "$end" --arg d "$dim" \
     '{startDate:$s,endDate:$e,dimensions:[$d],rowLimit:250}')
+  # The bearer token goes in via `--config <(...)`, not `-H` on argv: a
+  # `-H "Authorization: Bearer $TOKEN"` argument is readable by any process on
+  # the box via `ps`, and process substitution hands curl a fd path instead
+  # (`/dev/fd/N`), which carries no secret itself. A Google OAuth bearer token
+  # is base64url (alnum, -, _, .) and never contains `"` or `\`, but the
+  # escape guards the config-file syntax anyway rather than assuming that holds.
+  local cfg_token
+  cfg_token=$(printf '%s' "$ACCESS_TOKEN" | sed 's/\\/\\\\/g; s/"/\\"/g')
   resp=$(curl -sS --fail-with-body -X POST \
     "https://searchconsole.googleapis.com/webmasters/v3/sites/$(_urlencode "$site")/searchAnalytics/query" \
-    -H "Authorization: Bearer $ACCESS_TOKEN" \
     -H 'Content-Type: application/json' \
-    -d "$body") || { echo "ERROR: Search Console query failed for $site ($dim)" >&2; return 1; }
+    -d "$body" \
+    --config <(printf 'header = "Authorization: Bearer %s"\n' "$cfg_token")) \
+    || { echo "ERROR: Search Console query failed for $site ($dim)" >&2; return 1; }
 
-  printf '%s' "$resp" | jq -r '.rows[]? | [.keys[0], .clicks, .impressions, .ctr, .position] | @tsv'
+  _gsc_parse_body "$resp" "$site" "$dim"
 }
 
 _urlencode() { jq -rn --arg v "$1" '$v|@uri'; }
+
+# _gsc_parse_body <json> <site> <dim> -> TSV rows, or a failure to stderr.
+# A 200 response can still carry a Search Console error payload
+# ({"error":{"code":403,...}}); `.rows[]?` on that emits nothing and returns
+# 0, so the report silently printed "- none" for a query that actually
+# failed. `.rows: []` is a legitimate empty week and must still succeed.
+_gsc_parse_body() {
+  local resp="$1" site="$2" dim="$3" err
+  err=$(printf '%s' "$resp" | jq -r '.error.message? // empty' 2>/dev/null)
+  if [ -n "$err" ]; then
+    echo "ERROR: Search Console returned an error for $site ($dim): $err" >&2
+    return 1
+  fi
+  printf '%s' "$resp" | jq -e 'has("rows")' >/dev/null 2>&1 || {
+    echo "ERROR: Search Console response for $site ($dim) has no rows field" >&2
+    return 1
+  }
+  printf '%s' "$resp" | jq -r '.rows[]? | [.keys[0], .clicks, .impressions, .ctr, .position] | @tsv'
+}
 
 # _valid_rows <file> -> the file's rows that are exactly 5 tab-separated fields
 # with numeric metrics, in order. `IFS=$'\t' read` collapses *consecutive* tabs
@@ -328,4 +365,8 @@ main() {
   printf 'ok %s\n' "${REPORT_FILE/#$VAULT\//}"
 }
 
-main "$@"
+# Tests source this file to reach internal functions (_gsc_parse_body,
+# _gsc_query) directly; only run the report when actually executed.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+fi
