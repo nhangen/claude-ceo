@@ -522,4 +522,72 @@ test_new_queries_are_ordered_by_impressions_descending() {
     "the higher-impression new query is listed first"
 }
 
+# --- R4: a Search Console query failure must include the response body -----
+# --- R5: a token-request failure must report Google's error_description ----
+
+test_a_search_console_query_failure_includes_the_response_body() {
+  STUBDIR=$(mktemp -d)
+  cat > "$STUBDIR/curl" <<'STUB'
+#!/bin/bash
+case " $* " in
+  *'searchAnalytics/query'*)
+    printf '%s' '{"error":{"code":403,"message":"User does not have sufficient permission for site"}}'
+    exit 22
+    ;;
+  *) printf '{}'; exit 22 ;;
+esac
+STUB
+  chmod +x "$STUBDIR/curl"
+  local err rc
+  err=$(
+    export PATH="$STUBDIR:$PATH" ACCESS_TOKEN="tok" CEO_ANALYTICS_FIXTURE_DIR=""
+    unset CEO_ANALYTICS_FIXTURE_DIR
+    # shellcheck source=/dev/null
+    source "$ANALYTICS" >/dev/null 2>&1
+    _gsc_query "https://shop.test/" "2026-01-01" "2026-01-07" page 2>&1 >/dev/null
+  )
+  rc=$?
+  rm -rf "$STUBDIR"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" "the query fails"
+  assert_contains "$err" "sufficient permission" \
+    "the response body — the only thing that distinguishes a permission error from a timeout — reaches the error message"
+}
+
+test_a_token_request_failure_reports_the_error_description() {
+  local keydir keyfile
+  keydir=$(mktemp -d)
+  openssl genrsa -out "$keydir/key.pem" 2048 >/dev/null 2>&1
+  keyfile="$keydir/sa.json"
+  # jq -Rs slurps the PEM (with its embedded newlines) into a single JSON string
+  # so the key file is valid JSON with the raw PEM as `.private_key`.
+  jq -Rs --arg email "test@example.iam.gserviceaccount.com" \
+    '{client_email: $email, private_key: .}' "$keydir/key.pem" > "$keyfile"
+
+  STUBDIR=$(mktemp -d)
+  cat > "$STUBDIR/curl" <<'STUB'
+#!/bin/bash
+case " $* " in
+  *'oauth2.googleapis.com/token'*)
+    printf '%s' '{"error":"invalid_grant","error_description":"Invalid JWT Signature."}'
+    exit 22
+    ;;
+  *) printf '{}'; exit 22 ;;
+esac
+STUB
+  chmod +x "$STUBDIR/curl"
+  local err rc
+  err=$(
+    export PATH="$STUBDIR:$PATH" GA_SERVICE_ACCOUNT_JSON="$keyfile" CEO_ANALYTICS_FIXTURE_DIR=""
+    unset CEO_ANALYTICS_FIXTURE_DIR
+    # shellcheck source=/dev/null
+    source "$ANALYTICS" >/dev/null 2>&1
+    _access_token 2>&1 >/dev/null
+  )
+  rc=$?
+  rm -rf "$STUBDIR" "$keydir"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" "the token request fails"
+  assert_contains "$err" "Invalid JWT Signature" \
+    "Google's error_description reaches the operator instead of being withheld"
+}
+
 run_tests

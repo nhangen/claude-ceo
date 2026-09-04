@@ -103,11 +103,17 @@ _access_token() {
   # The assertion (a signed JWT) goes to curl via `--data-urlencode assertion@-`
   # on stdin, not as `assertion=$assertion` on argv — argv is readable by any
   # process on the box via `ps`, and that was the actual exposure here, not
-  # the key file (see the comment above `_b64url`).
+  # the key file (see the comment above `_b64url`). Because the assertion
+  # arrives on stdin, `resp` (no `2>&1`) is the response body alone — it
+  # cannot echo the assertion back, so withholding it hid the one thing that
+  # distinguishes a revoked key from clock skew from a malformed key file:
+  # Google's `error_description` (e.g. "Invalid JWT Signature").
   resp=$(printf '%s' "$assertion" | curl -sS --fail-with-body -X POST https://oauth2.googleapis.com/token \
     -d grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer \
-    --data-urlencode assertion@- 2>&1) || {
-    echo "ERROR: token request failed (response withheld: may echo the assertion)" >&2
+    --data-urlencode assertion@-) || {
+    local tokerr
+    tokerr=$(printf '%s' "$resp" | jq -r '.error_description // .error // empty' 2>/dev/null)
+    echo "ERROR: token request failed: ${tokerr:-no error detail in response}" >&2
     return 1
   }
   token=$(printf '%s' "$resp" | jq -r '.access_token // empty')
@@ -149,7 +155,7 @@ _gsc_query() {
     -H 'Content-Type: application/json' \
     -d "$body" \
     --config <(printf 'header = "Authorization: Bearer %s"\n' "$cfg_token")) \
-    || { echo "ERROR: Search Console query failed for $site ($dim)" >&2; return 1; }
+    || { echo "ERROR: Search Console query failed for $site ($dim): $resp" >&2; return 1; }
 
   _gsc_parse_body "$resp" "$site" "$dim"
 }
