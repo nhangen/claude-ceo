@@ -2640,6 +2640,34 @@ if [ "${CEO_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# Asking for help must never do work, and must not require a configured vault.
+# Every branch below either ignores argv outright or sits behind
+# `ceo_require_vault`, so a help request used to run whatever the command does:
+# `ceo playbook sync --help` synced the vault, `ceo swarm owners-health --help`
+# wrote the synced inbox, and `ceo test --help` ran a full morning-brief -- a
+# paid model call plus four dated files into the synced tree (#367).
+#
+# `creds` is excluded because it answers help itself and needs no vault.
+case "${1:-help}" in
+  creds|help|-h|--help) ;;
+  *)
+    if _wants_help "${@:2}"; then
+      case "$1" in
+        playbook) _playbook_sub_usage "${2:-}" ;;
+        swarm)    _swarm_sub_usage "${2:-}" ;;
+        *)        cmd_help ;;
+      esac
+      exit 0
+    fi
+    # The groups' own error text says "Run: ceo playbook help", and that
+    # spelling was still vault-gated.
+    case "$1 ${2:-}" in
+      "playbook help") _playbook_overview; exit 0 ;;
+      "swarm help")    _swarm_overview; exit 0 ;;
+    esac
+    ;;
+esac
+
 case "${1:-help}" in
   setup)    shift; cmd_setup "$@" ;;
   pr-sources) cmd_pr_sources ;;
@@ -2649,17 +2677,9 @@ case "${1:-help}" in
   test)     ceo_require_vault; _bind_vault; cmd_test ;;
   chat)     ceo_require_vault; _bind_vault; shift; cmd_chat "$@" ;;
   cron)     ceo_require_vault; _bind_vault; shift; cmd_cron "$@" ;;
-  playbook)
-    shift
-    if _wants_help "$@"; then _playbook_sub_usage "${1:-}"; exit 0; fi
-    ceo_require_vault; _bind_vault; cmd_playbook "$@"
-    ;;
+  playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
   schedule) ceo_require_vault; _bind_vault; shift; cmd_schedule "$@" ;;
-  swarm)
-    shift
-    if _wants_help "$@"; then _swarm_sub_usage "${1:-}"; exit 0; fi
-    ceo_require_vault; _bind_vault; cmd_swarm "$@"
-    ;;
+  swarm)    ceo_require_vault; _bind_vault; shift; cmd_swarm "$@" ;;
   creds)    shift; cmd_creds "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
