@@ -2647,14 +2647,22 @@ fi
 # wrote the synced inbox, and `ceo test --help` ran a full morning-brief -- a
 # paid model call plus four dated files into the synced tree (#367).
 #
-# `creds` is excluded because it answers help itself and needs no vault.
+# The command list is spelled out rather than matched with `*)` so that an
+# unknown command still fails: `ceo bogus --help` must stay exit 1, or a
+# wrapper checking the status cannot tell a typo from a help request. The
+# CEO_HELP_GATE_COMMANDS arm of ceo-help-contract.test.sh pins it equal to the
+# dispatch table below, since a command added there and forgotten here would be
+# ungated in exactly the silent way this whole change is about.
 case "${1:-help}" in
-  creds|help|-h|--help) ;;
-  *)
+  help|-h|--help) ;;
+  setup|pr-sources|next|doctor|preflight|test|chat|cron|playbook|schedule|swarm|creds)
     if _wants_help "${@:2}"; then
       case "$1" in
         playbook) _playbook_sub_usage "${2:-}" ;;
         swarm)    _swarm_sub_usage "${2:-}" ;;
+        # creds answers help itself, and one level down `creds check --help`
+        # read the flag as a playbook name and demanded a vault.
+        creds)    cmd_creds help ;;
         *)        cmd_help ;;
       esac
       exit 0

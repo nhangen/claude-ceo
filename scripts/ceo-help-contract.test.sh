@@ -282,12 +282,39 @@ test_cli_pr_sources_help_writes_no_config() {
     "pr-sources --help must not write its config"
 }
 
-test_cli_creds_still_answers_its_own_help() {
-  # creds is excluded from the gate because it handles help itself. Confirm the
-  # exclusion did not cost it its answer.
+test_cli_creds_answers_its_own_help_at_both_levels() {
+  # creds routes through the gate to its own usage rather than the top-level
+  # one. `creds check --help` used to read the flag as a playbook name and
+  # demand a vault.
   _cli creds --help
   assert_eq "$CALL_RC" "0" "ceo creds --help must exit 0"
   assert_contains "$CALL_OUT" "Usage: ceo creds" "creds must print its own usage, not the top-level one"
+  _cli creds check --help
+  assert_eq "$CALL_RC" "0" "ceo creds check --help must exit 0"
+  assert_contains "$CALL_OUT" "Usage: ceo creds" "creds check --help must print creds usage"
+  assert_not_contains "$CALL_OUT" "Playbook not found" "must not read --help as a playbook name"
+}
+
+test_unknown_command_with_help_still_fails() {
+  # The gate names its commands instead of matching everything, so a typo keeps
+  # its non-zero status. A wrapper reading the exit code must still see a typo.
+  _cli bogus --help
+  assert_eq "$CALL_RC" "1" "an unknown command must stay exit 1 even with --help"
+  assert_contains "$CALL_OUT" "Unknown command" "must name the unknown command"
+}
+
+test_gate_command_list_matches_the_dispatch_table() {
+  # A command added to the dispatch and forgotten in the gate is ungated, and
+  # nothing else would notice. Compare the two lists as sets.
+  local gate dispatch
+  gate=$(awk '/^  setup\|pr-sources\|/ { gsub(/^ +|\)$/, ""); print; exit }' "$CEO_CLI" \
+    | tr '|' '\n' | sort -u | tr '\n' ' ')
+  dispatch=$(awk '/^case "\$\{1:-help\}" in$/ { n++ } n == 2 && /^  [a-z-]+\)/ { \
+      line = $0; sub(/^  /, "", line); sub(/\).*$/, "", line); print line } \
+      n == 2 && /^esac$/ { exit }' "$CEO_CLI" \
+    | grep -v '^help$' | sort -u | tr '\n' ' ')
+  assert_eq "$gate" "$dispatch" \
+    "every dispatched command must appear in the help gate's command list"
 }
 
 test_cli_bare_help_word_works_on_the_groups() {
