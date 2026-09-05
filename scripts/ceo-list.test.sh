@@ -225,4 +225,26 @@ test_help_on_name_taking_subcommand_needs_no_registry() {
   assert_contains "$out" "Usage: ceo playbook enable" "usage printed with no registry"
 }
 
+test_help_after_a_playbook_name_still_writes_nothing() {
+  # The first guards only inspected $1, so `enable <name> --help` enabled the
+  # playbook and reported success to someone who asked for documentation.
+  # git-monitor is deliberately NOT in the fixture's enabled.json — enabling
+  # an already-enabled playbook is a no-op and would hide the write.
+  assert_eq "$(_enabled_has git-monitor)" "no" "precondition: git-monitor starts disabled"
+  local out rc
+  out=$(bash "$CEO_CLI" playbook enable git-monitor --help 2>&1); rc=$?
+  assert_eq "$rc" "0" "enable <name> --help must exit 0"
+  assert_contains "$out" "Usage: ceo playbook enable" "must print usage, not enable the playbook"
+  assert_not_contains "$out" "Enabled" "must not report a write it did not make"
+  assert_eq "$(_enabled_has git-monitor)" "no" \
+    "enable <name> --help must not write enabled.json (#367)"
+}
+
+test_list_rejects_unknown_arguments() {
+  local out rc
+  out=$(bash "$CEO_CLI" playbook list --bogus 2>&1); rc=$?
+  assert_eq "$rc" "1" "playbook list must reject an argument it cannot honor"
+  assert_contains "$out" "takes no arguments" "the rejection must say why"
+}
+
 run_tests

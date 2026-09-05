@@ -176,4 +176,27 @@ test_sync_rejects_unknown_flag_without_writing() {
     "a rejected flag must not fall through to the write path (#367)"
 }
 
+test_sync_help_works_with_no_vault_configured() {
+  # ceo_require_vault runs ahead of the subcommand dispatch, so a help request
+  # on a host that has not run `ceo setup` aborted FATAL before sync saw the
+  # flag. Help must answer before any vault resolution.
+  local sandbox rc=0 out
+  sandbox=$(mktemp -d)
+  out=$(env -i HOME="$sandbox" PATH="$PATH" bash "$CEO_CLI" playbook sync --help 2>&1) || rc=$?
+  rm -rf "$sandbox"
+  assert_eq "$rc" "0" "sync --help must exit 0 with no vault configured"
+  assert_contains "$out" "Usage: ceo playbook sync" "usage must print with no vault"
+  assert_not_contains "$out" "CEO_VAULT unresolved" "help must not hit the vault gate"
+}
+
+test_sync_dry_run_alias_is_accepted_and_writes_nothing() {
+  # --dry-run is an undocumented alias for --check. It is now the difference
+  # between a dry run and a hard rejection, so pin it.
+  _pb "$REPO_PB/foo.md" foo "NEW"
+  _run_sync_cli --dry-run
+  assert_eq "$SYNC_RC" "1" "--dry-run must behave as --check (exit 1 on drift)"
+  assert_contains "$SYNC_OUT" "Would create: foo.md" "--dry-run must report, not sync"
+  assert_eq "$(ls -A "$VAULT_PB" | wc -l | tr -d " ")" "0" "--dry-run must write nothing"
+}
+
 run_tests
