@@ -397,4 +397,47 @@ test_owners_health_marker_dedupe_survives_state_wipe() {
     "marker grep prevents a duplicate after the state file is wiped"
 }
 
+# --- #367: a help request must not run the check ---
+# owners-health parsed no arguments at all, so `--help` ran the full staleness
+# sweep and wrote both the synced inbox and the host state file.
+
+_owners_health_args() {
+  env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="${OH_NOW:-}" PATH="$PATH" \
+    bash "$CEO_CLI" swarm owners-health "$@"
+}
+
+test_owners_health_help_writes_no_inbox_and_no_state() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  # No heartbeat: without the guard this host is stale, so the run would append
+  # an inbox line and write the state file. That is the write being pinned.
+  local rc=0 out
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health_args --help 2>&1) || rc=$?
+  assert_eq "$rc" "0" "swarm owners-health --help must exit 0"
+  assert_contains "$out" "Usage: ceo swarm owners-health" "--help must print usage"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "0" \
+    "--help must not append to the synced inbox (#367)"
+  assert_eq "$([ -f "$TEST_HOME/.ceo/owner-staleness-state.json" ] && echo yes || echo no)" "no" \
+    "--help must not write the host staleness state (#367)"
+}
+
+test_owners_health_rejects_arguments() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  local rc=0 out
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health_args --bogus 2>&1) || rc=$?
+  assert_eq "$rc" "1" "an argument to owners-health must be rejected"
+  assert_contains "$out" "takes no arguments" "the rejection must say why"
+  assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "0" \
+    "a rejected argument must not fall through to the check"
+}
+
+test_swarm_doctor_help_prints_usage() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": {} }'
+  local rc=0 out
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    PATH="$PATH" bash "$CEO_CLI" swarm doctor --help 2>&1) || rc=$?
+  assert_eq "$rc" "0" "swarm doctor --help must exit 0"
+  assert_contains "$out" "Usage: ceo swarm doctor" "--help must print usage, not an unknown-option error"
+}
+
 run_tests

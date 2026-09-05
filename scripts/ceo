@@ -399,6 +399,8 @@ cmd_doctor() {
   if [ ! -d "$CEO_DIR/playbooks" ] || [ ! -d "${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}" ]; then
     echo "  ? Playbook drift check skipped (vault or repo playbooks dir missing)"
     warn=$((warn + 1))
+  # Pass only flags cmd_playbook_diff recognizes: it now also returns non-zero
+  # on an unrecognized argument, which this branch cannot tell from real drift.
   elif cmd_playbook_diff --quiet >/dev/null 2>&1; then
     echo "  ✓ Playbooks in sync (no vault/repo drift)"
     ok=$((ok + 1))
@@ -706,28 +708,14 @@ cmd_playbook() {
   shift 2>/dev/null || true
   case "$subcmd" in
     scan) cmd_playbook_scan "$@" ;;
-    list) cmd_playbook_list ;;
+    list) cmd_playbook_list "$@" ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
     sync) cmd_playbook_sync "$@" ;;
     enable) cmd_playbook_enable "$@" ;;
     disable) cmd_playbook_disable "$@" ;;
     assign) cmd_playbook_assign "$@" ;;
-    help|--help|-h)
-      echo "Usage: ceo playbook <scan|list|info|diff|enable|disable|assign>"
-      echo ""
-      echo "  scan [--dry-run]   Discover playbooks, update host-local registry"
-      echo "                     (--dry-run prints the registry diff summary, no writes)"
-      echo "  list               Show all registered playbooks with scope + state"
-      echo "  info <name>        Show details for one playbook"
-      echo "  diff [--quiet]     Detect drift between vault and repo playbooks"
-      echo "  sync [--check]     Reconcile vault playbooks from the repo (repo wins;"
-      echo "                     vault-only playbooks kept). --check: report + exit 1 on"
-      echo "                     drift, no writes."
-      echo "  enable <name>      Run this each-scope playbook on THIS host"
-      echo "  disable <name>     Stop running this each-scope playbook on THIS host"
-      echo "  assign <name> <host>  Assign a single-scope playbook to an owner host"
-      ;;
+    help|--help|-h) _playbook_overview ;;
     *)
       echo "Unknown playbook command: $subcmd"
       echo "Run: ceo playbook help"
@@ -742,20 +730,7 @@ cmd_swarm() {
   case "$subcmd" in
     doctor) cmd_swarm_doctor "$@" ;;
     owners-health) cmd_swarm_owners_health "$@" ;;
-    help|--help|-h)
-      echo "Usage: ceo swarm <doctor|owners-health> [--fix]"
-      echo ""
-      echo "  doctor          Detect Syncthing swarm.json sync-conflict copies."
-      echo "                  Read-only: prints the proposed merge and exits"
-      echo "                  non-zero if any conflict copy exists (health gate)."
-      echo "  doctor --fix    Apply the merge atomically, then remove the"
-      echo "                  conflict copies."
-      echo "  owners-health   Detect single-scope playbook owners whose synced"
-      echo "                  heartbeat has gone stale (host presumed offline →"
-      echo "                  those playbooks run nowhere). Escalates to the inbox"
-      echo "                  on a fresh→stale transition; exits non-zero if any"
-      echo "                  owner is stale."
-      ;;
+    help|--help|-h) _swarm_overview ;;
     *)
       echo "Unknown swarm command: $subcmd"
       echo "Run: ceo swarm help"
@@ -786,6 +761,7 @@ cmd_swarm() {
 #   conflict copy exists (usable as a health gate). --fix writes the merge
 #   atomically (tmp+mv) and removes the conflict copies only after the write.
 cmd_swarm_doctor() {
+  _wants_help "$@" && { _swarm_sub_usage doctor; return 0; }
   : "${CEO_VAULT:?CEO_VAULT must be set before ceo swarm doctor}"
   local fix=0
   case "${1:-}" in
@@ -963,6 +939,11 @@ _parse_iso8601_to_epoch() {
 #   sustained outage produces one task, not one per run (the disk-monitor
 #   incident). Exit non-zero when any owner is stale (health gate).
 cmd_swarm_owners_health() {
+  _wants_help "$@" && { _swarm_sub_usage owners-health; return 0; }
+  if [ "$#" -gt 0 ]; then
+    echo "ERROR: ceo swarm owners-health takes no arguments (got: $*)" >&2
+    return 1
+  fi
   : "${CEO_VAULT:?CEO_VAULT must be set before ceo swarm owners-health}"
   : "${HOME:?HOME must be set before ceo swarm owners-health}"
 
@@ -1090,7 +1071,94 @@ cmd_swarm_owners_health() {
   return 0
 }
 
+# True when any argument is a help request. Scanned as a whole, not matched
+# positionally: `sync --chek --help` and `assign foo --help` are both help
+# requests, and a positional check answers neither (#367).
+_wants_help() {
+  local a
+  for a in "$@"; do
+    case "$a" in --help|-h) return 0 ;; esac
+  done
+  return 1
+}
+
+# Per-subcommand usage for `ceo playbook <sub> --help`. This is the only place
+# flag detail lives; `_playbook_overview` indexes the subcommands and points
+# here, so the two cannot drift apart.
+_playbook_sub_usage() {
+  case "$1" in
+    scan)
+      echo "Usage: ceo playbook scan [--dry-run]"
+      echo "  Discover playbooks and update the host-local registry."
+      echo "  --dry-run   Print the registry diff summary; write nothing."
+      ;;
+    diff)
+      echo "Usage: ceo playbook diff [--quiet]"
+      echo "  Report drift between the vault and repo playbook trees. Read-only."
+      echo "  --quiet     Exit status only; no output."
+      ;;
+    sync)
+      echo "Usage: ceo playbook sync [--check]"
+      echo "  Reconcile vault playbooks from the repo. The repo wins; vault-only"
+      echo "  playbooks are kept and reported, never deleted."
+      echo "  --check     Report what would change and exit 1 on drift; write nothing."
+      echo "              (--dry-run is an accepted alias.)"
+      ;;
+    list)     echo "Usage: ceo playbook list" ;;
+    info)     echo "Usage: ceo playbook info <name>" ;;
+    enable)   echo "Usage: ceo playbook enable <name>" ;;
+    disable)  echo "Usage: ceo playbook disable <name>" ;;
+    assign)   echo "Usage: ceo playbook assign <name> <host>" ;;
+    *)        _playbook_overview ;;
+  esac
+}
+
+_playbook_overview() {
+  echo "Usage: ceo playbook <scan|list|info|diff|sync|enable|disable|assign>"
+  echo ""
+  echo "  scan [--dry-run]      Discover playbooks, update host-local registry"
+  echo "  list                  Show all registered playbooks with scope + state"
+  echo "  info <name>           Show details for one playbook"
+  echo "  diff [--quiet]        Detect drift between vault and repo playbooks"
+  echo "  sync [--check]        Reconcile vault playbooks from the repo"
+  echo "  enable <name>         Run this each-scope playbook on THIS host"
+  echo "  disable <name>        Stop running this each-scope playbook on THIS host"
+  echo "  assign <name> <host>  Assign a single-scope playbook to an owner host"
+  echo ""
+  echo "Run 'ceo playbook <subcommand> --help' for that subcommand's flags."
+}
+
+_swarm_sub_usage() {
+  case "$1" in
+    doctor)
+      echo "Usage: ceo swarm doctor [--fix]"
+      echo "  Detect Syncthing swarm.json sync-conflict copies. Read-only without"
+      echo "  --fix: prints the proposed merge and exits non-zero if any conflict"
+      echo "  copy exists (usable as a health gate)."
+      echo "  --fix     Apply the merge atomically, then remove the conflict copies."
+      ;;
+    owners-health)
+      echo "Usage: ceo swarm owners-health"
+      echo "  Detect single-scope playbook owners whose synced heartbeat has gone"
+      echo "  stale, meaning those playbooks run nowhere. Escalates to the inbox on"
+      echo "  a fresh->stale transition and exits non-zero if any owner is stale."
+      echo "  Takes no flags."
+      ;;
+    *) _swarm_overview ;;
+  esac
+}
+
+_swarm_overview() {
+  echo "Usage: ceo swarm <doctor|owners-health>"
+  echo ""
+  echo "  doctor          Detect and merge swarm.json sync-conflict copies"
+  echo "  owners-health   Detect single-scope owners whose heartbeat went stale"
+  echo ""
+  echo "Run 'ceo swarm <subcommand> --help' for that subcommand's flags."
+}
+
 cmd_playbook_diff() {
+  _wants_help "$@" && { _playbook_sub_usage diff; return 0; }
   : "${CEO_VAULT:?CEO_VAULT must be set before ceo playbook diff}"
   local vault_dir="$CEO_DIR/playbooks"
   local repo_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
@@ -1098,6 +1166,10 @@ cmd_playbook_diff() {
   for arg in "$@"; do
     case "$arg" in
       --quiet) quiet="--quiet" ;;
+      *)
+        echo "ERROR: unknown diff argument: '$arg' (supported: --quiet)" >&2
+        return 1
+        ;;
     esac
   done
 
@@ -1163,6 +1235,7 @@ cmd_playbook_diff() {
 # never touch vault-only (intentional local) playbooks. Exit: 0 ok / 2 on
 # missing repo dir or copy failure; with --check, 1 signals drift (no writes).
 cmd_playbook_sync() {
+  _wants_help "$@" && { _playbook_sub_usage sync; return 0; }
   : "${CEO_VAULT:?CEO_VAULT must be set before ceo playbook sync}"
   local vault_dir="$CEO_DIR/playbooks"
   local repo_dir="${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}"
@@ -1170,6 +1243,13 @@ cmd_playbook_sync() {
   for arg in "$@"; do
     case "$arg" in
       --check|--dry-run) check=1 ;;
+      *)
+        # Never fall through to the write path on an argument we don't know.
+        # `--help` synced the whole vault and `--chek` ran the live sync the
+        # caller was trying to dry-run (#367, enum-config-typo-fallback).
+        echo "ERROR: unknown sync argument: '$arg' (supported: --check)" >&2
+        return 1
+        ;;
     esac
   done
 
@@ -1261,6 +1341,7 @@ cmd_playbook_sync() {
 }
 
 cmd_playbook_scan() {
+  _wants_help "$@" && { _playbook_sub_usage scan; return 0; }
   # Extract a scalar field from YAML frontmatter without requiring yq.
   # Handles quoted and unquoted values; returns empty string if absent.
   _fm_scalar() {
@@ -2158,6 +2239,11 @@ _playbook_rows() {
 }
 
 cmd_playbook_list() {
+  _wants_help "$@" && { _playbook_sub_usage list; return 0; }
+  if [ "$#" -gt 0 ]; then
+    echo "ERROR: ceo playbook list takes no arguments (got: $*)" >&2
+    return 1
+  fi
   local registry_file; registry_file=$(_ceo_registry_path)
   _require_registry_current "$registry_file"
 
@@ -2167,6 +2253,7 @@ cmd_playbook_list() {
 }
 
 cmd_playbook_enable() {
+  _wants_help "$@" && { _playbook_sub_usage enable; return 0; }
   local name="${1:-}"
   if [ -z "$name" ]; then
     echo "Usage: ceo playbook enable <name>" >&2
@@ -2202,6 +2289,7 @@ cmd_playbook_enable() {
 }
 
 cmd_playbook_disable() {
+  _wants_help "$@" && { _playbook_sub_usage disable; return 0; }
   local name="${1:-}"
   if [ -z "$name" ]; then
     echo "Usage: ceo playbook disable <name>" >&2
@@ -2231,6 +2319,7 @@ cmd_playbook_disable() {
 }
 
 cmd_playbook_assign() {
+  _wants_help "$@" && { _playbook_sub_usage assign; return 0; }
   local name="${1:-}" host="${2:-}"
   if [ -z "$name" ] || [ -z "$host" ]; then
     echo "Usage: ceo playbook assign <name> <host>" >&2
@@ -2257,6 +2346,7 @@ cmd_playbook_assign() {
 }
 
 cmd_playbook_info() {
+  _wants_help "$@" && { _playbook_sub_usage info; return 0; }
   local target="${1:-}"
   if [ -z "$target" ]; then
     echo "Usage: ceo playbook info <name>"
@@ -2549,6 +2639,42 @@ _bind_vault() { VAULT="$CEO_VAULT"; CEO_DIR="$VAULT/CEO"; }
 if [ "${CEO_LIB_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
+
+# Asking for help must never do work, and must not require a configured vault.
+# Every branch below either ignores argv outright or sits behind
+# `ceo_require_vault`, so a help request used to run whatever the command does:
+# `ceo playbook sync --help` synced the vault, `ceo swarm owners-health --help`
+# wrote the synced inbox, and `ceo test --help` ran a full morning-brief -- a
+# paid model call plus four dated files into the synced tree (#367).
+#
+# The command list is spelled out rather than matched with `*)` so that an
+# unknown command still fails: `ceo bogus --help` must stay exit 1, or a
+# wrapper checking the status cannot tell a typo from a help request. The
+# CEO_HELP_GATE_COMMANDS arm of ceo-help-contract.test.sh pins it equal to the
+# dispatch table below, since a command added there and forgotten here would be
+# ungated in exactly the silent way this whole change is about.
+case "${1:-help}" in
+  help|-h|--help) ;;
+  setup|pr-sources|next|doctor|preflight|test|chat|cron|playbook|schedule|swarm|creds)
+    if _wants_help "${@:2}"; then
+      case "$1" in
+        playbook) _playbook_sub_usage "${2:-}" ;;
+        swarm)    _swarm_sub_usage "${2:-}" ;;
+        # creds answers help itself, and one level down `creds check --help`
+        # read the flag as a playbook name and demanded a vault.
+        creds)    cmd_creds help ;;
+        *)        cmd_help ;;
+      esac
+      exit 0
+    fi
+    # The groups' own error text says "Run: ceo playbook help", and that
+    # spelling was still vault-gated.
+    case "$1 ${2:-}" in
+      "playbook help") _playbook_overview; exit 0 ;;
+      "swarm help")    _swarm_overview; exit 0 ;;
+    esac
+    ;;
+esac
 
 case "${1:-help}" in
   setup)    shift; cmd_setup "$@" ;;

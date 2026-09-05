@@ -386,4 +386,15 @@ test_scan_no_shadow_drift_warning_when_no_repo_dir() {
     "scan must not emit the sync warning when there is no repo dir to shadow"
 }
 
+# --- #367: --help must be answered, not rejected as an unknown argument ---
+
+test_scan_help_prints_usage_and_writes_no_registry() {
+  local out rc
+  out=$(bash "$CEO_CLI" playbook scan --help 2>&1); rc=$?
+  assert_eq "$rc" "0" "scan --help → exit 0"
+  assert_contains "$out" "Usage: ceo playbook scan" "scan --help → usage"
+  assert_eq "$([ -f "$HOME/.ceo/registry.json" ] && echo yes || echo no)" "no" \
+    "scan --help must not write a registry"
+}
+
 run_tests

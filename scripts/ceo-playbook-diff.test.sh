@@ -135,4 +135,27 @@ test_both_dirs_empty_no_drift() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# --- #367: --help and unknown flags ---
+
+test_diff_help_prints_usage_and_reports_no_drift_scan() {
+  write_pair "foo.md" "hello"
+  local out rc
+  out=$(bash "$CEO_CLI" playbook diff --help); rc=$?
+  assert_eq "$rc" "0" "diff --help → exit 0"
+  assert_contains "$out" "Usage: ceo playbook diff" "diff --help → usage"
+  assert_not_contains "$out" "No drift detected" "diff --help must not run the comparison"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_diff_rejects_unknown_flag() {
+  # `--quite` used to be silently dropped, so a caller asking for quiet got
+  # full output and read it as "no drift found".
+  write_pair "foo.md" "hello"
+  local out rc
+  out=$(bash "$CEO_CLI" playbook diff --quite 2>&1); rc=$?
+  assert_eq "$rc" "1" "diff → exit 1 on an unrecognized flag"
+  assert_contains "$out" "unknown diff argument" "diff must name the flag it rejected"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests
