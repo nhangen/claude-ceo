@@ -129,4 +129,51 @@ test_sync_missing_repo_dir_exits_2() {
   assert_eq "$SYNC_RC" "2" "sync must exit 2 when the repo playbook dir is missing"
 }
 
+# --- #367: `--help` and unknown flags must never reach the write path ---
+# `ceo playbook sync --help` synced seven vault playbooks before this. The arg
+# loop recognized only --check/--dry-run and silently dropped everything else,
+# so `check` stayed 0 and execution fell through to the cp/mv. Driven through
+# the CLI entry point, not cmd_playbook_sync, because that is the invocation
+# that misfired.
+
+_run_sync_cli() { SYNC_OUT=$(bash "$CEO_CLI" playbook sync "$@" 2>&1); SYNC_RC=$?; }
+
+test_sync_help_prints_usage_and_writes_nothing() {
+  _pb "$REPO_PB/process-watchdog.md" process-watchdog "repo"
+  _run_sync_cli --help
+  assert_eq "$SYNC_RC" "0" "sync --help must exit 0"
+  assert_contains "$SYNC_OUT" "Usage: ceo playbook sync" \
+    "sync --help must print its usage"
+  assert_eq "$(ls -A "$VAULT_PB" | wc -l | tr -d " ")" "0" \
+    "sync --help must write nothing to the vault (#367)"
+}
+
+test_sync_short_help_prints_usage_and_writes_nothing() {
+  _pb "$REPO_PB/process-watchdog.md" process-watchdog "repo"
+  _run_sync_cli -h
+  assert_eq "$SYNC_RC" "0" "sync -h must exit 0"
+  assert_eq "$(ls -A "$VAULT_PB" | wc -l | tr -d " ")" "0" \
+    "sync -h must write nothing to the vault"
+}
+
+test_sync_help_after_check_still_writes_nothing() {
+  # --help anywhere in argv wins; a caller who typed both meant to read, not run.
+  _pb "$REPO_PB/process-watchdog.md" process-watchdog "repo"
+  _run_sync_cli --check --help
+  assert_eq "$SYNC_RC" "0" "sync --check --help must exit 0"
+  assert_contains "$SYNC_OUT" "Usage: ceo playbook sync" \
+    "--help must win over --check"
+}
+
+test_sync_rejects_unknown_flag_without_writing() {
+  # The same hole passed any typo: --chek performed a live sync, not a dry run.
+  _pb "$REPO_PB/process-watchdog.md" process-watchdog "repo"
+  _run_sync_cli --chek
+  assert_eq "$SYNC_RC" "1" "sync must exit 1 on an unrecognized flag"
+  assert_contains "$SYNC_OUT" "unknown sync argument" \
+    "sync must name the flag it rejected"
+  assert_eq "$(ls -A "$VAULT_PB" | wc -l | tr -d " ")" "0" \
+    "a rejected flag must not fall through to the write path (#367)"
+}
+
 run_tests

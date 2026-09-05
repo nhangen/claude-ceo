@@ -201,4 +201,28 @@ test_assign_does_not_clobber_malformed_swarm() {
   assert_eq "$(cat "$SWARM_FILE")" '{bad json' "malformed swarm.json must be preserved, not clobbered"
 }
 
+# --- #367: --help on a name-taking subcommand ---
+
+test_name_taking_subcommands_answer_help() {
+  # info/enable/disable/assign read $1 as a playbook name, so `--help` was
+  # looked up in the registry and reported as a missing playbook.
+  local sub out rc
+  for sub in info enable disable assign list; do
+    out=$(bash "$CEO_CLI" playbook "$sub" --help 2>&1); rc=$?
+    assert_eq "$rc" "0" "playbook $sub --help → exit 0"
+    assert_contains "$out" "Usage: ceo playbook $sub" "playbook $sub --help → its own usage"
+    assert_not_contains "$out" "not in the registry" \
+      "playbook $sub --help must not treat --help as a playbook name"
+  done
+}
+
+test_help_on_name_taking_subcommand_needs_no_registry() {
+  # Help must answer before any registry read — the state a new host is in.
+  rm -f "$REGISTRY_FILE"
+  local out rc
+  out=$(bash "$CEO_CLI" playbook enable --help 2>&1); rc=$?
+  assert_eq "$rc" "0" "playbook enable --help → exit 0 with no registry"
+  assert_contains "$out" "Usage: ceo playbook enable" "usage printed with no registry"
+}
+
 run_tests

@@ -372,6 +372,7 @@ ceo cron <name>      Manually run a cron trigger
 ceo chat [name]      Interactive playbook (no cron); empty = triage conversation; defaults to --effort medium
 ceo playbook scan|list|info     Self-registering playbook management
 ceo playbook scan --dry-run     Preview what scan would install, no writes
+ceo playbook <sub> --help       Usage for one subcommand; runs nothing
 ceo schedule [name]  List effective schedules; with name, reschedule one
 ceo preflight        Preview what cron would run vs skip
 ```

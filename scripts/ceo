@@ -706,7 +706,7 @@ cmd_playbook() {
   shift 2>/dev/null || true
   case "$subcmd" in
     scan) cmd_playbook_scan "$@" ;;
-    list) cmd_playbook_list ;;
+    list) case "${1:-}" in --help|-h) _playbook_sub_usage list ;; *) cmd_playbook_list ;; esac ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
     sync) cmd_playbook_sync "$@" ;;
@@ -1090,6 +1090,36 @@ cmd_swarm_owners_health() {
   return 0
 }
 
+# Per-subcommand usage for `ceo playbook <sub> --help`. Every subcommand that
+# reads flags must answer --help from here and return before doing any work:
+# `ceo playbook sync --help` used to fall through to a live vault sync (#367).
+_playbook_sub_usage() {
+  case "$1" in
+    scan)
+      echo "Usage: ceo playbook scan [--dry-run]"
+      echo "  Discover playbooks and update the host-local registry."
+      echo "  --dry-run   Print the registry diff summary; write nothing."
+      ;;
+    diff)
+      echo "Usage: ceo playbook diff [--quiet]"
+      echo "  Report drift between the vault and repo playbook trees. Read-only."
+      echo "  --quiet     Exit status only; no output."
+      ;;
+    sync)
+      echo "Usage: ceo playbook sync [--check]"
+      echo "  Reconcile vault playbooks from the repo. The repo wins; vault-only"
+      echo "  playbooks are kept and reported, never deleted."
+      echo "  --check     Report what would change and exit 1 on drift; write nothing."
+      ;;
+    list)     echo "Usage: ceo playbook list" ;;
+    info)     echo "Usage: ceo playbook info <name>" ;;
+    enable)   echo "Usage: ceo playbook enable <name>" ;;
+    disable)  echo "Usage: ceo playbook disable <name>" ;;
+    assign)   echo "Usage: ceo playbook assign <name> <host>" ;;
+    *)        echo "Usage: ceo playbook help" ;;
+  esac
+}
+
 cmd_playbook_diff() {
   : "${CEO_VAULT:?CEO_VAULT must be set before ceo playbook diff}"
   local vault_dir="$CEO_DIR/playbooks"
@@ -1098,6 +1128,11 @@ cmd_playbook_diff() {
   for arg in "$@"; do
     case "$arg" in
       --quiet) quiet="--quiet" ;;
+      --help|-h) _playbook_sub_usage diff; return 0 ;;
+      *)
+        echo "ERROR: unknown diff argument: '$arg' (supported: --quiet)" >&2
+        return 1
+        ;;
     esac
   done
 
@@ -1170,6 +1205,14 @@ cmd_playbook_sync() {
   for arg in "$@"; do
     case "$arg" in
       --check|--dry-run) check=1 ;;
+      --help|-h) _playbook_sub_usage sync; return 0 ;;
+      *)
+        # Never fall through to the write path on an argument we don't know.
+        # `--help` synced the whole vault and `--chek` ran the live sync the
+        # caller was trying to dry-run (#367, enum-config-typo-fallback).
+        echo "ERROR: unknown sync argument: '$arg' (supported: --check)" >&2
+        return 1
+        ;;
     esac
   done
 
@@ -1333,6 +1376,7 @@ cmd_playbook_scan() {
   for arg in "$@"; do
     case "$arg" in
       --dry-run) dry_run=1 ;;
+      --help|-h) _playbook_sub_usage scan; return 0 ;;
       *)
         # Reject unknown args rather than fall through to a real scan —
         # `--dryrun` typo must not silently run the destructive path. Per
@@ -2168,6 +2212,7 @@ cmd_playbook_list() {
 
 cmd_playbook_enable() {
   local name="${1:-}"
+  case "$name" in --help|-h) _playbook_sub_usage enable; return 0 ;; esac
   if [ -z "$name" ]; then
     echo "Usage: ceo playbook enable <name>" >&2
     exit 1
@@ -2203,6 +2248,7 @@ cmd_playbook_enable() {
 
 cmd_playbook_disable() {
   local name="${1:-}"
+  case "$name" in --help|-h) _playbook_sub_usage disable; return 0 ;; esac
   if [ -z "$name" ]; then
     echo "Usage: ceo playbook disable <name>" >&2
     exit 1
@@ -2232,6 +2278,7 @@ cmd_playbook_disable() {
 
 cmd_playbook_assign() {
   local name="${1:-}" host="${2:-}"
+  case "$name" in --help|-h) _playbook_sub_usage assign; return 0 ;; esac
   if [ -z "$name" ] || [ -z "$host" ]; then
     echo "Usage: ceo playbook assign <name> <host>" >&2
     exit 1
@@ -2258,6 +2305,7 @@ cmd_playbook_assign() {
 
 cmd_playbook_info() {
   local target="${1:-}"
+  case "$target" in --help|-h) _playbook_sub_usage info; return 0 ;; esac
   if [ -z "$target" ]; then
     echo "Usage: ceo playbook info <name>"
     exit 1
