@@ -56,8 +56,9 @@ Active playbooks shipped with the plugin (live in `docs/playbooks/`; copy into `
 | `eod-summary` | `47 17 * * 1-5` | read | claude | Recap if there are log entries after 4pm |
 | `cleanup` | weekly | low-stakes-write | claude | Branch / worktree hygiene |
 | `token-intake` | `45 8 * * 1-5` | read | script | Run `ceo-token-intake.sh` — token-scope snapshot to vault |
+| `norx-bookkeeping` | hourly at :15 | high-stakes | script | Run the once-daily NoRx Mercury import and Sheets refresh when due |
 
-`tier: read` runs a single `claude --print --max-turns 5 --disallowedTools Bash,Write,Edit` call with pre-gathered context injected as `<external-data>` blocks. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline; high-stakes actions are written to `CEO/approvals/pending.md` instead of executed.
+For `runner: claude`, `tier: read` runs a single `claude --print --max-turns 5 --disallowedTools Bash,Write,Edit` call with pre-gathered context injected as `<external-data>` blocks. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline; high-stakes actions are written to `CEO/approvals/pending.md` instead of executed. A `runner: script` playbook executes its already-approved script directly, including when its notification posture is `high-stakes`.
 
 A playbook can declare `runner: script` to dispatch a shell script directly, skipping the LLM call entirely (token-intake is the canonical example). The script receives `CEO_VAULT`, `CEO_DIR`, `LOG_DIR`, `TODAY`, `NOW`, `TRIGGER` as env vars; the dispatcher does not parse stdout. Exit code 0 = success.
 
