@@ -6,10 +6,14 @@ others. Treating "no exception" as success would record an HTTP error as a model
 turn (non-throwing-client-success-check).
 """
 import json
+import time
 import urllib.error
 import urllib.request
 
 DEFAULT_HOST = "127.0.0.1:11434"
+RETRYABLE_HTTP_STATUSES = frozenset({502, 503, 504})
+MAX_HTTP_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 0.2
 
 
 def parse_chat_response(status, body):
@@ -64,12 +68,22 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
         payload = json.dumps(body).encode()
         req = urllib.request.Request(url, data=payload,
                                      headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return parse_chat_response(resp.status, resp.read().decode())
-        except urllib.error.HTTPError as e:
-            return parse_chat_response(e.code, e.read().decode())
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e
+        for attempt in range(1, MAX_HTTP_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return parse_chat_response(resp.status, resp.read().decode())
+            except urllib.error.HTTPError as e:
+                try:
+                    if e.code not in RETRYABLE_HTTP_STATUSES:
+                        return parse_chat_response(e.code, e.read().decode())
+                    if attempt == MAX_HTTP_ATTEMPTS:
+                        raise RuntimeError(
+                            f"ollama HTTP {e.code} after {attempt} attempts for model {model}"
+                        ) from e
+                finally:
+                    e.close()
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e
 
     return transport
