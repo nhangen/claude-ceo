@@ -7,6 +7,7 @@ safe-delegation tiering land in the governance slice (#190). Until then this is
 a deliberately-invoked local tool, not an unattended one; the caller picks cwd.
 """
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -54,7 +55,7 @@ class ToolBox:
                            "stderr": _clip(p.stderr, MAX_OUTPUT)})
 
     def git(self, args):
-        argv = args if isinstance(args, list) else str(args).split()
+        argv = args if isinstance(args, list) else shlex.split(str(args))
         try:
             p = subprocess.run(["git", *argv], cwd=self.cwd, capture_output=True,
                                text=True, timeout=self.timeout)

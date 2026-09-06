@@ -43,3 +43,31 @@ def test_run_shell_timeout_is_an_error(tmp_path):
     result = json.loads(tb.dispatch("run_shell", {"command": "sleep 5"}))
     assert "error" in result
     assert [e["tool"] for e in tb.tool_errors] == ["run_shell"]
+
+
+def test_git_string_args_handles_quoted_spaces(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Nathan Hangen"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "nathan@nhangen.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "core.hooksPath", ""], cwd=tmp_path, check=True)
+
+    file_with_spaces = tmp_path / "my file with spaces.txt"
+    file_with_spaces.write_text("hello world")
+
+    tb = ToolBox(cwd=str(tmp_path))
+
+    # String args with quoted spaces (would fail under str.split(), passes under shlex.split())
+    res_str = json.loads(tb.dispatch("git", {"args": 'add "my file with spaces.txt"'}))
+    assert res_str["returncode"] == 0
+    assert tb.tool_errors == []
+
+    # Commit with message with spaces
+    res_commit = json.loads(tb.dispatch("git", {"args": 'commit -m "commit message with spaces"'}))
+    assert res_commit["returncode"] == 0
+    assert tb.tool_errors == []
+
+    # List args also work
+    res_status = json.loads(tb.dispatch("git", {"args": ["status", "--porcelain"]}))
+    assert res_status["returncode"] == 0
+    assert res_status["stdout"].strip() == ""
