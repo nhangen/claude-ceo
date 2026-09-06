@@ -434,6 +434,90 @@ def test_transport_urlerror_raises_unreachable(monkeypatch):
         t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
 
 
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_transport_retries_transient_http_once_without_changing_request(
+        monkeypatch, status):
+    import io
+    import ollama_agent.transport as t
+
+    requests = []
+    errors = []
+
+    def respond(req, timeout):
+        requests.append((req.full_url, dict(req.headers), timeout, req.data))
+        if len(requests) == 1:
+            error = t.urllib.error.HTTPError(
+                "u", status, "upstream failure", {},
+                io.BytesIO(b"upstream failed"))
+            errors.append(error)
+            raise error
+        return _FakeResp(200, json.dumps({
+            "message": {"role": "assistant", "content": "ok"},
+            "prompt_eval_count": 7,
+            "eval_count": 11,
+        }))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+
+    msg, usage = t.ollama_transport("local-coder")(
+        [{"role": "user", "content": "hi"}], [])
+
+    assert msg["content"] == "ok"
+    assert usage == {"input": 7, "output": 11}
+    assert len(requests) == 2
+    assert requests[0] == requests[1]
+    assert errors[0].closed
+
+
+def test_transport_stops_after_bounded_502_retries(monkeypatch):
+    import io
+    import ollama_agent.transport as t
+
+    errors = []
+
+    def fail(req, timeout):
+        error = t.urllib.error.HTTPError(
+            "u", 502, "bad gateway", {}, io.BytesIO(b"upstream secret"))
+        errors.append(error)
+        raise error
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+
+    with pytest.raises(
+            RuntimeError,
+            match=r"HTTP 502 after 3 attempts for model local-coder") as exc:
+        t.ollama_transport("local-coder", host="router:40114")(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert len(errors) == 3
+    assert all(error.closed for error in errors)
+    assert "upstream secret" not in str(exc.value)
+
+
+@pytest.mark.parametrize("status", [400, 500])
+def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
+    import io
+    import ollama_agent.transport as t
+
+    errors = []
+
+    def fail(req, timeout):
+        error = t.urllib.error.HTTPError(
+            "u", status, "request failed", {},
+            io.BytesIO(b'{"error":"request failed"}'))
+        errors.append(error)
+        raise error
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+
+    with pytest.raises(RuntimeError, match=f"HTTP {status}"):
+        t.ollama_transport("local-coder")(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert len(errors) == 1
+    assert errors[0].closed
+
+
 # --- transport success check ---
 
 def test_parse_chat_response_ok():
