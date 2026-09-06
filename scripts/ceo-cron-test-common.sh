@@ -151,8 +151,21 @@ teardown() {
   unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE CEO_LOCK_FILE
 }
 
+
+
+# --- shared helpers hoisted from ceo-cron.test.sh (sourced by every ceo-cron-*.test.sh shard) ---
+
+# _stub_gh_prs <count> — replaces the base gh stub with one whose
+# `search prs --review-requested` returns <count> PRs. Same argv discipline as
+# the base stub: anything unexpected exits 99 rather than returning a plausible
+# empty result (stub-cli-argv-validation).
 _stub_gh_prs() {
   local n="${1:-0}"
+  # A bad argument here would otherwise surface as an arithmetic error inside a
+  # test whose own assertion then fails for an unrelated-looking reason.
+  case "$n" in
+    ''|*[!0-9]*) echo "_stub_gh_prs: PR count must be a non-negative integer, got '$n'" >&2; return 1 ;;
+  esac
   local prs_json="[]"
   if [ "$n" -gt 0 ]; then
     prs_json=$(jq -n --argjson count "$n" '[range(1; $count + 1) | {
@@ -160,7 +173,7 @@ _stub_gh_prs() {
       title: "Review PR \(.)",
       createdAt: "2026-09-01T12:00:00Z",
       repository: { nameWithOwner: "testorg/testrepo" }
-    }]')
+    }]') || { echo "_stub_gh_prs: jq failed building $n PRs" >&2; return 1; }
   fi
 
   cat > "$TEST_HOME/.bun/bin/gh" << STUB
@@ -187,19 +200,16 @@ case "\$1 \${2:-}" in
         echo '[]'
         exit 0 ;;
       *)
-        echo "stub gh: unexpected search prs flags: \$*" >&2
+        echo "gh stub: unexpected search prs flags: \$*" >&2
         exit 99 ;;
     esac ;;
   *)
-    echo "stub gh: unexpected argv: \$*" >&2
+    echo "gh stub: unexpected argv: \$*" >&2
     exit 99 ;;
 esac
 STUB
   chmod +x "$TEST_HOME/.bun/bin/gh"
 }
-
-
-# --- shared helpers hoisted from ceo-cron.test.sh (sourced by every ceo-cron-*.test.sh shard) ---
 
 
 # --- #173: script playbooks signal fired/noop so _record_success notifies only
