@@ -152,7 +152,64 @@ teardown() {
 }
 
 
+
 # --- shared helpers hoisted from ceo-cron.test.sh (sourced by every ceo-cron-*.test.sh shard) ---
+
+# _stub_gh_prs <count> — replaces the base gh stub with one whose
+# `search prs --review-requested` returns <count> PRs. Same argv discipline as
+# the base stub: anything unexpected exits 99 rather than returning a plausible
+# empty result (stub-cli-argv-validation).
+_stub_gh_prs() {
+  local n="${1:-0}"
+  # A bad argument here would otherwise surface as an arithmetic error inside a
+  # test whose own assertion then fails for an unrelated-looking reason.
+  case "$n" in
+    ''|*[!0-9]*) echo "_stub_gh_prs: PR count must be a non-negative integer, got '$n'" >&2; return 1 ;;
+  esac
+  local prs_json="[]"
+  if [ "$n" -gt 0 ]; then
+    prs_json=$(jq -n --argjson count "$n" '[range(1; $count + 1) | {
+      number: (100 + .),
+      title: "Review PR \(.)",
+      createdAt: "2026-09-01T12:00:00Z",
+      repository: { nameWithOwner: "testorg/testrepo" }
+    }]') || { echo "_stub_gh_prs: jq failed building $n PRs" >&2; return 1; }
+  fi
+
+  cat > "$TEST_HOME/.bun/bin/gh" << STUB
+#!/bin/bash
+echo "\$*" >> "\$HOME/gh-invoked.txt"
+case "\$1 \${2:-}" in
+  "auth status"*)
+    case "\$*" in
+      *"--json"*) echo '[{"user":"testuser"}]'; exit 0 ;;
+      *) echo "Logged in to github.com account testuser (keyring)"; exit 0 ;;
+    esac ;;
+  "auth token"*)
+    echo "ghp_faketoken12345"
+    exit 0 ;;
+  "search prs"*)
+    case "\$*" in
+      *"--review-requested"*)
+        printf '%s\n' '$prs_json'
+        exit 0 ;;
+      *"--state open"*"--author"*)
+        echo '[]'
+        exit 0 ;;
+      *"--merged"*)
+        echo '[]'
+        exit 0 ;;
+      *)
+        echo "gh stub: unexpected search prs flags: \$*" >&2
+        exit 99 ;;
+    esac ;;
+  *)
+    echo "gh stub: unexpected argv: \$*" >&2
+    exit 99 ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/gh"
+}
 
 
 # --- #173: script playbooks signal fired/noop so _record_success notifies only

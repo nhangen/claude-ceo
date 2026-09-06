@@ -241,7 +241,7 @@ PB
 
   local out
   out=$(bash "$CEO_CLI" playbook scan 2>&1)
-  unset CEO_REPO_PLAYBOOK_DIR
+  export CEO_REPO_PLAYBOOK_DIR="$TEST_HOME/empty-repo-playbooks"
 
   assert_contains "$out" "ADD   _test-repo-pb" "repo playbook must be picked up by scan"
 
@@ -282,7 +282,7 @@ PB
 
   local out
   out=$(bash "$CEO_CLI" playbook scan 2>&1)
-  unset CEO_REPO_PLAYBOOK_DIR
+  export CEO_REPO_PLAYBOOK_DIR="$TEST_HOME/empty-repo-playbooks"
 
   assert_contains "$out" "SHADOW" "scan must report shadowing"
 
@@ -323,7 +323,7 @@ PB
 
   local out
   out=$(bash "$CEO_CLI" playbook scan 2>&1)
-  unset CEO_REPO_PLAYBOOK_DIR
+  export CEO_REPO_PLAYBOOK_DIR="$TEST_HOME/empty-repo-playbooks"
 
   assert_contains "$out" "DUP" "two repo files with same name must log DUP"
   if [[ "$out" == *"SHADOW"* ]]; then

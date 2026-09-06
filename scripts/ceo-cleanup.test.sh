@@ -630,6 +630,61 @@ test_cleanup_reaps_pidless_worker_row_older_than_threshold() {
     "only the old pid-less worker row is removed"
 }
 
+test_cleanup_reaps_pidless_worker_row_with_no_timestamp() {
+  local repo; repo="$(mkrepo_cleanup pidless-nots main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "pidless-nots")"
+  mkdir -p "$sdir"
+
+  local now; now="$(date +%s)"
+  printf '%s\n' \
+    '{"branch":"ceo/pidless-no-ts","base":"aaa","files":["a.txt"]}' \
+    "{\"branch\":\"ceo/pidless-fresh\",\"base\":\"aaa\",\"files\":[\"b.txt\"],\"ts\":$now}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKER_REAPED: ceo/pidless-no-ts (pid-less row with no timestamp)" \
+    "a pid-less worker row with no timestamp must be reaped"
+  assert_not_contains "$out" "WORKER_REAPED: ceo/pidless-fresh" \
+    "a fresh pid-less worker row must NOT be reaped"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/pidless-fresh" \
+    "only the pid-less row with no timestamp is removed"
+}
+
+# A pid-less row whose ts is present but unreadable is reaped for the same reason
+# an absent ts is -- neither carries liveness evidence, and neither can ever age
+# out, which is the immortal row #365 exists to remove. What it must NOT do is
+# report the two as the same condition: the operator reading a cleanup report
+# needs to know the row had a timestamp that could not be parsed. jq's tostring
+# renders 1234.0 with the dot, so a real epoch lands here too.
+test_cleanup_reaps_pidless_row_with_unreadable_timestamp() {
+  local repo; repo="$(mkrepo_cleanup pidless-badts main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "pidless-badts")"
+  mkdir -p "$sdir"
+
+  local now; now="$(date +%s)"
+  printf '%s\n' \
+    '{"branch":"ceo/pidless-bad-ts","base":"aaa","files":["a.txt"],"ts":"garbage"}' \
+    '{"branch":"ceo/pidless-float-ts","base":"aaa","files":["b.txt"],"ts":1234.0}' \
+    "{\"branch\":\"ceo/pidless-fresh\",\"base\":\"aaa\",\"files\":[\"c.txt\"],\"ts\":$now}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKER_REAPED: ceo/pidless-bad-ts (pid-less row with unreadable timestamp 'garbage')" \
+    "an unreadable ts must be reported as unreadable, not as absent"
+  assert_contains "$out" "WORKER_REAPED: ceo/pidless-float-ts (pid-less row with unreadable timestamp '1234.0')" \
+    "a non-integer ts is unreadable to the integer arithmetic below it"
+  assert_not_contains "$out" "ceo/pidless-bad-ts (pid-less row with no timestamp)" \
+    "the two conditions must not share a reason string"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/pidless-fresh" \
+    "only the unreadable-ts rows are removed"
+}
+
 # The arm that used to sit here asserted the opposite of this one: it seeded
 # $$ -- the live test shell -- as the PID, called it a "recycled PID", and
 # required the row be reaped for having no worktree. That rule deleted the state

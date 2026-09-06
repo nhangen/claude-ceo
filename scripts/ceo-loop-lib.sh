@@ -371,6 +371,12 @@ RELEASE_INNER
 # that can be positively confirmed gone:
 #   1. The PID is dead — kill -0 fails with ESRCH, not EPERM.
 #   2. The row carries no PID and is older than max-age-secs (default 7 days).
+#   3. The row carries no PID and has no timestamp.
+#   4. The row carries no PID and a timestamp that cannot be read as an integer.
+#      Rules 3 and 4 are the same judgement -- neither row carries any liveness
+#      evidence, and neither can ever age out under rule 2, so both are immortal
+#      without this. They are reported separately on purpose: an operator reading
+#      a cleanup report needs to know a timestamp was there and was unparseable.
 # Prints each dropped row to stdout as REAPED|<reason>|<branch>. The branch
 # goes last because `IFS='|' read` hands the trailing field the remainder of
 # the line verbatim, and git check-ref-format permits `|` in a branch name --
@@ -483,10 +489,20 @@ while IFS= read -r row || [ -n "$row" ]; do
       ;;
   esac
 
-  # Candidate 2: no PID to check, and old enough that nothing is coming back.
-  if [ -z "$reap_reason" ] && [ -z "$row_pid" ] && [ -n "$row_ts" ]; then
+  # Candidate 2: no PID to check. A row with no timestamp is immediately reaped;
+  # a row with a valid timestamp is reaped once older than max-age-secs.
+  #
+  # An unreadable timestamp is reaped too, and reported as its own condition.
+  # It cannot take the age arithmetic below -- jq's tostring passes anything
+  # truthy through, so `"ts": "abc"` and `"ts": 1234.0` both arrive as strings
+  # the integer subtraction would fail on -- so without this it is a row that
+  # ages out never. Note this is the opposite call from the PID arm above, and
+  # deliberately: an unreadable PID might still name a running process, while an
+  # unreadable timestamp names nothing at all.
+  if [ -z "$reap_reason" ] && [ -z "$row_pid" ]; then
     case "$row_ts" in
-      ''|*[!0-9]*) ;;
+      '')          reap_reason="pid-less row with no timestamp" ;;
+      *[!0-9]*)    reap_reason="pid-less row with unreadable timestamp '$row_ts'" ;;
       *)
         age=$((now_epoch - row_ts))
         if [ "$age" -ge "$CEO_MAX_AGE" ]; then

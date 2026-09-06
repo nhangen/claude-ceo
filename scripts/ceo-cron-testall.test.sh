@@ -153,6 +153,39 @@ test_test_all_preflight_dependency_failure_is_failed_not_skip() {
 }
 
 
+# The positive complement to the dependency-failure arm above. Together the
+# three separate the states --test-all can report for one preflight: work
+# present, no work, and the preflight itself unable to answer. Without both of
+# these, a preflight that always returned false would still look correct.
+test_test_all_preflight_has_prs_to_review_would_run_when_prs_present() {
+  _stub_gh_prs 2
+  _register_pb_sched ta-pr-rev "5 9 * * *" has_prs_to_review
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" --test-all >/dev/null 2>&1 || true
+  local body; body=$(cat "$(_test_all_report)" 2>/dev/null)
+  assert_contains "$body" "ta-pr-rev | would run" \
+    "has_prs_to_review must report 'would run' when PRs exist for review"
+  assert_not_contains "$body" "FAILED" \
+    "successful preflight must not record failure"
+}
+
+
+# The other half: a clean skip must not be recorded as a failure. `_stub_gh_prs
+# 0` is load-bearing -- without it the unauthenticated base stub sends this down
+# the dependency-failure path and the arm passes for the wrong reason.
+test_test_all_preflight_has_prs_to_review_skips_when_no_prs() {
+  _stub_gh_prs 0
+  _register_pb_sched ta-pr-none "5 9 * * *" has_prs_to_review
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" --test-all >/dev/null 2>&1 || true
+  local body; body=$(cat "$(_test_all_report)" 2>/dev/null)
+  assert_contains "$body" "ta-pr-none | skip: no work" \
+    "has_prs_to_review must report 'skip: no work' when PR count is 0"
+  assert_not_contains "$body" "FAILED" \
+    "clean preflight skip must not record failure"
+}
+
+
 # --depth plan: a read-tier playbook has no planning phase, so it previews the
 # call it WOULD make without spending tokens (no model call).
 test_dry_run_depth_plan_read_tier_previews_without_call() {
