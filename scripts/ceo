@@ -1474,6 +1474,9 @@ cmd_playbook_scan() {
   # way an invalid status does (enum-config-typo-fallback: failed dispatch
   # counts toward failure observability).
   local invalid_scope=0
+  # An explicitly-set repo playbook dir that does not exist. Only reachable
+  # under --dry-run; the write path exits before it can be set.
+  local missing_repo_dir=0
 
   local seen_names_vault=""
   local seen_names_repo=""
@@ -1493,8 +1496,16 @@ cmd_playbook_scan() {
     scan_dirs+=( "$repo_playbook_dir" )
   elif [ -n "${CEO_REPO_PLAYBOOK_DIR:-}" ]; then
     echo "ERROR: CEO_REPO_PLAYBOOK_DIR is set to a path that does not exist: $repo_playbook_dir" >&2
-    echo "Fix the path or unset it; refusing to rewrite the registry without the repo playbooks." >&2
-    exit 1
+    # --dry-run writes nothing, so there is no registry to protect and the
+    # preview a broken config most needs is the one it should still get. It
+    # still exits non-zero at the tail, alongside the invalid-enum counters.
+    if [ "$dry_run" -eq 1 ]; then
+      echo "Continuing the preview without the repo playbooks; nothing will be written." >&2
+      missing_repo_dir=1
+    else
+      echo "Fix the path or unset it; refusing to rewrite the registry without the repo playbooks." >&2
+      exit 1
+    fi
   else
     echo "  WARN  repo playbooks directory not found ($repo_playbook_dir) — skipping repo playbooks" >&2
   fi
@@ -1846,7 +1857,7 @@ cmd_playbook_scan() {
   if [ "$dry_run" -eq 1 ]; then
     echo ""
     echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed) — NOT written"
-    if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ]; then
+    if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ] || [ "$missing_repo_dir" -eq 1 ]; then
       [ "$invalid_status" -gt 0 ] && echo "ERROR: $invalid_status playbook(s) skipped due to invalid status — see SKIP lines above" >&2
       [ "$invalid_scope" -gt 0 ] && echo "ERROR: $invalid_scope playbook(s) skipped due to invalid scope — see SKIP lines above" >&2
       return 1

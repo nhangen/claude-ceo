@@ -434,15 +434,41 @@ test_scan_errors_when_explicit_repo_playbook_dir_missing() {
 # previous one intact rather than half-rewriting it from the vault dir alone.
 test_scan_leaves_registry_intact_when_explicit_repo_dir_missing() {
   rm -f "$CEO_DIR/playbooks/scope-bogus.md"
+  # The baseline registry has to contain something only the repo tree supplies,
+  # or the assertion below cannot fail: with an empty repo dir the registry is
+  # byte-identical whether or not that tree was scanned, and the arm passes
+  # against a scan that dropped it.
+  _write_playbook "$CEO_REPO_PLAYBOOK_DIR/repo-only.md" "repo-only" ""
   _run_scan
   assert_eq "$SCAN_RC" "0" "baseline scan must succeed"
   local before; before="$(cat "$HOME/.ceo/registry.json")"
+  assert_contains "$before" "repo-only" \
+    "the baseline registry must carry a playbook only the repo tree supplies"
 
   export CEO_REPO_PLAYBOOK_DIR="$TMP/nonexistent-repo-playbooks"
   _run_scan_split
   assert_eq "$SCAN_RC" "1" "the second scan must fail"
   assert_eq "$(cat "$HOME/.ceo/registry.json")" "$before" \
     "a refused scan must not rewrite the registry"
+}
+
+# --dry-run writes nothing, so there is no registry to protect: the preview a
+# broken config most needs is the one it should still get. It must still report
+# the error and still exit non-zero.
+test_scan_dry_run_previews_and_fails_when_explicit_repo_dir_missing() {
+  rm -f "$CEO_DIR/playbooks/scope-bogus.md"
+  export CEO_REPO_PLAYBOOK_DIR="$TMP/nonexistent-repo-playbooks"
+  local err; err="$TMP/dry-stderr.$$"
+  local out rc=0
+  out=$(cmd_playbook_scan --dry-run 2>"$err") || rc=$?
+  local errtext; errtext="$(cat "$err")"; rm -f "$err"
+  assert_eq "$rc" "1" "a dry run over a broken explicit path must still fail"
+  assert_contains "$errtext" "CEO_REPO_PLAYBOOK_DIR is set to a path that does not exist" \
+    "the dry run must still report the broken path"
+  assert_contains "$out" "NOT written" \
+    "the dry run must still print its preview instead of exiting early"
+  assert_eq "$([ -f "$HOME/.ceo/registry.json" ] && echo yes || echo no)" "no" \
+    "a dry run must not write a registry"
 }
 
 # The unset case keeps the old behavior: warn, skip the repo tree, carry on.
