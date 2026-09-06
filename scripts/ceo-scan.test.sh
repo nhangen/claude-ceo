@@ -475,6 +475,7 @@ test_scan_dry_run_previews_and_fails_when_explicit_repo_dir_missing() {
 test_scan_warns_when_default_repo_playbook_dir_missing() {
   rm -f "$CEO_DIR/playbooks/scope-bogus.md"
   unset CEO_REPO_PLAYBOOK_DIR
+  # shellcheck disable=SC2034  # read by the sourced lib's module-scope functions
   INSTALL_DIR="$TMP/no-such-install"
   _run_scan_split
   assert_eq "$SCAN_RC" "0" "a missing install default must not fail the scan"
