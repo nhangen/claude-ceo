@@ -434,6 +434,76 @@ def test_transport_urlerror_raises_unreachable(monkeypatch):
         t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
 
 
+def test_transport_retries_502_once_without_changing_request(monkeypatch):
+    import io
+    import ollama_agent.transport as t
+
+    payloads = []
+
+    def respond(req, timeout):
+        payloads.append(req.data)
+        if len(payloads) == 1:
+            raise t.urllib.error.HTTPError(
+                "u", 502, "bad gateway", {}, io.BytesIO(b"upstream failed"))
+        return _FakeResp(200, json.dumps({
+            "message": {"role": "assistant", "content": "ok"},
+            "prompt_eval_count": 7,
+            "eval_count": 11,
+        }))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+
+    msg, usage = t.ollama_transport("local-coder")(
+        [{"role": "user", "content": "hi"}], [])
+
+    assert msg["content"] == "ok"
+    assert usage == {"input": 7, "output": 11}
+    assert len(payloads) == 2
+    assert payloads[0] == payloads[1]
+
+
+def test_transport_stops_after_bounded_502_retries(monkeypatch):
+    import io
+    import ollama_agent.transport as t
+
+    calls = []
+
+    def fail(req, timeout):
+        calls.append(req.data)
+        raise t.urllib.error.HTTPError(
+            "u", 502, "bad gateway", {}, io.BytesIO(b"upstream secret"))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+
+    with pytest.raises(
+            RuntimeError,
+            match=r"HTTP 502 after 3 attempts for model local-coder"):
+        t.ollama_transport("local-coder", host="router:40114")(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert len(calls) == 3
+
+
+def test_transport_does_not_retry_400(monkeypatch):
+    import io
+    import ollama_agent.transport as t
+
+    calls = []
+
+    def fail(req, timeout):
+        calls.append(req.data)
+        raise t.urllib.error.HTTPError(
+            "u", 400, "bad request", {}, io.BytesIO(b'{"error":"bad request"}'))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        t.ollama_transport("local-coder")(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert len(calls) == 1
+
+
 # --- transport success check ---
 
 def test_parse_chat_response_ok():
