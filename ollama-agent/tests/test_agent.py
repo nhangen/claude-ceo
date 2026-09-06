@@ -551,6 +551,18 @@ def test_parse_chat_response_missing_message_raises():
         parse_chat_response(200, json.dumps({"done": True}))
 
 
+def test_parse_chat_response_context_overflow_500_diagnostic():
+    body = json.dumps({"error": "no user query found in messages"})
+    with pytest.raises(RuntimeError, match="prompt exceeded context window.*--num-ctx"):
+        parse_chat_response(500, body)
+
+
+def test_parse_chat_response_context_overflow_200_diagnostic():
+    body = json.dumps({"error": "no user query found in messages"})
+    with pytest.raises(RuntimeError, match="prompt exceeded context window.*--num-ctx"):
+        parse_chat_response(200, body)
+
+
 # --- why the run ended (reason) ---
 #
 # The ledger's outcome was a two-field truth table with a null in it:

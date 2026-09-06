@@ -21,11 +21,22 @@ def parse_chat_response(status, body):
     prompt_eval_count (input) and eval_count (output) — so a caller can attribute
     local-model spend. Both default to 0 when the daemon omits them (older builds
     or an interrupted stream), never None, so downstream sums stay numeric."""
+    if "no user query found in messages" in body:
+        raise RuntimeError(
+            f"prompt exceeded context window (ollama trimmed user message): {body[:200]}. "
+            "Increase --num-ctx (e.g. --num-ctx 65536) or reduce prompt size with --no-skills / --no-rules / --max-rules."
+        )
     if status != 200:
         raise RuntimeError(f"ollama HTTP {status}: {body[:200]}")
     data = json.loads(body)
     if "error" in data:
-        raise RuntimeError(f"ollama error: {data['error']}")
+        err = data["error"]
+        if isinstance(err, str) and "no user query found in messages" in err:
+            raise RuntimeError(
+                f"prompt exceeded context window (ollama trimmed user message): {err}. "
+                "Increase --num-ctx (e.g. --num-ctx 65536) or reduce prompt size with --no-skills / --no-rules / --max-rules."
+            )
+        raise RuntimeError(f"ollama error: {err}")
     if "message" not in data:
         raise RuntimeError(f"ollama 200 with no message: {body[:200]}")
     usage = {
