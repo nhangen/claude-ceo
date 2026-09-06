@@ -34,6 +34,41 @@ test_script_without_outcome_keeps_default_notify() {
 }
 
 
+test_script_runner_failure_records_bounded_output_in_failure_reason() {
+  cat > "$SCRIPT_DIR/failing-script-test.sh" << 'SCRIPT'
+#!/bin/bash
+echo "Line 1 output"
+echo "conflict: duplicate directory found" >&2
+exit 1
+SCRIPT
+  chmod +x "$SCRIPT_DIR/failing-script-test.sh"
+
+  cat > "$CEO_DIR/playbooks/script-fail.md" << 'PB'
+---
+name: script-fail
+description: Failing script test fixture
+trigger: cron
+schedule: "0 9 * * *"
+runner: script
+script: failing-script-test.sh
+tier: read
+status: active
+---
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" script-fail >/dev/null 2>&1 || true
+
+  local skips_log
+  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "Script exited 1 for script-fail — output:" \
+    "failure record must include the output prefix"
+  assert_contains "$skips_log" "conflict: duplicate directory found" \
+    "failure record must contain the script output (#302)"
+  rm -f "$SCRIPT_DIR/failing-script-test.sh"
+}
+
+
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash

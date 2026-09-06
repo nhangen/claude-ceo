@@ -1558,17 +1558,33 @@ if [ "$RUNNER" = "script" ]; then
   # _record_success whether this tick did real work worth a success notify.
   CEO_RUNNER_OUTCOME_FILE="$(mktemp)"
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER CEO_RUNNER_OUTCOME_FILE
+  SCRIPT_OUT_TMP="$(mktemp)"
+  SCRIPT_ERR_TMP="$(mktemp)"
   SCRIPT_EXIT=0
-  "$SCRIPT_FULL" >>"$LOG_DIR/cron-stdout.log" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
+  "$SCRIPT_FULL" > "$SCRIPT_OUT_TMP" 2> "$SCRIPT_ERR_TMP" || SCRIPT_EXIT=$?
+  cat "$SCRIPT_OUT_TMP" >> "$LOG_DIR/cron-stdout.log" 2>/dev/null || true
+  cat "$SCRIPT_ERR_TMP" >> "$LOG_DIR/cron-stderr.log" 2>/dev/null || true
   # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
   # trap set earlier at the top of the run. rm before each exit instead so the
   # per-tick outcome tmp file doesn't leak.
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
-    _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    script_tail=""
+    if [ -s "$SCRIPT_ERR_TMP" ]; then
+      script_tail=$(tail -n 10 "$SCRIPT_ERR_TMP" | cut -c1-120 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    elif [ -s "$SCRIPT_OUT_TMP" ]; then
+      script_tail=$(tail -n 10 "$SCRIPT_OUT_TMP" | cut -c1-120 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    fi
+    rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
+    if [ -n "$script_tail" ]; then
+      _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER — output: $script_tail"
+    else
+      _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    fi
     rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit "$SCRIPT_EXIT"
   fi
+  rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
   _record_success
   rm -f "$CEO_RUNNER_OUTCOME_FILE"
   exit 0
@@ -2120,7 +2136,27 @@ fi
 # --- Phase 2: FILTER (shell strips high-stakes actions) ---
 _v "Phase 1 done. Filtering actions..."
 SAFE_ACTIONS=$(echo "$PLAN_OUTPUT" | grep "^ACTION:" | grep -v "| high-stakes |" || true)
-HIGH_STAKES=$(echo "$PLAN_OUTPUT" | grep "^ACTION:" | grep "| high-stakes |" || true)
+RAW_HIGH_STAKES=$(echo "$PLAN_OUTPUT" | grep "^ACTION:" | grep "| high-stakes |" || true)
+HIGH_STAKES=""
+if [ -n "$RAW_HIGH_STAKES" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    _desc=$(echo "$line" | awk -F'|' '{print $3}' | xargs)
+    # Filter out unsubstituted prompt templates or meta-instructions (#306)
+    case "$_desc" in
+      *\<*\>*)
+        _v "  Ignoring placeholder ACTION: $_desc"
+        continue
+        ;;
+      [Ee]"mit "*|[Ee]"xample:"*|[Tt]"emplate:"*|[Dd]"irective:"*)
+        _v "  Ignoring directive/template ACTION: $_desc"
+        continue
+        ;;
+    esac
+    HIGH_STAKES="${HIGH_STAKES:+${HIGH_STAKES}
+}$line"
+  done <<< "$RAW_HIGH_STAKES"
+fi
 SAFE_COUNT=$(echo "$SAFE_ACTIONS" | grep -c "^ACTION:" 2>/dev/null || echo 0)
 HIGH_COUNT=$(echo "$HIGH_STAKES" | grep -c "^ACTION:" 2>/dev/null || echo 0)
 _v "  Safe actions: $SAFE_COUNT | High-stakes (deferred): $HIGH_COUNT"
@@ -2136,6 +2172,7 @@ if [ -n "$HIGH_STAKES" ]; then
       echo "## $TODAY $NOW"
       echo ""
       while IFS= read -r line; do
+        [ -n "$line" ] || continue
         DESC=$(echo "$line" | awk -F'|' '{print $3}' | xargs)
         CMD=$(echo "$line" | awk -F'|' '{print $4}' | xargs)
         echo "- [ ] **$DESC**"

@@ -480,4 +480,39 @@ test_setup_exit_if_missing_surfaces_array_entries_and_exits_one() {
   assert_contains "$out" "plugin INSTALL_DIR" "must echo each missing entry"
 }
 
+# === ceo_setup_git_config global identity write / preserve invariants (#319) ===
+
+test_setup_git_config_preserves_existing_identity() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  git config --global user.name "Alice"
+  git config --global user.email "alice@example.com"
+  local out
+  out=$(ceo_setup_git_config 2>&1)
+  assert_contains "$out" "user.name preserved: Alice" "existing user.name must be preserved"
+  assert_contains "$out" "user.email preserved: alice@example.com" "existing user.email must be preserved"
+  assert_eq "$(git config --global --get user.name)" "Alice"
+  assert_eq "$(git config --global --get user.email)" "alice@example.com"
+}
+
+test_setup_git_config_leaves_unset_identity_untouched_and_unflagged() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out
+  out=$(CEO_GIT_USER_NAME="Bob" CEO_GIT_USER_EMAIL="bob@example.com" ceo_setup_git_config 2>&1)
+  assert_contains "$out" "NOTE: git user.name is not set globally" "unset user.name prints informational note"
+  assert_contains "$out" "NOTE: git user.email is not set globally" "unset user.email prints informational note"
+  assert_eq "$(git config --global --get user.name || true)" "" "global user.name must remain unset (#319)"
+  assert_eq "$(git config --global --get user.email || true)" "" "global user.email must remain unset (#319)"
+  assert_eq "${#MISSING_CONFIG[@]}" "0" "unset identity must not be marked as missing config (#319)"
+}
+
+test_setup_git_config_writes_when_opt_in_set() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out
+  out=$(CEO_GIT_USER_NAME="Bob" CEO_GIT_USER_EMAIL="bob@example.com" CEO_GIT_WRITE_GLOBAL_IDENTITY=1 ceo_setup_git_config 2>&1)
+  assert_contains "$out" "user.name set from CEO_GIT_USER_NAME: Bob" "explicit opt-in writes user.name"
+  assert_contains "$out" "user.email set from CEO_GIT_USER_EMAIL: bob@example.com" "explicit opt-in writes user.email"
+  assert_eq "$(git config --global --get user.name)" "Bob" "global user.name set when opt-in provided"
+  assert_eq "$(git config --global --get user.email)" "bob@example.com" "global user.email set when opt-in provided"
+}
+
 run_tests

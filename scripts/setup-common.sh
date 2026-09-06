@@ -139,24 +139,20 @@ ceo_setup_git_config() {
   existing_name="$(git config --global --get user.name 2>/dev/null || true)"
   if [ -n "$existing_name" ]; then
     echo "  user.name preserved: $existing_name"
-  elif [ -n "${CEO_GIT_USER_NAME:-}" ]; then
+  elif [ -n "${CEO_GIT_USER_NAME:-}" ] && [ "${CEO_GIT_WRITE_GLOBAL_IDENTITY:-0}" = "1" ]; then
     git config --global user.name "$CEO_GIT_USER_NAME"
     echo "  user.name set from CEO_GIT_USER_NAME: $CEO_GIT_USER_NAME"
   else
-    echo "  WARNING: git user.name not set. Set CEO_GIT_USER_NAME or run:" >&2
-    echo "    git config --global user.name \"Your Name\"" >&2
-    MISSING_CONFIG+=("git user.name")
+    echo "  NOTE: git user.name is not set globally. (Leave unset if using includeIf/local configs, or set via git config --global user.name \"Your Name\")"
   fi
   existing_email="$(git config --global --get user.email 2>/dev/null || true)"
   if [ -n "$existing_email" ]; then
     echo "  user.email preserved: $existing_email"
-  elif [ -n "${CEO_GIT_USER_EMAIL:-}" ]; then
+  elif [ -n "${CEO_GIT_USER_EMAIL:-}" ] && [ "${CEO_GIT_WRITE_GLOBAL_IDENTITY:-0}" = "1" ]; then
     git config --global user.email "$CEO_GIT_USER_EMAIL"
     echo "  user.email set from CEO_GIT_USER_EMAIL: $CEO_GIT_USER_EMAIL"
   else
-    echo "  WARNING: git user.email not set. Set CEO_GIT_USER_EMAIL or run:" >&2
-    echo "    git config --global user.email <you@example.com>" >&2
-    MISSING_CONFIG+=("git user.email")
+    echo "  NOTE: git user.email is not set globally. (Leave unset if using includeIf/local configs, or set via git config --global user.email <you@example.com>)"
   fi
 }
 

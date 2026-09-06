@@ -296,6 +296,41 @@ STUB
 }
 
 
+test_high_stakes_filtering_ignores_placeholder_and_directive_actions() {
+  cat > "$CEO_DIR/playbooks/hs-filter.md" << 'PB'
+---
+name: hs-filter
+description: high stakes placeholder filtering fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | reconcile close: \"<to-do verbatim>\" — org/repo#123 merged | n/a"
+echo "ACTION: 2 | high-stakes | Emit one ACTION per close/amend proposal | n/a"
+echo "ACTION: 3 | high-stakes | real close proposal: fix bug in core | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" hs-filter >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "real close proposal: fix bug in core" \
+    "valid high-stakes proposal must be written to pending.md"
+  assert_not_contains "$pending" "<to-do verbatim>" \
+    "unsubstituted placeholder action must NOT reach pending.md (#306)"
+  assert_not_contains "$pending" "Emit one ACTION" \
+    "meta-directive action must NOT reach pending.md (#306)"
+}
+
+
 # runner:skill in dry-run must NOT exec the skill or write its out_pattern;
 # it previews the would-run skill instead.
 test_dry_run_skill_runner_skips_exec_and_previews() {
