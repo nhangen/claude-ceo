@@ -1480,9 +1480,21 @@ cmd_playbook_scan() {
   local shadowed=0
   local shadowed_drift=0
 
+  # The two missing-directory cases are not the same fault. An explicitly-set
+  # CEO_REPO_PLAYBOOK_DIR that does not exist is a typo or an unmounted disk;
+  # the install default not existing is a host without a repo checkout. Only the
+  # second may be skipped, because the tail of this function rewrites the
+  # registry ceo-schedulerd reads -- so warning and continuing on a typo would
+  # deregister every repo playbook on the host at exit 0, with a stderr line in
+  # a cron job as the only signal. cmd_playbook_diff and cmd_playbook_sync
+  # already `return 2` on this condition; scan is the one that writes.
   local scan_dirs=( "$playbook_dir" )
   if [ -d "$repo_playbook_dir" ]; then
     scan_dirs+=( "$repo_playbook_dir" )
+  elif [ -n "${CEO_REPO_PLAYBOOK_DIR:-}" ]; then
+    echo "ERROR: CEO_REPO_PLAYBOOK_DIR is set to a path that does not exist: $repo_playbook_dir" >&2
+    echo "Fix the path or unset it; refusing to rewrite the registry without the repo playbooks." >&2
+    exit 1
   else
     echo "  WARN  repo playbooks directory not found ($repo_playbook_dir) — skipping repo playbooks" >&2
   fi

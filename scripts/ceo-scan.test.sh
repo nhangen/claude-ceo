@@ -129,6 +129,17 @@ _run_scan() {
   SCAN_RC=$?
 }
 
+# Same run, streams kept apart. _run_scan merges them, so any assertion about
+# *which* stream a diagnostic went to passes there whether or not the routing is
+# right; a test that names stderr has to read stderr.
+_run_scan_split() {
+  local err; err="$TMP/scan-stderr.$$"
+  SCAN_STDOUT=$(cmd_playbook_scan 2>"$err")
+  SCAN_RC=$?
+  SCAN_STDERR=$(cat "$err")
+  rm -f "$err"
+}
+
 test_registry_written_host_local_not_vault() {
   _run_scan
   assert_file_exists "$HOME/.ceo/registry.json" "registry must be written host-local under \$HOME/.ceo"
@@ -398,13 +409,53 @@ test_scan_help_prints_usage_and_writes_no_registry() {
     "scan --help must not write a registry"
 }
 
-test_scan_warns_when_repo_playbook_dir_missing() {
+# The install default not existing is a configuration; an explicitly-set
+# CEO_REPO_PLAYBOOK_DIR that does not exist is a typo. Only the first may warn
+# and continue, because continuing rewrites the registry ceo-schedulerd reads --
+# so a typo that merely warned would silently deregister every repo playbook on
+# the host, at exit 0, with a stderr line in a cron job as the only signal.
+test_scan_errors_when_explicit_repo_playbook_dir_missing() {
+  # The shared fixture ships a deliberately-invalid scope, which fails the scan
+  # on its own; drop it so this arm's return code is about the missing dir.
+  rm -f "$CEO_DIR/playbooks/scope-bogus.md"
   export CEO_REPO_PLAYBOOK_DIR="$TMP/nonexistent-repo-playbooks"
+  _run_scan_split
+  assert_eq "$SCAN_RC" "1" \
+    "an explicitly-set repo playbooks dir that is missing must fail the scan"
+  assert_contains "$SCAN_STDERR" "ERROR: CEO_REPO_PLAYBOOK_DIR is set to a path that does not exist" \
+    "scan must report the missing explicit path on stderr"
+  assert_contains "$SCAN_STDERR" "$TMP/nonexistent-repo-playbooks" \
+    "the error must name the missing path"
+  assert_not_contains "$SCAN_STDOUT" "ERROR: CEO_REPO_PLAYBOOK_DIR" \
+    "the diagnostic belongs on stderr, not stdout"
+}
+
+# The registry is the artifact worth protecting: a refused scan must leave the
+# previous one intact rather than half-rewriting it from the vault dir alone.
+test_scan_leaves_registry_intact_when_explicit_repo_dir_missing() {
+  rm -f "$CEO_DIR/playbooks/scope-bogus.md"
   _run_scan
-  assert_contains "$SCAN_OUT" "WARN  repo playbooks directory not found" \
-    "scan must warn on stderr when repo playbooks directory is missing"
-  assert_contains "$SCAN_OUT" "$TMP/nonexistent-repo-playbooks" \
-    "warning must name the missing path"
+  assert_eq "$SCAN_RC" "0" "baseline scan must succeed"
+  local before; before="$(cat "$HOME/.ceo/registry.json")"
+
+  export CEO_REPO_PLAYBOOK_DIR="$TMP/nonexistent-repo-playbooks"
+  _run_scan_split
+  assert_eq "$SCAN_RC" "1" "the second scan must fail"
+  assert_eq "$(cat "$HOME/.ceo/registry.json")" "$before" \
+    "a refused scan must not rewrite the registry"
+}
+
+# The unset case keeps the old behavior: warn, skip the repo tree, carry on.
+test_scan_warns_when_default_repo_playbook_dir_missing() {
+  rm -f "$CEO_DIR/playbooks/scope-bogus.md"
+  unset CEO_REPO_PLAYBOOK_DIR
+  INSTALL_DIR="$TMP/no-such-install"
+  _run_scan_split
+  assert_eq "$SCAN_RC" "0" "a missing install default must not fail the scan"
+  assert_contains "$SCAN_STDERR" "WARN  repo playbooks directory not found" \
+    "scan must warn on stderr when the default repo playbooks directory is missing"
+  assert_not_contains "$SCAN_STDOUT" "WARN  repo playbooks directory not found" \
+    "the warning belongs on stderr, not stdout"
 }
 
 run_tests
