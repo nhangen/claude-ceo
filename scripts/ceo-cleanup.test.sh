@@ -630,6 +630,29 @@ test_cleanup_reaps_pidless_worker_row_older_than_threshold() {
     "only the old pid-less worker row is removed"
 }
 
+test_cleanup_reaps_pidless_worker_row_with_no_timestamp() {
+  local repo; repo="$(mkrepo_cleanup pidless-nots main)"
+  set_repos_md "$repo"
+  local sdir; sdir="$(ceo_loop_state_dir "pidless-nots")"
+  mkdir -p "$sdir"
+
+  local now; now="$(date +%s)"
+  printf '%s\n' \
+    '{"branch":"ceo/pidless-no-ts","base":"aaa","files":["a.txt"]}' \
+    "{\"branch\":\"ceo/pidless-fresh\",\"base\":\"aaa\",\"files\":[\"b.txt\"],\"ts\":$now}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(bash "$CLEANUP" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "cleanup must succeed"
+  assert_contains "$out" "WORKER_REAPED: ceo/pidless-no-ts (pid-less row with no timestamp)" \
+    "a pid-less worker row with no timestamp must be reaped"
+  assert_not_contains "$out" "WORKER_REAPED: ceo/pidless-fresh" \
+    "a fresh pid-less worker row must NOT be reaped"
+  assert_eq "$(jq -r .branch "$sdir/workers.jsonl")" "ceo/pidless-fresh" \
+    "only the pid-less row with no timestamp is removed"
+}
+
 # The arm that used to sit here asserted the opposite of this one: it seeded
 # $$ -- the live test shell -- as the PID, called it a "recycled PID", and
 # required the row be reaped for having no worktree. That rule deleted the state

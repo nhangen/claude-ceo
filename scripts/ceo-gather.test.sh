@@ -66,7 +66,7 @@ _run_gather() {
   # is sourced by cron without nounset); echo the observability vars.
   ( set +eu
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
-    echo "DEGRADED=${PR_GATHER_DEGRADED}|MERGED_COUNT=${PR_MERGED_COUNT}|REASONS=${PR_GATHER_DEGRADED_REASONS}" )
+    echo "DEGRADED=${PR_GATHER_DEGRADED}|REVIEW_COUNT=${PR_REVIEW_COUNT}|AUTHORED_COUNT=${PR_AUTHORED_COUNT}|MERGED_COUNT=${PR_MERGED_COUNT}|REASONS=${PR_GATHER_DEGRADED_REASONS}" )
 }
 
 # A jq post-processing failure (malformed payload that the gh call returns with
@@ -84,6 +84,32 @@ test_clean_gather_not_degraded() {
   _write_gh_stub '[]'
   local out; out=$(_run_gather)
   assert_contains "$out" "DEGRADED=0" "a clean gather must leave PR_GATHER_DEGRADED unset"
+}
+
+test_gather_parses_prs_present() {
+  local pr_json='[{"number":101,"title":"PR 1","createdAt":"2026-09-01T12:00:00Z","repository":{"nameWithOwner":"org/repo"}}]'
+  cat > "$TMP/bin/gh" << STUB
+#!/bin/bash
+case "\$1 \$2" in
+  "auth token") echo "ghs_faketoken"; exit 0 ;;
+  "auth status") exit 0 ;;
+esac
+if [ "\$1" = "search" ] && [ "\$2" = "prs" ]; then
+  case "\$*" in
+    *"--merged"*)            echo '[]'; exit 0 ;;
+    *"--review-requested"*)  printf '%s' '$pr_json'; exit 0 ;;
+    *"--state open"*"--author"*) printf '%s' '$pr_json'; exit 0 ;;
+  esac
+fi
+echo "stub gh: unexpected argv: \$*" >&2
+exit 99
+STUB
+  chmod +x "$TMP/bin/gh"
+
+  local out; out=$(_run_gather)
+  assert_contains "$out" "DEGRADED=0" "successful parse of PRs must not be degraded"
+  assert_contains "$out" "REVIEW_COUNT=1" "review count must reflect parsed PRs"
+  assert_contains "$out" "AUTHORED_COUNT=1" "authored count must reflect parsed PRs"
 }
 
 run_tests

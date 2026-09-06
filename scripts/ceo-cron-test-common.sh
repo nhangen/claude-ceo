@@ -151,6 +151,53 @@ teardown() {
   unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE CEO_LOCK_FILE
 }
 
+_stub_gh_prs() {
+  local n="${1:-0}"
+  local prs_json="[]"
+  if [ "$n" -gt 0 ]; then
+    prs_json=$(jq -n --argjson count "$n" '[range(1; $count + 1) | {
+      number: (100 + .),
+      title: "Review PR \(.)",
+      createdAt: "2026-09-01T12:00:00Z",
+      repository: { nameWithOwner: "testorg/testrepo" }
+    }]')
+  fi
+
+  cat > "$TEST_HOME/.bun/bin/gh" << STUB
+#!/bin/bash
+echo "\$*" >> "\$HOME/gh-invoked.txt"
+case "\$1 \${2:-}" in
+  "auth status"*)
+    case "\$*" in
+      *"--json"*) echo '[{"user":"testuser"}]'; exit 0 ;;
+      *) echo "Logged in to github.com account testuser (keyring)"; exit 0 ;;
+    esac ;;
+  "auth token"*)
+    echo "ghp_faketoken12345"
+    exit 0 ;;
+  "search prs"*)
+    case "\$*" in
+      *"--review-requested"*)
+        printf '%s\n' '$prs_json'
+        exit 0 ;;
+      *"--state open"*"--author"*)
+        echo '[]'
+        exit 0 ;;
+      *"--merged"*)
+        echo '[]'
+        exit 0 ;;
+      *)
+        echo "stub gh: unexpected search prs flags: \$*" >&2
+        exit 99 ;;
+    esac ;;
+  *)
+    echo "stub gh: unexpected argv: \$*" >&2
+    exit 99 ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/gh"
+}
+
 
 # --- shared helpers hoisted from ceo-cron.test.sh (sourced by every ceo-cron-*.test.sh shard) ---
 

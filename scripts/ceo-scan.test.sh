@@ -103,7 +103,8 @@ setup() {
   : > "$CEO_DIR/inbox.md"
 
   # No repo playbooks should leak in.
-  export CEO_REPO_PLAYBOOK_DIR="$TMP/no-such-repo-playbooks"
+  export CEO_REPO_PLAYBOOK_DIR="$TMP/empty-repo-playbooks"
+  mkdir -p "$CEO_REPO_PLAYBOOK_DIR"
 
   # Resolve hostname deterministically so the primary-host gate (absent
   # settings.json → pass) and any host lookups don't depend on the runner.
@@ -395,6 +396,15 @@ test_scan_help_prints_usage_and_writes_no_registry() {
   assert_contains "$out" "Usage: ceo playbook scan" "scan --help → usage"
   assert_eq "$([ -f "$HOME/.ceo/registry.json" ] && echo yes || echo no)" "no" \
     "scan --help must not write a registry"
+}
+
+test_scan_warns_when_repo_playbook_dir_missing() {
+  export CEO_REPO_PLAYBOOK_DIR="$TMP/nonexistent-repo-playbooks"
+  _run_scan
+  assert_contains "$SCAN_OUT" "WARN  repo playbooks directory not found" \
+    "scan must warn on stderr when repo playbooks directory is missing"
+  assert_contains "$SCAN_OUT" "$TMP/nonexistent-repo-playbooks" \
+    "warning must name the missing path"
 }
 
 run_tests

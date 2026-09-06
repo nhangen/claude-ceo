@@ -371,6 +371,7 @@ RELEASE_INNER
 # that can be positively confirmed gone:
 #   1. The PID is dead — kill -0 fails with ESRCH, not EPERM.
 #   2. The row carries no PID and is older than max-age-secs (default 7 days).
+#   3. The row carries no PID and has no timestamp.
 # Prints each dropped row to stdout as REAPED|<reason>|<branch>. The branch
 # goes last because `IFS='|' read` hands the trailing field the remainder of
 # the line verbatim, and git check-ref-format permits `|` in a branch name --
@@ -483,17 +484,24 @@ while IFS= read -r row || [ -n "$row" ]; do
       ;;
   esac
 
-  # Candidate 2: no PID to check, and old enough that nothing is coming back.
-  if [ -z "$reap_reason" ] && [ -z "$row_pid" ] && [ -n "$row_ts" ]; then
-    case "$row_ts" in
-      ''|*[!0-9]*) ;;
-      *)
-        age=$((now_epoch - row_ts))
-        if [ "$age" -ge "$CEO_MAX_AGE" ]; then
-          reap_reason="pid-less row older than $((age / 86400))d"
-        fi
-        ;;
-    esac
+  # Candidate 2: no PID to check. A row with no timestamp is immediately reaped;
+  # a row with a valid timestamp is reaped once older than max-age-secs.
+  if [ -z "$reap_reason" ] && [ -z "$row_pid" ]; then
+    if [ -z "$row_ts" ]; then
+      reap_reason="pid-less row with no timestamp"
+    else
+      case "$row_ts" in
+        ''|*[!0-9]*)
+          reap_reason="pid-less row with no timestamp"
+          ;;
+        *)
+          age=$((now_epoch - row_ts))
+          if [ "$age" -ge "$CEO_MAX_AGE" ]; then
+            reap_reason="pid-less row older than $((age / 86400))d"
+          fi
+          ;;
+      esac
+    fi
   fi
 
   if [ -n "$reap_reason" ]; then

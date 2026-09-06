@@ -153,6 +153,32 @@ test_test_all_preflight_dependency_failure_is_failed_not_skip() {
 }
 
 
+test_test_all_preflight_has_prs_to_review_would_run_when_prs_present() {
+  _stub_gh_prs 2
+  _register_pb_sched ta-pr-rev "5 9 * * *" has_prs_to_review
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" --test-all >/dev/null 2>&1 || true
+  local body; body=$(cat "$(_test_all_report)" 2>/dev/null)
+  assert_contains "$body" "ta-pr-rev | would run" \
+    "has_prs_to_review must report 'would run' when PRs exist for review"
+  assert_not_contains "$body" "FAILED" \
+    "successful preflight must not record failure"
+}
+
+
+test_test_all_preflight_has_prs_to_review_skips_when_no_prs() {
+  _stub_gh_prs 0
+  _register_pb_sched ta-pr-none "5 9 * * *" has_prs_to_review
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" --test-all >/dev/null 2>&1 || true
+  local body; body=$(cat "$(_test_all_report)" 2>/dev/null)
+  assert_contains "$body" "ta-pr-none | skip: no work" \
+    "has_prs_to_review must report 'skip: no work' when PR count is 0"
+  assert_not_contains "$body" "FAILED" \
+    "clean preflight skip must not record failure"
+}
+
+
 # --depth plan: a read-tier playbook has no planning phase, so it previews the
 # call it WOULD make without spending tokens (no model call).
 test_dry_run_depth_plan_read_tier_previews_without_call() {

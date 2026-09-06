@@ -1481,7 +1481,11 @@ cmd_playbook_scan() {
   local shadowed_drift=0
 
   local scan_dirs=( "$playbook_dir" )
-  [ -d "$repo_playbook_dir" ] && scan_dirs+=( "$repo_playbook_dir" )
+  if [ -d "$repo_playbook_dir" ]; then
+    scan_dirs+=( "$repo_playbook_dir" )
+  else
+    echo "  WARN  repo playbooks directory not found ($repo_playbook_dir) — skipping repo playbooks" >&2
+  fi
 
   for d in "${scan_dirs[@]}"; do
     for f in "$d"/*.md; do
