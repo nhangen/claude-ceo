@@ -2174,35 +2174,47 @@ _action_desc() {
   printf '%s' "$1" | awk -F'|' '{print $3}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
+# Field 2 of an ACTION line (the tier), whitespace-trimmed. A pipe inside the
+# description cannot reach this field, so the tier is readable even on a line
+# whose later fields are shifted.
+_action_tier() {
+  printf '%s' "$1" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
 # Drops model-emitted ACTION lines that are prompt scaffolding rather than
 # proposals (#306). Reads lines on stdin, writes the survivors.
 #
 # Two things this deliberately does NOT do. It does not test field 3 alone: the
 # fields are `|`-delimited and PLAN_OUTPUT is model-authored, so a description
 # containing one pipe shifts every field right -- `ok | rm -rf <target>` puts
-# `ok` in field 3, evading a field-3 test, while the pending.md writer below
-# records `rm -rf <target>` as the *description* and something else as the
-# command. A line with more fields than the format allows is malformed input,
-# not something to best-effort parse, so it is dropped outright.
+# `ok` in field 3, evading a field-3 test. So the token and meta-directive
+# matches below run against the whole line first, before any field arithmetic.
 #
 # And it does not match any `<...>` anywhere: that dropped `Email <n@example.com>
 # about the invoice` and `fix <img> tag rendering`, which are ordinary proposals.
 # The defect #306 is about is an *unsubstituted template token*, so match those.
+#
+# The extra-field gate is tier-aware, and that asymmetry is the point. More than
+# four fields is ambiguous -- the extra pipe could be in the description (which
+# shifts the command) or in the command itself (`... | grep foo | wc -l`, an
+# ordinary shell pipeline and a perfectly well-formed proposal). Nothing in the
+# line distinguishes the two. On the non-high-stakes lane that ambiguity is
+# unacceptable, because Phase 3 hands those to a write-capable claude, so the
+# line is dropped. High-stakes actions are never executed -- they are written to
+# approvals/pending.md for a human to read -- so dropping one there discards a
+# real proposal to avoid a misparse the reader can see for themselves. Those are
+# kept, and the writer takes everything after the third delimiter verbatim as
+# the command.
 _strip_template_actions() {
   local line desc extra
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    extra=$(printf '%s' "$line" | awk -F'|' '{print NF}')
-    if [ "$extra" -gt 4 ]; then
-      _drop_action "$line" "malformed (a description containing '|' shifts the command field)"
-      continue
-    fi
-    desc=$(_action_desc "$line")
     case "$line" in
-      *"<to-do verbatim>"*|*"<rewritten line>"*|*"<what remains>"*|*"<one-line evidence"*|*"<n> |"*|*"<number> |"*|*"<tier> |"*)
+      *"<to-do verbatim>"*|*"<rewritten line>"*|*"<what remains>"*|*"<one-line evidence"*|*"<bug description>"*|*"<issue>-<short-desc>"*|*"<org>/<repo>"*|*"<n> |"*|*"<number> |"*|*"<tier> |"*|*"<title> |"*)
         _drop_action "$line" "unsubstituted template token"
         continue ;;
     esac
+    desc=$(_action_desc "$line")
     # A description that talks about the ACTION format is an instruction to the
     # model that leaked into its own output, not a proposal. The bare `Emit `
     # prefix is not enough of a signal on its own -- "Emit metrics to the
@@ -2213,6 +2225,11 @@ _strip_template_actions() {
         _drop_action "$line" "meta-directive"
         continue ;;
     esac
+    extra=$(printf '%s' "$line" | awk -F'|' '{print NF}')
+    if [ "$extra" -gt 4 ] && [ "$(_action_tier "$line")" != "high-stakes" ]; then
+      _drop_action "$line" "malformed (a description containing '|' shifts the command field)"
+      continue
+    fi
     printf '%s\n' "$line"
   done
 }
@@ -2259,7 +2276,10 @@ if [ -n "$HIGH_STAKES" ]; then
       while IFS= read -r line; do
         [ -n "$line" ] || continue
         DESC=$(_action_desc "$line")
-        CMD=$(printf '%s' "$line" | awk -F'|' '{print $4}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # Everything after the third delimiter, pipes included: a command may
+        # legitimately be a shell pipeline, and field 4 alone truncates it at
+        # the first `|`.
+        CMD=$(printf '%s' "$line" | awk -F'|' '{for (i=4; i<=NF; i++) printf "%s%s", (i>4 ? "|" : ""), $i}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         echo "- [ ] **$DESC**"
         echo "  - playbook: $TRIGGER"
         echo "  - command: \`$CMD\`"

@@ -371,11 +371,17 @@ STUB
 }
 
 # A description containing a pipe shifts every field right, so field 3 stops
-# being the description and field 4 stops being the command. Two things follow:
-# the filter tests a field the model controls the boundaries of, and pending.md
-# records a command that was never proposed. A line with more fields than the
-# format allows is malformed input, not something to best-effort parse.
-test_high_stakes_filtering_drops_an_action_whose_description_contains_a_pipe() {
+# being the description and field 4 stops being the command. The token and
+# meta-directive matches therefore run against the whole line, before any field
+# arithmetic — a template token in the command field must not evade a filter
+# that only ever looks at field 3.
+#
+# Extra fields are NOT a drop on this lane. High-stakes actions are written to
+# approvals/pending.md for a human to read and are never executed, so a shifted
+# description is a misparse the reader can see, while dropping the line discards
+# a real proposal silently. The safe lane, which Phase 3 executes, still drops
+# them — see the arm below.
+test_high_stakes_filtering_keeps_a_piped_description_but_still_drops_a_token() {
   cat > "$CEO_DIR/playbooks/hs-pipe.md" << 'PB'
 ---
 name: hs-pipe
@@ -405,8 +411,114 @@ STUB
     "a well-formed proposal must still be written"
   assert_not_contains "$pending" "to-do verbatim" \
     "a template token in the command field must not evade a field-3-only filter"
-  assert_not_contains "$pending" "rename a" \
-    "a description containing a pipe is malformed and must be dropped, not truncated"
+  assert_contains "$pending" "rename a" \
+    "a piped description on the reviewed lane must reach the human, not be dropped"
+}
+
+# The reason extra fields cannot simply be dropped: a command may legitimately
+# be a shell pipeline. Taking field 4 alone truncates it at the first pipe and
+# records a command that was never proposed — the same misparse the drop was
+# meant to prevent, arriving through the field the filter trusts.
+test_high_stakes_pending_records_a_pipelined_command_in_full() {
+  cat > "$CEO_DIR/playbooks/hs-cmdpipe.md" << 'PB'
+---
+name: hs-cmdpipe
+description: high stakes pipelined-command fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | count the open PRs | gh pr list | wc -l"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" hs-cmdpipe >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "count the open PRs" \
+    "a proposal whose command is a pipeline must not be dropped"
+  assert_contains "$pending" "gh pr list | wc -l" \
+    "the command must be recorded in full, not truncated at the first pipe"
+}
+
+# The token list was enumerated against reconcile.md, the playbook #306 actually
+# came from. bug-fix.md and pr-review.md carry their own placeholders in their
+# procedure text (`<org>/<repo>`, `<bug description>`, `<issue>-<short-desc>`),
+# which a confused model can echo into a description the same way. Closing the
+# matcher over one playbook leaves the next one open.
+test_filtering_drops_a_placeholder_from_another_playbooks_template() {
+  cat > "$CEO_DIR/playbooks/hs-otherplaybook.md" << 'PB'
+---
+name: hs-otherplaybook
+description: cross-playbook placeholder fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | open a bug issue on <org>/<repo> | n/a"
+echo "ACTION: 2 | high-stakes | triage <bug description> from the queue | n/a"
+echo "ACTION: 3 | high-stakes | close the stale release ticket | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" hs-otherplaybook >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "close the stale release ticket" \
+    "a real proposal alongside the placeholders must still be written"
+  assert_not_contains "$pending" "org>/<repo" \
+    "a pr-review template placeholder must be filtered"
+  assert_not_contains "$pending" "bug description" \
+    "a bug-fix template placeholder must be filtered"
+}
+
+# The other half of the asymmetry. Phase 3 hands non-high-stakes actions to a
+# write-capable claude, so an ambiguous field boundary there is not something to
+# best-effort parse — the line is dropped and the drop is recorded.
+test_a_non_high_stakes_action_with_extra_fields_is_dropped() {
+  cat > "$CEO_DIR/playbooks/nhs-pipe.md" << 'PB'
+---
+name: nhs-pipe
+description: non-high-stakes extra-field fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: low-stakes-write
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | low-stakes-write | rename a|b module | mv a b"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" nhs-pipe >/dev/null 2>&1 || true
+
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "nhs-pipe ignored ACTION" \
+    "an ambiguous field boundary on the executed lane must be dropped"
+  assert_contains "$skips" "shifts the command field" \
+    "the skip record must name why the action was dropped"
 }
 
 # An apostrophe is ordinary in a human-written to-do. Trimming with xargs made
