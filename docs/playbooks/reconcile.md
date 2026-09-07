@@ -58,6 +58,8 @@ ACTION: <n> | high-stakes | reconcile close: "<to-do verbatim>" — <one-line ev
 ACTION: <n> | high-stakes | reconcile amend: "<to-do verbatim>" → <rewritten line>; NOT covered: <what remains> | n/a
 ```
 
+**If no to-dos qualify for close or amend (all items are `keep`), do NOT emit any `ACTION:` lines at all.** Never emit template, example, or placeholder action lines.
+
 **Decision record.** Do NOT use the `Write`/`Edit` tools or shell out to write a file —
 the headless EXECUTE phase has no file-write permission, and a Write attempt only
 produces a spurious error. Instead, put the full record in the **Output** section of

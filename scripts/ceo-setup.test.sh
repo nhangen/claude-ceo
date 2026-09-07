@@ -19,7 +19,15 @@ setup() {
   HOME_BACKUP="$HOME"
   PATH_BACKUP="$PATH"
   export HOME="$TEST_HOME"
-  mkdir -p "$TEST_HOME/stubs" "$TEST_HOME/empty_bin"
+  # HOME alone does not bound `git config --global`: GIT_CONFIG_GLOBAL overrides
+  # it outright, and XDG_CONFIG_HOME/git/config wins when ~/.gitconfig is absent.
+  # Both were merely inherited, so this suite was safe by environment rather
+  # than by construction — and it is the one suite in the repo whose subject is
+  # writing a developer's real global identity.
+  export GIT_CONFIG_GLOBAL="$TEST_HOME/.gitconfig"
+  export GIT_CONFIG_SYSTEM=/dev/null
+  export XDG_CONFIG_HOME="$TEST_HOME/.config"
+  mkdir -p "$TEST_HOME/stubs" "$TEST_HOME/empty_bin" "$TEST_HOME/.config"
 
   # Stub the per-OS installers as one-liners so dispatch tests don't actually
   # run a setup pass. Each one echoes its name and exits 0.
@@ -478,6 +486,96 @@ test_setup_exit_if_missing_surfaces_array_entries_and_exits_one() {
   assert_contains "$out" "MISSING REQUIRED CONFIG" "must print the section header"
   assert_contains "$out" "git user.name" "must echo each missing entry"
   assert_contains "$out" "plugin INSTALL_DIR" "must echo each missing entry"
+}
+
+# === ceo_setup_git_config global identity write / preserve invariants (#319) ===
+
+test_setup_git_config_preserves_existing_identity() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  git config --global user.name "Alice"
+  git config --global user.email "alice@example.com"
+  local out
+  out=$(ceo_setup_git_config 2>&1)
+  assert_contains "$out" "user.name preserved: Alice" "existing user.name must be preserved"
+  assert_contains "$out" "user.email preserved: alice@example.com" "existing user.email must be preserved"
+  assert_eq "$(git config --global --get user.name)" "Alice"
+  assert_eq "$(git config --global --get user.email)" "alice@example.com"
+}
+
+test_setup_git_config_leaves_unset_identity_untouched_and_unflagged() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  # An identity supplied by a local/includeIf config is a real identity, so this
+  # is the case #319 exists for: nothing is written globally, and nothing is
+  # flagged, because a commit will still find an author.
+  git config --file "$TEST_HOME/.gitconfig-local" user.name "Carol"
+  git config --file "$TEST_HOME/.gitconfig-local" user.email "carol@example.com"
+  printf '[include]\n\tpath = %s\n' "$TEST_HOME/.gitconfig-local" > "$TEST_HOME/.gitconfig"
+  local out
+  # NOT a command substitution: MISSING_CONFIG is an array the function appends
+  # to, and $( ) would confine every append to a subshell — which is why the
+  # assertion below used to pass against the code it was meant to gate.
+  ceo_setup_git_config > "$TEST_HOME/gitcfg.out" 2>&1
+  out=$(cat "$TEST_HOME/gitcfg.out")
+  assert_eq "$(git config --global --get user.name || true)" "" "global user.name must remain unset (#319)"
+  assert_eq "$(git config --global --get user.email || true)" "" "global user.email must remain unset (#319)"
+  assert_eq "${#MISSING_CONFIG[@]}" "0" "an identity resolvable from an included config must not be flagged (#319)"
+  assert_contains "$out" "NOTE: git user.name is not set globally" "unset global user.name prints informational note"
+}
+
+# The other half of #319, and the one that bites unattended. ceo-loop.sh commits
+# worker output with no identity of its own, and its own failure branch says the
+# next reclaim discards that work — so a host where NO identity resolves from any
+# scope must not pass setup silently.
+test_setup_git_config_flags_an_identity_that_resolves_from_no_scope() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  ceo_setup_git_config > "$TEST_HOME/gitcfg-none.out" 2>&1
+  assert_eq "${#MISSING_CONFIG[@]}" "2" \
+    "with no identity anywhere, both name and email must be flagged so setup exits non-zero"
+  assert_contains "${MISSING_CONFIG[*]}" "ceo-loop commits will fail" \
+    "the entry must say what actually breaks"
+}
+
+# CEO_GIT_USER_NAME set without the opt-in used to print the same note as a host
+# that had configured nothing, so a user who did exactly what the old message
+# told them to got no acknowledgement that their value was seen and ignored.
+test_setup_git_config_says_when_it_ignores_a_supplied_identity() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out
+  out=$(CEO_GIT_USER_NAME="Bob" CEO_GIT_USER_EMAIL="bob@example.com" ceo_setup_git_config 2>&1)
+  assert_contains "$out" "CEO_GIT_USER_NAME is set but not applied" \
+    "a supplied but unapplied identity must be named, not silently dropped"
+  assert_contains "$out" "CEO_GIT_WRITE_GLOBAL_IDENTITY=1" \
+    "the note must name the flag that would apply it"
+  assert_eq "$(git config --global --get user.name || true)" "" "still must not write globally"
+}
+
+# Every value except 1 silently meant "no", including the ones an operator is
+# most likely to reach for.
+test_setup_git_config_accepts_the_usual_truthy_opt_in_spellings() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out
+  out=$(CEO_GIT_USER_NAME="Dave" CEO_GIT_USER_EMAIL="dave@example.com" CEO_GIT_WRITE_GLOBAL_IDENTITY=true ceo_setup_git_config 2>&1)
+  assert_eq "$(git config --global --get user.name)" "Dave" "CEO_GIT_WRITE_GLOBAL_IDENTITY=true must opt in"
+}
+
+test_setup_git_config_warns_on_an_unrecognized_opt_in_value() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out
+  out=$(CEO_GIT_USER_NAME="Eve" CEO_GIT_USER_EMAIL="eve@example.com" CEO_GIT_WRITE_GLOBAL_IDENTITY=maybe ceo_setup_git_config 2>&1)
+  assert_contains "$out" "is not a recognized value" \
+    "an unrecognized opt-in value must say so rather than silently meaning no"
+  assert_eq "$(git config --global --get user.name || true)" "" \
+    "an unrecognized value must not write"
+}
+
+test_setup_git_config_writes_when_opt_in_set() {
+  _source_common_with_stubs "$SCRIPT_DIR"
+  local out
+  out=$(CEO_GIT_USER_NAME="Bob" CEO_GIT_USER_EMAIL="bob@example.com" CEO_GIT_WRITE_GLOBAL_IDENTITY=1 ceo_setup_git_config 2>&1)
+  assert_contains "$out" "user.name set from CEO_GIT_USER_NAME: Bob" "explicit opt-in writes user.name"
+  assert_contains "$out" "user.email set from CEO_GIT_USER_EMAIL: bob@example.com" "explicit opt-in writes user.email"
+  assert_eq "$(git config --global --get user.name)" "Bob" "global user.name set when opt-in provided"
+  assert_eq "$(git config --global --get user.email)" "bob@example.com" "global user.email set when opt-in provided"
 }
 
 run_tests

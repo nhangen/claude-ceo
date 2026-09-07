@@ -1558,17 +1558,64 @@ if [ "$RUNNER" = "script" ]; then
   # _record_success whether this tick did real work worth a success notify.
   CEO_RUNNER_OUTCOME_FILE="$(mktemp)"
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER CEO_RUNNER_OUTCOME_FILE
+  SCRIPT_OUT_TMP="$(mktemp)"
+  SCRIPT_ERR_TMP="$(mktemp)"
   SCRIPT_EXIT=0
-  "$SCRIPT_FULL" >>"$LOG_DIR/cron-stdout.log" 2>>"$LOG_DIR/cron-stderr.log" || SCRIPT_EXIT=$?
+  "$SCRIPT_FULL" > "$SCRIPT_OUT_TMP" 2> "$SCRIPT_ERR_TMP" || SCRIPT_EXIT=$?
+  cat "$SCRIPT_OUT_TMP" >> "$LOG_DIR/cron-stdout.log" 2>/dev/null || true
+  cat "$SCRIPT_ERR_TMP" >> "$LOG_DIR/cron-stderr.log" 2>/dev/null || true
   # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
   # trap set earlier at the top of the run. rm before each exit instead so the
   # per-tick outcome tmp file doesn't leak.
+# The failure reason built from these bytes does not stay local. _record_failure
+# writes it into CEO/approvals/pending.md -- replicated between hosts by
+# Syncthing -- and hands it to ceo-notify.sh, which POSTs it to a Discord
+# webhook. A `runner: script` playbook is by definition one that shells out to
+# authenticated tools, so `gh: HTTP 401 Bad credentials`, a curl line echoing
+# `?token=...`, and `https://user:ghp_...@github.com` are its ordinary failure
+# texts. Redact here, at the point the value is read, rather than trusting a
+# sink to do it (no-secrets-in-logs).
+#
+# The collapse to a single line is load-bearing, not cosmetic: pending.md is
+# parsed with anchored `^- \[ \]` greps, so multi-line stderr containing
+# `- [x] **Approved: ...**` would otherwise forge an approved item that
+# ceo-scan.sh feeds verbatim into the morning-scan prompt. Keep the `tr` if this
+# is ever rewritten to preserve more context.
+_redact_secrets() {
+  sed -E \
+    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#gh*_***REDACTED***#g' \
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#github_pat_***REDACTED***#g' \
+    -e 's#sk-[A-Za-z0-9_-]{16,}#sk-***REDACTED***#g' \
+    -e 's#xox[baprs]-[A-Za-z0-9-]{10,}#xox*-***REDACTED***#g' \
+    -e 's#(//)[^/@[:space:]]+:[^/@[:space:]]+@#\1***REDACTED***@#g' \
+    -e 's/([Aa]uthorization:[[:space:]]*)[^[:space:]]+/\1***REDACTED***/g' \
+    -e 's/(([Tt]oken|[Aa]pi[_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[[:space:]]*[=:][[:space:]]*)[^[:space:]&]+/\1***REDACTED***/g'
+}
+
+# Bounded, redacted, single-line tail of a captured stream. 10 lines x 120 chars
+# caps it near 1.2 KB whatever the script emitted, including one enormous line.
+_script_tail() {
+  [ -s "$1" ] || return 0
+  tail -n 10 "$1" | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
-    _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    script_tail=$(_script_tail "$SCRIPT_ERR_TMP")
+    # Test the trimmed result, not the file: a script that ends its stderr with a
+    # blank line passes `[ -s ]` and yields an empty tail, which used to suppress
+    # a perfectly good diagnostic sitting on stdout.
+    [ -n "$script_tail" ] || script_tail=$(_script_tail "$SCRIPT_OUT_TMP")
+    rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
+    if [ -n "$script_tail" ]; then
+      _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER — output: $script_tail"
+    else
+      _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER"
+    fi
     rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit "$SCRIPT_EXIT"
   fi
+  rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
   _record_success
   rm -f "$CEO_RUNNER_OUTCOME_FILE"
   exit 0
@@ -2119,8 +2166,99 @@ fi
 
 # --- Phase 2: FILTER (shell strips high-stakes actions) ---
 _v "Phase 1 done. Filtering actions..."
-SAFE_ACTIONS=$(echo "$PLAN_OUTPUT" | grep "^ACTION:" | grep -v "| high-stakes |" || true)
-HIGH_STAKES=$(echo "$PLAN_OUTPUT" | grep "^ACTION:" | grep "| high-stakes |" || true)
+# Field 3 of an ACTION line, whitespace-trimmed. Not `xargs`: xargs does shell
+# quote processing, so an apostrophe in a description ("don't merge yet") makes
+# it exit 1, and under `set -euo pipefail` that kills the whole run with a
+# generic abort that names nothing. sed has no quote semantics.
+_action_desc() {
+  printf '%s' "$1" | awk -F'|' '{print $3}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# Field 2 of an ACTION line (the tier), whitespace-trimmed. A pipe inside the
+# description cannot reach this field, so the tier is readable even on a line
+# whose later fields are shifted.
+_action_tier() {
+  printf '%s' "$1" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# Drops model-emitted ACTION lines that are prompt scaffolding rather than
+# proposals (#306). Reads lines on stdin, writes the survivors.
+#
+# Two things this deliberately does NOT do. It does not test field 3 alone: the
+# fields are `|`-delimited and PLAN_OUTPUT is model-authored, so a description
+# containing one pipe shifts every field right -- `ok | rm -rf <target>` puts
+# `ok` in field 3, evading a field-3 test. So the token and meta-directive
+# matches below run against the whole line first, before any field arithmetic.
+#
+# And it does not match any `<...>` anywhere: that dropped `Email <n@example.com>
+# about the invoice` and `fix <img> tag rendering`, which are ordinary proposals.
+# The defect #306 is about is an *unsubstituted template token*, so match those.
+#
+# The extra-field gate is tier-aware, and that asymmetry is the point. More than
+# four fields is ambiguous -- the extra pipe could be in the description (which
+# shifts the command) or in the command itself (`... | grep foo | wc -l`, an
+# ordinary shell pipeline and a perfectly well-formed proposal). Nothing in the
+# line distinguishes the two. On the non-high-stakes lane that ambiguity is
+# unacceptable, because Phase 3 hands those to a write-capable claude, so the
+# line is dropped. High-stakes actions are never executed -- they are written to
+# approvals/pending.md for a human to read -- so dropping one there discards a
+# real proposal to avoid a misparse the reader can see for themselves. Those are
+# kept, and the writer takes everything after the third delimiter verbatim as
+# the command.
+_strip_template_actions() {
+  local line desc extra
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *"<to-do verbatim>"*|*"<rewritten line>"*|*"<what remains>"*|*"<one-line evidence"*|*"<bug description>"*|*"<issue>-<short-desc>"*|*"<org>/<repo>"*|*"<n> |"*|*"<number> |"*|*"<tier> |"*|*"<title> |"*)
+        _drop_action "$line" "unsubstituted template token"
+        continue ;;
+    esac
+    desc=$(_action_desc "$line")
+    # A description that talks about the ACTION format is an instruction to the
+    # model that leaked into its own output, not a proposal. The bare `Emit `
+    # prefix is not enough of a signal on its own -- "Emit metrics to the
+    # observability dashboard" is an ordinary proposal starting with an ordinary
+    # verb -- so require it to reference the format it is describing.
+    case "$desc" in
+      [Ee]"mit "*ACTION*|[Ee]"xample:"*|[Tt]"emplate:"*|[Dd]"irective:"*)
+        _drop_action "$line" "meta-directive"
+        continue ;;
+    esac
+    extra=$(printf '%s' "$line" | awk -F'|' '{print NF}')
+    if [ "$extra" -gt 4 ] && [ "$(_action_tier "$line")" != "high-stakes" ]; then
+      _drop_action "$line" "malformed (a description containing '|' shifts the command field)"
+      continue
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
+# A dropped proposal must leave a durable trace. _v is a no-op unless
+# CEO_VERBOSE=1, and scheduled runs never set it -- so before this the approvals
+# queue could silently lose an item that a human was supposed to see, while the
+# run report said the actions had been written to it. Every other discard in
+# this file already appends here.
+_drop_action() {
+  _v "  Ignoring ACTION ($2): $1"
+  echo "$(date): NOTICE — $TRIGGER ignored ACTION ($2): $1" >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true
+}
+
+# Filter before the tier split, not after. The filtered lane was the deferred
+# one -- high-stakes actions, which only ever get written to a file a human
+# approves. Everything else goes to Phase 3's EXECUTE prompt, which runs claude
+# WITHOUT the --disallowedTools that Phase 1 carries. Guarding the reviewed lane
+# and leaving the executed one open inverts the risk ordering, and the worse the
+# model's output, the more likely it lands on the unguarded side.
+RAW_ACTIONS=$(echo "$PLAN_OUTPUT" | grep "^ACTION:" || true)
+ALL_ACTIONS=$(printf '%s\n' "$RAW_ACTIONS" | _strip_template_actions || true)
+SAFE_ACTIONS=$(echo "$ALL_ACTIONS" | grep -v "| high-stakes |" || true)
+HIGH_STAKES=$(echo "$ALL_ACTIONS" | grep "| high-stakes |" || true)
+# Derived, not accumulated: _strip_template_actions runs in a pipeline subshell,
+# so a counter incremented inside it never reaches this scope.
+RAW_ACTION_COUNT=$(printf '%s' "$RAW_ACTIONS" | grep -c "^ACTION:" || true)
+KEPT_ACTION_COUNT=$(printf '%s' "$ALL_ACTIONS" | grep -c "^ACTION:" || true)
+DROPPED_ACTIONS=$((RAW_ACTION_COUNT - KEPT_ACTION_COUNT))
 SAFE_COUNT=$(echo "$SAFE_ACTIONS" | grep -c "^ACTION:" 2>/dev/null || echo 0)
 HIGH_COUNT=$(echo "$HIGH_STAKES" | grep -c "^ACTION:" 2>/dev/null || echo 0)
 _v "  Safe actions: $SAFE_COUNT | High-stakes (deferred): $HIGH_COUNT"
@@ -2136,8 +2274,12 @@ if [ -n "$HIGH_STAKES" ]; then
       echo "## $TODAY $NOW"
       echo ""
       while IFS= read -r line; do
-        DESC=$(echo "$line" | awk -F'|' '{print $3}' | xargs)
-        CMD=$(echo "$line" | awk -F'|' '{print $4}' | xargs)
+        [ -n "$line" ] || continue
+        DESC=$(_action_desc "$line")
+        # Everything after the third delimiter, pipes included: a command may
+        # legitimately be a shell pipeline, and field 4 alone truncates it at
+        # the first `|`.
+        CMD=$(printf '%s' "$line" | awk -F'|' '{for (i=4; i<=NF; i++) printf "%s%s", (i>4 ? "|" : ""), $i}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         echo "- [ ] **$DESC**"
         echo "  - playbook: $TRIGGER"
         echo "  - command: \`$CMD\`"
@@ -2156,12 +2298,21 @@ fi
 
 # --- Phase 3: EXECUTE (only safe actions) ---
 if [ -z "$SAFE_ACTIONS" ]; then
+  # The count matters, not just the tier. With every high-stakes line filtered
+  # out, HIGH_STAKES is empty, the pending.md write above is skipped, and this
+  # branch still fires -- so the old unconditional wording told the reader their
+  # proposals were queued for approval when nothing had been written.
+  _actions_note="none (all actions were high-stakes, $KEPT_ACTION_COUNT written to approvals"
+  if [ "$DROPPED_ACTIONS" -gt 0 ]; then
+    _actions_note="$_actions_note, $DROPPED_ACTIONS ignored as template/malformed — see cron-skips.log"
+  fi
+  _actions_note="$_actions_note)"
   _v "No safe actions to execute (all high-stakes). Done."
   _v ""
-  _v "All actions were high-stakes — written to CEO/approvals/pending.md"
+  _v "$KEPT_ACTION_COUNT high-stakes action(s) written to CEO/approvals/pending.md, $DROPPED_ACTIONS ignored"
   _report action "$TRIGGER" "**Status:** completed (no safe actions to execute)
 **Playbook:** $PLAYBOOK_REL
-**Actions:** none (all actions were high-stakes, written to approvals)"
+**Actions:** $_actions_note"
 else
   EXEC_PROMPT="You are the CEO agent running in EXECUTION MODE.
 

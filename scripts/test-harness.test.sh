@@ -66,6 +66,28 @@ test_x() {
   assert_contains "$CHILD_OUT" "FAILED: 1" "counted once"
 }
 
+# --- #321: pin body-scope absorption of a bare increment by a subshell failure ---
+#
+# A failure recorded one level down — an assert_* inside ( ... ) or $( ... ) —
+# appends a line to the failure file without bumping the body's in-process FAILS.
+# When the body also has a bare FAILS increment, the delta between the body's
+# final FAILS and initial FAILS is 1, while recorded is 1, so the difference
+# hand_rolled = (1 - 0) - 1 = 0, absorbing the bare increment.
+# Pinning this documented limitation so the caveat is self-policing until all
+# bare increments in test suites are converted to fail_test.
+test_321_body_scope_absorption_limitation_pinned() {
+  _run_child '
+test_x() {
+  assert_eq a a "keeps the no-assertions guard quiet"
+  ( assert_eq got want "nested assert fails" )
+  printf "  FAIL hand-rolled\n"; FAILS=$((FAILS + 1))
+}'
+  # Two genuine failures occurred, but one is reported due to body-scope subtraction.
+  # The run still fails (exits non-zero).
+  assert_eq "$CHILD_RC" "1" "the run still fails non-zero"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "pinning known limitation: reports 1 failure"
+}
+
 # --- Scope attribution (#317) ---
 #
 # `setup` and `teardown` run in the caller's shell, not in the per-test subshell, so

@@ -133,31 +133,75 @@ SSHEOF
   fi
 }
 
+# Whether the operator asked for the global identity to be written. Routed
+# through the file's existing yes/no convention rather than a bare `= "1"`,
+# which silently read `true`, `yes`, and `on` as "no" and gave the operator the
+# same NOTE as someone who had never opted in at all. An unrecognized value
+# says so instead of falling through (enum-config-typo-fallback).
+_ceo_want_global_identity_write() {
+  case "${CEO_GIT_WRITE_GLOBAL_IDENTITY:-0}" in
+    1|y|Y|yes|YES|true|TRUE|on|ON)    return 0 ;;
+    0|n|N|no|NO|false|FALSE|off|OFF)  return 1 ;;
+    *)
+      echo "  WARNING: CEO_GIT_WRITE_GLOBAL_IDENTITY='${CEO_GIT_WRITE_GLOBAL_IDENTITY}' is not a recognized value — treating as 0, global identity will NOT be written." >&2
+      return 1 ;;
+  esac
+}
+
 ceo_setup_git_config() {
   echo "[4/10] Configuring git..."
-  local existing_name existing_email
+  local existing_name existing_email resolved_name resolved_email
   existing_name="$(git config --global --get user.name 2>/dev/null || true)"
+  # Resolved from every scope that will still apply elsewhere on this host --
+  # global, system, and anything an includeIf pulls in. Run from a directory
+  # that is not a repository on purpose: inside one, `git config --get` also
+  # answers from .git/config, and setup happening to run in a repo with a local
+  # identity says nothing about the worktrees ceo-loop commits in. Preserving an
+  # includeIf-supplied identity without writing it is the point of #319; this is
+  # what the requirement below is judged on, while `existing_name` only decides
+  # whether to write.
+  resolved_name="$(cd / && git config --get user.name 2>/dev/null || true)"
+  resolved_email="$(cd / && git config --get user.email 2>/dev/null || true)"
   if [ -n "$existing_name" ]; then
     echo "  user.name preserved: $existing_name"
-  elif [ -n "${CEO_GIT_USER_NAME:-}" ]; then
+  elif [ -n "${CEO_GIT_USER_NAME:-}" ] && _ceo_want_global_identity_write; then
     git config --global user.name "$CEO_GIT_USER_NAME"
     echo "  user.name set from CEO_GIT_USER_NAME: $CEO_GIT_USER_NAME"
+    resolved_name="$CEO_GIT_USER_NAME"
+  elif [ -n "${CEO_GIT_USER_NAME:-}" ]; then
+    echo "  NOTE: CEO_GIT_USER_NAME is set but not applied — global identity is preserved by default. Re-run with CEO_GIT_WRITE_GLOBAL_IDENTITY=1 to write it."
   else
-    echo "  WARNING: git user.name not set. Set CEO_GIT_USER_NAME or run:" >&2
-    echo "    git config --global user.name \"Your Name\"" >&2
-    MISSING_CONFIG+=("git user.name")
+    echo "  NOTE: git user.name is not set globally. (Leave unset if using includeIf/local configs, or set via git config --global user.name \"Your Name\")"
   fi
   existing_email="$(git config --global --get user.email 2>/dev/null || true)"
   if [ -n "$existing_email" ]; then
     echo "  user.email preserved: $existing_email"
-  elif [ -n "${CEO_GIT_USER_EMAIL:-}" ]; then
+  elif [ -n "${CEO_GIT_USER_EMAIL:-}" ] && _ceo_want_global_identity_write; then
     git config --global user.email "$CEO_GIT_USER_EMAIL"
     echo "  user.email set from CEO_GIT_USER_EMAIL: $CEO_GIT_USER_EMAIL"
+    resolved_email="$CEO_GIT_USER_EMAIL"
+  elif [ -n "${CEO_GIT_USER_EMAIL:-}" ]; then
+    echo "  NOTE: CEO_GIT_USER_EMAIL is set but not applied — global identity is preserved by default. Re-run with CEO_GIT_WRITE_GLOBAL_IDENTITY=1 to write it."
   else
-    echo "  WARNING: git user.email not set. Set CEO_GIT_USER_EMAIL or run:" >&2
-    echo "    git config --global user.email <you@example.com>" >&2
-    MISSING_CONFIG+=("git user.email")
+    echo "  NOTE: git user.email is not set globally. (Leave unset if using includeIf/local configs, or set via git config --global user.email <you@example.com>)"
   fi
+
+  # Not writing the identity is right; not *requiring* one is not. ceo-loop.sh
+  # commits worker output with no identity of its own -- no -c user.name, no
+  # GIT_AUTHOR_* -- so on a host where nothing resolves, that commit dies on
+  # "Please tell me who you are" and, in its own words, "the next reclaim would
+  # discard it". Setup is where that is cheap to catch, which is what the gate
+  # this block feeds says: "before any CEO commits".
+  if [ -z "$resolved_name" ]; then
+    MISSING_CONFIG+=("git user.name (no identity resolves from any scope — ceo-loop commits will fail; set one globally, via includeIf, or export CEO_GIT_USER_NAME with CEO_GIT_WRITE_GLOBAL_IDENTITY=1)")
+  fi
+  if [ -z "$resolved_email" ]; then
+    MISSING_CONFIG+=("git user.email (no identity resolves from any scope — ceo-loop commits will fail; set one globally, via includeIf, or export CEO_GIT_USER_EMAIL with CEO_GIT_WRITE_GLOBAL_IDENTITY=1)")
+  fi
+  # Explicit: the function's last statement is a conditional, so without this it
+  # returns 1 whenever an identity *does* resolve — which under `set -e` in a
+  # caller reads as a setup failure on the healthy path.
+  return 0
 }
 
 ceo_setup_check_syncthing() {
