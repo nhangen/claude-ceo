@@ -330,6 +330,187 @@ STUB
     "meta-directive action must NOT reach pending.md (#306)"
 }
 
+# The drop-arms above pass under any filter broad enough to reject everything,
+# so on their own they license widening the matcher without limit. This is the
+# other half: a real proposal that merely *resembles* scaffolding must survive.
+# Angle brackets in a description are ordinary — an email address, an HTML tag,
+# a comparison — and dropping them silently loses an item a human was meant to
+# approve.
+test_high_stakes_filtering_keeps_a_proposal_that_resembles_a_placeholder() {
+  cat > "$CEO_DIR/playbooks/hs-keep.md" << 'PB'
+---
+name: hs-keep
+description: high stakes filter keep-arm fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | reconcile close: fix <img> tag rendering — org/repo#9 merged | n/a"
+echo "ACTION: 2 | high-stakes | Emit metrics to the observability dashboard | n/a"
+echo "ACTION: 3 | high-stakes | notify <nathan@example.com> about the invoice | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" hs-keep >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "fix <img> tag rendering" \
+    "an angle bracket in a real proposal must not be read as a template token"
+  assert_contains "$pending" "Emit metrics to the observability dashboard" \
+    "a proposal starting with the ordinary verb 'Emit' must not be read as a directive"
+  assert_contains "$pending" "notify <nathan@example.com> about the invoice" \
+    "an email address in angle brackets must not be read as a template token"
+}
+
+# A description containing a pipe shifts every field right, so field 3 stops
+# being the description and field 4 stops being the command. Two things follow:
+# the filter tests a field the model controls the boundaries of, and pending.md
+# records a command that was never proposed. A line with more fields than the
+# format allows is malformed input, not something to best-effort parse.
+test_high_stakes_filtering_drops_an_action_whose_description_contains_a_pipe() {
+  cat > "$CEO_DIR/playbooks/hs-pipe.md" << 'PB'
+---
+name: hs-pipe
+description: high stakes malformed-field fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | ok | ceo reconcile close \"<to-do verbatim>\""
+echo "ACTION: 2 | high-stakes | rename a|b module | mv a b"
+echo "ACTION: 3 | high-stakes | genuine proposal with no pipe | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" hs-pipe >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "genuine proposal with no pipe" \
+    "a well-formed proposal must still be written"
+  assert_not_contains "$pending" "to-do verbatim" \
+    "a template token in the command field must not evade a field-3-only filter"
+  assert_not_contains "$pending" "rename a" \
+    "a description containing a pipe is malformed and must be dropped, not truncated"
+}
+
+# An apostrophe is ordinary in a human-written to-do. Trimming with xargs made
+# one abort the entire run under set -euo pipefail, with a generic message that
+# named nothing.
+test_high_stakes_filtering_survives_an_apostrophe_in_a_description() {
+  cat > "$CEO_DIR/playbooks/hs-quote.md" << 'PB'
+---
+name: hs-quote
+description: high stakes quoting fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | reconcile close: don't merge yet | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" hs-quote >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "don't merge yet" \
+    "an apostrophe in a description must not abort the run"
+}
+
+# The filter used to run after the tier split, guarding only the high-stakes
+# lane. Everything else goes to Phase 3's EXECUTE prompt, which runs claude
+# without the --disallowedTools Phase 1 carries — so the guarded lane was the
+# reviewed one and the unguarded lane was the executed one. Filtering before the
+# split means a non-high-stakes placeholder is dropped too.
+test_a_non_high_stakes_placeholder_is_filtered_too() {
+  cat > "$CEO_DIR/playbooks/nhs-filter.md" << 'PB'
+---
+name: nhs-filter
+description: non-high-stakes placeholder filtering fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: low-stakes-write
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | low-stakes-write | reconcile close: \"<to-do verbatim>\" — org/repo#123 merged | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" nhs-filter >/dev/null 2>&1 || true
+
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "nhs-filter ignored ACTION" \
+    "a placeholder on the non-high-stakes lane must be filtered, not executed"
+  assert_contains "$skips" "unsubstituted template token" \
+    "the skip record must name why the action was dropped"
+}
+
+# A dropped proposal must leave a durable trace: _v is a no-op on a scheduled
+# run, so without this the approvals queue loses an item with no record anywhere.
+test_a_dropped_action_is_recorded_in_cron_skips_log() {
+  cat > "$CEO_DIR/playbooks/hs-skiplog.md" << 'PB'
+---
+name: hs-skiplog
+description: dropped-action logging fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | reconcile close: \"<to-do verbatim>\" — org/repo#1 merged | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" hs-skiplog >/dev/null 2>&1 || true
+
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "ignored ACTION" \
+    "a dropped action must be recorded outside verbose mode"
+  assert_contains "$skips" "hs-skiplog" \
+    "the skip record must name the playbook"
+
+  local body; body=$(cat "$CEO_DIR/log/$(date +%Y-%m)"/*.md 2>/dev/null || echo "")
+  assert_not_contains "$body" "none (all actions were high-stakes, written to approvals)" \
+    "the report must not claim actions were written when all of them were dropped"
+}
+
 
 # runner:skill in dry-run must NOT exec the skill or write its out_pattern;
 # it previews the would-run skill instead.
