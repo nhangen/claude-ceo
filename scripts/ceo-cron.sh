@@ -1567,14 +1567,45 @@ if [ "$RUNNER" = "script" ]; then
   # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
   # trap set earlier at the top of the run. rm before each exit instead so the
   # per-tick outcome tmp file doesn't leak.
+# The failure reason built from these bytes does not stay local. _record_failure
+# writes it into CEO/approvals/pending.md -- replicated between hosts by
+# Syncthing -- and hands it to ceo-notify.sh, which POSTs it to a Discord
+# webhook. A `runner: script` playbook is by definition one that shells out to
+# authenticated tools, so `gh: HTTP 401 Bad credentials`, a curl line echoing
+# `?token=...`, and `https://user:ghp_...@github.com` are its ordinary failure
+# texts. Redact here, at the point the value is read, rather than trusting a
+# sink to do it (no-secrets-in-logs).
+#
+# The collapse to a single line is load-bearing, not cosmetic: pending.md is
+# parsed with anchored `^- \[ \]` greps, so multi-line stderr containing
+# `- [x] **Approved: ...**` would otherwise forge an approved item that
+# ceo-scan.sh feeds verbatim into the morning-scan prompt. Keep the `tr` if this
+# is ever rewritten to preserve more context.
+_redact_secrets() {
+  sed -E \
+    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#gh*_***REDACTED***#g' \
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#github_pat_***REDACTED***#g' \
+    -e 's#sk-[A-Za-z0-9_-]{16,}#sk-***REDACTED***#g' \
+    -e 's#xox[baprs]-[A-Za-z0-9-]{10,}#xox*-***REDACTED***#g' \
+    -e 's#(//)[^/@[:space:]]+:[^/@[:space:]]+@#\1***REDACTED***@#g' \
+    -e 's/([Aa]uthorization:[[:space:]]*)[^[:space:]]+/\1***REDACTED***/g' \
+    -e 's/(([Tt]oken|[Aa]pi[_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[[:space:]]*[=:][[:space:]]*)[^[:space:]&]+/\1***REDACTED***/g'
+}
+
+# Bounded, redacted, single-line tail of a captured stream. 10 lines x 120 chars
+# caps it near 1.2 KB whatever the script emitted, including one enormous line.
+_script_tail() {
+  [ -s "$1" ] || return 0
+  tail -n 10 "$1" | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
-    script_tail=""
-    if [ -s "$SCRIPT_ERR_TMP" ]; then
-      script_tail=$(tail -n 10 "$SCRIPT_ERR_TMP" | cut -c1-120 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-    elif [ -s "$SCRIPT_OUT_TMP" ]; then
-      script_tail=$(tail -n 10 "$SCRIPT_OUT_TMP" | cut -c1-120 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-    fi
+    script_tail=$(_script_tail "$SCRIPT_ERR_TMP")
+    # Test the trimmed result, not the file: a script that ends its stderr with a
+    # blank line passes `[ -s ]` and yields an empty tail, which used to suppress
+    # a perfectly good diagnostic sitting on stdout.
+    [ -n "$script_tail" ] || script_tail=$(_script_tail "$SCRIPT_OUT_TMP")
     rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
     if [ -n "$script_tail" ]; then
       _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER — output: $script_tail"

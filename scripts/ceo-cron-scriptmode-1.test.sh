@@ -68,6 +68,127 @@ PB
   rm -f "$SCRIPT_DIR/failing-script-test.sh"
 }
 
+# The arm above pins that output is recorded; this pins that it is *bounded*,
+# which is the half that matters, because the reason does not stay local --
+# _record_failure writes it into the Syncthing-replicated pending.md and hands
+# it to ceo-notify.sh for the Discord webhook. Without this, widening the tail
+# and the cut leaves the suite green.
+test_script_runner_failure_output_is_bounded_to_the_last_lines() {
+  cat > "$SCRIPT_DIR/verbose-failing-script-test.sh" << 'SCRIPT'
+#!/bin/bash
+for i in $(seq 1 40); do
+  printf 'noise-line-%03d-%s\n' "$i" "$(printf 'x%.0s' $(seq 1 300))" >&2
+done
+echo "FINAL-MARKER the real error" >&2
+exit 1
+SCRIPT
+  chmod +x "$SCRIPT_DIR/verbose-failing-script-test.sh"
+
+  cat > "$CEO_DIR/playbooks/script-verbose.md" << 'PB'
+---
+name: script-verbose
+description: Verbose failing script fixture
+trigger: cron
+schedule: "0 9 * * *"
+runner: script
+script: verbose-failing-script-test.sh
+tier: read
+status: active
+---
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" script-verbose >/dev/null 2>&1 || true
+
+  local line len
+  line=$(grep "Script exited 1 for script-verbose" "$CEO_DIR/log/cron-skips.log" 2>/dev/null | tail -1)
+  len=${#line}
+  assert_eq "$([ "$len" -le 1500 ] && echo bounded || echo "unbounded:$len")" "bounded" \
+    "the recorded reason must stay bounded regardless of how much the script emitted"
+  assert_contains "$line" "FINAL-MARKER" \
+    "the bound must keep the LAST lines — the error — not the first"
+  assert_not_contains "$line" "noise-line-001" \
+    "the first lines of a long failure must be dropped, not the last"
+  rm -f "$SCRIPT_DIR/verbose-failing-script-test.sh"
+}
+
+# The reason reaches a Discord webhook and a synced file, and a runner: script
+# playbook is by definition one that shells out to authenticated tools — so a
+# token in its stderr is the ordinary case, not an exotic one.
+test_script_runner_failure_redacts_credentials_from_the_recorded_reason() {
+  cat > "$SCRIPT_DIR/leaky-failing-script-test.sh" << 'SCRIPT'
+#!/bin/bash
+echo "fatal: could not read Username for 'https://nathan:ghp_AAAABBBBCCCCDDDDEEEE@github.com'" >&2
+echo "gh: HTTP 401 with token=ghp_ZZZZYYYYXXXXWWWWVVVV1234" >&2
+echo "Authorization: Bearer sk-abcdefghijklmnopqrstuvwx" >&2
+exit 1
+SCRIPT
+  chmod +x "$SCRIPT_DIR/leaky-failing-script-test.sh"
+
+  cat > "$CEO_DIR/playbooks/script-leak.md" << 'PB'
+---
+name: script-leak
+description: Credential-bearing failing script fixture
+trigger: cron
+schedule: "0 9 * * *"
+runner: script
+script: leaky-failing-script-test.sh
+tier: read
+status: active
+---
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" script-leak >/dev/null 2>&1 || true
+
+  local skips_log; skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "Script exited 1 for script-leak" \
+    "the failure must still be recorded"
+  assert_not_contains "$skips_log" "ghp_AAAABBBBCCCCDDDDEEEE" \
+    "a token embedded in a remote URL must not reach the failure reason"
+  assert_not_contains "$skips_log" "ghp_ZZZZYYYYXXXXWWWWVVVV1234" \
+    "a bare token must not reach the failure reason"
+  assert_not_contains "$skips_log" "sk-abcdefghijklmnopqrstuvwx" \
+    "an api key must not reach the failure reason"
+  assert_contains "$skips_log" "REDACTED" \
+    "the redaction must be visible rather than silently dropping the line"
+  rm -f "$SCRIPT_DIR/leaky-failing-script-test.sh"
+}
+
+# A script that reports its error on stdout and exits non-zero is ordinary.
+# Testing `[ -s "$SCRIPT_ERR_TMP" ]` rather than the trimmed tail meant a
+# trailing newline on stderr suppressed the stdout diagnostic entirely.
+test_script_runner_failure_falls_back_to_stdout_when_stderr_is_blank() {
+  cat > "$SCRIPT_DIR/stdout-failing-script-test.sh" << 'SCRIPT'
+#!/bin/bash
+echo "STDOUT-DIAGNOSTIC the real error" 
+printf '\n' >&2
+exit 1
+SCRIPT
+  chmod +x "$SCRIPT_DIR/stdout-failing-script-test.sh"
+
+  cat > "$CEO_DIR/playbooks/script-stdout.md" << 'PB'
+---
+name: script-stdout
+description: stdout-only failing script fixture
+trigger: cron
+schedule: "0 9 * * *"
+runner: script
+script: stdout-failing-script-test.sh
+tier: read
+status: active
+---
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" script-stdout >/dev/null 2>&1 || true
+
+  local skips_log; skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips_log" "STDOUT-DIAGNOSTIC the real error" \
+    "a whitespace-only stderr must not suppress the stdout diagnostic"
+  rm -f "$SCRIPT_DIR/stdout-failing-script-test.sh"
+}
+
 
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
