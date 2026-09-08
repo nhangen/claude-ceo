@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "$0")"
 RUNNER="${NORX_BOOKKEEPING_RUNNER:-$HOME/Library/Application Support/NoRxPeptides/runtime/norx-operations/bin/daily-bookkeeping.sh}"
 STATE_DIR="${NORX_BOOKKEEPING_STATE_DIR:-$HOME/.local/state/norx-bookkeeping}"
+# Mirrors the runner's own default (NORX_BOOKKEEPING_LOG_DIR in
+# daily-bookkeeping.sh). Only used to tell an operator where to look, so a
+# mismatch degrades to "log not readable at <path>" rather than to silence.
+RUNNER_LOG_DIR="${NORX_BOOKKEEPING_LOG_DIR:-$HOME/Library/Logs/NoRxPeptides}"
 DATE_BIN="${NORX_BOOKKEEPING_DATE_BIN:-$(command -v date 2>/dev/null || true)}"
 SUCCESS_FILE="$STATE_DIR/ceo-last-success-date"
 LOCK_DIR="$STATE_DIR/ceo-wrapper.lock"
@@ -91,7 +95,39 @@ if [ ! -x "$RUNNER" ]; then
   exit 1
 fi
 
-"$RUNNER" --run-once
+# Guarded, and it reports. The runner sends its phase results to its own log and
+# writes nothing to stderr on a failure, so an unguarded call under `set -e`
+# aborted this wrapper silently — the dispatcher captures a failing script's
+# stderr and stdout (ceo-cron.sh), but there was nothing to capture, and the
+# recorded failure read `Script exited 1 for norx-bookkeeping` and stopped there.
+#
+# Measured 2026-09-08: ten failures over three hours, every one of them
+# `sync_all_sheets|remote_sheets_sync_failed` with every import phase green. That
+# is a one-line diagnosis sitting in a file nothing pointed at, and finding it
+# meant reading the wrapper to learn the runner existed, then reading the runner
+# to learn where it logs.
+RUNNER_EXIT=0
+"$RUNNER" --run-once || RUNNER_EXIT=$?
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  printf 'ERROR: NoRx bookkeeping runner exited %s\n' "$RUNNER_EXIT" >&2
+  # Newest by mtime rather than a date-derived name: this block is diagnostics,
+  # and a diagnostic must not be able to change the exit code it is explaining.
+  # Deriving the filename meant calling DATE_BIN with a second format, and under
+  # `set -e` a DATE_BIN that does not accept it aborts the wrapper with *its*
+  # status — which is exactly what happened, turning a runner exit of 9 into 2
+  # and breaking the arm that pins the code being preserved.
+  runner_log=$(ls -t "$RUNNER_LOG_DIR"/daily-bookkeeping-*.log 2>/dev/null | head -n 1 || true)
+  if [ -n "$runner_log" ] && [ -r "$runner_log" ]; then
+    printf 'runner log: %s\n' "$runner_log" >&2
+    # The failing phases, not the tail: the runner logs one line per phase and
+    # the successful ones outnumber the failure, so a plain tail buries it.
+    failing=$(grep -v '|success$' "$runner_log" 2>/dev/null | tail -n 3 || true)
+    [ -n "$failing" ] && printf 'last failing phases:\n%s\n' "$failing" >&2
+  else
+    printf 'no readable runner log under %s\n' "$RUNNER_LOG_DIR" >&2
+  fi
+  exit "$RUNNER_EXIT"
+fi
 
 marker_tmp=$(mktemp "$STATE_DIR/.ceo-success.XXXXXX")
 printf '%s\n' "$today" > "$marker_tmp"

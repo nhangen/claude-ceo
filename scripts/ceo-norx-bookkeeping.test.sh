@@ -96,6 +96,52 @@ test_failure_does_not_advance_marker_and_next_check_retries() {
   assert_eq "$(run_count)" "2" "next hourly check must retry after a failure"
 }
 
+# A runner failure has to reach the operator with something they can act on. The
+# runner writes its phase results to its own log and nothing to stderr, so an
+# unguarded call left the dispatcher with nothing to capture and the recorded
+# failure read "Script exited 1 for norx-bookkeeping" and stopped there.
+# Measured 2026-09-08: ten failures over three hours, all of them
+# `sync_all_sheets|remote_sheets_sync_failed`, with every import phase green.
+test_a_runner_failure_names_the_log_and_the_failing_phases() {
+  export NORX_TEST_RUNNER_EXIT=9
+  local logdir="$NORX_BOOKKEEPING_STATE_DIR/runner-logs"
+  mkdir -p "$logdir"
+  printf '%s\n' \
+    '2026-09-08T10:15:47Z|run-1|import_mercury_ledger|success' \
+    '2026-09-08T10:15:55Z|run-1|sync_all_sheets|remote_sheets_sync_failed' \
+    > "$logdir/daily-bookkeeping-2026-09-08.log"
+
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+
+  assert_eq "$rc" "9" "the diagnostic must not change the exit code it explains"
+  assert_contains "$err" "runner exited 9" "the failure names the runner's status"
+  assert_contains "$err" "daily-bookkeeping-2026-09-08.log" "and points at the runner's own log"
+  assert_contains "$err" "remote_sheets_sync_failed" "and quotes the phase that actually failed"
+  assert_not_contains "$err" "import_mercury_ledger" \
+    "successful phases are not quoted — they bury the one line that matters"
+}
+
+# The diagnostic reads a directory it does not own, so it has to degrade rather
+# than fail. An earlier version derived the log's filename from DATE_BIN, and a
+# DATE_BIN that did not accept the second format aborted the wrapper under
+# `set -e` with its own status — turning a runner exit of 9 into a 2.
+test_a_runner_failure_with_no_readable_log_still_preserves_the_code() {
+  export NORX_TEST_RUNNER_EXIT=9
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$NORX_BOOKKEEPING_STATE_DIR/nonexistent" \
+        bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+
+  assert_eq "$rc" "9" "a missing runner log must not change the exit code"
+  assert_contains "$err" "runner exited 9" "the failure is still reported"
+  assert_contains "$err" "no readable runner log" "and says the log could not be found"
+  # Names the directory it actually looked in, not the compiled-in default —
+  # without this the arm passes whether or not NORX_BOOKKEEPING_LOG_DIR is
+  # honored, and the message would send an operator to the wrong path.
+  assert_contains "$err" "$NORX_BOOKKEEPING_STATE_DIR/nonexistent" \
+    "and names the directory it searched"
+}
+
 test_next_day_runs_again() {
   bash "$TARGET"
   printf '2026-09-06\n375\n' > "$NORX_TEST_CLOCK"
