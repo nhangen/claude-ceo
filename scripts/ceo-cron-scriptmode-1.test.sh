@@ -354,6 +354,146 @@ PB
 }
 
 
+# The three-strike alert lands in approvals/pending.md, which every swarm host
+# syncs and appends to. The counter behind it is host-local — CEO/log/.fail-count*
+# is excluded by syncthing/shared.stignore — so "3 consecutive failures" is a
+# claim about one machine, and an unnamed one leaves the reader unable to tell
+# which, or whose cron-skips.log to open. #390 made that worse by putting the
+# failing host's own script output in the reason.
+test_the_three_strike_alert_names_the_host_that_failed() {
+  cat > "$SCRIPT_DIR/alert-host-test.sh" << 'SH'
+#!/bin/bash
+exit 7
+SH
+  _fixture_script "$SCRIPT_DIR/alert-host-test.sh"
+  cat > "$CEO_DIR/playbooks/alert-host.md" << 'PB'
+---
+name: alert-host
+description: fails so the third strike escalates
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: alert-host-test.sh
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
+  : > "$CEO_DIR/approvals/pending.md"
+  echo 2 > "$CEO_DIR/log/.fail-count-alert-host"
+  CEO_HOSTNAME=test-host-a bash "$CRON" alert-host >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  # Anchored per line, not a bare search for the host name: the alert names the
+  # host in three places, and a single unanchored assertion is satisfied by any
+  # one of them — so reverting two of the three stays green.
+  assert_contains "$pending" "— ALERT (test-host-a)" "the heading names the host"
+  assert_contains "$pending" "consecutive failures on test-host-a" \
+    "the count line names the host — this is the sentence a reader quotes"
+  assert_contains "$pending" "on test-host-a, check cron-raw.log" \
+    "the action line names the host whose logs to open"
+  rm -f "$SCRIPT_DIR/alert-host-test.sh"
+}
+
+# The fallback has to degrade the label, not the escalation. With the `||` inside
+# the command substitution it did the opposite: the expansion error exited the
+# subshell before the fallback ran, and `set -e` then aborted _record_failure
+# mid-way — no alert, no .last-run stamp, no notify — permanently, since the
+# counter was already past the threshold.
+test_an_unresolvable_host_still_escalates_and_still_stamps_last_run() {
+  printf '#!/bin/bash\nexit 0\n' > "$TEST_HOME/.bun/bin/hostname"
+  chmod +x "$TEST_HOME/.bun/bin/hostname"
+  cat > "$SCRIPT_DIR/fb-host-test.sh" << 'SH'
+#!/bin/bash
+exit 7
+SH
+  _fixture_script "$SCRIPT_DIR/fb-host-test.sh"
+  cat > "$CEO_DIR/playbooks/fb-host.md" << 'PB'
+---
+name: fb-host
+description: fails on a host with no resolvable name
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: fb-host-test.sh
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
+  : > "$CEO_DIR/approvals/pending.md"
+  echo 2 > "$CEO_DIR/log/.fail-count-fb-host"
+  ( unset CEO_HOSTNAME
+    CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-fb.log" bash "$CRON" fb-host >/dev/null 2>&1 ) || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  # `unknown` is the sentinel every sibling writer uses, ceo-notify.sh included,
+  # and it fires from the same function — two names for one machine defeats the
+  # point of naming it.
+  assert_contains "$pending" "consecutive failures on unknown" \
+    "an unresolvable host must still escalate, labelled unknown"
+  # The assertion that separates "the label degraded" from "the escalation died".
+  assert_file_exists "$CEO_DIR/log/.last-run-fb-host" \
+    "the bookkeeping after the alert must still run"
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "could not resolve this host" \
+    "and the degradation is logged, not swallowed by the resolver's 2>/dev/null"
+  # The notify is the last thing _record_failure does, so it is the cheapest
+  # proof that nothing aborted between the alert and the end of the function.
+  local notify; notify=$(cat "$TEST_HOME/notify-fb.log" 2>/dev/null || echo "")
+  assert_contains "$notify" "[failure/fb-host]" \
+    "and the failure notify still fires after a degraded host resolution"
+  rm -f "$SCRIPT_DIR/fb-host-test.sh" "$TEST_HOME/.bun/bin/hostname"
+}
+
+# Nothing in the production path creates $CEO_DIR/approvals — only the test
+# fixture does — so a fresh or unmounted vault fails this append on its first
+# escalation. Unchecked, that aborted the rest of _record_failure, and
+# cron-skips.log still said only that the run had failed.
+test_an_unwritable_pending_queue_does_not_swallow_the_rest_of_the_failure_path() {
+  cat > "$SCRIPT_DIR/ro-queue-test.sh" << 'SH'
+#!/bin/bash
+exit 7
+SH
+  _fixture_script "$SCRIPT_DIR/ro-queue-test.sh"
+  cat > "$CEO_DIR/playbooks/ro-queue.md" << 'PB'
+---
+name: ro-queue
+description: escalates into a queue it cannot write
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: ro-queue-test.sh
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
+  echo 2 > "$CEO_DIR/log/.fail-count-ro-queue"
+  rm -f "$CEO_DIR/approvals/pending.md"
+  # As root, chmod 500 does not stop the write and this arm fails rather than
+  # passing — the safe direction, but a root CI run would look like a regression.
+  chmod 500 "$CEO_DIR/approvals"
+  CEO_HOSTNAME=test-host-a bash "$CRON" ro-queue >/dev/null 2>&1 || true
+  chmod 700 "$CEO_DIR/approvals"
+
+  assert_file_exists "$CEO_DIR/log/.last-run-ro-queue" \
+    "a failed queue append must not cost the .last-run stamp"
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "could not be written to approvals/pending.md" \
+    "and the dropped escalation says so, rather than reading as a plain failure"
+  rm -f "$SCRIPT_DIR/ro-queue-test.sh"
+}
+
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash

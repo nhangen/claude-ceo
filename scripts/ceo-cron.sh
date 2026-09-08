@@ -294,14 +294,51 @@ _record_failure() {
   fails=$((fails + 1))
   echo "$fails" > "$FAIL_COUNT_FILE"
   if [ "$fails" -ge 3 ]; then
-    cat >> "$CEO_DIR/approvals/pending.md" << ALERTEOF
+    # pending.md is synced and every swarm host appends to it, while the counter
+    # behind this alert is host-local (CEO/log/.fail-count* is excluded by
+    # syncthing/shared.stignore). So "3 consecutive failures" is a claim about
+    # one machine, and without naming it the reader cannot tell which — nor which
+    # host's cron-skips.log to open, since that is host-local too. More acute
+    # since #390, because the recorded reason now carries that host's script
+    # output.
+    # The `||` is outside the substitution on purpose. _swarm_resolve_host fails
+    # through `: "${host:?...}"`, and an expansion error exits the subshell at
+    # once — an inner `|| echo unknown-host` never runs, the substitution returns
+    # non-zero, and under `set -euo pipefail` the assignment takes the whole
+    # escalation with it: no alert, no .last-run stamp, no notify. The counter is
+    # already past 3 by then, so it aborts here on every subsequent failure too.
+    local alert_host
+    alert_host=$(_swarm_resolve_host 2>/dev/null) || alert_host=""
+    if [ -z "$alert_host" ]; then
+      # Empty as well as non-zero: the EXIT-trap call site runs _record_failure
+      # under `|| true`, which suppresses errexit, so there the substitution
+      # yields an empty string rather than a failing status — and an alert
+      # reading "3 consecutive failures on " is the unnamed-host state this
+      # change exists to remove.
+      # `unknown`, not `unknown-host`: ceo-notify.sh fires from this same
+      # function three lines below and stamps its own unresolved host as
+      # `unknown` (ceo-notify.sh:122), as do ceo-report.sh and
+      # ceo-discord-report.sh. Two sentinels for one machine, in the change whose
+      # point is letting a reader identify the machine, is worse than either.
+      alert_host=unknown
+      echo "$(date): WARN — could not resolve this host for the $TRIGGER alert (set CEO_HOSTNAME); naming it unknown" \
+        >> "$LOG_DIR/cron-skips.log"
+    fi
+    # The append is checked for the same reason the resolution is: nothing in the
+    # production path creates $CEO_DIR/approvals, so a fresh or unmounted vault
+    # fails this redirect, and an unchecked failure aborts the rest of
+    # _record_failure — losing the .last-run stamp and the notify while
+    # cron-skips.log still says only that the run failed.
+    cat >> "$CEO_DIR/approvals/pending.md" << ALERTEOF || \
+      echo "$(date): WARN — three-strike alert for $TRIGGER could not be written to approvals/pending.md" \
+        >> "$LOG_DIR/cron-skips.log"
 
-## $TODAY $NOW — ALERT
+## $TODAY $NOW — ALERT ($alert_host)
 
-- [ ] **CEO cron failing repeatedly** — $fails consecutive failures
+- [ ] **CEO cron failing repeatedly** — $fails consecutive failures on $alert_host
   - trigger: $TRIGGER
   - last error: $reason
-  - action needed: check cron-raw.log and cron-skips.log
+  - action needed: on $alert_host, check cron-raw.log and cron-skips.log
 ALERTEOF
   fi
   date +%s > "$LAST_RUN_FILE"
