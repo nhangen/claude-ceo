@@ -558,9 +558,27 @@ def test_parse_chat_response_context_overflow_500_diagnostic():
 
 
 def test_parse_chat_response_context_overflow_200_diagnostic():
+    # Reaches the parsed-error branch, not the non-200 one: ollama returns the
+    # overflow either way. Reverting that branch to the plain "ollama error" raise
+    # fails this test — it did not before, because a pre-status raw-body check
+    # matched first and this arm never reached json.loads.
     body = json.dumps({"error": "no user query found in messages"})
     with pytest.raises(RuntimeError, match="prompt exceeded context window.*--num-ctx"):
         parse_chat_response(200, body)
+
+
+def test_parse_chat_response_healthy_200_quoting_the_sentinel_returns():
+    # The sentinel is ollama's error wording, and it is also ordinary text a model
+    # can emit — the phrase lives in this repo, which ollama-agent codes against, so
+    # a run asked to fix transport.py will quote it. Matching it on the raw body
+    # before the status check turned that healthy turn into a fatal run.
+    body = json.dumps({
+        "message": {"role": "assistant",
+                    "content": "the guard is: no user query found in messages"},
+        "prompt_eval_count": 10, "eval_count": 5})
+    msg, usage = parse_chat_response(200, body)
+    assert msg["content"] == "the guard is: no user query found in messages"
+    assert usage == {"input": 10, "output": 5}
 
 
 # --- why the run ended (reason) ---

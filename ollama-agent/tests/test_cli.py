@@ -527,7 +527,10 @@ def test_cli_warns_when_prompt_may_overflow_context(tmp_path, monkeypatch, capsy
     assert "may exceed num_ctx=100" in err
 
 
-def test_cli_surfaces_context_overflow_diagnostic(tmp_path, monkeypatch, capsys):
+def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch, capsys):
+    # Named for what it reaches: parse_chat_response directly, then cli's RuntimeError
+    # handler. urlopen and the HTTPError path in ollama_transport are stubbed out, so
+    # this does not show that a real 500 arrives here — test_agent covers parse itself.
     def failing_transport(m, t):
         from ollama_agent.transport import parse_chat_response
         return parse_chat_response(500, '{"error":"no user query found in messages"}')
@@ -537,5 +540,5 @@ def test_cli_surfaces_context_overflow_diagnostic(tmp_path, monkeypatch, capsys)
                    "--no-rules", "--no-skills"])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "agent failed: prompt exceeded context window" in err
+    assert "agent failed: ollama HTTP 500: prompt exceeded context window" in err
     assert "--num-ctx" in err
