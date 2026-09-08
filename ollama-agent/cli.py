@@ -8,6 +8,7 @@ Slice 2 (#187): real shell/fs/git tools + task-relevant rule injection.
 import argparse
 import hashlib
 import json
+import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,61 @@ def _warn_if_stale_scores(generated_at, stale_days):
               file=sys.stderr)
 
 
+class _Terminated(KeyboardInterrupt):
+    """A supervisor's SIGTERM/SIGHUP, routed into the KeyboardInterrupt arm."""
+
+
+def _install_kill_handlers():
+    """Make a supervisor stop reach the ledger the way Ctrl-C already does.
+
+    Ctrl-C is not how this process usually dies. ceo-schedulerd spawns the cron
+    bridge as an ordinary child in its own cgroup, so `systemctl --user stop`, a
+    redeploy, or a reboot SIGTERMs the run in flight — and launchd does the same
+    on macOS. Without this, `reason: "killed"` is reachable only from an
+    interactive terminal and the dominant kill path still loses the row (#328).
+
+    _Terminated subclasses KeyboardInterrupt rather than SystemExit on purpose:
+    SystemExit derives from BaseException, so it would slip past `except
+    Exception` and land back in the hole this closes. SIGKILL stays unhandleable
+    by definition — a `kill -9` still loses the row, and nothing here can change
+    that.
+    """
+    def raise_terminated(signum, _frame):
+        raise _Terminated(f"signal {signum}")
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, raise_terminated)
+        except ValueError:
+            # Not the main thread (an embedding caller, a test harness). The run
+            # still works; it just keeps the default disposition.
+            pass
+
+
+def _restore_default_kill_handlers():
+    """Hand SIGTERM/SIGHUP back to the OS once the crash record is being built.
+
+    Called from the finally, so it covers two cases. mcp.close() documents itself
+    as never raising and catches Exception — _Terminated is a KeyboardInterrupt,
+    so a second signal during its 10s of proc.wait would escape the finally and
+    drop the very row this path exists to write. And main() is callable
+    in-process (forty tests do it), so a handler left installed past a normal
+    return silently rewrites the caller's signal disposition for the rest of the
+    process. A second supervisor signal should kill us, not re-enter.
+    """
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, signal.SIG_DFL)
+        except ValueError:
+            pass
+
+
 def _crash_record(reason, run_id, usage_tracker, toolbox):
     """A ledger row for a run that died before run_agent could return one.
 
@@ -50,7 +106,13 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
     """
     return {
         "completed": False,
-        "verified": None,
+        # From the tracker, not a hardcoded None, so a gated run whose check went
+        # red before it crashed records False rather than reading as ungated.
+        # None stays ambiguous on a crash row — it means either no gate was
+        # configured or the run died before the gate first ran, which is the
+        # commoner shape since the gate only runs on a turn with no tool calls.
+        # True is unreachable here: a green gate breaks and returns normally.
+        "verified": usage_tracker.get("verified"),
         "reason": reason,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
@@ -249,7 +311,9 @@ def main(argv=None):
     if prompt_chars > a.num_ctx * 3:
         print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
               file=sys.stderr)
-    usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0}
+    usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
+                     "verified": None}
+    _install_kill_handlers()
     rec = None
     exit_code = 0
     try:
@@ -268,6 +332,8 @@ def main(argv=None):
         rec = _crash_record("error", a.run_id, usage_tracker, toolbox)
         exit_code = 1
     finally:
+        # Before close(), and on the success path too — see the helper's docstring.
+        _restore_default_kill_handlers()
         if mcp_transport:
             mcp_transport.close()
 
