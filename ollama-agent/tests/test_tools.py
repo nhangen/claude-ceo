@@ -82,3 +82,13 @@ def test_git_string_args_handles_quoted_spaces(tmp_path):
     assert res_status["returncode"] == 0
     assert res_status["stdout"].strip() == ""
 
+
+def test_git_malformed_quoting_is_an_error(tmp_path):
+    # shlex.split raises ValueError on an unbalanced quote. git is in
+    # ERROR_RELEVANT_TOOLS, so a stray quote fails the run instead of reaching
+    # git as the garbled argv str.split() used to hand it.
+    tb = ToolBox(cwd=str(tmp_path))
+    result = json.loads(tb.dispatch("git", {"args": 'commit -m "unterminated'}))
+    assert "error" in result
+    assert "ValueError" in result["error"]
+    assert [e["tool"] for e in tb.tool_errors] == ["git"]
