@@ -145,6 +145,12 @@ STUB
 }
 
 teardown() {
+  # Before rm -rf below, since the register lives inside TEST_HOME.
+  if [ -f "$TEST_HOME/.fixture-scripts" ]; then
+    while IFS= read -r f || [ -n "$f" ]; do
+      [ -n "$f" ] && rm -f "$f"
+    done < "$TEST_HOME/.fixture-scripts"
+  fi
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
@@ -152,6 +158,31 @@ teardown() {
 }
 
 
+
+# _fixture_script <path>... — chmod +x each path and register it for teardown.
+#
+# These fixtures have to live in SCRIPT_DIR: the runner resolves a playbook's
+# `script:` relative to the checked-out scripts/ directory, which is tracked.
+# What was wrong was the cleanup, not the location — an `rm -f` on the last line
+# of a test body is skipped by a failing assertion or an interrupt, leaving an
+# untracked executable in a tracked directory, one `git add -A` from a commit
+# (test-writes-stay-in-the-fixture). teardown runs on an abort; a test body's
+# last line does not.
+#
+# It also protects the -P 4 reasoning in .github/workflows/test.yml, which rests
+# on no two suites writing the same fixed path under scripts/. A leaked fixture
+# from an aborted run makes that hand-maintained property false for every later
+# run on the same checkout.
+_fixture_script() {
+  local f
+  for f in "$@"; do
+    chmod +x "$f"
+    # A file, not a shell array: test bodies run in a subshell, so an array
+    # appended there never reaches teardown in the parent. This is the same
+    # channel test-harness.sh uses to carry a subshell's failure count out.
+    printf '%s\n' "$f" >> "$TEST_HOME/.fixture-scripts"
+  done
+}
 
 # --- shared helpers hoisted from ceo-cron.test.sh (sourced by every ceo-cron-*.test.sh shard) ---
 
@@ -237,7 +268,7 @@ PB
 [ -n "$outcome" ] && [ -n "\$CEO_RUNNER_OUTCOME_FILE" ] && printf '%s' "$outcome" > "\$CEO_RUNNER_OUTCOME_FILE"
 exit 0
 SH
-  chmod +x "$SCRIPT_DIR/$trig-test.sh"
+  _fixture_script "$SCRIPT_DIR/$trig-test.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 }
 

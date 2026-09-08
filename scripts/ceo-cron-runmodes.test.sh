@@ -169,7 +169,7 @@ PB
 #!/bin/bash
 echo "ran" > "$TEST_HOME/dr-script-fired.txt"
 SH
-  chmod +x "$SCRIPT_DIR/dr-script.sh"
+  _fixture_script "$SCRIPT_DIR/dr-script.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   bash "$CRON" dr-script --dry-run >/dev/null 2>&1 || true
@@ -772,7 +772,7 @@ PB
 #!/bin/bash
 true
 SH
-  chmod +x "$SCRIPT_DIR/dr-trunc.sh"
+  _fixture_script "$SCRIPT_DIR/dr-trunc.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   bash "$CRON" dr-trunc --dry-run >/dev/null 2>&1 || true

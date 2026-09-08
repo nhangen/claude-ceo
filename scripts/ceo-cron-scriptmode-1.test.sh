@@ -34,6 +34,26 @@ test_script_without_outcome_keeps_default_notify() {
 }
 
 
+# A test body that aborts skips its own trailing `rm -f`, so the cleanup that
+# matters is the one teardown does. This drives that path directly: register a
+# fixture, abort the body, and assert teardown removed it anyway. Before
+# _fixture_script the equivalent inline `rm -f` was never reached and the
+# executable stayed in the tracked scripts/ directory.
+test_a_registered_fixture_script_survives_no_abort() {
+  local f="$SCRIPT_DIR/abort-leak-test.sh"
+  printf '#!/bin/bash\nexit 0\n' > "$f"
+  _fixture_script "$f"
+  assert_eq "$(test -f "$f" && echo present || echo gone)" "present" \
+    "the fixture exists while the test runs"
+  # No rm here on purpose: teardown owns it, and the arm below proves that.
+}
+
+test_teardown_removed_the_registered_fixture_from_the_previous_test() {
+  assert_eq "$(test -f "$SCRIPT_DIR/abort-leak-test.sh" && echo present || echo gone)" "gone" \
+    "teardown removes a registered fixture whose test body never rm'd it"
+}
+
+
 test_script_runner_failure_records_bounded_output_in_failure_reason() {
   cat > "$SCRIPT_DIR/failing-script-test.sh" << 'SCRIPT'
 #!/bin/bash
@@ -41,8 +61,7 @@ echo "Line 1 output"
 echo "conflict: duplicate directory found" >&2
 exit 1
 SCRIPT
-  chmod +x "$SCRIPT_DIR/failing-script-test.sh"
-
+  _fixture_script "$SCRIPT_DIR/failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-fail.md" << 'PB'
 ---
 name: script-fail
@@ -82,8 +101,7 @@ done
 echo "FINAL-MARKER the real error" >&2
 exit 1
 SCRIPT
-  chmod +x "$SCRIPT_DIR/verbose-failing-script-test.sh"
-
+  _fixture_script "$SCRIPT_DIR/verbose-failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-verbose.md" << 'PB'
 ---
 name: script-verbose
@@ -123,8 +141,7 @@ echo "gh: HTTP 401 with token=ghp_ZZZZYYYYXXXXWWWWVVVV1234" >&2
 echo "Authorization: Bearer sk-abcdefghijklmnopqrstuvwx" >&2
 exit 1
 SCRIPT
-  chmod +x "$SCRIPT_DIR/leaky-failing-script-test.sh"
-
+  _fixture_script "$SCRIPT_DIR/leaky-failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-leak.md" << 'PB'
 ---
 name: script-leak
@@ -165,8 +182,7 @@ echo "STDOUT-DIAGNOSTIC the real error"
 printf '\n' >&2
 exit 1
 SCRIPT
-  chmod +x "$SCRIPT_DIR/stdout-failing-script-test.sh"
-
+  _fixture_script "$SCRIPT_DIR/stdout-failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-stdout.md" << 'PB'
 ---
 name: script-stdout

@@ -22,8 +22,7 @@ PB
 #!/bin/bash
 echo "ran" > "$TEST_HOME/script-fired.txt"
 SH
-  chmod +x "$SCRIPT_DIR/fake-intake.sh"
-
+  _fixture_script "$SCRIPT_DIR/fake-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   CEO_VERBOSE=1 bash "$CRON" fake-intake >/dev/null 2>&1
@@ -86,7 +85,7 @@ PB
 #!/bin/bash
 exit 0
 SH
-  chmod +x "$SCRIPT_DIR/shape-noop.sh"
+  _fixture_script "$SCRIPT_DIR/shape-noop.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   local rc=0
   bash "$CRON" valid-trigger_1 >/dev/null 2>&1 || rc=$?
@@ -276,8 +275,7 @@ PB
 #!/bin/bash
 printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-child.txt"
 SH
-  chmod +x "$SCRIPT_DIR/playbook-id-script.sh"
-
+  _fixture_script "$SCRIPT_DIR/playbook-id-script.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" playbook-id-script >/dev/null 2>&1
   local got
@@ -327,8 +325,7 @@ SH
 #!/bin/bash
 printf '[%s]' "\${CEO_MODEL-UNSET}" > "$TEST_HOME/pureshell-model-from-child.txt"
 SH
-  chmod +x "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
-
+  _fixture_script "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" model-script >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" pureshell-script >/dev/null 2>&1
@@ -477,8 +474,7 @@ PB
 #!/bin/bash
 echo "ran" > "$TEST_HOME/v-test-fired.txt"
 SH
-  chmod +x "$SCRIPT_DIR/v-test.sh"
-
+  _fixture_script "$SCRIPT_DIR/v-test.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   unset CEO_VERBOSE
@@ -511,8 +507,7 @@ PB
 echo "synthetic-script-stderr-sentinel" >&2
 exit 4
 SH
-  chmod +x "$SCRIPT_DIR/stderr-intake.sh"
-
+  _fixture_script "$SCRIPT_DIR/stderr-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" stderr-intake >/dev/null 2>&1 || true
 
@@ -545,8 +540,7 @@ PB
 #!/bin/bash
 exit 7
 SH
-  chmod +x "$SCRIPT_DIR/fail-intake.sh"
-
+  _fixture_script "$SCRIPT_DIR/fail-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" fail-intake >/dev/null 2>&1 || true
 
@@ -578,8 +572,7 @@ PB
 #!/bin/bash
 exit 0
 SH
-  chmod +x "$SCRIPT_DIR/ok-intake.sh"
-
+  _fixture_script "$SCRIPT_DIR/ok-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   echo 2 > "$CEO_DIR/log/.fail-count-ok-intake"
   CEO_VERBOSE=1 bash "$CRON" ok-intake >/dev/null 2>&1 || true
@@ -612,8 +605,7 @@ PB
 #!/bin/bash
 exit 0
 SH
-  chmod +x "$SCRIPT_DIR/log-intake.sh"
-
+  _fixture_script "$SCRIPT_DIR/log-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" log-intake >/dev/null 2>&1 || true
 
@@ -645,8 +637,7 @@ PB
 #!/bin/bash
 exit 0
 SH
-  chmod +x "$SCRIPT_DIR/disk-monitor-test.sh"
-
+  _fixture_script "$SCRIPT_DIR/disk-monitor-test.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" CEO_VERBOSE=1 bash "$CRON" disk-monitor >/dev/null 2>&1 || true
 
