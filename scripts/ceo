@@ -641,13 +641,11 @@ cmd_preflight() {
     ceo_inbox_has_unchecked
   }
   preflight_has_prs_to_review() {
-    local reason rc=0
-    reason=$(ceo_pr_review_preflight) || rc=$?
-    if [ "$rc" -eq 2 ]; then
-      printf 'ceo: cannot check PRs for review: %s\n' "$reason" >&2
-      return 1
-    fi
-    return "$rc"
+    # Propagates 2 rather than flattening it to 1. The dispatch loop below reads
+    # the code; an earlier version signalled state 2 on stderr and returned 1,
+    # and the loop's own `2>/dev/null` threw the message away and rendered SKIP —
+    # byte-identical to a quiet day, which is the state this exists to separate.
+    ceo_pr_review_preflight
   }
   preflight_has_pending_items() {
     [ "${PENDING_COUNT:-0}" -gt 0 ]
@@ -684,9 +682,16 @@ cmd_preflight() {
     local fn="preflight_${preflight:-none}"
     local result="?"
     if type "$fn" &>/dev/null; then
-      if "$fn" 2>/dev/null; then
+      local out rc=0
+      out=$("$fn" 2>/dev/null) || rc=$?
+      if [ "$rc" -eq 0 ]; then
         result="RUN"
         would_run=$((would_run + 1))
+      elif [ "$rc" -eq 2 ]; then
+        # A preflight that cannot answer is not a skip. cron records a failure
+        # for this state, and this command exists to preview what cron will do.
+        result="FAIL (cannot tell — ${out:-no reason given})"
+        would_fail=$((would_fail + 1))
       else
         result="SKIP"
         would_skip=$((would_skip + 1))
@@ -705,7 +710,7 @@ cmd_preflight() {
   done < <(jq -r '.playbooks[] | "\(.name)|\(.model)|\(.preflight)|\(.status)"' "$registry_file")
 
   echo ""
-  echo "Result: $would_run would run, $would_skip would skip$([ "$would_fail" -gt 0 ] && printf ', %s would FAIL (unresolvable preflight)' "$would_fail")"
+  echo "Result: $would_run would run, $would_skip would skip$([ "$would_fail" -gt 0 ] && printf ', %s would FAIL (preflight unresolvable or unable to answer)' "$would_fail")"
   echo "Estimated API calls: $((would_run * 2)) (plan + execute per trigger)"
 }
 

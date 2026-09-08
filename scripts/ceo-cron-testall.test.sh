@@ -192,15 +192,19 @@ test_test_all_preflight_has_prs_to_review_skips_when_no_prs() {
 # rest of the brief still renders -- which is what made a rate limit and a quiet
 # day indistinguishable at the report.
 test_test_all_preflight_has_prs_to_review_fails_loudly_when_the_search_is_degraded() {
-  _stub_gh_prs_search_fails
+  _stub_gh_prs_review_search_fails
   _register_pb_sched ta-pr-degraded "5 9 * * *" has_prs_to_review
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" --test-all >/dev/null 2>&1 || true
   local body; body=$(cat "$(_test_all_report)" 2>/dev/null)
   assert_not_contains "$body" "ta-pr-degraded | skip: no work" \
     "a degraded PR search must not read as a quiet day"
-  assert_contains "$body" "FAILED" \
+  assert_contains "$body" "ta-pr-degraded | FAILED" \
     "an unanswerable preflight is a failure, not a benign skip"
+  # Anchored to the reason too: without it the arm cannot tell "gh missing" from
+  # "search degraded", which is the distinction the change exists to create.
+  assert_contains "$body" "PR search degraded" \
+    "and the recorded reason must say which state it was"
 }
 
 
