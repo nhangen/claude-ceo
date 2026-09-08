@@ -353,8 +353,14 @@ def test_loop_prose_content_still_completes_without_recovery(tmp_path):
 # --- transport error branches (the headline non-throwing-client claim) ---
 
 class _FakeResp:
-    def __init__(self, status, body):
+    # `headers` is here because a real http.client.HTTPResponse always has it.
+    # Without it the fake diverged from production and the provenance capture
+    # (#667) crashed against the stub while working against the daemon -- the
+    # test-reproduces-production-conditions failure, in the fixture rather than
+    # the code.
+    def __init__(self, status, body, headers=None):
         self.status, self._body = status, body
+        self.headers = headers or {}
     def __enter__(self):
         return self
     def __exit__(self, *a):

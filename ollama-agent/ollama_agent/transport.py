@@ -27,6 +27,34 @@ CONTEXT_OVERFLOW_REMEDIATION = (
 )
 
 
+# Response headers a proxy adds to name the backend it chose. Absent behind a
+# plain ollama daemon, which is why each is recorded only when present: an empty
+# string in `endpoint` would read as a backend named "".
+_HEADER_FIELDS = (
+    ("endpoint", "X-Olla-Endpoint"),
+    ("proxy", "Via"),
+    ("request_ids", "X-Olla-Request-Id"),
+)
+
+
+def _note_headers(provenance, headers):
+    """Best-effort, and deliberately unable to fail the run.
+
+    This mirrors `ledger.append_run`'s contract: provenance is telemetry, and a
+    run that produced correct code must not be reported as failed because the
+    bookkeeping about it went wrong. A response object without usable headers is
+    the realistic case (a stub, a transport wrapper), and the cost of losing one
+    row's attribution is a lot lower than the cost of losing the run.
+    """
+    if provenance is None or not headers:
+        return
+    try:
+        for key, header in _HEADER_FIELDS:
+            _note(provenance, key, headers.get(header))
+    except Exception:
+        return
+
+
 def _context_overflow_error(status, detail):
     return RuntimeError(
         f"ollama HTTP {status}: prompt exceeded context window "
@@ -34,7 +62,25 @@ def _context_overflow_error(status, detail):
     )
 
 
-def parse_chat_response(status, body):
+def _note(provenance, key, value):
+    """Record a DISTINCT observed value under `key`, in first-seen order.
+
+    Distinct rather than one entry per turn: a 20-turn run on one backend would
+    otherwise write a 20-element list nobody reads. Ordered rather than a set so
+    the row stays JSON-serializable and the first backend is identifiable.
+
+    A list, not a scalar, because a priority balancer re-decides per request --
+    so a run is not guaranteed to be one experiment, and recording only the last
+    turn would name one model for work two models did.
+    """
+    if provenance is None or not value:
+        return
+    seen = provenance.setdefault(key, [])
+    if value not in seen:
+        seen.append(value)
+
+
+def parse_chat_response(status, body, provenance=None):
     """Return (message, usage). `usage` carries ollama's own token counts —
     prompt_eval_count (input) and eval_count (output) — so a caller can attribute
     local-model spend. Both default to 0 when the daemon omits them (older builds
@@ -49,6 +95,10 @@ def parse_chat_response(status, body):
             raise _context_overflow_error(status, body[:200])
         raise RuntimeError(f"ollama HTTP {status}: {body[:200]}")
     data = json.loads(body)
+    # The model that ANSWERED, which against a router is not the one we asked
+    # for. `local-coder` resolved to a 14.8b build while the docs said 27b
+    # (#667), and this field was being parsed and discarded on every turn.
+    _note(provenance, "model_served", data.get("model"))
     if "error" in data:
         err = data["error"]
         if isinstance(err, str) and CONTEXT_OVERFLOW_SENTINEL in err:
@@ -64,7 +114,7 @@ def parse_chat_response(status, body):
 
 
 def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, timeout=600,
-                     think=None):
+                     think=None, provenance=None):
     """Return a transport(messages, tools) -> (assistant message dict, usage dict).
 
     Raises RuntimeError on any non-success response and re-raises URLError
@@ -77,6 +127,12 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
     turn over a 1,464-token diff spent its whole output budget thinking and never
     reached an answer inside 600s, while the same request with think=False finished
     in 62s; a task made of many short turns is unaffected either way.
+
+    `provenance`, when given a dict, accumulates who actually served each turn:
+    `model_served` from the response body, plus `endpoint`, `proxy` and
+    `request_ids` from a proxy's response headers. The caller owns the dict and
+    reads it after the run, so the transport's (message, usage) contract is
+    unchanged and every existing stub keeps working.
     """
     url = f"http://{host}/api/chat"
 
@@ -99,11 +155,17 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
         for attempt in range(1, MAX_HTTP_ATTEMPTS + 1):
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    return parse_chat_response(resp.status, resp.read().decode())
+                    _note_headers(provenance, getattr(resp, "headers", None))
+                    return parse_chat_response(resp.status, resp.read().decode(),
+                                               provenance=provenance)
             except urllib.error.HTTPError as e:
                 try:
                     if e.code not in RETRYABLE_HTTP_STATUSES:
-                        return parse_chat_response(e.code, e.read().decode())
+                        # Headers first: parse_chat_response raises on an error
+                        # body, and a failed turn still needs to name its backend.
+                        _note_headers(provenance, getattr(e, "headers", None))
+                        return parse_chat_response(e.code, e.read().decode(),
+                                                   provenance=provenance)
                     if attempt == MAX_HTTP_ATTEMPTS:
                         raise RuntimeError(
                             f"ollama HTTP {e.code} after {attempt} attempts for model {model}"

@@ -303,8 +303,12 @@ def main(argv=None):
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names)
+    # Who actually serves the turns. The transport fills this in as it goes, so
+    # it is readable after the run even when the run failed (#667).
+    provenance = {}
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
-                                 num_ctx=a.num_ctx, timeout=a.timeout, think=a.think)
+                                 num_ctx=a.num_ctx, timeout=a.timeout, think=a.think,
+                                 provenance=provenance)
     prompt_chars = len(system) + len(a.task)
     print(f"prompt: {prompt_chars} chars (system={len(system)}, task={len(a.task)}) | num_ctx={a.num_ctx}",
           file=sys.stderr)
@@ -343,9 +347,18 @@ def main(argv=None):
     # Record the local model's token usage to the ledger so a consumer can
     # attribute/estimate delegation savings. Best-effort: a ledger write failure
     # warns but never fails the run.
-    led = append_run(rec, a.model, a.task_name, a.cwd)
+    led = append_run(rec, a.model, a.task_name, a.cwd, provenance=provenance)
     if led is None:
         print("warning: could not write ollama-agent ledger (run unaffected)", file=sys.stderr)
+
+    served = provenance.get("model_served") or []
+    if served and served != [a.model]:
+        # Only when it differs from what was asked for: a router resolving a
+        # name to something else is the thing nobody could see. `local-coder`
+        # served a 14.8b build for thirteen runs while the docs said 27b.
+        where = ", ".join(provenance.get("endpoint") or []) or "unknown endpoint"
+        print(f"served-by: {', '.join(served)} via {where} (requested {a.model})",
+              file=sys.stderr)
 
     if exit_code != 0:
         return exit_code

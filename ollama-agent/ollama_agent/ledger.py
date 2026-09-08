@@ -36,10 +36,27 @@ def ledger_path():
     return Path(base) / "ollama-agent" / "runs.jsonl"
 
 
-def append_run(rec, model, task_name, cwd, now=None, path=None):
+# Who served the run, from `provenance` (see transport._note). Each is a list of
+# distinct values in first-seen order, because a router re-decides per request.
+_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "request_ids")
+
+
+def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None):
     """Append one run to the ledger. Best-effort: a write failure returns None
     (and never raises) so ledger I/O can't fail an otherwise-successful run.
-    Returns the path written on success."""
+    Returns the path written on success.
+
+    `model` is the string the caller ASKED FOR and keeps that meaning forever:
+    months of rows mean it, including the #648 and #653 evidence, so a reader
+    that reinterpreted it would misattribute every historical run. Who actually
+    answered goes in the `model_served` / `endpoint` / `proxy` / `request_ids`
+    keys, from `provenance` (#667).
+
+    Those keys are written as explicit nulls when nothing was captured, never
+    omitted. An absent key means a row from before this existed; a null means a
+    run that was recorded and had nothing to report. Collapsing the two would
+    make every old row look like a fresh unattributed one.
+    """
     p = Path(path) if path is not None else ledger_path()
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
     entry = {
@@ -56,6 +73,9 @@ def append_run(rec, model, task_name, cwd, now=None, path=None):
         "verified": rec.get("verified"),
         "reason": rec.get("reason"),
     }
+    prov = provenance or {}
+    for key in _PROVENANCE_FIELDS:
+        entry[key] = prov.get(key) or None
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "a", encoding="utf-8") as f:
