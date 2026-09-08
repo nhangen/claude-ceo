@@ -221,6 +221,12 @@ def main(argv=None):
                       mcp_client=mcp_client, mcp_names=mcp_names)
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
                                  num_ctx=a.num_ctx, timeout=a.timeout, think=a.think)
+    prompt_chars = len(system) + len(a.task)
+    print(f"prompt: {prompt_chars} chars (system={len(system)}, task={len(a.task)}) | num_ctx={a.num_ctx}",
+          file=sys.stderr)
+    if prompt_chars > a.num_ctx * 3:
+        print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
+              file=sys.stderr)
     try:
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
                         run_id=a.run_id, verify_cmd=a.verify_cmd)

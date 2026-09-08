@@ -15,17 +15,45 @@ RETRYABLE_HTTP_STATUSES = frozenset({502, 503, 504})
 MAX_HTTP_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.2
 
+# Ollama's own wording when a prompt overruns num_ctx: it trims tokens from the
+# front until the user turn is gone, then reports this. It is the daemon's
+# message, not an API contract (observed on ollama through 2026-09), so a reword
+# upstream silently reverts overflow to the generic raises below. The durable
+# signal is prompt_eval_count against num_ctx, not this string.
+CONTEXT_OVERFLOW_SENTINEL = "no user query found in messages"
+CONTEXT_OVERFLOW_REMEDIATION = (
+    "Increase --num-ctx (e.g. --num-ctx 65536) or reduce prompt size with "
+    "--no-skills / --no-rules / --max-rules."
+)
+
+
+def _context_overflow_error(status, detail):
+    return RuntimeError(
+        f"ollama HTTP {status}: prompt exceeded context window "
+        f"(ollama trimmed user message): {detail}. {CONTEXT_OVERFLOW_REMEDIATION}"
+    )
+
 
 def parse_chat_response(status, body):
     """Return (message, usage). `usage` carries ollama's own token counts —
     prompt_eval_count (input) and eval_count (output) — so a caller can attribute
     local-model spend. Both default to 0 when the daemon omits them (older builds
-    or an interrupted stream), never None, so downstream sums stay numeric."""
+    or an interrupted stream), never None, so downstream sums stay numeric.
+
+    A context overflow raises the diagnostic form of RuntimeError, on either the
+    non-200 body or a 200 carrying an "error" key. The sentinel is only ever read
+    from a body ollama itself reported as failed: a successful 200 whose assistant
+    content merely quotes the phrase is a model turn, not an error."""
     if status != 200:
+        if CONTEXT_OVERFLOW_SENTINEL in body:
+            raise _context_overflow_error(status, body[:200])
         raise RuntimeError(f"ollama HTTP {status}: {body[:200]}")
     data = json.loads(body)
     if "error" in data:
-        raise RuntimeError(f"ollama error: {data['error']}")
+        err = data["error"]
+        if isinstance(err, str) and CONTEXT_OVERFLOW_SENTINEL in err:
+            raise _context_overflow_error(status, err)
+        raise RuntimeError(f"ollama error: {err}")
     if "message" not in data:
         raise RuntimeError(f"ollama 200 with no message: {body[:200]}")
     usage = {

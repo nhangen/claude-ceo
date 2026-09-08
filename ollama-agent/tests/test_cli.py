@@ -503,3 +503,42 @@ def test_cli_writes_the_reason_to_a_real_ledger(tmp_path, monkeypatch, capsys):
     assert row["completed"] is False
     assert row["verified"] is False
     assert row["reason"] == "verify-failed"
+
+
+def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--num-ctx", "32768"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "prompt:" in err
+    assert "num_ctx=32768" in err
+
+
+def test_cli_warns_when_prompt_may_overflow_context(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "x" * 500, "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--num-ctx", "100"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "warning: prompt size" in err
+    assert "may exceed num_ctx=100" in err
+
+
+def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch, capsys):
+    # Named for what it reaches: parse_chat_response directly, then cli's RuntimeError
+    # handler. urlopen and the HTTPError path in ollama_transport are stubbed out, so
+    # this does not show that a real 500 arrives here — test_agent covers parse itself.
+    def failing_transport(m, t):
+        from ollama_agent.transport import parse_chat_response
+        return parse_chat_response(500, '{"error":"no user query found in messages"}')
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "large task", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "agent failed: ollama HTTP 500: prompt exceeded context window" in err
+    assert "--num-ctx" in err
