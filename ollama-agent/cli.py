@@ -303,8 +303,12 @@ def main(argv=None):
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names)
+    # Who actually serves the turns. The transport fills this in as it goes, so
+    # it is readable after the run even when the run failed (#667).
+    provenance = {}
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
-                                 num_ctx=a.num_ctx, timeout=a.timeout, think=a.think)
+                                 num_ctx=a.num_ctx, timeout=a.timeout, think=a.think,
+                                 provenance=provenance)
     prompt_chars = len(system) + len(a.task)
     print(f"prompt: {prompt_chars} chars (system={len(system)}, task={len(a.task)}) | num_ctx={a.num_ctx}",
           file=sys.stderr)
@@ -343,9 +347,21 @@ def main(argv=None):
     # Record the local model's token usage to the ledger so a consumer can
     # attribute/estimate delegation savings. Best-effort: a ledger write failure
     # warns but never fails the run.
-    led = append_run(rec, a.model, a.task_name, a.cwd)
+    led = append_run(rec, a.model, a.task_name, a.cwd, provenance=provenance)
     if led is None:
         print("warning: could not write ollama-agent ledger (run unaffected)", file=sys.stderr)
+
+    served = provenance.get("model_served") or []
+    # Two independent substitution signals, because either alone can miss it.
+    # The model string differing is the obvious one. `routing` is the router
+    # saying it resolved an alias, which still fires if the proxy echoes the
+    # alias name back and `model_served` therefore looks like an exact match.
+    substituted = bool(served) and served != [a.model]
+    aliased = any("alias" in r for r in (provenance.get("routing") or []))
+    if substituted or aliased:
+        where = ", ".join(provenance.get("endpoint") or []) or "unknown endpoint"
+        what = ", ".join(served) or "an unreported model"
+        print(f"served-by: {what} via {where} (requested {a.model})", file=sys.stderr)
 
     if exit_code != 0:
         return exit_code

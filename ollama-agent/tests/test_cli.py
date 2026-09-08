@@ -42,8 +42,15 @@ def _stub(monkeypatch, captured):
     monkeypatch.setattr(cli, "run_agent", fake_run_agent)
     # Neutralize the ledger write so cli tests never touch the real state dir;
     # capture the args instead for the tests that assert on them.
-    monkeypatch.setattr(cli, "append_run",
-                        lambda rec, model, task_name, cwd: captured.setdefault("ledger", (model, task_name, cwd)) or "/dev/null/ledger")
+    # The signature is pinned positionally on purpose rather than swallowed with
+    # **kwargs: it is what caught the #667 provenance argument being added, and a
+    # stub that accepts anything cannot report a caller drifting from the real one.
+    def fake_append_run(rec, model, task_name, cwd, provenance=None):
+        captured["ledger"] = (model, task_name, cwd)
+        captured["provenance"] = provenance
+        return "/dev/null/ledger"
+
+    monkeypatch.setattr(cli, "append_run", fake_append_run)
 
 
 def _tool_names(tools):
@@ -762,3 +769,77 @@ def test_cli_main_leaves_the_kill_handlers_as_it_found_them(tmp_path, monkeypatc
     after = {name: signal_mod.getsignal(getattr(signal_mod, name))
              for name in ("SIGTERM", "SIGHUP")}
     assert after == before
+
+
+def test_cli_threads_provenance_from_transport_to_ledger(tmp_path, monkeypatch, capsys):
+    """The unit arms in test_provenance.py prove the transport captures who
+    served and that the ledger can store it. Neither proves main() connects the
+    two, which is the whole fix: for thirteen runs the resolution was available
+    on every response and never reached a row (#667).
+
+    So this asserts the SAME dict object travels transport -> append_run, rather
+    than that each end works in isolation.
+    """
+    captured = {}
+    _stub(monkeypatch, captured)
+
+    def transport_that_reports(*a, **k):
+        prov = k["provenance"]
+        captured["handed_to_transport"] = prov
+        prov["model_served"] = ["hf.co/Qwen/Qwen3-14B-GGUF:Q5_K_M"]
+        prov["endpoint"] = ["ml1-5080"]
+        return lambda m, t: {"role": "assistant", "content": "ok"}
+
+    monkeypatch.setattr(cli, "ollama_transport", transport_that_reports)
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--model", "local-coder",
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    assert captured["provenance"] is captured["handed_to_transport"], \
+        "main() handed the ledger a different dict than the transport filled in"
+    assert captured["provenance"]["model_served"] == ["hf.co/Qwen/Qwen3-14B-GGUF:Q5_K_M"]
+
+    # And the operator is told, because a row nobody reads is how this was missed.
+    err = capsys.readouterr().err
+    assert "served-by:" in err
+    assert "Qwen3-14B" in err and "ml1-5080" in err and "requested local-coder" in err
+
+
+def test_cli_stays_quiet_when_the_served_model_is_the_one_requested(tmp_path, monkeypatch, capsys):
+    """The `served-by:` line exists to flag a SUBSTITUTION. Printing it on every
+    run would make the signal invisible again, one line down."""
+    captured = {}
+    _stub(monkeypatch, captured)
+
+    def transport_that_reports(*a, **k):
+        k["provenance"]["model_served"] = ["qwen3.8:27b"]
+        return lambda m, t: {"role": "assistant", "content": "ok"}
+
+    monkeypatch.setattr(cli, "ollama_transport", transport_that_reports)
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--model", "qwen3.8:27b",
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    assert "served-by:" not in capsys.readouterr().err
+
+
+def test_cli_warns_on_alias_routing_even_when_the_model_string_matches(tmp_path, monkeypatch, capsys):
+    """The substitution that hid for thirteen runs was visible two ways: the model
+    came back different, AND the router said it resolved an alias. Relying only on
+    the first means a proxy that echoes the requested alias goes unreported --
+    which is the exact shape of the original failure, one layer down."""
+    captured = {}
+    _stub(monkeypatch, captured)
+
+    def transport_that_reports(*a, **k):
+        prov = k["provenance"]
+        prov["model_served"] = ["local-coder"]   # proxy echoed the alias back
+        prov["endpoint"] = ["ml1-5080"]
+        prov["routing"] = ["alias"]
+        return lambda m, t: {"role": "assistant", "content": "ok"}
+
+    monkeypatch.setattr(cli, "ollama_transport", transport_that_reports)
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--model", "local-coder",
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "served-by:" in err, "alias routing was not reported because the strings matched"
+    assert "ml1-5080" in err
