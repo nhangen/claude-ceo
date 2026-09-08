@@ -48,6 +48,73 @@ jobs:
         run: |
           python3 -m pip install --quiet pytest
           cd ollama-agent && python3 -m pytest -q
+  # The shell tests on macOS, because /bin/bash there is 3.2.57 and the ubuntu
+  # job's bash 5 cannot see a whole class of 3.2 behavior. The one that prompted
+  # this (#372): a failed redirection on a compound command does not abort under
+  # `set -e` on 3.2, so `ceo_workers_reap` fell through an unreadable state file,
+  # truncated it, and returned 0 — destroying every in-flight worker's
+  # reservation while reporting a clean sweep. A test for it had existed and
+  # passed the whole time, because nothing ran it on a shell that could fail.
+  #
+  # Scoped to the shell suite deliberately: macOS runners bill at 10x, and pytest
+  # and bun are shell-version-independent, so duplicating them buys nothing.
+  test-bash32:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin bash 3.2 on PATH
+        # Invoking the test files with /bin/bash only pins their *own* shell. The
+        # interesting subprocesses resolve `bash` through PATH — ceo-loop.test.sh
+        # runs `bash "$LOOP"`, and the 110 failures behind #387 come from
+        # `mapfile` inside that child, not the parent. So without this shim both
+        # the coverage and the retirement gate below depend on whatever bash the
+        # runner image happens to put first, which is not something to leave to
+        # an image update.
+        run: |
+          mkdir -p "$RUNNER_TEMP/b32" && ln -sf /bin/bash "$RUNNER_TEMP/b32/bash"
+          echo "$RUNNER_TEMP/b32" >> "$GITHUB_PATH"
+      - name: Confirm bash is 3.2
+        # An error, not a warning: with the shim in place a non-3.x bash means
+        # this job is silently a duplicate of the ubuntu one, and a job that
+        # covers nothing should not pass quietly.
+        run: |
+          /bin/bash --version | head -1
+          bash --version | head -1
+          bash --version | head -1 | grep -q "version 3" \
+            || { echo "::error::bash is no longer 3.x — this job no longer covers what it was added for"; exit 1; }
+      - name: Run script tests under bash 3.2
+        # ceo-loop.test.sh is excluded: it fails 110 asserts under 3.2 on main,
+        # predating this job, and fixing it is #387 rather than this PR. The
+        # exclusion retires itself — the step below fails once that file passes,
+        # so nobody has to remember to come back and delete this line.
+        run: |
+          shopt -s nullglob
+          known_red=scripts/ceo-loop.test.sh
+          # Renaming the excluded file would otherwise leave the filter matching
+          # nothing and the gate below invoking a missing path — rc 127, which
+          # reads as "still red" and passes with a stale exclusion.
+          [ -f "$known_red" ] || { echo "known_red no longer exists: $known_red"; exit 1; }
+          tests=()
+          for t in scripts/*.test.sh; do
+            [ "$t" = "$known_red" ] || tests+=("$t")
+          done
+          [ "${#tests[@]}" -ge 1 ] || { echo "no tests ran"; exit 1; }
+          printf '%s\n' "${tests[@]}" | xargs -P 4 -I {} /bin/bash -c '
+            out=$(/bin/bash "$1" 2>&1); rc=$?
+            printf "=== %s (rc=%d) ===\n%s\n" "$1" "$rc" "$out"
+            exit "$rc"
+          ' _ {}
+      - name: The bash 3.2 exclusion is still needed
+        run: |
+          known_red=scripts/ceo-loop.test.sh
+          [ -f "$known_red" ] || { echo "known_red no longer exists: $known_red"; exit 1; }
+          if /bin/bash "$known_red" >/dev/null 2>&1; then
+            echo "scripts/ceo-loop.test.sh now passes under bash 3.2 (#387)."
+            echo "Delete the known_red exclusion above and this step."
+            exit 1
+          fi
+          echo "still red under 3.2, exclusion stands"
   scheduler:
     runs-on: ubuntu-latest
     timeout-minutes: 5

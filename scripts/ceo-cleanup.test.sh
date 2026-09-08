@@ -853,9 +853,14 @@ test_an_unreadable_pid_is_kept_not_reaped_as_dead() {
   mkdir -p "$sdir"
   sleep 60 &
   local live_pid=$!
+  # A current ts, not epoch 1000: this test is about the pid axis only. With a
+  # 1970 timestamp both rows now age out under #374 and the arm below would pass
+  # for the wrong reason — proving the age check fired, not that the pid check
+  # kept them.
+  local now; now="$(date +%s)"
   printf '%s\n' \
-    "{\"branch\":\"ceo/float-pid\",\"base\":\"aaa\",\"pid\":${live_pid}.0,\"files\":[\"a.txt\"],\"ts\":1000}" \
-    '{"branch":"ceo/string-pid","base":"aaa","pid":"abc","files":["b.txt"],"ts":1000}' \
+    "{\"branch\":\"ceo/float-pid\",\"base\":\"aaa\",\"pid\":${live_pid}.0,\"files\":[\"a.txt\"],\"ts\":${now}}" \
+    "{\"branch\":\"ceo/string-pid\",\"base\":\"aaa\",\"pid\":\"abc\",\"files\":[\"b.txt\"],\"ts\":${now}}" \
     > "$sdir/workers.jsonl"
 
   local out rc=0
@@ -893,6 +898,97 @@ test_an_abort_after_the_lock_is_taken_is_reported_not_swallowed() {
   assert_eq "$(wc -l < "$sdir/workers.jsonl" | tr -d ' ')" "1" \
     "a reap that aborted changes nothing"
   assert_fails "the lock is released even on an abort" test -d "$sdir/.lock"
+}
+
+# The arm above passes on bash 5 whether or not the read is guarded, because
+# there a failed redirection on a compound command does abort under `set -e`.
+# On bash 3.2 — /bin/bash on macOS, and the inner shell is always the caller's
+# via ${BASH:-bash} — it does not: execution falls through with no rows read,
+# the rename truncates the file, and the caller is told nothing happened. So
+# this pins the guard by running the same shape under 3.2 explicitly, and skips
+# where that shell is not installed rather than passing vacuously (#372).
+test_a_failed_read_is_refused_under_bash_3_2() {
+  if [ "$(id -u)" = "0" ]; then
+    assert_eq "skipped" "skipped" "running as root — chmod cannot make a file unreadable"
+    return 0
+  fi
+  if [ ! -x /bin/bash ] || ! /bin/bash --version | head -1 | grep -q "version 3"; then
+    assert_eq "skipped" "skipped" "no bash 3.2 at /bin/bash — guard unverifiable here"
+    return 0
+  fi
+  local sdir; sdir="$(mktemp -d)"
+  printf '%s\n' '{"branch":"ceo/x","base":"aaa","pid":99999999,"files":["a.txt"],"ts":1000}' \
+    > "$sdir/workers.jsonl"
+  chmod 000 "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(BASH=/bin/bash ceo_workers_reap "$sdir" 2>&1) || rc=$?
+  chmod 644 "$sdir/workers.jsonl"
+
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "an unreadable state file must fail the reap under bash 3.2, not fall through"
+  assert_contains "$out" "refusing to reap" \
+    "the refusal names itself rather than dying silently"
+  assert_eq "$(wc -l < "$sdir/workers.jsonl" | tr -d ' ')" "1" \
+    "the row survives a reap that could not read it"
+}
+
+# An unreadable pid is absence of evidence, not evidence of death: the row is
+# kept on the pid check (test_an_unreadable_pid_is_kept_not_reaped_as_dead), but
+# it must still age out. Before #374 candidate 2 was gated on the pid field
+# being *empty*, so a row like {"pid":"abc","ts":1} — a timestamp from 1970 —
+# skipped the clock entirely and survived every sweep forever.
+test_a_row_with_an_unreadable_pid_still_ages_out() {
+  local sdir; sdir="$(mktemp -d)"
+  sleep 60 &
+  local live_pid=$!
+  local now; now="$(date +%s)"
+  printf '%s\n' \
+    '{"branch":"ceo/ancient","base":"aaa","pid":"abc","files":["a.txt"],"ts":1}' \
+    "{\"branch\":\"ceo/fresh\",\"base\":\"aaa\",\"pid\":\"abc\",\"files\":[\"b.txt\"],\"ts\":${now}}" \
+    "{\"branch\":\"ceo/live\",\"base\":\"aaa\",\"pid\":${live_pid},\"files\":[\"c.txt\"],\"ts\":1}" \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(ceo_workers_reap "$sdir" 2>&1) || rc=$?
+  kill "$live_pid" 2>/dev/null || true
+
+  assert_eq "$rc" "0" "the reap succeeds"
+  assert_contains "$out" "ceo/ancient" \
+    "an unreadable-pid row older than max-age is reaped"
+  assert_contains "$out" "unreadable pid" \
+    "the report names why the row could not be checked, not just its age"
+  assert_not_contains "$out" "ceo/fresh" \
+    "an unreadable-pid row inside max-age is kept"
+  assert_not_contains "$out" "ceo/live" \
+    "a live pid still exempts a row from the clock, however old its ts"
+  assert_eq "$(wc -l < "$sdir/workers.jsonl" | tr -d ' ')" "2" \
+    "exactly the aged-out row is removed"
+}
+
+# A reap report is `REAPED|<reason>|<branch>` and ceo-cleanup.sh splits it with
+# the branch last, so a `|` in the reason steals the branch field — the operator
+# loses the one piece of information saying which reservation was destroyed. The
+# function header documents this class as fixed for branch names; interpolating
+# a pid or ts read off a hand-edited row is the same hole from the other side,
+# and that population is precisely what these arms exist for.
+test_a_pipe_in_an_unreadable_pid_cannot_steal_the_branch_field() {
+  local sdir; sdir="$(mktemp -d)"
+  printf '%s\n' \
+    '{"branch":"ceo/injected","base":"aaa","pid":"a|b","files":["a.txt"],"ts":1}' \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(ceo_workers_reap "$sdir" 2>&1) || rc=$?
+
+  assert_eq "$rc" "0" "the reap succeeds"
+  local record; record="$(echo "$out" | grep '^REAPED|' | head -1)"
+  assert_eq "$(echo "$record" | awk -F'|' '{print NF}')" "3" \
+    "the record still has exactly three fields"
+  assert_eq "$(echo "$record" | awk -F'|' '{print $3}')" "ceo/injected" \
+    "the branch field survives a pipe in the pid"
+  assert_contains "$record" "unreadable pid" \
+    "the reason still says why the row could not be checked"
 }
 
 # A malformed row is preserved deliberately, and a reap that cannot run at all
