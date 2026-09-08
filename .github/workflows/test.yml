@@ -48,6 +48,54 @@ jobs:
         run: |
           python3 -m pip install --quiet pytest
           cd ollama-agent && python3 -m pytest -q
+  # The shell tests on macOS, because /bin/bash there is 3.2.57 and the ubuntu
+  # job's bash 5 cannot see a whole class of 3.2 behavior. The one that prompted
+  # this (#372): a failed redirection on a compound command does not abort under
+  # `set -e` on 3.2, so `ceo_workers_reap` fell through an unreadable state file,
+  # truncated it, and returned 0 — destroying every in-flight worker's
+  # reservation while reporting a clean sweep. A test for it had existed and
+  # passed the whole time, because nothing ran it on a shell that could fail.
+  #
+  # Scoped to the shell suite deliberately: macOS runners bill at 10x, and pytest
+  # and bun are shell-version-independent, so duplicating them buys nothing.
+  test-bash32:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm /bin/bash is 3.2
+        # If a future image ships a newer /bin/bash this job silently becomes a
+        # duplicate of the ubuntu one, so say so rather than passing quietly.
+        run: |
+          /bin/bash --version | head -1
+          /bin/bash --version | head -1 | grep -q "version 3" \
+            || echo "::warning::/bin/bash is no longer 3.x — this job no longer covers what it was added for"
+      - name: Run script tests under bash 3.2
+        # ceo-loop.test.sh is excluded: it fails 110 asserts under 3.2 on main,
+        # predating this job, and fixing it is #387 rather than this PR. The
+        # exclusion retires itself — the step below fails once that file passes,
+        # so nobody has to remember to come back and delete this line.
+        run: |
+          shopt -s nullglob
+          known_red=scripts/ceo-loop.test.sh
+          tests=()
+          for t in scripts/*.test.sh; do
+            [ "$t" = "$known_red" ] || tests+=("$t")
+          done
+          [ "${#tests[@]}" -ge 1 ] || { echo "no tests ran"; exit 1; }
+          printf '%s\n' "${tests[@]}" | xargs -P 4 -I {} /bin/bash -c '
+            out=$(/bin/bash "$1" 2>&1); rc=$?
+            printf "=== %s (rc=%d) ===\n%s\n" "$1" "$rc" "$out"
+            exit "$rc"
+          ' _ {}
+      - name: The bash 3.2 exclusion is still needed
+        run: |
+          if /bin/bash scripts/ceo-loop.test.sh >/dev/null 2>&1; then
+            echo "scripts/ceo-loop.test.sh now passes under bash 3.2 (#387)."
+            echo "Delete the known_red exclusion above and this step."
+            exit 1
+          fi
+          echo "still red under 3.2, exclusion stands"
   scheduler:
     runs-on: ubuntu-latest
     timeout-minutes: 5
