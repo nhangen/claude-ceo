@@ -546,7 +546,9 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
                    "--no-rules", "--no-skills"])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "agent failed: ollama HTTP 500: prompt exceeded context window" in err
+    # The class prefix comes from #383's crash handler, which now names the
+    # exception type; the diagnostic itself is #376's.
+    assert "agent failed: RuntimeError: ollama HTTP 500: prompt exceeded context window" in err
     assert "--num-ctx" in err
 
 
