@@ -109,3 +109,14 @@ def test_append_run_reason_absent_reads_as_null(tmp_path):
     rec.pop("reason", None)
     append_run(rec, "m", "t", "/c", path=str(p))
     assert json.loads(p.read_text().strip())["reason"] is None
+
+
+def test_append_run_records_error_and_killed_reasons(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(completed=False, verified=None, reason="error"),
+               "m", "t", "/c", path=str(p))
+    append_run(_rec(completed=False, verified=None, reason="killed"),
+               "m", "t", "/c", path=str(p))
+    lines = [json.loads(line) for line in p.read_text().strip().splitlines()]
+    assert lines[0]["reason"] == "error"
+    assert lines[1]["reason"] == "killed"

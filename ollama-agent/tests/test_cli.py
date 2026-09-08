@@ -24,11 +24,15 @@ def _stub(monkeypatch, captured):
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: {"role": "assistant", "content": "ok"}))
 
     def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
-                       verify_cmd=None):
+                       verify_cmd=None, usage_tracker=None):
         captured["system"] = system
         captured["tools"] = tools
         captured["run_id"] = run_id
         captured["verify_cmd"] = verify_cmd
+        if usage_tracker is not None:
+            usage_tracker["ollama_input_tokens"] = 40
+            usage_tracker["ollama_output_tokens"] = 400
+            usage_tracker["turns"] = 1
         return {"completed": True, "verified": None, "turns": 1, "run_id": run_id,
                 "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
@@ -542,3 +546,107 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
     err = capsys.readouterr().err
     assert "agent failed: ollama HTTP 500: prompt exceeded context window" in err
     assert "--num-ctx" in err
+
+
+def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+    def failing_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant", "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
+                    {"input": 50, "output": 15})
+        raise RuntimeError("model transport failed mid-run")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "agent failed: RuntimeError: model transport failed mid-run" in err
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["verified"] is None
+    assert row["reason"] == "error"
+    assert row["ollama_input_tokens"] == 50
+    assert row["ollama_output_tokens"] == 15
+    assert row["turns"] == 2
+
+
+def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+    def interrupt_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant", "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
+                    {"input": 30, "output": 10})
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: interrupt_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 130
+    err = capsys.readouterr().err
+    assert "agent interrupted" in err
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["verified"] is None
+    assert row["reason"] == "killed"
+    assert row["ollama_input_tokens"] == 30
+    assert row["ollama_output_tokens"] == 10
+    assert row["turns"] == 2
+
+
+def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def immediate_fail(messages, tools):
+        raise RuntimeError("daemon unreachable")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: immediate_fail)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["reason"] == "error"
+    assert row["ollama_input_tokens"] == 0
+    assert row["ollama_output_tokens"] == 0
+
+
+def test_cli_crashed_run_records_a_row_for_a_non_runtimeerror(tmp_path, monkeypatch, capsys):
+    # The except is deliberately broad — the ledger's job is to record burned
+    # tokens whatever killed the run. Narrowing it to RuntimeError would put
+    # every other exception back in the hole #328 closes.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+
+    def failing_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant",
+                     "tool_calls": [{"function": {"name": "list_dir",
+                                                  "arguments": {"path": "."}}}]},
+                    {"input": 11, "output": 22})
+        raise OSError("connection reset by peer")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 1
+    assert "agent failed: OSError: connection reset by peer" in capsys.readouterr().err
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["ollama_input_tokens"] == 11
+    assert row["ollama_output_tokens"] == 22

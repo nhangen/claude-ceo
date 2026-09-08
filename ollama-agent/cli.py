@@ -41,6 +41,28 @@ def _warn_if_stale_scores(generated_at, stale_days):
               file=sys.stderr)
 
 
+def _crash_record(reason, run_id, usage_tracker, toolbox):
+    """A ledger row for a run that died before run_agent could return one.
+
+    The counts come from the tracker the caller handed to run_agent, so the row
+    reports the tokens the run actually burned instead of zero — a 0-token row
+    understates cost as badly as an absent one (#328).
+    """
+    return {
+        "completed": False,
+        "verified": None,
+        "reason": reason,
+        "turns": usage_tracker.get("turns", 0),
+        "run_id": run_id,
+        "ollama_input_tokens": usage_tracker.get("ollama_input_tokens", 0),
+        "ollama_output_tokens": usage_tracker.get("ollama_output_tokens", 0),
+        "transcript": [],
+        "calls": toolbox.calls,
+        "unknown_calls": toolbox.unknown_calls,
+        "tool_errors": toolbox.tool_errors,
+    }
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Run a local ollama model as a tool-using agent.")
     p.add_argument("--task", required=True, help="The task for the agent to perform.")
@@ -227,12 +249,24 @@ def main(argv=None):
     if prompt_chars > a.num_ctx * 3:
         print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
               file=sys.stderr)
+    usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0}
+    rec = None
+    exit_code = 0
     try:
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
-                        run_id=a.run_id, verify_cmd=a.verify_cmd)
-    except RuntimeError as e:
-        print(f"agent failed: {e}", file=sys.stderr)
-        return 1
+                        run_id=a.run_id, verify_cmd=a.verify_cmd, usage_tracker=usage_tracker)
+    except KeyboardInterrupt:
+        print("agent interrupted", file=sys.stderr)
+        rec = _crash_record("killed", a.run_id, usage_tracker, toolbox)
+        exit_code = 130
+    # Deliberately broad. The ledger's job is to record that a run burned tokens,
+    # and a TypeError in the loop burned them exactly as a RuntimeError would.
+    # Naming only the types seen so far puts the next unseen one back in the hole
+    # this catch exists to close, so the class goes in the message instead.
+    except Exception as e:
+        print(f"agent failed: {type(e).__name__}: {e}", file=sys.stderr)
+        rec = _crash_record("error", a.run_id, usage_tracker, toolbox)
+        exit_code = 1
     finally:
         if mcp_transport:
             mcp_transport.close()
@@ -246,6 +280,9 @@ def main(argv=None):
     led = append_run(rec, a.model, a.task_name, a.cwd)
     if led is None:
         print("warning: could not write ollama-agent ledger (run unaffected)", file=sys.stderr)
+
+    if exit_code != 0:
+        return exit_code
 
     if a.json:
         print(json.dumps(rec, indent=2))
