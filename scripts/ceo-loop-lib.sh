@@ -442,6 +442,16 @@ command -v jq >/dev/null 2>&1 || { echo "ceo-workers: jq not found — refusing 
 file="$CEO_LOCK_DIR/workers.jsonl"
 [ -f "$file" ] || exit 0
 
+# A reap report is a `|`-delimited record that ceo-cleanup.sh splits with the
+# branch last, so any `|` or newline reaching the reason field steals the branch
+# — the operator loses the one field naming which reservation was destroyed.
+# The header above documents this class as fixed for branch names; a pid or ts
+# read straight off a hand-edited row is the same hole from the other side, and
+# that population is exactly the one these arms exist for.
+ceo_reap_field() {
+  printf '%s' "$1" | tr '|\n' '//' | cut -c1-40
+}
+
 now_epoch="$(date +%s)"
 surviving_rows=()
 reaped_reports=()
@@ -497,14 +507,17 @@ while IFS= read -r row <&3 || [ -n "$row" ]; do
   # those. ceo_worker_register's `tonumber` constrains what it writes, not what
   # the reaper reads back off disk.
   #
-  # The three outcomes are not two. "live" is the only one that exempts a row
-  # from the age check below; absent and unreadable both mean this arm proved
-  # nothing, and a row nothing can prove anything about must still age out.
+  # Four outcomes, and only "live" exempts a row from the age check below;
+  # "absent" and "unreadable" both mean this arm proved nothing, and a row
+  # nothing can prove anything about must still age out. ("dead" is reaped here.)
+  #
+  # row_desc is set only for the two that reach the age check -- the numeric arm
+  # never does, since dead sets a reason and live cannot age out -- so giving it
+  # a third form would advertise a report shape that does not exist.
   case "$row_pid" in
     '')          pid_evidence="absent";     row_desc="pid-less row" ;;
-    *[!0-9]*)    pid_evidence="unreadable"; row_desc="row with unreadable pid '$row_pid'" ;;
+    *[!0-9]*)    pid_evidence="unreadable"; row_desc="row with unreadable pid '$(ceo_reap_field "$row_pid")'" ;;
     *)
-      row_desc="row for pid $row_pid"
       if ! kill -0 "$row_pid" 2>/dev/null \
          && ! ps -p "$row_pid" -o pid= >/dev/null 2>&1; then
         pid_evidence="dead"
@@ -532,14 +545,19 @@ while IFS= read -r row <&3 || [ -n "$row" ]; do
   # timestamp from 1970 -- survived every sweep forever. Keeping such a row on
   # the pid check stays right, since it may still name a live process; letting
   # it skip the clock was not. A live pid is the one thing that still exempts.
+  # Exhaustive, with no wildcard default: a fifth pid_evidence value added later
+  # would otherwise fall to "" -- "never ages out" -- which is exactly the #374
+  # bug this arm exists to fix, arriving again by default rather than by code
+  # (enum-config-typo-fallback).
   case "$pid_evidence" in
     absent|unreadable) can_age_out="yes" ;;
-    *)                 can_age_out="" ;;
+    dead|live)         can_age_out="" ;;
+    *) echo "ceo-workers: unknown pid_evidence '$pid_evidence' — refusing to reap" >&2; exit 11 ;;
   esac
   if [ -z "$reap_reason" ] && [ -n "$can_age_out" ]; then
     case "$row_ts" in
       '')          reap_reason="$row_desc with no timestamp" ;;
-      *[!0-9]*)    reap_reason="$row_desc with unreadable timestamp '$row_ts'" ;;
+      *[!0-9]*)    reap_reason="$row_desc with unreadable timestamp '$(ceo_reap_field "$row_ts")'" ;;
       *)
         age=$((now_epoch - row_ts))
         if [ "$age" -ge "$CEO_MAX_AGE" ]; then

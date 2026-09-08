@@ -966,6 +966,31 @@ test_a_row_with_an_unreadable_pid_still_ages_out() {
     "exactly the aged-out row is removed"
 }
 
+# A reap report is `REAPED|<reason>|<branch>` and ceo-cleanup.sh splits it with
+# the branch last, so a `|` in the reason steals the branch field — the operator
+# loses the one piece of information saying which reservation was destroyed. The
+# function header documents this class as fixed for branch names; interpolating
+# a pid or ts read off a hand-edited row is the same hole from the other side,
+# and that population is precisely what these arms exist for.
+test_a_pipe_in_an_unreadable_pid_cannot_steal_the_branch_field() {
+  local sdir; sdir="$(mktemp -d)"
+  printf '%s\n' \
+    '{"branch":"ceo/injected","base":"aaa","pid":"a|b","files":["a.txt"],"ts":1}' \
+    > "$sdir/workers.jsonl"
+
+  local out rc=0
+  out=$(ceo_workers_reap "$sdir" 2>&1) || rc=$?
+
+  assert_eq "$rc" "0" "the reap succeeds"
+  local record; record="$(echo "$out" | grep '^REAPED|' | head -1)"
+  assert_eq "$(echo "$record" | awk -F'|' '{print NF}')" "3" \
+    "the record still has exactly three fields"
+  assert_eq "$(echo "$record" | awk -F'|' '{print $3}')" "ceo/injected" \
+    "the branch field survives a pipe in the pid"
+  assert_contains "$record" "unreadable pid" \
+    "the reason still says why the row could not be checked"
+}
+
 # A malformed row is preserved deliberately, and a reap that cannot run at all
 # must say so rather than reporting a clean sweep over rows it never read.
 test_cleanup_preserves_unparseable_worker_rows() {

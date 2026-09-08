@@ -63,13 +63,26 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Confirm /bin/bash is 3.2
-        # If a future image ships a newer /bin/bash this job silently becomes a
-        # duplicate of the ubuntu one, so say so rather than passing quietly.
+      - name: Pin bash 3.2 on PATH
+        # Invoking the test files with /bin/bash only pins their *own* shell. The
+        # interesting subprocesses resolve `bash` through PATH — ceo-loop.test.sh
+        # runs `bash "$LOOP"`, and the 110 failures behind #387 come from
+        # `mapfile` inside that child, not the parent. So without this shim both
+        # the coverage and the retirement gate below depend on whatever bash the
+        # runner image happens to put first, which is not something to leave to
+        # an image update.
+        run: |
+          mkdir -p "$RUNNER_TEMP/b32" && ln -sf /bin/bash "$RUNNER_TEMP/b32/bash"
+          echo "$RUNNER_TEMP/b32" >> "$GITHUB_PATH"
+      - name: Confirm bash is 3.2
+        # An error, not a warning: with the shim in place a non-3.x bash means
+        # this job is silently a duplicate of the ubuntu one, and a job that
+        # covers nothing should not pass quietly.
         run: |
           /bin/bash --version | head -1
-          /bin/bash --version | head -1 | grep -q "version 3" \
-            || echo "::warning::/bin/bash is no longer 3.x — this job no longer covers what it was added for"
+          bash --version | head -1
+          bash --version | head -1 | grep -q "version 3" \
+            || { echo "::error::bash is no longer 3.x — this job no longer covers what it was added for"; exit 1; }
       - name: Run script tests under bash 3.2
         # ceo-loop.test.sh is excluded: it fails 110 asserts under 3.2 on main,
         # predating this job, and fixing it is #387 rather than this PR. The
@@ -78,6 +91,10 @@ jobs:
         run: |
           shopt -s nullglob
           known_red=scripts/ceo-loop.test.sh
+          # Renaming the excluded file would otherwise leave the filter matching
+          # nothing and the gate below invoking a missing path — rc 127, which
+          # reads as "still red" and passes with a stale exclusion.
+          [ -f "$known_red" ] || { echo "known_red no longer exists: $known_red"; exit 1; }
           tests=()
           for t in scripts/*.test.sh; do
             [ "$t" = "$known_red" ] || tests+=("$t")
@@ -90,7 +107,9 @@ jobs:
           ' _ {}
       - name: The bash 3.2 exclusion is still needed
         run: |
-          if /bin/bash scripts/ceo-loop.test.sh >/dev/null 2>&1; then
+          known_red=scripts/ceo-loop.test.sh
+          [ -f "$known_red" ] || { echo "known_red no longer exists: $known_red"; exit 1; }
+          if /bin/bash "$known_red" >/dev/null 2>&1; then
             echo "scripts/ceo-loop.test.sh now passes under bash 3.2 (#387)."
             echo "Delete the known_red exclusion above and this step."
             exit 1
