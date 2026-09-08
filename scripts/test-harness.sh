@@ -185,7 +185,11 @@ run_tests() {
   # prevent. Ctrl-C during a slow suite is not an exotic event. `type` is
   # re-checked because the trap outlives any one arm, and 130 is the
   # conventional SIGINT status the caller would have seen anyway.
-  trap 'type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM
+  # `trap - INT TERM` first, so a second signal — or one arriving while the
+  # loop's own teardown is mid-flight — cannot re-enter this handler. A
+  # second pass through a teardown that has already unset its saved HOME
+  # aborts under `set -u` before reaching the exit, costing the status.
+  trap 'trap - INT TERM; type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue

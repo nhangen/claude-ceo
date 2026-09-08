@@ -40,8 +40,11 @@ test_script_without_outcome_keeps_default_notify() {
 # declare -F's alphabetical ordering — renaming the producer, or running under
 # TEST_FILTER, left the check passing while testing nothing.
 #
-# Each arm registers, calls teardown itself, asserts the sweep, then calls setup
-# to restore the state the run_tests loop expects for the next arm.
+# Each arm registers, then calls teardown itself and asserts the sweep. It does
+# not call setup afterwards: the body is a backgrounded subshell, so a setup
+# there never reaches the parent, and run_tests calls setup per-arm in the parent
+# regardless. An earlier version did call it and claimed to be restoring state —
+# it was restoring nothing and leaking one mktemp dir per arm.
 _assert_teardown_sweeps() {  # $1=label  $2..=extra paths to create+register
   local label="$1"; shift
   local f
@@ -56,7 +59,6 @@ _assert_teardown_sweeps() {  # $1=label  $2..=extra paths to create+register
     assert_eq "$(test -f "$f" && echo present || echo gone)" "gone" \
       "$label: teardown removed a fixture nothing rm'd"
   done
-  setup
 }
 
 test_teardown_sweeps_a_registered_fixture() {
@@ -78,7 +80,10 @@ test_a_fixture_path_containing_a_newline_is_refused() {
   # $'\n', not "$(printf '\n')" — command substitution strips trailing newlines,
   # so the latter builds a path with no newline in it and the arm passes
   # vacuously. The helper had the identical bug; this arm found it.
-  local bad="$SCRIPT_DIR/sweep-a"$'\n'"sweep-b.sh"
+  # Under TEST_HOME, not SCRIPT_DIR: _fixture_script refuses this path by design,
+  # so it can never be registered, and an unregisterable file has no business in
+  # the tracked directory. Nothing about the arm needs it there.
+  local bad="$TEST_HOME/sweep-a"$'\n'"sweep-b.sh"
   printf '#!/bin/bash\nexit 0\n' > "$bad"
   local err rc=0
   err=$(_fixture_script "$bad" 2>&1) || rc=$?
@@ -115,6 +120,10 @@ _child_abort_leaves_no_fixture() {  # $1=label  $2=abort statement
     echo '}'
     echo 'run_tests'
   } > "$child"
+  # Registered, not just rm'd below: an arm proving that no unregistered
+  # executable survives an abort must not itself write one and clean it up on a
+  # line an abort would skip.
+  _fixture_script "$child"
   local out; out=$(bash "$child" 2>&1)
   rm -f "$child"
   assert_contains "$out" "FAILED:" \
@@ -159,6 +168,10 @@ test_a_signalled_run_still_has_its_fixture_swept() {
     echo '}'
     echo 'run_tests'
   } > "$child"
+  # Same reason as the abort helper, and more urgent here: this child sleeps 60s
+  # by construction, so it is the likeliest file in the repo to be caught by a
+  # Ctrl-C — and it sits in the tracked directory.
+  _fixture_script "$child"
   bash "$child" >"$TEST_HOME/interrupt-out" 2>&1 &
   local child_pid=$!
   local waited=0
