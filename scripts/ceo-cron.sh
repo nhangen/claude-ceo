@@ -1600,12 +1600,29 @@ if [ "$RUNNER" = "script" ]; then
   # _record_success whether this tick did real work worth a success notify.
   CEO_RUNNER_OUTCOME_FILE="$(mktemp)"
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER CEO_RUNNER_OUTCOME_FILE
-  SCRIPT_OUT_TMP="$(mktemp)"
-  SCRIPT_ERR_TMP="$(mktemp)"
+  # Live append, not capture-then-flush. #302 needed the script's own output to
+  # build a failure tail and captured it to two tmp files, which cost two
+  # properties that only matter when things go wrong: `tail -f cron-stdout.log`
+  # — the natural way to watch the thing #302 exists to make debuggable — showed
+  # an empty file for the whole life of a hung playbook, and a killed run lost
+  # its output entirely and leaked both tmp files, since cleanup is an explicit
+  # rm on each exit path rather than a trap (an EXIT trap here would clobber the
+  # lock-release trap set at the top of the run).
+  #
+  # Recording each log's size first buys the tail back without either cost: the
+  # bytes appended past that offset are exactly this run's. Nothing to clean up,
+  # so a SIGTERM leaves the logs holding everything written up to the kill —
+  # which is the state you want at 3am. The global lock serializes ticks, so no
+  # other playbook can append inside the window; a script that writes to these
+  # logs itself would, and no script does.
+  SCRIPT_OUT_LOG="$LOG_DIR/cron-stdout.log"
+  SCRIPT_ERR_LOG="$LOG_DIR/cron-stderr.log"
+  : >> "$SCRIPT_OUT_LOG" 2>/dev/null || true
+  : >> "$SCRIPT_ERR_LOG" 2>/dev/null || true
+  SCRIPT_OUT_OFFSET=$(wc -c < "$SCRIPT_OUT_LOG" 2>/dev/null || echo 0)
+  SCRIPT_ERR_OFFSET=$(wc -c < "$SCRIPT_ERR_LOG" 2>/dev/null || echo 0)
   SCRIPT_EXIT=0
-  "$SCRIPT_FULL" > "$SCRIPT_OUT_TMP" 2> "$SCRIPT_ERR_TMP" || SCRIPT_EXIT=$?
-  cat "$SCRIPT_OUT_TMP" >> "$LOG_DIR/cron-stdout.log" 2>/dev/null || true
-  cat "$SCRIPT_ERR_TMP" >> "$LOG_DIR/cron-stderr.log" 2>/dev/null || true
+  "$SCRIPT_FULL" >> "$SCRIPT_OUT_LOG" 2>> "$SCRIPT_ERR_LOG" || SCRIPT_EXIT=$?
   # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
   # trap set earlier at the top of the run. rm before each exit instead so the
   # per-tick outcome tmp file doesn't leak.
@@ -1634,21 +1651,24 @@ _redact_secrets() {
     -e 's/(([Tt]oken|[Aa]pi[_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[[:space:]]*[=:][[:space:]]*)[^[:space:]&]+/\1***REDACTED***/g'
 }
 
-# Bounded, redacted, single-line tail of a captured stream. 10 lines x 120 chars
-# caps it near 1.2 KB whatever the script emitted, including one enormous line.
+# Bounded, redacted, single-line tail of one run's slice of a shared log. 10
+# lines x 120 chars caps it near 1.2 KB whatever the script emitted, including
+# one enormous line. $2 is the log's size before this run, so the slice is this
+# run's bytes and not the previous tick's — these logs are append-only and shared
+# by every playbook.
 _script_tail() {
-  [ -s "$1" ] || return 0
-  tail -n 10 "$1" | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+  local f="$1" off="${2:-0}"
+  [ -s "$f" ] || return 0
+  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -n 10 | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
 
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
-    script_tail=$(_script_tail "$SCRIPT_ERR_TMP")
+    script_tail=$(_script_tail "$SCRIPT_ERR_LOG" "$SCRIPT_ERR_OFFSET")
     # Test the trimmed result, not the file: a script that ends its stderr with a
     # blank line passes `[ -s ]` and yields an empty tail, which used to suppress
     # a perfectly good diagnostic sitting on stdout.
-    [ -n "$script_tail" ] || script_tail=$(_script_tail "$SCRIPT_OUT_TMP")
-    rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
+    [ -n "$script_tail" ] || script_tail=$(_script_tail "$SCRIPT_OUT_LOG" "$SCRIPT_OUT_OFFSET")
     if [ -n "$script_tail" ]; then
       _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER — output: $script_tail"
     else
@@ -1657,7 +1677,6 @@ _script_tail() {
     rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit "$SCRIPT_EXIT"
   fi
-  rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
   _record_success
   rm -f "$CEO_RUNNER_OUTCOME_FILE"
   exit 0

@@ -494,6 +494,104 @@ PB
   rm -f "$SCRIPT_DIR/ro-queue-test.sh"
 }
 
+# The logs are append-only and shared by every playbook, so the failure tail has
+# to be this run's slice of them, not the file's tail. Without the offset, the
+# second failing tick quotes the first one's output as its own cause — the same
+# cross-run misattribution #390 fixed in the norx wrapper, one layer up.
+test_the_failure_tail_quotes_this_runs_output_not_the_previous_ticks() {
+  cat > "$SCRIPT_DIR/slice-a-test.sh" << 'SH'
+#!/bin/bash
+echo "cause-from-the-earlier-tick" >&2
+exit 3
+SH
+  cat > "$SCRIPT_DIR/slice-b-test.sh" << 'SH'
+#!/bin/bash
+echo "cause-from-this-tick" >&2
+exit 4
+SH
+  _fixture_script "$SCRIPT_DIR/slice-a-test.sh" "$SCRIPT_DIR/slice-b-test.sh"
+  for n in a b; do
+    cat > "$CEO_DIR/playbooks/slice-$n.md" << PB
+---
+name: slice-$n
+description: writes a distinguishable failure cause
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: slice-$n-test.sh
+---
+# noop
+PB
+  done
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" slice-a >/dev/null 2>&1 || true
+  bash "$CRON" slice-b >/dev/null 2>&1 || true
+
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local b_line; b_line=$(printf '%s\n' "$skips" | grep "Script exited 4 for slice-b" | tail -1)
+  assert_contains "$b_line" "cause-from-this-tick" "the tail quotes the run that just failed"
+  assert_not_contains "$b_line" "cause-from-the-earlier-tick" \
+    "and not the previous tick's, which is still sitting in the same shared log"
+  rm -f "$SCRIPT_DIR/slice-a-test.sh" "$SCRIPT_DIR/slice-b-test.sh"
+}
+
+# Two properties that only matter when things go wrong, and that capture-then-flush
+# cost: a hung playbook logged nothing while it ran, so `tail -f cron-stdout.log`
+# showed an empty file; and a killed run lost its output entirely, because the
+# flush and the tmp-file cleanup were both after the script returned.
+test_script_output_is_live_and_survives_a_killed_run() {
+  cat > "$SCRIPT_DIR/live-out-test.sh" << 'SH'
+#!/bin/bash
+echo "live-marker-from-script"
+# Blocks on a file the test creates, rather than on a sleep, so the "is it
+# visible yet?" question has a deterministic answer. Bounded so a failing
+# assertion cannot hang the suite.
+i=0
+while [ ! -f "$LOG_DIR/stop-now" ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
+SH
+  _fixture_script "$SCRIPT_DIR/live-out-test.sh"
+  cat > "$CEO_DIR/playbooks/live-out.md" << 'PB'
+---
+name: live-out
+description: emits a line then blocks until released
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: live-out-test.sh
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/log"
+  rm -f "$CEO_DIR/log/stop-now" "$CEO_DIR/log/cron-stdout.log"
+
+  bash "$CRON" live-out >/dev/null 2>&1 &
+  local cron_pid=$! i=0 seen=""
+  while [ "$i" -lt 100 ]; do
+    if grep -q "live-marker-from-script" "$CEO_DIR/log/cron-stdout.log" 2>/dev/null; then
+      seen=yes; break
+    fi
+    sleep 0.1; i=$((i + 1))
+  done
+  assert_eq "$seen" "yes" \
+    "the script's output must reach cron-stdout.log while it is still running"
+
+  kill -TERM "$cron_pid" 2>/dev/null || true
+  touch "$CEO_DIR/log/stop-now"
+  wait "$cron_pid" 2>/dev/null || true
+
+  local out; out=$(cat "$CEO_DIR/log/cron-stdout.log" 2>/dev/null || echo "")
+  assert_contains "$out" "live-marker-from-script" \
+    "and a killed run keeps what it had already written"
+  rm -f "$SCRIPT_DIR/live-out-test.sh" "$CEO_DIR/log/stop-now"
+}
+
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
