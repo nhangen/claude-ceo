@@ -30,6 +30,16 @@ STUB
   cat > "$NORX_BOOKKEEPING_RUNNER" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${NORX_TEST_RUNS:?}"
+case "$*" in
+  --run-once) ;;
+  *) printf 'norx-runner stub: unexpected argv: %s\n' "$*" >&2; exit 64 ;;
+esac
+# The real runner writes its phase lines while it runs, so a fixture that only
+# pre-seeds the log cannot exercise the wrapper's "is this log from this run?"
+# check — it would be indistinguishable from yesterday's leftovers.
+if [ -n "${NORX_TEST_RUNNER_LOG_LINES:-}" ] && [ -n "${NORX_TEST_RUNNER_LOG_DEST:-}" ]; then
+  cat "$NORX_TEST_RUNNER_LOG_LINES" >> "$NORX_TEST_RUNNER_LOG_DEST"
+fi
 exit "${NORX_TEST_RUNNER_EXIT:-0}"
 STUB
   chmod +x "$NORX_BOOKKEEPING_DATE_BIN" "$NORX_BOOKKEEPING_RUNNER"
@@ -42,6 +52,7 @@ teardown() {
   rm -rf "$TEST_ROOT"
   unset TEST_ROOT HOME NORX_BOOKKEEPING_STATE_DIR NORX_BOOKKEEPING_RUNNER
   unset NORX_BOOKKEEPING_DATE_BIN NORX_TEST_CLOCK NORX_TEST_RUNS NORX_TEST_RUNNER_EXIT
+  unset NORX_TEST_RUNNER_LOG_LINES NORX_TEST_RUNNER_LOG_DEST
 }
 
 run_count() {
@@ -87,7 +98,9 @@ test_same_day_replay_skips_runner() {
 
 test_failure_does_not_advance_marker_and_next_check_retries() {
   export NORX_TEST_RUNNER_EXIT=9
-  bash "$TARGET"
+  # Redirected: the failure path is diagnostic-rich now, and an ERROR line in a
+  # passing suite teaches the reader to skim past ERROR lines.
+  bash "$TARGET" 2>/dev/null
   failed_rc=$?
   assert_eq "$failed_rc" "9" "playbook must preserve the bookkeeping failure code"
   assert_fails "failed bookkeeping must not write success marker" test -f "$NORX_BOOKKEEPING_STATE_DIR/ceo-last-success-date"
@@ -102,14 +115,29 @@ test_failure_does_not_advance_marker_and_next_check_retries() {
 # failure read "Script exited 1 for norx-bookkeeping" and stopped there.
 # Measured 2026-09-08: ten failures over three hours, all of them
 # `sync_all_sheets|remote_sheets_sync_failed`, with every import phase green.
+# Seeds a log dir with lines from a *previous* run, aged so its mtime cannot be
+# confused with this run's, and arms the stub to append this run's lines while it
+# runs. Echoes the log dir.
+seed_runner_log() {
+  local logdir="$NORX_BOOKKEEPING_STATE_DIR/runner-logs"
+  local logfile="$logdir/daily-bookkeeping-2026-09-08.log"
+  mkdir -p "$logdir"
+  printf '%s\n' "$@" > "$logfile"
+  touch -t 202609070915 "$logfile"
+  printf '%s' "$logdir"
+}
+
 test_a_runner_failure_names_the_log_and_the_failing_phases() {
   export NORX_TEST_RUNNER_EXIT=9
-  local logdir="$NORX_BOOKKEEPING_STATE_DIR/runner-logs"
-  mkdir -p "$logdir"
+  local logdir
+  logdir=$(seed_runner_log \
+    '2026-09-08T09:15:55Z|run-0|sync_all_sheets|stale_prior_run_failure')
   printf '%s\n' \
     '2026-09-08T10:15:47Z|run-1|import_mercury_ledger|success' \
     '2026-09-08T10:15:55Z|run-1|sync_all_sheets|remote_sheets_sync_failed' \
-    > "$logdir/daily-bookkeeping-2026-09-08.log"
+    > "$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_LINES="$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_DEST="$logdir/daily-bookkeeping-2026-09-08.log"
 
   local err rc=0
   err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
@@ -120,6 +148,112 @@ test_a_runner_failure_names_the_log_and_the_failing_phases() {
   assert_contains "$err" "remote_sheets_sync_failed" "and quotes the phase that actually failed"
   assert_not_contains "$err" "import_mercury_ledger" \
     "successful phases are not quoted — they bury the one line that matters"
+  # The runner appends every run of the UTC day to one file and this playbook
+  # runs hourly, so an unscoped tail hands an operator an earlier run's cause.
+  assert_not_contains "$err" "stale_prior_run_failure" \
+    "an earlier run's failures are not this run's diagnosis"
+}
+
+# The runner has non-zero exits that write no log line at all — an unwritable log
+# dir, a failed mktemp, and exit 75 when another copy holds the lock. In each the
+# newest log belongs to a previous run, and quoting it names a cause that is not
+# this failure's.
+test_a_runner_failure_does_not_quote_a_log_written_before_this_run() {
+  export NORX_TEST_RUNNER_EXIT=75
+  local logdir
+  logdir=$(seed_runner_log \
+    '2026-09-08T09:15:55Z|run-0|reconcile_ledger|mercury_auth_expired')
+
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+
+  assert_eq "$rc" "75" "a stale-log verdict must not change the exit code"
+  assert_contains "$err" "predates this run" "the wrapper says the log is not this run's"
+  assert_not_contains "$err" "mercury_auth_expired" \
+    "a previous run's cause must never be presented as this one's"
+}
+
+# Newest by mtime, not by name. The date-derived filename this replaced called
+# DATE_BIN with a second format and aborted the wrapper under `set -e`; sorting
+# by name instead would pass every other arm while quoting the wrong file.
+test_a_runner_failure_picks_the_newest_log_by_mtime_not_by_name() {
+  export NORX_TEST_RUNNER_EXIT=9
+  local logdir="$NORX_BOOKKEEPING_STATE_DIR/runner-logs"
+  mkdir -p "$logdir"
+  # Sorts *first*, so a plain `ls | head -n 1` picks it and a mtime sort does not.
+  printf '%s\n' '2026-09-07T09:00:00Z|run-old|sync_all_sheets|sorts_first_but_older' \
+    > "$logdir/daily-bookkeeping-2026-09-07.log"
+  touch -t 202609070915 "$logdir/daily-bookkeeping-2026-09-07.log"
+  : > "$logdir/daily-bookkeeping-2026-09-08.log"
+  printf '%s\n' '2026-09-08T10:15:55Z|run-1|sync_all_sheets|written_by_this_run' \
+    > "$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_LINES="$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_DEST="$logdir/daily-bookkeeping-2026-09-08.log"
+
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+
+  assert_eq "$rc" "9" "log selection must not change the exit code"
+  assert_contains "$err" "written_by_this_run" "the log this run wrote is the one quoted"
+  assert_not_contains "$err" "sorts_first_but_older" \
+    "an alphabetically earlier but older log is not the newest one"
+}
+
+# The oldest of four is dropped. With a single failing line the cap is
+# indistinguishable from no cap at all.
+test_a_runner_failure_quotes_at_most_the_last_three_phases() {
+  export NORX_TEST_RUNNER_EXIT=9
+  local logdir
+  logdir=$(seed_runner_log '2026-09-08T09:00:00Z|run-0|lock|success')
+  printf '%s\n' \
+    '2026-09-08T10:15:51Z|run-1|phase_one|oldest_failure' \
+    '2026-09-08T10:15:52Z|run-1|phase_two|second_failure' \
+    '2026-09-08T10:15:53Z|run-1|phase_three|third_failure' \
+    '2026-09-08T10:15:54Z|run-1|phase_four|newest_failure' \
+    > "$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_LINES="$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_DEST="$logdir/daily-bookkeeping-2026-09-08.log"
+
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+
+  assert_eq "$rc" "9" "the cap must not change the exit code"
+  assert_contains "$err" "newest_failure" "the most recent failing phase is quoted"
+  assert_not_contains "$err" "oldest_failure" "the fourth-from-last is dropped"
+}
+
+# An empty extraction has to say so. Printing a log path and nothing else leaves
+# "no failures in that log" and "the extraction broke" looking identical.
+test_a_runner_failure_with_an_all_success_log_says_there_are_no_phases() {
+  export NORX_TEST_RUNNER_EXIT=9
+  local logdir
+  logdir=$(seed_runner_log '2026-09-08T09:00:00Z|run-0|lock|success')
+  printf '%s\n' '2026-09-08T10:15:47Z|run-1|import_mercury_ledger|success' \
+    > "$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_LINES="$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_DEST="$logdir/daily-bookkeeping-2026-09-08.log"
+
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+
+  assert_eq "$rc" "9" "an empty extraction must not change the exit code"
+  assert_contains "$err" "no non-success phase lines" "the wrapper says it found none"
+}
+
+# The `-r` half of the guard. The nonexistent-directory arm below only reaches
+# the `-n` half, so an unreadable-but-present log had no coverage.
+test_a_runner_failure_with_an_unreadable_log_still_preserves_the_code() {
+  export NORX_TEST_RUNNER_EXIT=9
+  local logdir
+  logdir=$(seed_runner_log '2026-09-08T09:00:00Z|run-0|lock|success')
+  chmod 000 "$logdir/daily-bookkeeping-2026-09-08.log"
+
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+  chmod 644 "$logdir/daily-bookkeeping-2026-09-08.log"
+
+  assert_eq "$rc" "9" "an unreadable log must not change the exit code"
+  assert_contains "$err" "no readable runner log" "and degrades to the not-found message"
 }
 
 # The diagnostic reads a directory it does not own, so it has to degrade rather

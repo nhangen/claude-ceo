@@ -106,6 +106,14 @@ fi
 # is a one-line diagnosis sitting in a file nothing pointed at, and finding it
 # meant reading the wrapper to learn the runner existed, then reading the runner
 # to learn where it logs.
+# Touched immediately before the runner call so the block below can ask whether
+# the newest log is actually *this* run's. `-nt` compares mtimes with no external
+# command, which keeps a diagnostic from calling DATE_BIN with a format it may
+# not accept (see the comment on the mtime choice below). A write failure here
+# empties the variable rather than aborting: an unwritable state dir must not
+# turn a runner failure into a wrapper failure.
+RUN_START_MARK="$STATE_DIR/.ceo-run-start"
+: > "$RUN_START_MARK" 2>/dev/null || RUN_START_MARK=''
 RUNNER_EXIT=0
 "$RUNNER" --run-once || RUNNER_EXIT=$?
 if [ "$RUNNER_EXIT" -ne 0 ]; then
@@ -116,15 +124,56 @@ if [ "$RUNNER_EXIT" -ne 0 ]; then
   # `set -e` a DATE_BIN that does not accept it aborts the wrapper with *its*
   # status — which is exactly what happened, turning a runner exit of 9 into 2
   # and breaking the arm that pins the code being preserved.
+  # SC2012 (info): `find` is the house pattern, but the runner names these files
+  # daily-bookkeeping-<ISO date>.log and nothing else writes here, so the
+  # filename hazard `find` exists for cannot arise. `|| true` keeps the pipeline
+  # from tripping `pipefail` when the glob matches nothing.
   runner_log=$(ls -t "$RUNNER_LOG_DIR"/daily-bookkeeping-*.log 2>/dev/null | head -n 1 || true)
   if [ -n "$runner_log" ] && [ -r "$runner_log" ]; then
-    printf 'runner log: %s\n' "$runner_log" >&2
-    # The failing phases, not the tail: the runner logs one line per phase and
-    # the successful ones outnumber the failure, so a plain tail buries it.
-    failing=$(grep -v '|success$' "$runner_log" 2>/dev/null | tail -n 3 || true)
-    [ -n "$failing" ] && printf 'last failing phases:\n%s\n' "$failing" >&2
+    printf 'norx-bookkeeping: runner log: %s\n' "$runner_log" >&2
+    if [ -z "$RUN_START_MARK" ]; then
+      printf 'norx-bookkeeping: cannot tell whether that log is from this run — not quoting it\n' >&2
+    elif [ "$RUN_START_MARK" -nt "$runner_log" ]; then
+      # Strictly older than the mark, so nothing in it was written by this run.
+      # The runner has non-zero exits that log nothing at all — an unwritable log
+      # dir, a failed mktemp, and `exit 75` when another copy holds the lock — and
+      # in every one of those the newest log is a previous run's. Quoting it names
+      # a cause that is not this failure's, which is worse than saying nothing:
+      # silence prompts an investigation, a confident wrong answer ends one.
+      printf 'norx-bookkeeping: that log predates this run — it does not explain this failure\n' >&2
+    else
+      # Scoped to one run id, not the file: the runner appends to a single log per
+      # UTC day and this playbook runs hourly, so an unscoped tail attributes an
+      # earlier run's failures to this one. On 2026-09-08 that was nine of ten runs.
+      # The id is the second pipe field of `ts|run_id|phase|code`, a format owned by
+      # daily-bookkeeping.sh — when a line does not carry it, say so and fall back
+      # rather than silently degrading into the plain tail this block replaced.
+      run_id=''
+      case "$(tail -n 1 "$runner_log" 2>/dev/null || true)" in
+        *'|'*'|'*) run_id=$(tail -n 1 "$runner_log" 2>/dev/null | cut -d'|' -f2 || true) ;;
+      esac
+      if [ -n "$run_id" ]; then
+        failing=$(grep -F "|$run_id|" "$runner_log" 2>/dev/null | grep -v '|success$' | tail -n 3 || true)
+        scope="run $run_id"
+      else
+        printf 'norx-bookkeeping: log format not recognized — quoting it unscoped\n' >&2
+        failing=$(grep -v '|success$' "$runner_log" 2>/dev/null | tail -n 3 || true)
+        scope='the whole log'
+      fi
+      # "non-success", not "failing": the runner also logs benign codes such as
+      # stale_lock_recovered, and an operator acts on the label. These lines reach
+      # the vault-synced cron-stderr.log unredacted (ceo-cron.sh appends the raw
+      # stream; only the recorded failure reason is redacted), which is safe only
+      # because every code daily-bookkeeping.sh logs is a literal identifier. If
+      # it ever interpolates an error string, this quote becomes a leak path.
+      if [ -n "$failing" ]; then
+        printf 'norx-bookkeeping: last non-success phases (%s):\n%s\n' "$scope" "$failing" >&2
+      else
+        printf 'norx-bookkeeping: no non-success phase lines for %s\n' "$scope" >&2
+      fi
+    fi
   else
-    printf 'no readable runner log under %s\n' "$RUNNER_LOG_DIR" >&2
+    printf 'norx-bookkeeping: no readable runner log under %s\n' "$RUNNER_LOG_DIR" >&2
   fi
   exit "$RUNNER_EXIT"
 fi
