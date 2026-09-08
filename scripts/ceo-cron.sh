@@ -294,14 +294,23 @@ _record_failure() {
   fails=$((fails + 1))
   echo "$fails" > "$FAIL_COUNT_FILE"
   if [ "$fails" -ge 3 ]; then
+    # pending.md is synced and every swarm host appends to it, while the counter
+    # behind this alert is host-local (CEO/log/.fail-count* is excluded by
+    # syncthing/shared.stignore). So "3 consecutive failures" is a claim about
+    # one machine, and without naming it the reader cannot tell which — nor which
+    # host's cron-skips.log to open, since that is host-local too. More acute
+    # since #390, because the recorded reason now carries that host's script
+    # output.
+    local alert_host
+    alert_host=$(_swarm_resolve_host 2>/dev/null || echo unknown-host)
     cat >> "$CEO_DIR/approvals/pending.md" << ALERTEOF
 
-## $TODAY $NOW — ALERT
+## $TODAY $NOW — ALERT ($alert_host)
 
-- [ ] **CEO cron failing repeatedly** — $fails consecutive failures
+- [ ] **CEO cron failing repeatedly** — $fails consecutive failures on $alert_host
   - trigger: $TRIGGER
   - last error: $reason
-  - action needed: check cron-raw.log and cron-skips.log
+  - action needed: on $alert_host, check cron-raw.log and cron-skips.log
 ALERTEOF
   fi
   date +%s > "$LAST_RUN_FILE"

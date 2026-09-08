@@ -354,6 +354,45 @@ PB
 }
 
 
+# The three-strike alert lands in approvals/pending.md, which every swarm host
+# syncs and appends to. The counter behind it is host-local — CEO/log/.fail-count*
+# is excluded by syncthing/shared.stignore — so "3 consecutive failures" is a
+# claim about one machine, and an unnamed one leaves the reader unable to tell
+# which, or whose cron-skips.log to open. #390 made that worse by putting the
+# failing host's own script output in the reason.
+test_the_three_strike_alert_names_the_host_that_failed() {
+  cat > "$SCRIPT_DIR/alert-host-test.sh" << 'SH'
+#!/bin/bash
+exit 7
+SH
+  _fixture_script "$SCRIPT_DIR/alert-host-test.sh"
+  cat > "$CEO_DIR/playbooks/alert-host.md" << 'PB'
+---
+name: alert-host
+description: fails so the third strike escalates
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: alert-host-test.sh
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
+  : > "$CEO_DIR/approvals/pending.md"
+  echo 2 > "$CEO_DIR/log/.fail-count-alert-host"
+  CEO_HOSTNAME=test-host-a bash "$CRON" alert-host >/dev/null 2>&1 || true
+
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "consecutive failures" "the third failure must escalate"
+  assert_contains "$pending" "test-host-a" \
+    "and the alert must name the host whose counter reached three"
+  rm -f "$SCRIPT_DIR/alert-host-test.sh"
+}
+
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
