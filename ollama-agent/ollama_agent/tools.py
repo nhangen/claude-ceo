@@ -19,8 +19,10 @@ MAX_READ = 20000       # chars returned by read_file
 # Tools whose error result signals an operational failure the cron gate should
 # fail the run on. A read_file/list_dir "error" is a benign path probe, and a
 # run_shell non-zero returncode (grep no-match, [ -f x ]) is not an error key —
-# only a run_shell timeout/exception sets one. unknown tools/skills are gated
-# separately via .unknown_calls.
+# only a run_shell timeout/exception sets one. A git args string that cannot be
+# tokenized (unbalanced quote) raises and so does set one: the model asked for a
+# mutation that never ran. unknown tools/skills are gated separately via
+# .unknown_calls.
 ERROR_RELEVANT_TOOLS = {"write_file", "git", "run_shell"}
 
 
@@ -146,7 +148,7 @@ TOOLS = [
             "command": {"type": "string", "description": "The shell command to run."}},
             "required": ["command"]}}},
     {"type": "function", "function": {"name": "git",
-        "description": "Run a git subcommand in the working directory (e.g. args=[\"status\",\"--short\"]).",
+        "description": "Run a git subcommand in the working directory (e.g. args=[\"status\",\"--short\"]). args may also be a single string, tokenized with shell quoting rules: quote any path or message containing spaces, and escape a literal backslash.",
         "parameters": {"type": "object", "properties": {
             "args": {"type": "array", "items": {"type": "string"}}},
             "required": ["args"]}}},
