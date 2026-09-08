@@ -86,17 +86,16 @@ _pr_gather_mark_degraded() {
   PR_GATHER_DEGRADED=1
   PR_GATHER_DEGRADED_REASONS="$PR_GATHER_DEGRADED_REASONS
 $1"
-  # Classified from the reason string rather than at each call site, so the
-  # drained jq failures (which arrive as `jq-failed:<label>`, and whose review
-  # labels all carry the word) are classified by the same rule as the direct
-  # marks. A token failure blocks every search for that account, review included.
-  case "$1" in
-    *review*|token-*)
-      PR_REVIEW_GATHER_DEGRADED=1
-      PR_REVIEW_GATHER_DEGRADED_REASONS="$PR_REVIEW_GATHER_DEGRADED_REASONS
+  # $2 = "review" also marks the review-scoped flag. Passed by the caller rather
+  # than pattern-matched out of the reason: every reason interpolates an account
+  # name from pr-sources.json, so a glob for `*review*` classifies
+  # `gh-merged-failed:reviewbot` as a review failure and re-opens the false alarm
+  # the split exists to close.
+  if [ "${2:-}" = review ]; then
+    PR_REVIEW_GATHER_DEGRADED=1
+    PR_REVIEW_GATHER_DEGRADED_REASONS="$PR_REVIEW_GATHER_DEGRADED_REASONS
 $1"
-      ;;
-  esac
+  fi
 }
 
 # ceo_pr_review_preflight — the one place that answers "is there PR review work?"
@@ -133,7 +132,7 @@ ceo_pr_review_preflight() {
   # Only when the count is 0: a degraded search that still returned PRs has work
   # to do, and the incompleteness is the morning brief's marker to render.
   if [ "${PR_REVIEW_GATHER_DEGRADED:-0}" -eq 1 ]; then
-    echo "PR search degraded, so an empty review queue is not evidence of one: $(echo "${PR_REVIEW_GATHER_DEGRADED_REASONS:-}" | tr '\n' ' ' | xargs)"
+    echo "PR search degraded, so an empty review queue is not evidence of one: $(echo "${PR_REVIEW_GATHER_DEGRADED_REASONS:-}" | tr '\n' ' ' | sed -e 's/^ *//' -e 's/ *$//')"
     return 2
   fi
   return 1
@@ -203,17 +202,17 @@ if command -v gh &>/dev/null; then
     _GH_ACCTS_SEEN=$((_GH_ACCTS_SEEN + 1))
     if ! TOKEN=$(gh auth token -u "$ACCT" 2>/dev/null); then
       echo "WARN: gh auth token failed for '$ACCT' — run 'gh auth refresh -h github.com -u $ACCT'" >&2
-      _pr_gather_mark_degraded "token-fetch-failed:$ACCT"
+      _pr_gather_mark_degraded "token-fetch-failed:$ACCT" review
       continue
     fi
-    [ -z "$TOKEN" ] && { _pr_gather_mark_degraded "token-empty:$ACCT"; continue; }
+    [ -z "$TOKEN" ] && { _pr_gather_mark_degraded "token-empty:$ACCT" review; continue; }
 
     _err=$(mktemp)
     if ! _R=$(GH_TOKEN="$TOKEN" _CEO_TIMEOUT 30 gh search prs \
           --state open --review-requested "@me" \
           --json number,title,createdAt,repository --limit 50 2>"$_err"); then
       echo "WARN: gh search prs (review) for '$ACCT' failed: $(head -c 200 "$_err")" >&2
-      _pr_gather_mark_degraded "gh-review-failed:$ACCT"
+      _pr_gather_mark_degraded "gh-review-failed:$ACCT" review
       _R="[]"
     fi
     rm -f "$_err"
@@ -253,7 +252,7 @@ if command -v gh &>/dev/null; then
   # `failed` for a host that simply has not logged in.
   if [ "$_GH_ACCTS_SEEN" -eq 0 ] && gh auth status >/dev/null 2>&1; then
     echo "WARN: gh is authenticated but no accounts resolved — no PR search was issued" >&2
-    _pr_gather_mark_degraded "gh-review-no-accounts-resolved"
+    _pr_gather_mark_degraded "gh-review-no-accounts-resolved" review
   fi
 
   # Drop excluded orgs (case-insensitive match on the owner segment).
@@ -293,7 +292,7 @@ if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
     _err=$(mktemp)
     if ! _GLR=$(_CEO_TIMEOUT 30 glab api "merge_requests?scope=all&state=opened&reviewer_username=$GL_USER&per_page=50" 2>"$_err"); then
       echo "WARN: glab api (reviewer) for '$GL_USER' failed: $(head -c 200 "$_err")" >&2
-      _pr_gather_mark_degraded "glab-review-failed:$GL_USER"
+      _pr_gather_mark_degraded "glab-review-failed:$GL_USER" review
       _GLR="[]"
     fi
     rm -f "$_err"
@@ -317,7 +316,7 @@ elif [ -n "$(ceo_pr_sources_gitlab_usernames)" ]; then
   # token. Skipping the block silently leaves _GL_REVIEW_PARTS empty and nothing
   # marked, which the preflight would read as a trustworthy empty queue.
   echo "WARN: GitLab usernames are configured but glab is missing or unauthenticated" >&2
-  _pr_gather_mark_degraded "glab-review-unavailable"
+  _pr_gather_mark_degraded "glab-review-unavailable" review
 fi
 
 _REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_GL_REVIEW_PARTS" | _pr_gather_jq "merge-review-final" "$_REVIEW_PARTS" -s 'add')
@@ -327,7 +326,16 @@ _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_GL_AUTHORED_PARTS" | _pr
 # degradation state in this (parent) scope.
 if [ -n "$_PR_GATHER_JQ_FAILS" ] && [ -s "$_PR_GATHER_JQ_FAILS" ]; then
   while IFS= read -r _r; do
-    [ -n "$_r" ] && _pr_gather_mark_degraded "$_r"
+    if [ -n "$_r" ]; then
+      # Classify on the jq label, which is a code literal, never on the whole
+      # reason — the account name is spliced onto the end of some labels.
+      _lbl=${_r#jq-failed:}
+      _lbl=${_lbl%%:*}
+      case "$_lbl" in
+        *review*) _pr_gather_mark_degraded "$_r" review ;;
+        *)        _pr_gather_mark_degraded "$_r" ;;
+      esac
+    fi
   done < "$_PR_GATHER_JQ_FAILS"
 fi
 [ -n "$_PR_GATHER_JQ_FAILS" ] && rm -f "$_PR_GATHER_JQ_FAILS"

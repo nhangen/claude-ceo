@@ -690,7 +690,11 @@ cmd_preflight() {
       elif [ "$rc" -eq 2 ]; then
         # A preflight that cannot answer is not a skip. cron records a failure
         # for this state, and this command exists to preview what cron will do.
-        result="FAIL (cannot tell — ${out:-no reason given})"
+        # Capped: the reason can list one failure per configured account, and
+        # this row is printed into a fixed-width table.
+        local why="${out:-no reason given}"
+        [ "${#why}" -gt 110 ] && why="${why:0:110}…"
+        result="FAIL (cannot tell — $why)"
         would_fail=$((would_fail + 1))
       else
         result="SKIP"

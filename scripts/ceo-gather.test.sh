@@ -142,6 +142,38 @@ test_a_merged_search_failure_does_not_degrade_the_review_queue() {
     "but it says nothing about the review queue, which was searched cleanly"
 }
 
+# Every reason interpolates an account name from pr-sources.json, so classifying
+# by globbing the reason for "review" makes an account called `reviewbot` turn an
+# unrelated merged-search flake into a review degradation — the false alarm the
+# review-scoped flag exists to prevent, arriving through the fix for it.
+test_an_account_named_review_does_not_forge_a_review_degradation() {
+  cat > "$TMP/.ceo/pr-sources.json" << 'JSON'
+{ "github": { "accounts": ["reviewbot"] }, "gitlab": { "usernames": [] } }
+JSON
+  _write_gh_stub '[]' '[]' '[]' merged
+  local out; out=$(_run_gather)
+  assert_contains "$out" "DEGRADED=1" "the merged-search failure still degrades the gather"
+  assert_contains "$out" "REVIEW_DEGRADED=0" \
+    "an account name is not a classification — the review search was clean"
+}
+
+# The reason is the payload of state 2. `xargs` is not a trim: it parses shell
+# quoting, so an account name containing a quote makes it exit non-zero with
+# empty output, and the reason vanishes from inside the command substitution.
+test_a_quoted_account_name_does_not_blank_the_reason() {
+  _write_gh_stub '[]'
+  local out
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    PR_REVIEW_COUNT=0
+    PR_REVIEW_GATHER_DEGRADED=1
+    # shellcheck disable=SC2034  # read by ceo_pr_review_preflight, sourced above
+    PR_REVIEW_GATHER_DEGRADED_REASONS="gh-review-failed:acc't"
+    ceo_pr_review_preflight ) || true   # state 2 is the expected exit here
+  assert_contains "$out" "gh-review-failed:acc't" \
+    "state 2 must still carry its reason when the account name contains a quote"
+}
+
 test_a_review_search_failure_degrades_the_review_queue() {
   _write_gh_stub '[]' '[]' '[]' review
   local out; out=$(_run_gather)
