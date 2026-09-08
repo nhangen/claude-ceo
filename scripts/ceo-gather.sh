@@ -4,6 +4,13 @@
 #
 # Usage: source "$(dirname "$0")/ceo-gather.sh"
 #
+# Provides:
+#   ceo_pr_review_preflight() — is there PR review work? 0 yes / 1 no, and the
+#     search is trustworthy / 2 cannot tell, reason on stdout. It lives here
+#     rather than in ceo-config.sh on purpose: it reads the gather's own
+#     degradation state, and from ceo-config.sh it could be called before the
+#     gather ran, where the unset flags would default to a false all-clear.
+#
 # Exports:
 #   VAULT, CEO_DIR, LOG_DIR, TODAY, NOW
 #   PENDING_COUNT, APPROVED_COUNT
@@ -68,10 +75,67 @@ _MERGED_SINCE=$(date -v-30d +%Y-%m-%d 2>/dev/null || date -d '30 days ago' +%Y-%
 # marker instead of silently reporting 0 on rate limits / 5xx / token expiry.
 export PR_GATHER_DEGRADED=0
 export PR_GATHER_DEGRADED_REASONS=""
+# The review-only subset of the above. `ceo_pr_review_preflight` draws a trust
+# conclusion from a flag, so it needs the failures that can actually hide a
+# review-requested PR — not the union. A 502 on the 30-day merged search sets
+# PR_GATHER_DEGRADED and says nothing about the review queue, and recording a
+# preflight failure for it is the mirror image of the bug this flag exists to fix.
+export PR_REVIEW_GATHER_DEGRADED=0
+export PR_REVIEW_GATHER_DEGRADED_REASONS=""
 _pr_gather_mark_degraded() {
   PR_GATHER_DEGRADED=1
   PR_GATHER_DEGRADED_REASONS="$PR_GATHER_DEGRADED_REASONS
 $1"
+  # $2 = "review" also marks the review-scoped flag. Passed by the caller rather
+  # than pattern-matched out of the reason: every reason interpolates an account
+  # name from pr-sources.json, so a glob for `*review*` classifies
+  # `gh-merged-failed:reviewbot` as a review failure and re-opens the false alarm
+  # the split exists to close.
+  if [ "${2:-}" = review ]; then
+    PR_REVIEW_GATHER_DEGRADED=1
+    PR_REVIEW_GATHER_DEGRADED_REASONS="$PR_REVIEW_GATHER_DEGRADED_REASONS
+$1"
+  fi
+}
+
+# ceo_pr_review_preflight — the one place that answers "is there PR review work?"
+# for both callers (ceo-cron.sh's scheduler and the inline copy in ceo). Those two
+# had drifted: the cron one guarded on gh's presence and auth, the ceo one did
+# not, so on a host with gh missing the same state read as FAILED from cron and
+# "skip: no work" from ceo.
+#
+# Three outcomes, because two are not enough. An empty queue and an unanswerable
+# question look identical downstream — `PR_REVIEW_COUNT` is 0 either way, since a
+# failed search is swallowed to 0 by design so the rest of the brief still
+# renders. Callers need to tell a quiet day from a rate limit, a revoked token,
+# or a 5xx, and this returns 2 with a reason on stdout for exactly that.
+#
+#   0  PRs are waiting
+#   1  no PRs, and the search is trustworthy
+#   2  cannot tell — reason printed to stdout
+ceo_pr_review_preflight() {
+  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+    echo "gh CLI missing or unauthenticated; cannot check PRs for review"
+    return 2
+  fi
+  # A count that is not a number is not a zero. `[ x -gt 0 ]` is false for both,
+  # and falling through would certify a malformed count as a trustworthy empty.
+  case "${PR_REVIEW_COUNT:-0}" in
+    ''|*[!0-9]*)
+      echo "PR_REVIEW_COUNT is not a number ('${PR_REVIEW_COUNT:-}'); the review queue is unknown"
+      return 2
+      ;;
+  esac
+  if [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]; then
+    return 0
+  fi
+  # Only when the count is 0: a degraded search that still returned PRs has work
+  # to do, and the incompleteness is the morning brief's marker to render.
+  if [ "${PR_REVIEW_GATHER_DEGRADED:-0}" -eq 1 ]; then
+    echo "PR search degraded, so an empty review queue is not evidence of one: $(echo "${PR_REVIEW_GATHER_DEGRADED_REASONS:-}" | tr '\n' ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+    return 2
+  fi
+  return 1
 }
 
 # Same idea for local vault reads. Tolerating a truncation's exit status (#293)
@@ -132,21 +196,23 @@ _pr_gather_jq() {
 }
 
 if command -v gh &>/dev/null; then
+  _GH_ACCTS_SEEN=0
   while IFS= read -r ACCT; do
     [ -z "$ACCT" ] && continue
+    _GH_ACCTS_SEEN=$((_GH_ACCTS_SEEN + 1))
     if ! TOKEN=$(gh auth token -u "$ACCT" 2>/dev/null); then
       echo "WARN: gh auth token failed for '$ACCT' — run 'gh auth refresh -h github.com -u $ACCT'" >&2
-      _pr_gather_mark_degraded "token-fetch-failed:$ACCT"
+      _pr_gather_mark_degraded "token-fetch-failed:$ACCT" review
       continue
     fi
-    [ -z "$TOKEN" ] && { _pr_gather_mark_degraded "token-empty:$ACCT"; continue; }
+    [ -z "$TOKEN" ] && { _pr_gather_mark_degraded "token-empty:$ACCT" review; continue; }
 
     _err=$(mktemp)
     if ! _R=$(GH_TOKEN="$TOKEN" _CEO_TIMEOUT 30 gh search prs \
           --state open --review-requested "@me" \
           --json number,title,createdAt,repository --limit 50 2>"$_err"); then
       echo "WARN: gh search prs (review) for '$ACCT' failed: $(head -c 200 "$_err")" >&2
-      _pr_gather_mark_degraded "gh-review-failed:$ACCT"
+      _pr_gather_mark_degraded "gh-review-failed:$ACCT" review
       _R="[]"
     fi
     rm -f "$_err"
@@ -174,6 +240,20 @@ if command -v gh &>/dev/null; then
     rm -f "$_err"
     _MERGED_PARTS=$(printf '%s\n%s' "$_MERGED_PARTS" "$_M" | _pr_gather_jq "merge-merged:$ACCT" "$_MERGED_PARTS" -s 'add')
   done < <(ceo_pr_sources_github_accounts)
+
+  # Zero iterations means no search was issued at all. Discovery returns 0 with
+  # empty stdout when gh's output format drifts (ceo-config.sh), and a malformed
+  # pr-sources.json with an empty .github.accounts looks the same. Without this,
+  # `gh auth status` succeeds, the count is 0, nothing is marked, and the preflight
+  # certifies an empty queue it never looked for.
+  # Only when gh is actually authenticated. Unauthenticated is a different state
+  # with its own handling — the preflight's own `gh auth status` guard reports it,
+  # and marking here as well would flip the gather's status from `empty` to
+  # `failed` for a host that simply has not logged in.
+  if [ "$_GH_ACCTS_SEEN" -eq 0 ] && gh auth status >/dev/null 2>&1; then
+    echo "WARN: gh is authenticated but no accounts resolved — no PR search was issued" >&2
+    _pr_gather_mark_degraded "gh-review-no-accounts-resolved" review
+  fi
 
   # Drop excluded orgs (case-insensitive match on the owner segment).
   # Warn loudly if the user configured exclude_orgs but everything got dropped
@@ -212,7 +292,7 @@ if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
     _err=$(mktemp)
     if ! _GLR=$(_CEO_TIMEOUT 30 glab api "merge_requests?scope=all&state=opened&reviewer_username=$GL_USER&per_page=50" 2>"$_err"); then
       echo "WARN: glab api (reviewer) for '$GL_USER' failed: $(head -c 200 "$_err")" >&2
-      _pr_gather_mark_degraded "glab-review-failed:$GL_USER"
+      _pr_gather_mark_degraded "glab-review-failed:$GL_USER" review
       _GLR="[]"
     fi
     rm -f "$_err"
@@ -231,6 +311,12 @@ if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
     _GL_REVIEW_PARTS=$(printf '%s\n%s' "$_GL_REVIEW_PARTS" "$_R" | _pr_gather_jq "merge-gl-review:$GL_USER" "$_GL_REVIEW_PARTS" -s 'add')
     _GL_AUTHORED_PARTS=$(printf '%s\n%s' "$_GL_AUTHORED_PARTS" "$_A" | _pr_gather_jq "merge-gl-authored:$GL_USER" "$_GL_AUTHORED_PARTS" -s 'add')
   done < <(ceo_pr_sources_gitlab_usernames)
+elif [ -n "$(ceo_pr_sources_gitlab_usernames)" ]; then
+  # Configured but unreachable — glab missing, unauthenticated, or an expired
+  # token. Skipping the block silently leaves _GL_REVIEW_PARTS empty and nothing
+  # marked, which the preflight would read as a trustworthy empty queue.
+  echo "WARN: GitLab usernames are configured but glab is missing or unauthenticated" >&2
+  _pr_gather_mark_degraded "glab-review-unavailable" review
 fi
 
 _REVIEW_PARTS=$(printf '%s\n%s' "$_REVIEW_PARTS" "$_GL_REVIEW_PARTS" | _pr_gather_jq "merge-review-final" "$_REVIEW_PARTS" -s 'add')
@@ -240,7 +326,16 @@ _AUTHORED_PARTS=$(printf '%s\n%s' "$_AUTHORED_PARTS" "$_GL_AUTHORED_PARTS" | _pr
 # degradation state in this (parent) scope.
 if [ -n "$_PR_GATHER_JQ_FAILS" ] && [ -s "$_PR_GATHER_JQ_FAILS" ]; then
   while IFS= read -r _r; do
-    [ -n "$_r" ] && _pr_gather_mark_degraded "$_r"
+    if [ -n "$_r" ]; then
+      # Classify on the jq label, which is a code literal, never on the whole
+      # reason — the account name is spliced onto the end of some labels.
+      _lbl=${_r#jq-failed:}
+      _lbl=${_lbl%%:*}
+      case "$_lbl" in
+        *review*) _pr_gather_mark_degraded "$_r" review ;;
+        *)        _pr_gather_mark_degraded "$_r" ;;
+      esac
+    fi
   done < "$_PR_GATHER_JQ_FAILS"
 fi
 [ -n "$_PR_GATHER_JQ_FAILS" ] && rm -f "$_PR_GATHER_JQ_FAILS"

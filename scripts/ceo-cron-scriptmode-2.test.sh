@@ -773,6 +773,35 @@ PB
   assert_not_contains "$row" "→ RUN" "and must not read RUN"
 }
 
+# The other half of #311's principle, and the half #373 was about: a preflight
+# that cannot answer is not a skip either. `ceo preflight` is the user-facing
+# preview, and it rendered a rate-limited PR search identically to a quiet day —
+# the dispatch loop discarded the reason and counted the row as SKIP.
+test_cmd_preflight_reports_a_degraded_pr_search_as_fail_not_skip() {
+  _stub_gh_prs_review_search_fails
+  cat > "$CEO_DIR/playbooks/degraded-preview.md" << 'PB'
+---
+name: degraded-preview
+description: gates on PRs to review
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_prs_to_review
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local out
+  out=$(bash "$CEO_CLI" preflight 2>&1)
+  local row
+  row=$(printf '%s\n' "$out" | grep 'degraded-preview' | head -1)
+  assert_contains "$row" "FAIL" "a search that failed must not preview as SKIP"
+  assert_contains "$row" "PR search degraded" "and the row must say why"
+  assert_not_contains "$row" "SKIP" "a quiet day and a rate limit must not render alike"
+  assert_contains "$out" "would FAIL" "and the summary must count it"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---
