@@ -429,7 +429,8 @@ PB
   mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
   : > "$CEO_DIR/approvals/pending.md"
   echo 2 > "$CEO_DIR/log/.fail-count-fb-host"
-  ( unset CEO_HOSTNAME; bash "$CRON" fb-host >/dev/null 2>&1 ) || true
+  ( unset CEO_HOSTNAME
+    CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-fb.log" bash "$CRON" fb-host >/dev/null 2>&1 ) || true
 
   local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
   # `unknown` is the sentinel every sibling writer uses, ceo-notify.sh included,
@@ -443,6 +444,11 @@ PB
   local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips" "could not resolve this host" \
     "and the degradation is logged, not swallowed by the resolver's 2>/dev/null"
+  # The notify is the last thing _record_failure does, so it is the cheapest
+  # proof that nothing aborted between the alert and the end of the function.
+  local notify; notify=$(cat "$TEST_HOME/notify-fb.log" 2>/dev/null || echo "")
+  assert_contains "$notify" "[failure/fb-host]" \
+    "and the failure notify still fires after a degraded host resolution"
   rm -f "$SCRIPT_DIR/fb-host-test.sh" "$TEST_HOME/.bun/bin/hostname"
 }
 
@@ -474,6 +480,8 @@ PB
   mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
   echo 2 > "$CEO_DIR/log/.fail-count-ro-queue"
   rm -f "$CEO_DIR/approvals/pending.md"
+  # As root, chmod 500 does not stop the write and this arm fails rather than
+  # passing — the safe direction, but a root CI run would look like a regression.
   chmod 500 "$CEO_DIR/approvals"
   CEO_HOSTNAME=test-host-a bash "$CRON" ro-queue >/dev/null 2>&1 || true
   chmod 700 "$CEO_DIR/approvals"
