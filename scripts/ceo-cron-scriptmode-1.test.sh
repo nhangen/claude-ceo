@@ -35,22 +35,157 @@ test_script_without_outcome_keeps_default_notify() {
 
 
 # A test body that aborts skips its own trailing `rm -f`, so the cleanup that
-# matters is the one teardown does. This drives that path directly: register a
-# fixture, abort the body, and assert teardown removed it anyway. Before
-# _fixture_script the equivalent inline `rm -f` was never reached and the
-# executable stayed in the tracked scripts/ directory.
-test_a_registered_fixture_script_survives_no_abort() {
-  local f="$SCRIPT_DIR/abort-leak-test.sh"
-  printf '#!/bin/bash\nexit 0\n' > "$f"
-  _fixture_script "$f"
-  assert_eq "$(test -f "$f" && echo present || echo gone)" "present" \
-    "the fixture exists while the test runs"
-  # No rm here on purpose: teardown owns it, and the arm below proves that.
+# matters is teardown's. These arms are self-contained on purpose: an earlier
+# version registered in one arm and asserted in the next, which relied on
+# declare -F's alphabetical ordering — renaming the producer, or running under
+# TEST_FILTER, left the check passing while testing nothing.
+#
+# Each arm registers, calls teardown itself, asserts the sweep, then calls setup
+# to restore the state the run_tests loop expects for the next arm.
+_assert_teardown_sweeps() {  # $1=label  $2..=extra paths to create+register
+  local label="$1"; shift
+  local f
+  for f in "$@"; do printf '#!/bin/bash\nexit 0\n' > "$f"; done
+  _fixture_script "$@"
+  for f in "$@"; do
+    assert_eq "$(test -f "$f" && echo present || echo gone)" "present" \
+      "$label: the fixture exists before teardown"
+  done
+  teardown
+  for f in "$@"; do
+    assert_eq "$(test -f "$f" && echo present || echo gone)" "gone" \
+      "$label: teardown removed a fixture nothing rm'd"
+  done
+  setup
 }
 
-test_teardown_removed_the_registered_fixture_from_the_previous_test() {
-  assert_eq "$(test -f "$SCRIPT_DIR/abort-leak-test.sh" && echo present || echo gone)" "gone" \
-    "teardown removes a registered fixture whose test body never rm'd it"
+test_teardown_sweeps_a_registered_fixture() {
+  _assert_teardown_sweeps "single" "$SCRIPT_DIR/sweep-single-test.sh"
+}
+
+# The two-argument call at ceo-cron-misc.test.sh's model/pureshell site is the
+# only one in the suite, so a helper that registered only $1 would leave every
+# test green while leaking the second path on every run.
+test_teardown_sweeps_every_path_of_a_multi_path_registration() {
+  _assert_teardown_sweeps "multi" \
+    "$SCRIPT_DIR/sweep-multi-a-test.sh" "$SCRIPT_DIR/sweep-multi-b-test.sh"
+}
+
+# A path containing a newline would be swept in fragments, and the tail fragment
+# is relative — `rm -f` would run against the harness cwd rather than SCRIPT_DIR.
+# Refused at registration instead.
+test_a_fixture_path_containing_a_newline_is_refused() {
+  # $'\n', not "$(printf '\n')" — command substitution strips trailing newlines,
+  # so the latter builds a path with no newline in it and the arm passes
+  # vacuously. The helper had the identical bug; this arm found it.
+  local bad="$SCRIPT_DIR/sweep-a"$'\n'"sweep-b.sh"
+  printf '#!/bin/bash\nexit 0\n' > "$bad"
+  local err rc=0
+  err=$(_fixture_script "$bad" 2>&1) || rc=$?
+  rm -f "$bad"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a newline in a fixture path is refused, not registered"
+  assert_contains "$err" "newline" "the refusal says why"
+}
+
+# The register lives in TEST_HOME. If that is gone the append fails, and these
+# suites run `set -uo pipefail` without -e, so a silent return 1 would leak the
+# fixture — the exact failure the helper exists to prevent.
+# The three abort shapes #380 exists for. Each runs a whole child suite so the
+# deliberate abort is the child's failure, not this suite's: an arm that exits
+# mid-body cannot then assert on what teardown did, because it is gone.
+_child_abort_leaves_no_fixture() {  # $1=label  $2=abort statement
+  local label="$1" abort="$2"
+  local probe="$SCRIPT_DIR/abort-$label-test.sh"
+  rm -f "$probe"
+  # The child lives in SCRIPT_DIR, not TEST_HOME: ceo-cron-test-common.sh
+  # resolves test-harness.sh from $(dirname "$0"), so a child elsewhere fails to
+  # source and never runs. That failure is silent in the shape these arms take —
+  # the probe is then never created, and "gone" is trivially true — which is why
+  # each arm also asserts the child actually produced a run.
+  local child="$SCRIPT_DIR/abort-child-probe.sh"
+  {
+    echo '#!/bin/bash'
+    echo 'set -uo pipefail'
+    echo "source '$SCRIPT_DIR/ceo-cron-test-common.sh'"
+    echo 'test_x() {'
+    echo "  printf '#!/bin/bash\\nexit 0\\n' > \"$probe\""
+    echo "  _fixture_script \"$probe\""
+    echo "  $abort"
+    echo '}'
+    echo 'run_tests'
+  } > "$child"
+  local out; out=$(bash "$child" 2>&1)
+  rm -f "$child"
+  assert_contains "$out" "FAILED:" \
+    "$label: the child suite actually ran and reported its deliberate failure"
+  assert_eq "$(test -f "$probe" && echo present || echo gone)" "gone" \
+    "$label: teardown swept the fixture after the body aborted"
+  rm -f "$probe"
+}
+
+test_a_body_that_exits_still_has_its_fixture_swept() {
+  _child_abort_leaves_no_fixture exit "exit 1"
+}
+
+test_a_body_that_returns_nonzero_still_has_its_fixture_swept() {
+  _child_abort_leaves_no_fixture return "return 1"
+}
+
+test_a_body_ending_on_a_failing_assertion_still_has_its_fixture_swept() {
+  _child_abort_leaves_no_fixture assert "assert_eq got want 'deliberate failure'"
+}
+
+# A signal skips teardown unless run_tests traps it, which it did not before
+# #380. Without the trap the executable stays in the tracked scripts/ directory.
+#
+# SIGTERM, not SIGINT: a shell backgrounds a child with SIGINT set to SIG_IGN and
+# the child inherits it, so `kill -INT` on a `&`-launched suite does nothing and
+# this arm passed with the trap removed. SIGTERM is not ignored, and it is also
+# the realistic signal — a CI cancel or a supervisor stop, not someone's Ctrl-C.
+test_a_signalled_run_still_has_its_fixture_swept() {
+  local probe="$SCRIPT_DIR/abort-signal-test.sh"
+  rm -f "$probe"
+  local child="$SCRIPT_DIR/interrupt-child-probe.sh"
+  {
+    echo '#!/bin/bash'
+    echo 'set -uo pipefail'
+    echo "source '$SCRIPT_DIR/ceo-cron-test-common.sh'"
+    echo 'test_x() {'
+    echo "  printf '#!/bin/bash\\nexit 0\\n' > \"$probe\""
+    echo "  _fixture_script \"$probe\""
+    echo '  echo READY'
+    echo '  sleep 60'
+    echo '}'
+    echo 'run_tests'
+  } > "$child"
+  bash "$child" >"$TEST_HOME/interrupt-out" 2>&1 &
+  local child_pid=$!
+  local waited=0
+  while [ "$waited" -lt 100 ] && ! grep -q READY "$TEST_HOME/interrupt-out" 2>/dev/null; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  kill -TERM "$child_pid" 2>/dev/null || true
+  wait "$child_pid" 2>/dev/null || true
+  rm -f "$child"
+
+  assert_contains "$(cat "$TEST_HOME/interrupt-out" 2>/dev/null || echo "")" "READY" \
+    "the child reached the body before being signalled"
+  assert_eq "$(test -f "$probe" && echo present || echo gone)" "gone" \
+    "a signalled run still reaches teardown"
+  rm -f "$probe"
+}
+
+
+test_registering_without_a_test_home_fails_loudly() {
+  local saved="$TEST_HOME"
+  TEST_HOME="$saved/definitely-not-here"
+  local err rc=0
+  err=$(_fixture_script "$SCRIPT_DIR/sweep-nohome-test.sh" 2>&1) || rc=$?
+  TEST_HOME="$saved"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "a missing TEST_HOME fails the registration"
+  assert_contains "$err" "TEST_HOME" "the refusal names the cause"
 }
 
 

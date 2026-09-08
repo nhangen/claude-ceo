@@ -178,6 +178,14 @@ run_tests() {
   body_fails_tmp=$(mktemp)
   parent_fails_tmp=$(mktemp)
   assertions_tmp="${body_fails_tmp}.assertions"
+
+  # An interrupt otherwise skips teardown entirely, so whatever a suite cleans
+  # up there stays behind — for the ceo-cron suites that is an executable in the
+  # tracked scripts/ directory (#380), which is the leak teardown exists to
+  # prevent. Ctrl-C during a slow suite is not an exotic event. `type` is
+  # re-checked because the trap outlives any one arm, and 130 is the
+  # conventional SIGINT status the caller would have seen anyway.
+  trap 'type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue

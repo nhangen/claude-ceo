@@ -159,15 +159,22 @@ teardown() {
 
 
 
+# $'\n', not "$(printf '\n')": command substitution strips trailing newlines, so
+# the latter is the empty string and `case $f in *""*)` then matches every path.
+# The first version of this refused every registration, which the new arms caught.
+_FIXTURE_NEWLINE=$'\n'
+
 # _fixture_script <path>... — chmod +x each path and register it for teardown.
 #
 # These fixtures have to live in SCRIPT_DIR: the runner resolves a playbook's
 # `script:` relative to the checked-out scripts/ directory, which is tracked.
 # What was wrong was the cleanup, not the location — an `rm -f` on the last line
-# of a test body is skipped by a failing assertion or an interrupt, leaving an
-# untracked executable in a tracked directory, one `git add -A` from a commit
-# (test-writes-stay-in-the-fixture). teardown runs on an abort; a test body's
-# last line does not.
+# of a test body is skipped by a failing assertion, a `return`, or an `exit`,
+# leaving an untracked executable in a tracked directory, one `git add -A` from
+# a commit (test-writes-stay-in-the-fixture). teardown runs on all of those; a
+# test body's last line does not. An interrupt is covered too, but by a separate
+# mechanism -- run_tests traps INT/TERM and calls teardown, which it did not
+# before this change, so the two have to hold together.
 #
 # It also protects the -P 4 reasoning in .github/workflows/test.yml, which rests
 # on no two suites writing the same fixed path under scripts/. A leaked fixture
@@ -175,12 +182,28 @@ teardown() {
 # run on the same checkout.
 _fixture_script() {
   local f
+  # Loudly, not by returning 1 nobody checks: without the register the fixture
+  # stays in scripts/, which is the leak this helper exists to prevent, and
+  # these suites run `set -uo pipefail` without -e so a silent failure here
+  # would sail past.
+  [ -d "${TEST_HOME:-}" ] || {
+    echo "_fixture_script: TEST_HOME is not a directory — refusing to register" >&2
+    return 1
+  }
   for f in "$@"; do
+    case "$f" in
+      *"$_FIXTURE_NEWLINE"*)
+        # The register is newline-delimited, so a path containing one is swept
+        # in fragments — and the tail fragment is relative, so `rm -f` runs
+        # against the harness cwd instead of SCRIPT_DIR. No fixture needs one.
+        echo "_fixture_script: refusing a path containing a newline" >&2
+        return 1 ;;
+    esac
     chmod +x "$f"
     # A file, not a shell array: test bodies run in a subshell, so an array
     # appended there never reaches teardown in the parent. This is the same
     # channel test-harness.sh uses to carry a subshell's failure count out.
-    printf '%s\n' "$f" >> "$TEST_HOME/.fixture-scripts"
+    printf '%s\n' "$f" >> "$TEST_HOME/.fixture-scripts" || return 1
   done
 }
 

@@ -34,7 +34,10 @@ _run_child() {
     echo "$body"
     echo 'run_tests'
   } > "$TMP/child.sh"
-  CHILD_OUT=$(bash "$TMP/child.sh" 2>&1)
+  # env -u: TEST_FILTER is meant to select arms in *this* suite, but it is exported
+  # into the child too, where it matches none of the child's own test names and
+  # every case reports "no tests discovered". That made the filter unusable here.
+  CHILD_OUT=$(env -u TEST_FILTER bash "$TMP/child.sh" 2>&1)
   CHILD_RC=$?
 }
 
@@ -96,7 +99,10 @@ test_x() {
   # Two genuine failures occurred; one is absorbed by body-scope subtraction.
   assert_eq "$CHILD_RC" "1" "the run still fails non-zero"
   assert_contains "$CHILD_OUT" "FAILED: 1" \
-    "known bug (#321): two failures report as one — if this now says FAILED: 2 the bug is fixed, delete this test"
+    "known bug (#321): two failures report as one. FAILED: 2 here means one of two \
+things — check test_assert_failures_are_not_double_counted first. Green: #321 is fixed, \
+delete this test. Red: the recorded-subtraction guard regressed and every assert failure \
+is being counted twice, which is not a fix"
 }
 
 # --- Scope attribution (#317) ---
