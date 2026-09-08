@@ -123,7 +123,12 @@ assert_fails() {
 # cannot repair a bare main-scope increment sitting beside it — that is the absorption
 # above. The parent scopes have no such caveat: there the file is the only channel
 # (see _record_assertion_fail), so nothing cancels. No site in these suites is in
-# either shape, and test-harness.test.sh pins the bare-increment half only.
+# either shape, and test-harness.test.sh pins the bare-increment half only —
+# accurately: test_a_bare_fails_increment_reaches_the_exit_code drives the one
+# shape where this sweep's absence diverges, and neutering the sweep fails it.
+# The absorption half is a tripwire rather than a specification
+# (test_321_body_scope_absorption_known_bug_undercounts_by_one), and goes red
+# deliberately on the day that bug is fixed.
 _record_hand_rolled_fails() {
   local fails_before="$1" recorded=0
   [ -f "${TEST_FAILS_TMP:-}" ] && recorded=$(wc -l < "$TEST_FAILS_TMP")
