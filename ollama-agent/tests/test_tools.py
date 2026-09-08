@@ -6,6 +6,7 @@ completed-but-errored run. A benign read/list probe error and a non-zero shell
 returncode are NOT operational failures and must stay out of .tool_errors.
 """
 import json
+import subprocess
 
 from ollama_agent.tools import ToolBox
 
@@ -46,11 +47,16 @@ def test_run_shell_timeout_is_an_error(tmp_path):
 
 
 def test_git_string_args_handles_quoted_spaces(tmp_path):
-    import subprocess
     subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Nathan Hangen"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "nathan@nhangen.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "core.hooksPath", ""], cwd=tmp_path, check=True)
+    # hooksPath points at a real empty dir, not "": without it the fixture inherits
+    # the machine's global core.hooksPath. gpgsign off so a machine that signs by
+    # default doesn't fail the commit arm for a reason unrelated to tokenization.
+    hooks = tmp_path / "hooks-none"
+    hooks.mkdir()
+    for key, value in (("user.name", "t"), ("user.email", "t@example.com"),
+                       ("core.hooksPath", str(hooks)), ("commit.gpgsign", "false")):
+        subprocess.run(["git", "config", key, value], cwd=tmp_path, check=True,
+                       capture_output=True)
 
     file_with_spaces = tmp_path / "my file with spaces.txt"
     file_with_spaces.write_text("hello world")
@@ -62,12 +68,17 @@ def test_git_string_args_handles_quoted_spaces(tmp_path):
     assert res_str["returncode"] == 0
     assert tb.tool_errors == []
 
-    # Commit with message with spaces
     res_commit = json.loads(tb.dispatch("git", {"args": 'commit -m "commit message with spaces"'}))
     assert res_commit["returncode"] == 0
     assert tb.tool_errors == []
+    # returncode 0 alone survives posix=False, which keeps the quotes in the subject.
+    subject = subprocess.run(["git", "log", "-1", "--pretty=%s"], cwd=tmp_path,
+                             check=True, capture_output=True, text=True).stdout.strip()
+    assert subject == "commit message with spaces"
 
-    # List args also work
-    res_status = json.loads(tb.dispatch("git", {"args": ["status", "--porcelain"]}))
+    # List args: an element that itself contains a space stays one argv token.
+    res_status = json.loads(tb.dispatch(
+        "git", {"args": ["status", "--porcelain", "my file with spaces.txt"]}))
     assert res_status["returncode"] == 0
     assert res_status["stdout"].strip() == ""
+
