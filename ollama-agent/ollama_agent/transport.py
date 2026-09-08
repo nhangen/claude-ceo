@@ -30,11 +30,22 @@ CONTEXT_OVERFLOW_REMEDIATION = (
 # Response headers a proxy adds to name the backend it chose. Absent behind a
 # plain ollama daemon, which is why each is recorded only when present: an empty
 # string in `endpoint` would read as a backend named "".
+# Enough request ids to find the run in the proxy's own logs. Capped because an
+# id is unique per request: see `_note`'s `limit`.
+MAX_REQUEST_IDS = 5
+
 _HEADER_FIELDS = (
     ("endpoint", "X-Olla-Endpoint"),
     ("proxy", "Via"),
+    # The router stating that it resolved a name to something else. This is the
+    # substitution signal that does NOT depend on the model string coming back
+    # different: if the proxy ever echoes the alias instead of the concrete tag,
+    # `model_served` looks like an exact match and only this field dissents.
+    ("routing", "X-Olla-Routing-Strategy"),
     ("request_ids", "X-Olla-Request-Id"),
 )
+
+_FIELD_LIMITS = {"request_ids": MAX_REQUEST_IDS}
 
 
 def _note_headers(provenance, headers):
@@ -50,7 +61,7 @@ def _note_headers(provenance, headers):
         return
     try:
         for key, header in _HEADER_FIELDS:
-            _note(provenance, key, headers.get(header))
+            _note(provenance, key, headers.get(header), limit=_FIELD_LIMITS.get(key))
     except Exception:
         return
 
@@ -62,22 +73,29 @@ def _context_overflow_error(status, detail):
     )
 
 
-def _note(provenance, key, value):
+def _note(provenance, key, value, limit=None):
     """Record a DISTINCT observed value under `key`, in first-seen order.
-
-    Distinct rather than one entry per turn: a 20-turn run on one backend would
-    otherwise write a 20-element list nobody reads. Ordered rather than a set so
-    the row stays JSON-serializable and the first backend is identifiable.
 
     A list, not a scalar, because a priority balancer re-decides per request --
     so a run is not guaranteed to be one experiment, and recording only the last
-    turn would name one model for work two models did.
+    turn would name one model for work two models did. Ordered rather than a set
+    so the row stays JSON-serializable and the first backend is identifiable.
+
+    Distinct keeps the model and endpoint fields short: a 20-turn run on one
+    backend writes one entry, not twenty. **That argument does not hold for a
+    value that is unique per request**, which is why `limit` exists -- an olla
+    request id never repeats, so dedup never fires on it and the list grows with
+    the turn count. `turns` already says how many requests there were, so a
+    capped list is not a claim about their number.
     """
     if provenance is None or not value:
         return
     seen = provenance.setdefault(key, [])
-    if value not in seen:
-        seen.append(value)
+    if value in seen:
+        return
+    if limit is not None and len(seen) >= limit:
+        return
+    seen.append(value)
 
 
 def parse_chat_response(status, body, provenance=None):
@@ -166,6 +184,10 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         _note_headers(provenance, getattr(e, "headers", None))
                         return parse_chat_response(e.code, e.read().decode(),
                                                    provenance=provenance)
+                    # The endpoint that just 503'd. Without this a flaky backend
+                    # that fails twice before a healthy one answers is invisible,
+                    # which is exactly the "which machine" question this records.
+                    _note_headers(provenance, getattr(e, "headers", None))
                     if attempt == MAX_HTTP_ATTEMPTS:
                         raise RuntimeError(
                             f"ollama HTTP {e.code} after {attempt} attempts for model {model}"

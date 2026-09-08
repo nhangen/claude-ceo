@@ -38,7 +38,20 @@ def ledger_path():
 
 # Who served the run, from `provenance` (see transport._note). Each is a list of
 # distinct values in first-seen order, because a router re-decides per request.
-_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "request_ids")
+_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids")
+
+# Two things #667 asked for that are deliberately NOT here, recorded so a reader
+# who greps the ticket for them is not left wondering:
+#
+# - `model_requested`. The ticket asked for it as a new key. `model` already
+#   holds exactly that and keeps the meaning forever (see append_run), so a
+#   second key would duplicate every row. Consumers are unaffected: token-scope
+#   reads `run.model`.
+# - The backend **ollama** version. Only the proxy's version is captured, from
+#   `Via`. Ollama's /api/chat response body carries no version field, so this
+#   would need a separate /api/version call per run -- which defeats the "no
+#   extra request" property that makes this capture free. Left out on purpose;
+#   an upgrade still has to be recorded by hand, as #414 already does.
 
 
 def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None):

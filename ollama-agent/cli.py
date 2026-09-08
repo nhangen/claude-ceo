@@ -352,13 +352,16 @@ def main(argv=None):
         print("warning: could not write ollama-agent ledger (run unaffected)", file=sys.stderr)
 
     served = provenance.get("model_served") or []
-    if served and served != [a.model]:
-        # Only when it differs from what was asked for: a router resolving a
-        # name to something else is the thing nobody could see. `local-coder`
-        # served a 14.8b build for thirteen runs while the docs said 27b.
+    # Two independent substitution signals, because either alone can miss it.
+    # The model string differing is the obvious one. `routing` is the router
+    # saying it resolved an alias, which still fires if the proxy echoes the
+    # alias name back and `model_served` therefore looks like an exact match.
+    substituted = bool(served) and served != [a.model]
+    aliased = any("alias" in r for r in (provenance.get("routing") or []))
+    if substituted or aliased:
         where = ", ".join(provenance.get("endpoint") or []) or "unknown endpoint"
-        print(f"served-by: {', '.join(served)} via {where} (requested {a.model})",
-              file=sys.stderr)
+        what = ", ".join(served) or "an unreported model"
+        print(f"served-by: {what} via {where} (requested {a.model})", file=sys.stderr)
 
     if exit_code != 0:
         return exit_code

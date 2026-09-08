@@ -819,3 +819,27 @@ def test_cli_stays_quiet_when_the_served_model_is_the_one_requested(tmp_path, mo
                    "--no-rules", "--no-skills"])
     assert rc == 0
     assert "served-by:" not in capsys.readouterr().err
+
+
+def test_cli_warns_on_alias_routing_even_when_the_model_string_matches(tmp_path, monkeypatch, capsys):
+    """The substitution that hid for thirteen runs was visible two ways: the model
+    came back different, AND the router said it resolved an alias. Relying only on
+    the first means a proxy that echoes the requested alias goes unreported --
+    which is the exact shape of the original failure, one layer down."""
+    captured = {}
+    _stub(monkeypatch, captured)
+
+    def transport_that_reports(*a, **k):
+        prov = k["provenance"]
+        prov["model_served"] = ["local-coder"]   # proxy echoed the alias back
+        prov["endpoint"] = ["ml1-5080"]
+        prov["routing"] = ["alias"]
+        return lambda m, t: {"role": "assistant", "content": "ok"}
+
+    monkeypatch.setattr(cli, "ollama_transport", transport_that_reports)
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--model", "local-coder",
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "served-by:" in err, "alias routing was not reported because the strings matched"
+    assert "ml1-5080" in err
