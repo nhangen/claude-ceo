@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cli  # noqa: E402
@@ -24,11 +26,15 @@ def _stub(monkeypatch, captured):
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: {"role": "assistant", "content": "ok"}))
 
     def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
-                       verify_cmd=None):
+                       verify_cmd=None, usage_tracker=None):
         captured["system"] = system
         captured["tools"] = tools
         captured["run_id"] = run_id
         captured["verify_cmd"] = verify_cmd
+        if usage_tracker is not None:
+            usage_tracker["ollama_input_tokens"] = 40
+            usage_tracker["ollama_output_tokens"] = 400
+            usage_tracker["turns"] = 1
         return {"completed": True, "verified": None, "turns": 1, "run_id": run_id,
                 "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
@@ -540,5 +546,219 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
                    "--no-rules", "--no-skills"])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "agent failed: ollama HTTP 500: prompt exceeded context window" in err
+    # The class prefix comes from #383's crash handler, which now names the
+    # exception type; the diagnostic itself is #376's.
+    assert "agent failed: RuntimeError: ollama HTTP 500: prompt exceeded context window" in err
     assert "--num-ctx" in err
+
+
+def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+    def failing_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant", "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
+                    {"input": 50, "output": 15})
+        raise RuntimeError("model transport failed mid-run")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "agent failed: RuntimeError: model transport failed mid-run" in err
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["verified"] is None
+    assert row["reason"] == "error"
+    assert row["ollama_input_tokens"] == 50
+    assert row["ollama_output_tokens"] == 15
+    # 2 turns carrying 1 turn's tokens is the intended reading: on a crash row
+    # `turns` is the turn the run died on, not the count it completed. See the
+    # usage_tracker paragraph in run_agent's docstring.
+    assert row["turns"] == 2
+
+
+def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+    def interrupt_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant", "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
+                    {"input": 30, "output": 10})
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: interrupt_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 130
+    err = capsys.readouterr().err
+    assert "agent interrupted" in err
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["verified"] is None
+    assert row["reason"] == "killed"
+    assert row["ollama_input_tokens"] == 30
+    assert row["ollama_output_tokens"] == 10
+    assert row["turns"] == 2
+
+
+def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def immediate_fail(messages, tools):
+        raise RuntimeError("daemon unreachable")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: immediate_fail)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["reason"] == "error"
+    assert row["ollama_input_tokens"] == 0
+    assert row["ollama_output_tokens"] == 0
+
+
+def test_cli_crashed_run_records_a_row_for_a_non_runtimeerror(tmp_path, monkeypatch, capsys):
+    # The except is deliberately broad — the ledger's job is to record burned
+    # tokens whatever killed the run. Narrowing it to RuntimeError would put
+    # every other exception back in the hole #328 closes.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+
+    def failing_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant",
+                     "tool_calls": [{"function": {"name": "list_dir",
+                                                  "arguments": {"path": "."}}}]},
+                    {"input": 11, "output": 22})
+        raise OSError("connection reset by peer")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 1
+    assert "agent failed: OSError: connection reset by peer" in capsys.readouterr().err
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["ollama_input_tokens"] == 11
+    assert row["ollama_output_tokens"] == 22
+
+
+def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monkeypatch, capsys):
+    # None means "no gate was configured" (run_agent's contract), so a gated run
+    # that drove the gate red and then crashed must not report None — that reads
+    # as ungated to every ledger consumer.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+    def gate_then_crash(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # No tool calls, so the gate runs — and `false` exits non-zero.
+            return ({"role": "assistant", "content": "done"}, {"input": 7, "output": 3})
+        raise RuntimeError("transport died after the gate went red")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: gate_then_crash)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--verify-cmd", "false", "--turn-cap", "5"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["verified"] is False
+    assert row["ollama_input_tokens"] == 7
+
+
+def test_cli_sigterm_writes_a_killed_ledger_row(tmp_path):
+    # A real subprocess and a real signal. monkeypatch-raising KeyboardInterrupt
+    # exercises the handler arm but not the signal disposition, which is the half
+    # that was missing: a supervisor stop sends SIGTERM, not SIGINT.
+    import os
+    import signal as signal_mod
+    import subprocess
+    import time
+
+    ledger = tmp_path / "runs.jsonl"
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        "import sys, time\n"
+        f"sys.path.insert(0, {str(Path(cli.__file__).resolve().parent)!r})\n"
+        "import cli\n"
+        "calls = []\n"
+        "def slow(messages, tools):\n"
+        "    calls.append(1)\n"
+        "    if len(calls) == 1:\n"
+        "        return ({'role': 'assistant', 'tool_calls': [{'function': "
+        "{'name': 'list_dir', 'arguments': {'path': '.'}}}]}, {'input': 77, 'output': 33})\n"
+        "    sys.stderr.write('READY\\n'); sys.stderr.flush()\n"
+        "    time.sleep(120)\n"
+        "cli.ollama_transport = lambda *a, **k: slow\n"
+        f"sys.exit(cli.main(['--ungated', '--task', 'work', '--cwd', {str(tmp_path)!r},\n"
+        "                   '--no-rules', '--no-skills', '--turn-cap', '5']))\n"
+    )
+    env = dict(os.environ, OLLAMA_AGENT_LEDGER=str(ledger))
+    proc = subprocess.Popen([sys.executable, str(driver)], env=env,
+                            stderr=subprocess.PIPE, text=True)
+    try:
+        ready = False
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            line = proc.stderr.readline()
+            if not line:
+                break
+            if "READY" in line:
+                ready = True
+                break
+        if not ready:
+            # Otherwise a driver that dies during import degrades into a 30s
+            # timeout and we signal a corpse, which is a mystery, not a failure.
+            proc.kill()
+            pytest.fail(f"driver never reached the second turn: {proc.stderr.read()!r}")
+        proc.send_signal(signal_mod.SIGTERM)
+        rc = proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    assert rc == 130
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "killed"
+    assert row["completed"] is False
+    assert row["ollama_input_tokens"] == 77
+    assert row["ollama_output_tokens"] == 33
+
+
+def test_cli_main_leaves_the_kill_handlers_as_it_found_them(tmp_path, monkeypatch):
+    # main() is callable in-process and this suite calls it forty times. A handler
+    # left installed past a normal return rewrites the caller's signal disposition
+    # for the rest of the process.
+    import signal as signal_mod
+
+    before = {name: signal_mod.getsignal(getattr(signal_mod, name))
+              for name in ("SIGTERM", "SIGHUP")}
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(tmp_path / "runs.jsonl"))
+    monkeypatch.setattr(cli, "ollama_transport",
+                        lambda *a, **k: (lambda m, t: ({"role": "assistant", "content": "ok"},
+                                                       {"input": 1, "output": 1})))
+    assert cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                     "--no-rules", "--no-skills"]) == 0
+    after = {name: signal_mod.getsignal(getattr(signal_mod, name))
+             for name in ("SIGTERM", "SIGHUP")}
+    assert after == before

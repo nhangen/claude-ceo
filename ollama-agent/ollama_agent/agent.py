@@ -54,8 +54,13 @@ def _tool_calls_from_content(content):
     return calls
 
 
+def _track(usage_tracker, key, value):
+    if usage_tracker is not None:
+        usage_tracker[key] = value
+
+
 def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
-              verify_cmd=None):
+              verify_cmd=None, usage_tracker=None):
     """Run one task to completion (a turn with no tool calls) or the turn cap.
 
     Returns a record: completed, turns, the full transcript, and the toolbox's
@@ -73,11 +78,19 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     than to the model's own say-so. `verified` is None when no gate is configured,
     else the last check's pass/fail; the turn cap still bounds the loop.
 
+    `usage_tracker` is an optional caller-owned dict, mutated in place every turn
+    so the caller can read what a run burned even when this function raises
+    instead of returning — that is the whole point of it, and cli's crash record
+    is its only consumer today. It carries `ollama_input_tokens`,
+    `ollama_output_tokens`, `turns`, and `verified`. Entry resets all four, so a
+    tracker reused across two calls does not double-count and a stale `verified`
+    cannot leak into the next run.
+
     `reason` says why the loop ended in one field, so a consumer needn't join
     two nullable ones: "ok" (the model stopped and the gate passed, or none
-    was configured), "turn-cap" (ungated run out of turns), or
-    "verify-failed" (out of turns, gate last observed red). It carries no
-    value for a crash or a kill — neither reaches the ledger write.
+    was configured), "turn-cap" (ungated run out of turns),
+    "verify-failed" (out of turns, gate last observed red), "error" (crashed run),
+    or "killed" (interrupted run).
     """
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": task}]
@@ -88,11 +101,19 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     turns = 0
     ollama_input_tokens = 0
     ollama_output_tokens = 0
+    for key, value in (("ollama_input_tokens", 0), ("ollama_output_tokens", 0),
+                       ("turns", 0), ("verified", None)):
+        _track(usage_tracker, key, value)
     while turns < turn_cap:
         turns += 1
+        # The turn in flight, not the turn count completed: a crash row's `turns`
+        # is the turn it died on, so N turns can carry N-1 turns of tokens.
+        _track(usage_tracker, "turns", turns)
         msg, usage = transport(messages, tools)
         ollama_input_tokens += usage.get("input", 0)
         ollama_output_tokens += usage.get("output", 0)
+        _track(usage_tracker, "ollama_input_tokens", ollama_input_tokens)
+        _track(usage_tracker, "ollama_output_tokens", ollama_output_tokens)
         transcript.append(msg)
         messages.append(msg)
         calls = msg.get("tool_calls") or []
@@ -108,8 +129,10 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                     verified = True
                     completed = True
                     reason = "ok"
+                    _track(usage_tracker, "verified", True)
                     break
                 verified = False
+                _track(usage_tracker, "verified", False)
                 feedback = {"role": "user", "content": (
                     "Verification command `%s` is not passing yet (returncode=%s). "
                     "Fix the remaining failures and keep going — do not stop until "

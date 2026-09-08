@@ -623,3 +623,38 @@ def test_reason_verify_failed_when_the_gate_is_still_red_at_the_cap(tmp_path):
                     turn_cap=3, verify_cmd="false")
     assert rec["completed"] is False
     assert rec["reason"] == "verify-failed"
+
+
+def test_run_agent_updates_usage_tracker_across_turns(tmp_path):
+    tracker = {}
+    transport = _script(
+        ({"role": "assistant", "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
+         {"input": 15, "output": 25}),
+        ({"role": "assistant", "content": "done"},
+         {"input": 30, "output": 40}),
+    )
+    rec = run_agent("task", "sys", transport, ToolBox(cwd=tmp_path), TOOLS,
+                    turn_cap=5, usage_tracker=tracker)
+    assert rec["completed"] is True
+    assert tracker["ollama_input_tokens"] == 45
+    assert tracker["ollama_output_tokens"] == 65
+    assert tracker["turns"] == 2
+
+
+def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
+    # The docstring promises a reused tracker does not double-count and that a
+    # stale `verified` cannot leak forward. Without the entry reset both are false
+    # and nothing else in the suite notices.
+    tracker = {}
+    gated = _script(({"role": "assistant", "content": "done"}, {"input": 10, "output": 20}))
+    run_agent("task", "sys", gated, ToolBox(cwd=tmp_path), TOOLS,
+              turn_cap=1, verify_cmd="false", usage_tracker=tracker)
+    assert tracker["verified"] is False
+    assert tracker["ollama_input_tokens"] == 10
+
+    second = _script(({"role": "assistant", "content": "done"}, {"input": 3, "output": 4}))
+    run_agent("task", "sys", second, ToolBox(cwd=tmp_path), TOOLS,
+              turn_cap=1, usage_tracker=tracker)
+    assert tracker["verified"] is None
+    assert tracker["ollama_input_tokens"] == 3
+    assert tracker["turns"] == 1
