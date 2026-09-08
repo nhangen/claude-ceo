@@ -186,6 +186,24 @@ test_test_all_preflight_has_prs_to_review_skips_when_no_prs() {
 }
 
 
+# The fourth state, and the one that had no coverage: the search failed, so the
+# queue is unknown rather than empty. `PR_REVIEW_COUNT` is 0 in this case exactly
+# as in the arm above -- gather swallows a failed search to 0 on purpose so the
+# rest of the brief still renders -- which is what made a rate limit and a quiet
+# day indistinguishable at the report.
+test_test_all_preflight_has_prs_to_review_fails_loudly_when_the_search_is_degraded() {
+  _stub_gh_prs_search_fails
+  _register_pb_sched ta-pr-degraded "5 9 * * *" has_prs_to_review
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" --test-all >/dev/null 2>&1 || true
+  local body; body=$(cat "$(_test_all_report)" 2>/dev/null)
+  assert_not_contains "$body" "ta-pr-degraded | skip: no work" \
+    "a degraded PR search must not read as a quiet day"
+  assert_contains "$body" "FAILED" \
+    "an unanswerable preflight is a failure, not a benign skip"
+}
+
+
 # --depth plan: a read-tier playbook has no planning phase, so it previews the
 # call it WOULD make without spending tokens (no model call).
 test_dry_run_depth_plan_read_tier_previews_without_call() {

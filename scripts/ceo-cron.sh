@@ -1145,11 +1145,16 @@ preflight_has_unchecked_inbox() {
 }
 
 preflight_has_prs_to_review() {
-  if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null 2>&1; then
-    _record_failure "gh CLI missing or unauthenticated; cannot check PRs for review"
+  local reason rc=0
+  reason=$(ceo_pr_review_preflight) || rc=$?
+  # 2 is "cannot tell", not "nothing to do" — a swallowed search failure would
+  # otherwise be recorded as a benign skip, which is the state this playbook is
+  # least able to notice and most likely to sit in.
+  if [ "$rc" -eq 2 ]; then
+    _record_failure "$reason"
     return 1
   fi
-  [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]
+  return "$rc"
 }
 
 preflight_has_pending_items() {

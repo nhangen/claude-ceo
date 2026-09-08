@@ -641,7 +641,13 @@ cmd_preflight() {
     ceo_inbox_has_unchecked
   }
   preflight_has_prs_to_review() {
-    [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]
+    local reason rc=0
+    reason=$(ceo_pr_review_preflight) || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      printf 'ceo: cannot check PRs for review: %s\n' "$reason" >&2
+      return 1
+    fi
+    return "$rc"
   }
   preflight_has_pending_items() {
     [ "${PENDING_COUNT:-0}" -gt 0 ]

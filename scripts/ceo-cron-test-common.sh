@@ -209,6 +209,34 @@ _fixture_script() {
 
 # --- shared helpers hoisted from ceo-cron.test.sh (sourced by every ceo-cron-*.test.sh shard) ---
 
+# _stub_gh_prs_search_fails — a gh whose auth is fine but whose PR search fails
+# the way a rate limit does. Models the half of reality _stub_gh_prs cannot: every
+# arm there exits 0, so a suite built only on it pins the shape that makes a
+# degraded source and a quiet day indistinguishable rather than probing it.
+_stub_gh_prs_search_fails() {
+  cat > "$TEST_HOME/.bun/bin/gh" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$HOME/gh-invoked.txt"
+case "$1 ${2:-}" in
+  "auth status"*)
+    case "$*" in
+      *"--json"*) echo '[{"user":"testuser"}]'; exit 0 ;;
+      *) echo "Logged in to github.com account testuser (keyring)"; exit 0 ;;
+    esac ;;
+  "auth token"*)
+    echo "ghp_faketoken12345"
+    exit 0 ;;
+  "search prs"*)
+    echo "gh: API rate limit exceeded for user ID 1234567." >&2
+    exit 1 ;;
+  *)
+    echo "gh stub: unexpected argv: $*" >&2
+    exit 99 ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/gh"
+}
+
 # _stub_gh_prs <count> — replaces the base gh stub with one whose
 # `search prs --review-requested` returns <count> PRs. Same argv discipline as
 # the base stub: anything unexpected exits 99 rather than returning a plausible

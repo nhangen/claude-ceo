@@ -74,6 +74,38 @@ _pr_gather_mark_degraded() {
 $1"
 }
 
+# ceo_pr_review_preflight — the one place that answers "is there PR review work?"
+# for both callers (ceo-cron.sh's scheduler and the inline copy in ceo). Those two
+# had drifted: the cron one guarded on gh's presence and auth, the ceo one did
+# not, so on a host with gh missing the same state read as FAILED from cron and
+# "skip: no work" from ceo.
+#
+# Three outcomes, because two are not enough. An empty queue and an unanswerable
+# question look identical downstream — `PR_REVIEW_COUNT` is 0 either way, since a
+# failed search is swallowed to 0 by design so the rest of the brief still
+# renders. Callers need to tell a quiet day from a rate limit, a revoked token,
+# or a 5xx, and this returns 2 with a reason on stdout for exactly that.
+#
+#   0  PRs are waiting
+#   1  no PRs, and the search is trustworthy
+#   2  cannot tell — reason printed to stdout
+ceo_pr_review_preflight() {
+  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+    echo "gh CLI missing or unauthenticated; cannot check PRs for review"
+    return 2
+  fi
+  if [ "${PR_REVIEW_COUNT:-0}" -gt 0 ]; then
+    return 0
+  fi
+  # Only when the count is 0: a degraded search that still returned PRs has work
+  # to do, and the incompleteness is the morning brief's marker to render.
+  if [ "${PR_GATHER_DEGRADED:-0}" -eq 1 ]; then
+    echo "PR search degraded, so an empty review queue is not evidence of one:$(echo "${PR_GATHER_DEGRADED_REASONS:-}" | tr '\n' ' ')"
+    return 2
+  fi
+  return 1
+}
+
 # Same idea for local vault reads. Tolerating a truncation's exit status (#293)
 # must not also tolerate an IO error: an unreadable Pending.md yields the same
 # empty string as a Pending.md with nothing in it, and the status evaluation below
