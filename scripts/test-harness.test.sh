@@ -34,7 +34,10 @@ _run_child() {
     echo "$body"
     echo 'run_tests'
   } > "$TMP/child.sh"
-  CHILD_OUT=$(bash "$TMP/child.sh" 2>&1)
+  # env -u: TEST_FILTER is meant to select arms in *this* suite, but it is exported
+  # into the child too, where it matches none of the child's own test names and
+  # every case reports "no tests discovered". That made the filter unusable here.
+  CHILD_OUT=$(env -u TEST_FILTER bash "$TMP/child.sh" 2>&1)
   CHILD_RC=$?
 }
 
@@ -75,17 +78,31 @@ test_x() {
 # hand_rolled = (1 - 0) - 1 = 0, absorbing the bare increment.
 # Pinning this documented limitation so the caveat is self-policing until all
 # bare increments in test suites are converted to fail_test.
-test_321_body_scope_absorption_limitation_pinned() {
+# The mechanism this arm's absence would break is already pinned, 40 lines down,
+# by test_a_bare_fails_increment_reaches_the_exit_code: a bare increment with no
+# nested assert beside it is the shape where the sweep and its absence diverge,
+# and neutering _record_hand_rolled_fails fails that test. So what is needed here
+# is not a second copy of it.
+#
+# A tripwire on a known bug, not a specification. When body-scope absorption is
+# fixed the count correctly becomes 2 and this arm goes red — that is the
+# intended signal, so the name and the message say so rather than reading as a
+# regression. test-harness.sh states plainly that the absorption "has not been"
+# fixed, so that day is expected.
+test_321_body_scope_absorption_known_bug_undercounts_by_one() {
   _run_child '
 test_x() {
   assert_eq a a "keeps the no-assertions guard quiet"
   ( assert_eq got want "nested assert fails" )
   printf "  FAIL hand-rolled\n"; FAILS=$((FAILS + 1))
 }'
-  # Two genuine failures occurred, but one is reported due to body-scope subtraction.
-  # The run still fails (exits non-zero).
+  # Two genuine failures occurred; one is absorbed by body-scope subtraction.
   assert_eq "$CHILD_RC" "1" "the run still fails non-zero"
-  assert_contains "$CHILD_OUT" "FAILED: 1" "pinning known limitation: reports 1 failure"
+  assert_contains "$CHILD_OUT" "FAILED: 1" \
+    "known bug (#321): two failures report as one. FAILED: 2 here means one of two \
+things — check test_assert_failures_are_not_double_counted first. Green: #321 is fixed, \
+delete this test. Red: the recorded-subtraction guard regressed and every assert failure \
+is being counted twice, which is not a fix"
 }
 
 # --- Scope attribution (#317) ---

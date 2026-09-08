@@ -123,7 +123,12 @@ assert_fails() {
 # cannot repair a bare main-scope increment sitting beside it — that is the absorption
 # above. The parent scopes have no such caveat: there the file is the only channel
 # (see _record_assertion_fail), so nothing cancels. No site in these suites is in
-# either shape, and test-harness.test.sh pins the bare-increment half only.
+# either shape, and test-harness.test.sh pins the bare-increment half only —
+# accurately: test_a_bare_fails_increment_reaches_the_exit_code drives the one
+# shape where this sweep's absence diverges, and neutering the sweep fails it.
+# The absorption half is a tripwire rather than a specification
+# (test_321_body_scope_absorption_known_bug_undercounts_by_one), and goes red
+# deliberately on the day that bug is fixed.
 _record_hand_rolled_fails() {
   local fails_before="$1" recorded=0
   [ -f "${TEST_FAILS_TMP:-}" ] && recorded=$(wc -l < "$TEST_FAILS_TMP")
@@ -173,6 +178,18 @@ run_tests() {
   body_fails_tmp=$(mktemp)
   parent_fails_tmp=$(mktemp)
   assertions_tmp="${body_fails_tmp}.assertions"
+
+  # An interrupt otherwise skips teardown entirely, so whatever a suite cleans
+  # up there stays behind — for the ceo-cron suites that is an executable in the
+  # tracked scripts/ directory (#380), which is the leak teardown exists to
+  # prevent. Ctrl-C during a slow suite is not an exotic event. `type` is
+  # re-checked because the trap outlives any one arm, and 130 is the
+  # conventional SIGINT status the caller would have seen anyway.
+  # `trap - INT TERM` first, so a second signal — or one arriving while the
+  # loop's own teardown is mid-flight — cannot re-enter this handler. A
+  # second pass through a teardown that has already unset its saved HOME
+  # aborts under `set -u` before reaching the exit, costing the status.
+  trap 'trap - INT TERM; type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue

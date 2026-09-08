@@ -58,7 +58,7 @@ Active playbooks shipped with the plugin (live in `docs/playbooks/`; copy into `
 | `token-intake` | `45 8 * * 1-5` | read | script | Run `ceo-token-intake.sh` — token-scope snapshot to vault |
 | `norx-bookkeeping` | hourly at :15 | high-stakes | script | Run the once-daily NoRx Mercury import and Sheets refresh when due |
 
-For `runner: claude`, `tier: read` runs a single `claude --print --max-turns 5 --disallowedTools Bash,Write,Edit` call with pre-gathered context injected as `<external-data>` blocks. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline; high-stakes actions are written to `CEO/approvals/pending.md` instead of executed. A `runner: script` playbook executes its already-approved script directly, including when its notification posture is `high-stakes`.
+For `runner: claude`, `tier: read` runs a single `claude --print --max-turns 5 --disallowedTools Bash,Write,Edit` call with pre-gathered context injected as `<external-data>` blocks. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline; high-stakes actions are written to `CEO/approvals/pending.md` instead of executed — unless FILTER drops them first, as an unsubstituted template token or a meta-directive, in which case they reach neither EXECUTE nor the approvals queue and the drop is recorded in `cron-skips.log`. A `runner: script` playbook executes its already-approved script directly, including when its notification posture is `high-stakes`.
 
 A playbook can declare `runner: script` to dispatch a shell script directly, skipping the LLM call entirely (token-intake is the canonical example). The script receives `CEO_VAULT`, `CEO_DIR`, `LOG_DIR`, `TODAY`, `NOW`, `TRIGGER` as env vars; the dispatcher does not parse stdout. Exit code 0 = success.
 
@@ -249,6 +249,22 @@ Override the configured vault path for a single invocation:
 CEO_VAULT="$HOME/Documents/Obsidian" bash scripts/ceo-token-intake.sh
 ```
 
+### `CEO_GIT_WRITE_GLOBAL_IDENTITY`
+
+`ceo setup` **preserves** an existing global git identity by default, and does not
+write one from `CEO_GIT_USER_NAME` / `CEO_GIT_USER_EMAIL` unless you opt in:
+
+```bash
+CEO_GIT_USER_NAME="You" CEO_GIT_USER_EMAIL="you@example.com" \
+  CEO_GIT_WRITE_GLOBAL_IDENTITY=1 ceo setup
+```
+
+Accepts `1`/`y`/`yes`/`true`/`on` and their negatives; an unrecognized value is
+refused with a warning rather than silently read as "no". Without it, setting
+the name and email alone prints a NOTE and changes nothing — deliberate, since a
+`--global` identity write is machine-wide and mis-signs commits in every repo on
+the host.
+
 ### `ceo_augment_path`
 
 Helper in `scripts/ceo-config.sh` that prepends `~/.bun/bin`, Homebrew, `~/.local/bin`, and `~/.cargo/bin` (OS-aware) to `PATH`. Cron starts with `PATH=/usr/bin:/bin`; any script that needs bun/Homebrew/user-installed CLIs sources `ceo-config.sh` and calls `ceo_augment_path` at the top. Validates `$HOME` is non-empty — `set -u` doesn't catch `HOME=""`.
@@ -335,7 +351,15 @@ After posting `morning-brief`, the poster also appends the **prior day's full da
 |------|---------|----------------|----------|
 | `read` | Scan vault, read PRs, generate briefings | Single call (no Bash/Write/Edit) | Auto |
 | `low-stakes-write` | Create branches, run tests, post PR comments | Three-phase PLAN/FILTER/EXECUTE | Auto + report |
-| `high-stakes` | Push code, merge PRs, create PRs | Filtered out of EXECUTE; written to `approvals/pending.md` | Propose + wait |
+| `high-stakes` | Push code, merge PRs, create PRs | Filtered out of EXECUTE; written to `approvals/pending.md`, or dropped outright — see below | Propose + wait |
+
+A high-stakes action has three possible fates, not two. It normally lands in
+`approvals/pending.md` and waits. But FILTER drops an action that is an
+unsubstituted template token or a meta-directive rather than a real proposal,
+and a dropped action reaches neither EXECUTE nor the queue. If you are looking
+for a proposal that never arrived, `cron-skips.log` is where the drop is
+recorded; the run's own summary also names a count of actions "ignored as
+template/malformed".
 
 ### Vault structure
 
