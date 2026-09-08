@@ -18,6 +18,7 @@ LOCK_DIR="$STATE_DIR/ceo-wrapper.lock"
 DAILY_BOUNDARY_MINUTES=375
 LOCK_ACQUIRED=0
 marker_tmp=''
+RUN_START_MARK=''
 
 if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
   printf 'noop' > "$CEO_RUNNER_OUTCOME_FILE"
@@ -49,6 +50,9 @@ chmod 700 "$STATE_DIR"
 cleanup() {
   if [ -n "$marker_tmp" ]; then
     rm -f "$marker_tmp"
+  fi
+  if [ -n "$RUN_START_MARK" ]; then
+    rm -f "$RUN_START_MARK"
   fi
   if [ "$LOCK_ACQUIRED" -eq 1 ]; then
     rm -f "$LOCK_DIR/owner"
@@ -113,11 +117,20 @@ fi
 # empties the variable rather than aborting: an unwritable state dir must not
 # turn a runner failure into a wrapper failure.
 RUN_START_MARK="$STATE_DIR/.ceo-run-start"
-: > "$RUN_START_MARK" 2>/dev/null || RUN_START_MARK=''
+# Braced: redirections are applied left to right, so a bare `: > "$f" 2>/dev/null`
+# reports the failing `>` before the `2>` is in effect — and that message would
+# land in the vault-synced cron-stderr.log.
+{ : > "$RUN_START_MARK"; } 2>/dev/null || RUN_START_MARK=''
 RUNNER_EXIT=0
 "$RUNNER" --run-once || RUNNER_EXIT=$?
 if [ "$RUNNER_EXIT" -ne 0 ]; then
   printf 'ERROR: NoRx bookkeeping runner exited %s\n' "$RUNNER_EXIT" >&2
+  # daily-bookkeeping.sh exits 75 when another copy holds its lock. The mtime
+  # check below proves the log moved since this run started, not that *this* run
+  # moved it — and on 75 the other copy is by definition the one writing. Quoting
+  # it there would attribute a concurrent run's phases to a run that did no work,
+  # which is the misdirection the rest of this block exists to prevent.
+  RUNNER_LOCK_BUSY_EXIT=75
   # Newest by mtime rather than a date-derived name: this block is diagnostics,
   # and a diagnostic must not be able to change the exit code it is explaining.
   # Deriving the filename meant calling DATE_BIN with a second format, and under
@@ -129,15 +142,17 @@ if [ "$RUNNER_EXIT" -ne 0 ]; then
   # filename hazard `find` exists for cannot arise. `|| true` keeps the pipeline
   # from tripping `pipefail` when the glob matches nothing.
   runner_log=$(ls -t "$RUNNER_LOG_DIR"/daily-bookkeeping-*.log 2>/dev/null | head -n 1 || true)
-  if [ -n "$runner_log" ] && [ -r "$runner_log" ]; then
+  if [ "$RUNNER_EXIT" -eq "$RUNNER_LOCK_BUSY_EXIT" ]; then
+    printf 'norx-bookkeeping: another copy of the runner holds its lock — this run did no work, so no log is quoted\n' >&2
+  elif [ -n "$runner_log" ] && [ -r "$runner_log" ]; then
     printf 'norx-bookkeeping: runner log: %s\n' "$runner_log" >&2
     if [ -z "$RUN_START_MARK" ]; then
       printf 'norx-bookkeeping: cannot tell whether that log is from this run — not quoting it\n' >&2
     elif [ "$RUN_START_MARK" -nt "$runner_log" ]; then
       # Strictly older than the mark, so nothing in it was written by this run.
-      # The runner has non-zero exits that log nothing at all — an unwritable log
-      # dir, a failed mktemp, and `exit 75` when another copy holds the lock — and
-      # in every one of those the newest log is a previous run's. Quoting it names
+      # The runner has other non-zero exits that log nothing at all — an
+      # unwritable log dir and a failed mktemp — and in both the newest log is a
+      # previous run's (exit 75 is handled above, before this check). Quoting it names
       # a cause that is not this failure's, which is worse than saying nothing:
       # silence prompts an investigation, a confident wrong answer ends one.
       printf 'norx-bookkeeping: that log predates this run — it does not explain this failure\n' >&2

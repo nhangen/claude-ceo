@@ -159,7 +159,7 @@ test_a_runner_failure_names_the_log_and_the_failing_phases() {
 # newest log belongs to a previous run, and quoting it names a cause that is not
 # this failure's.
 test_a_runner_failure_does_not_quote_a_log_written_before_this_run() {
-  export NORX_TEST_RUNNER_EXIT=75
+  export NORX_TEST_RUNNER_EXIT=9
   local logdir
   logdir=$(seed_runner_log \
     '2026-09-08T09:15:55Z|run-0|reconcile_ledger|mercury_auth_expired')
@@ -167,10 +167,31 @@ test_a_runner_failure_does_not_quote_a_log_written_before_this_run() {
   local err rc=0
   err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
 
-  assert_eq "$rc" "75" "a stale-log verdict must not change the exit code"
+  assert_eq "$rc" "9" "a stale-log verdict must not change the exit code"
   assert_contains "$err" "predates this run" "the wrapper says the log is not this run's"
   assert_not_contains "$err" "mercury_auth_expired" \
     "a previous run's cause must never be presented as this one's"
+}
+
+# Exit 75 is the runner's "another copy holds my lock". The other copy is by
+# definition writing the log right now, so the mtime check would call it fresh and
+# quote a concurrent run's phases for a run that did no work.
+test_a_lock_busy_exit_quotes_no_log_even_when_one_was_just_written() {
+  export NORX_TEST_RUNNER_EXIT=75
+  local logdir
+  logdir=$(seed_runner_log '2026-09-08T09:00:00Z|run-0|lock|success')
+  printf '%s\n' '2026-09-08T10:15:55Z|run-other|sync_all_sheets|other_copys_failure' \
+    > "$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_LINES="$TEST_ROOT/runner-log-lines"
+  export NORX_TEST_RUNNER_LOG_DEST="$logdir/daily-bookkeeping-2026-09-08.log"
+
+  local err rc=0
+  err=$(NORX_BOOKKEEPING_LOG_DIR="$logdir" bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+
+  assert_eq "$rc" "75" "the lock-busy verdict must not change the exit code"
+  assert_contains "$err" "holds its lock" "the wrapper says another copy is running"
+  assert_not_contains "$err" "other_copys_failure" \
+    "a concurrent run's phases are not this run's diagnosis"
 }
 
 # Newest by mtime, not by name. The date-derived filename this replaced called
@@ -260,7 +281,7 @@ test_a_runner_failure_with_an_unreadable_log_still_preserves_the_code() {
 # than fail. An earlier version derived the log's filename from DATE_BIN, and a
 # DATE_BIN that did not accept the second format aborted the wrapper under
 # `set -e` with its own status — turning a runner exit of 9 into a 2.
-test_a_runner_failure_with_no_readable_log_still_preserves_the_code() {
+test_a_runner_failure_with_a_missing_log_directory_still_preserves_the_code() {
   export NORX_TEST_RUNNER_EXIT=9
   local err rc=0
   err=$(NORX_BOOKKEEPING_LOG_DIR="$NORX_BOOKKEEPING_STATE_DIR/nonexistent" \
