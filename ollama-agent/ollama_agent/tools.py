@@ -150,7 +150,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "git",
         "description": "Run a git subcommand in the working directory (e.g. args=[\"status\",\"--short\"]). args may also be a single string, tokenized with shell quoting rules: quote any path or message containing spaces, and escape a literal backslash.",
         "parameters": {"type": "object", "properties": {
-            "args": {"type": "array", "items": {"type": "string"}}},
+            "args": {"type": ["array", "string"], "items": {"type": "string"}}},
             "required": ["args"]}}},
     {"type": "function", "function": {"name": "read_file",
         "description": "Read a file (relative to the working directory) and return its content.",
