@@ -547,17 +547,24 @@ PB
 # silently corrupting every failure reason from that point on.
 test_no_playbook_script_writes_to_the_shared_cron_logs() {
   local f offenders=""
-  for f in "$SCRIPT_DIR"/ceo-*.sh; do
-    case "$f" in *.test.sh|*/ceo-cron.sh) continue ;; esac
-    # A redirect into the path, not a mention of it — ceo-norx-bookkeeping.sh
-    # names cron-stderr.log in a comment about what the dispatcher does with its
-    # output, which is documentation, not a write.
-    if grep -Eq '>>?[[:space:]]*"?[^"]*cron-std(out|err)\.log' "$f" 2>/dev/null; then
+  # Every shell script beside the dispatcher, not just ceo-*.sh: a playbook's
+  # `script:` field is a free-form filename, so the prefix is convention rather
+  # than a constraint.
+  for f in "$SCRIPT_DIR"/*.sh; do
+    case "$f" in *.test.sh|*test-common.sh|*test-harness.sh|*/ceo-cron.sh) continue ;; esac
+    # Comments stripped first, so writing *about* these logs is not a write to
+    # them — ceo-norx-bookkeeping.sh explains what the dispatcher does with its
+    # output, and a `>>` inside that prose would otherwise trip this.
+    if sed 's/#.*//' "$f" 2>/dev/null \
+       | grep -Eq '(>>?[[:space:]]*"?[^"]*|tee[^|]*)cron-std(out|err)\.log'; then
       offenders="$offenders $(basename "$f")"
     fi
   done
   assert_eq "$offenders" "" \
     "a runner:script playbook writing these logs would break the failure tail's offset scoping"
+  # Not proof against a determined evasion — a variable holding the filename, or
+  # a split string, slips past. It is a tripwire for the accidental case, which
+  # is the one that will actually happen.
 }
 
 # The stdout fallback is the other consumer of the offset, and the arm above
@@ -635,7 +642,9 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   mkdir -p "$CEO_DIR/log"
   rm -f "$CEO_DIR/log/cron-stdout.log" "$CEO_DIR/log/cron-stderr.log"
-  # Present but unwritable, so the append fails rather than the create.
+  # Present but unwritable, so the append fails rather than the create. As root
+  # the chmod is a no-op and this arm fails rather than passing — the safe
+  # direction, but a root CI run would look like a regression.
   : > "$CEO_DIR/log/cron-stdout.log"
   chmod 400 "$CEO_DIR/log/cron-stdout.log"
   bash "$CRON" ro-log >/dev/null 2>&1 || true

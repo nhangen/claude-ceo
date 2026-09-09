@@ -1625,7 +1625,7 @@ if [ "$RUNNER" = "script" ]; then
   # indistinguishable from a real failure, three strikes and a Discord post
   # later. Classify it instead.
   if ! : >> "$SCRIPT_OUT_LOG" 2>/dev/null || ! : >> "$SCRIPT_ERR_LOG" 2>/dev/null; then
-    _record_failure "Cannot append to $LOG_DIR/cron-{stdout,stderr}.log for $TRIGGER — script NOT run (disk full or vault unmounted?)"
+    _record_failure "Cannot append to $LOG_DIR/cron-{stdout,stderr}.log for $TRIGGER — script NOT run (root-owned log from an earlier sudo run?)"
     rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit 1
   fi
@@ -1691,7 +1691,11 @@ _script_tail() {
   case "$off" in
     ''|*[!0-9]*) printf 'log offset unavailable; output not quoted'; return 0 ;;
   esac
-  cur=$(wc -c < "$f" 2>/dev/null || echo 0)
+  # `tr -d` for the same reason the offset capture has it: BSD wc pads its count.
+  # `[ -lt ]` tolerates the padding where the glob above does not, and relying on
+  # that asymmetry is how the guard one line up got its own bug.
+  cur=$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]' || echo 0)
+  [ -n "$cur" ] || cur=0
   if [ "$cur" -lt "$off" ]; then
     # Shrunk since the run started: an operator clearing a bloated log, or a
     # rotation. `tail -c +N` past EOF emits nothing, which would read as "the
@@ -1699,11 +1703,16 @@ _script_tail() {
     printf 'log truncated during the run; output unavailable'
     return 0
   fi
-  # The inner -c cap bounds the forward read: `tail -c +N` streams from the
-  # offset to EOF, so a playbook that emitted gigabytes before dying would
-  # otherwise cost a full read of its own output on the failure path — on a host
-  # that may already be the one with the disk problem.
-  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -c 65536 | tail -n 10 | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+  # The inner -c cap bounds how much is held and passed down the pipeline, not
+  # the read: `tail -c +N` still streams to EOF. It keeps a playbook that emitted
+  # gigabytes before dying from carrying all of it through cut and sed.
+  #
+  # The trailing `|| true` is load-bearing. Under pipefail an unreadable log makes
+  # this pipeline exit 1, and the call site is a bare assignment under `set -e` —
+  # the dispatcher would die before _record_failure ran, turning a script failure
+  # into the generic aborted-before-its-own-failure-handling path. A diagnostic
+  # must not be able to take down the failure it is describing.
+  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -c 65536 | tail -n 10 | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true
 }
 
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
