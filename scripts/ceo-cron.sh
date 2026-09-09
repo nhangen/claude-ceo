@@ -1600,12 +1600,46 @@ if [ "$RUNNER" = "script" ]; then
   # _record_success whether this tick did real work worth a success notify.
   CEO_RUNNER_OUTCOME_FILE="$(mktemp)"
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER CEO_RUNNER_OUTCOME_FILE
-  SCRIPT_OUT_TMP="$(mktemp)"
-  SCRIPT_ERR_TMP="$(mktemp)"
+  # Live append, not capture-then-flush. #302 needed the script's own output to
+  # build a failure tail and captured it to two tmp files, which cost two
+  # properties that only matter when things go wrong: `tail -f cron-stdout.log`
+  # — the natural way to watch the thing #302 exists to make debuggable — showed
+  # an empty file for the whole life of a hung playbook, and a killed run lost
+  # its output entirely and leaked both tmp files, since cleanup is an explicit
+  # rm on each exit path rather than a trap (an EXIT trap here would clobber the
+  # lock-release trap set at the top of the run).
+  #
+  # Recording each log's size first buys the tail back without either cost: the
+  # bytes appended past that offset are exactly this run's. Nothing to clean up,
+  # so a SIGTERM leaves the logs holding everything written up to the kill —
+  # which is the state you want at 3am. The global lock serializes ticks, so no
+  # other playbook can append inside the window; a script that writes to these
+  # logs itself would, and no script does.
+  SCRIPT_OUT_LOG="$LOG_DIR/cron-stdout.log"
+  SCRIPT_ERR_LOG="$LOG_DIR/cron-stderr.log"
+  # Probed, not tolerated. Under the old capture-then-flush the logs were a
+  # best-effort sink — `cat … >> log || true` — and a full or unmounted vault
+  # cost the log line, not the run. Now the log IS the child's stdout, so bash
+  # opens it before exec'ing: a failed open means the playbook never runs and
+  # bash returns 1, which would be recorded as `Script exited 1` and be
+  # indistinguishable from a real failure, three strikes and a Discord post
+  # later. Classify it instead.
+  if ! : >> "$SCRIPT_OUT_LOG" 2>/dev/null || ! : >> "$SCRIPT_ERR_LOG" 2>/dev/null; then
+    _record_failure "Cannot append to $LOG_DIR/cron-{stdout,stderr}.log for $TRIGGER — script NOT run (root-owned log from an earlier sudo run?)"
+    rm -f "$CEO_RUNNER_OUTCOME_FILE"
+    exit 1
+  fi
+  # Empty on failure, not 0. Zero is not a neutral default here — it is the one
+  # value that means "quote the whole shared log", which is the cross-run
+  # misattribution the offset exists to prevent. An unmeasurable log suppresses
+  # the quote instead of widening it.
+  # `tr -d` because BSD wc pads its count with leading spaces, and the numeric
+  # guard in _script_tail is a glob, not an arithmetic test — an unstripped
+  # "     42" reads as non-numeric and suppresses every failure reason.
+  SCRIPT_OUT_OFFSET=$(wc -c < "$SCRIPT_OUT_LOG" 2>/dev/null | tr -d '[:space:]') || SCRIPT_OUT_OFFSET=""
+  SCRIPT_ERR_OFFSET=$(wc -c < "$SCRIPT_ERR_LOG" 2>/dev/null | tr -d '[:space:]') || SCRIPT_ERR_OFFSET=""
   SCRIPT_EXIT=0
-  "$SCRIPT_FULL" > "$SCRIPT_OUT_TMP" 2> "$SCRIPT_ERR_TMP" || SCRIPT_EXIT=$?
-  cat "$SCRIPT_OUT_TMP" >> "$LOG_DIR/cron-stdout.log" 2>/dev/null || true
-  cat "$SCRIPT_ERR_TMP" >> "$LOG_DIR/cron-stderr.log" 2>/dev/null || true
+  "$SCRIPT_FULL" >> "$SCRIPT_OUT_LOG" 2>> "$SCRIPT_ERR_LOG" || SCRIPT_EXIT=$?
   # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
   # trap set earlier at the top of the run. rm before each exit instead so the
   # per-tick outcome tmp file doesn't leak.
@@ -1634,21 +1668,60 @@ _redact_secrets() {
     -e 's/(([Tt]oken|[Aa]pi[_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[[:space:]]*[=:][[:space:]]*)[^[:space:]&]+/\1***REDACTED***/g'
 }
 
-# Bounded, redacted, single-line tail of a captured stream. 10 lines x 120 chars
-# caps it near 1.2 KB whatever the script emitted, including one enormous line.
+# Bounded, redacted, single-line tail of one run's slice of a shared log. 10
+# lines x 120 chars caps it near 1.2 KB whatever the script emitted, including
+# one enormous line. $2 is the log's size before this run, so the slice is this
+# run's bytes and not the previous tick's — these logs are append-only and shared
+# by every playbook.
 _script_tail() {
-  [ -s "$1" ] || return 0
-  tail -n 10 "$1" | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+  local f="$1" off="${2:-}" cur
+  # No `[ -s "$f" ]` early-out any more: $f is a shared append-only log that is
+  # non-empty on every host after the first tick, so the guard read as a check on
+  # this run's slice and was a check on the file. An empty log with a non-zero
+  # offset is the truncation case below, and an empty slice falls out of the
+  # pipeline as the empty string, which the caller already tests for.
+  #
+  # An unmeasurable offset means the slice cannot be identified. Saying so beats
+  # quoting the whole shared log as this run's cause.
+  # Defaulting to empty rather than to 0, and reporting rather than aborting. A
+  # `${2?...}` would make the omission loud, but it kills the subshell this runs
+  # in and takes _record_failure's remaining bookkeeping with it — the shape that
+  # bit the #395 host fallback. 0 is worse still: it is the one value that means
+  # "quote the whole shared log", which is the bug the offset exists to prevent.
+  case "$off" in
+    ''|*[!0-9]*) printf 'log offset unavailable; output not quoted'; return 0 ;;
+  esac
+  # `tr -d` for the same reason the offset capture has it: BSD wc pads its count.
+  # `[ -lt ]` tolerates the padding where the glob above does not, and relying on
+  # that asymmetry is how the guard one line up got its own bug.
+  cur=$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]' || echo 0)
+  [ -n "$cur" ] || cur=0
+  if [ "$cur" -lt "$off" ]; then
+    # Shrunk since the run started: an operator clearing a bloated log, or a
+    # rotation. `tail -c +N` past EOF emits nothing, which would read as "the
+    # script produced no diagnostic" when it produced one and the slicer lost it.
+    printf 'log truncated during the run; output unavailable'
+    return 0
+  fi
+  # The inner -c cap bounds how much is held and passed down the pipeline, not
+  # the read: `tail -c +N` still streams to EOF. It keeps a playbook that emitted
+  # gigabytes before dying from carrying all of it through cut and sed.
+  #
+  # The trailing `|| true` is load-bearing. Under pipefail an unreadable log makes
+  # this pipeline exit 1, and the call site is a bare assignment under `set -e` —
+  # the dispatcher would die before _record_failure ran, turning a script failure
+  # into the generic aborted-before-its-own-failure-handling path. A diagnostic
+  # must not be able to take down the failure it is describing.
+  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -c 65536 | tail -n 10 | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true
 }
 
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
     _v "FAILED (exit: $SCRIPT_EXIT)"
-    script_tail=$(_script_tail "$SCRIPT_ERR_TMP")
+    script_tail=$(_script_tail "$SCRIPT_ERR_LOG" "$SCRIPT_ERR_OFFSET")
     # Test the trimmed result, not the file: a script that ends its stderr with a
     # blank line passes `[ -s ]` and yields an empty tail, which used to suppress
     # a perfectly good diagnostic sitting on stdout.
-    [ -n "$script_tail" ] || script_tail=$(_script_tail "$SCRIPT_OUT_TMP")
-    rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
+    [ -n "$script_tail" ] || script_tail=$(_script_tail "$SCRIPT_OUT_LOG" "$SCRIPT_OUT_OFFSET")
     if [ -n "$script_tail" ]; then
       _record_failure "Script exited $SCRIPT_EXIT for $TRIGGER — output: $script_tail"
     else
@@ -1657,7 +1730,6 @@ _script_tail() {
     rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit "$SCRIPT_EXIT"
   fi
-  rm -f "$SCRIPT_OUT_TMP" "$SCRIPT_ERR_TMP"
   _record_success
   rm -f "$CEO_RUNNER_OUTCOME_FILE"
   exit 0

@@ -494,6 +494,240 @@ PB
   rm -f "$SCRIPT_DIR/ro-queue-test.sh"
 }
 
+# The logs are append-only and shared by every playbook, so the failure tail has
+# to be this run's slice of them, not the file's tail. Without the offset, the
+# second failing tick quotes the first one's output as its own cause — the same
+# cross-run misattribution #390 fixed in the norx wrapper, one layer up.
+test_the_failure_tail_quotes_this_runs_output_not_the_previous_ticks() {
+  cat > "$SCRIPT_DIR/slice-a-test.sh" << 'SH'
+#!/bin/bash
+echo "cause-from-the-earlier-tick" >&2
+exit 3
+SH
+  cat > "$SCRIPT_DIR/slice-b-test.sh" << 'SH'
+#!/bin/bash
+echo "cause-from-this-tick" >&2
+exit 4
+SH
+  _fixture_script "$SCRIPT_DIR/slice-a-test.sh" "$SCRIPT_DIR/slice-b-test.sh"
+  for n in a b; do
+    cat > "$CEO_DIR/playbooks/slice-$n.md" << PB
+---
+name: slice-$n
+description: writes a distinguishable failure cause
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: slice-$n-test.sh
+---
+# noop
+PB
+  done
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" slice-a >/dev/null 2>&1 || true
+  bash "$CRON" slice-b >/dev/null 2>&1 || true
+
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local b_line; b_line=$(printf '%s\n' "$skips" | grep "Script exited 4 for slice-b" | tail -1)
+  assert_contains "$b_line" "cause-from-this-tick" "the tail quotes the run that just failed"
+  assert_not_contains "$b_line" "cause-from-the-earlier-tick" \
+    "and not the previous tick's, which is still sitting in the same shared log"
+  rm -f "$SCRIPT_DIR/slice-a-test.sh" "$SCRIPT_DIR/slice-b-test.sh"
+}
+
+# The offset only identifies this run's bytes while nothing else appends to these
+# two logs inside the window. The global lock covers other ticks; what it cannot
+# cover is a playbook script writing to them directly — and ceo-cron.sh exports
+# LOG_DIR to the child, which is an invitation to do exactly that. True of all
+# nine script playbooks today, so this is a tripwire on the assumption rather
+# than a bug: the next author to add such a write gets a failing test instead of
+# silently corrupting every failure reason from that point on.
+test_no_playbook_script_writes_to_the_shared_cron_logs() {
+  local f offenders=""
+  # Every shell script beside the dispatcher, not just ceo-*.sh: a playbook's
+  # `script:` field is a free-form filename, so the prefix is convention rather
+  # than a constraint.
+  for f in "$SCRIPT_DIR"/*.sh; do
+    case "$f" in *.test.sh|*test-common.sh|*test-harness.sh|*/ceo-cron.sh) continue ;; esac
+    # Comments stripped first, so writing *about* these logs is not a write to
+    # them — ceo-norx-bookkeeping.sh explains what the dispatcher does with its
+    # output, and a `>>` inside that prose would otherwise trip this.
+    if sed 's/#.*//' "$f" 2>/dev/null \
+       | grep -Eq '(>>?[[:space:]]*"?[^"]*|tee[^|]*)cron-std(out|err)\.log'; then
+      offenders="$offenders $(basename "$f")"
+    fi
+  done
+  assert_eq "$offenders" "" \
+    "a runner:script playbook writing these logs would break the failure tail's offset scoping"
+  # Not proof against a determined evasion — a variable holding the filename, or
+  # a split string, slips past. It is a tripwire for the accidental case, which
+  # is the one that will actually happen.
+}
+
+# The stdout fallback is the other consumer of the offset, and the arm above
+# drives only stderr — both its fixtures write to >&2. So the branch that carries
+# the diagnostic when stderr is blank, which is the case #302 added the fallback
+# for, had its offset unverified: dropping the argument from that one call site
+# left every existing arm green.
+test_the_stdout_fallback_is_also_scoped_to_this_run() {
+  cat > "$SCRIPT_DIR/slice-c-test.sh" << 'SH'
+#!/bin/bash
+echo "stdout-cause-from-the-earlier-tick"
+exit 5
+SH
+  cat > "$SCRIPT_DIR/slice-d-test.sh" << 'SH'
+#!/bin/bash
+echo "stdout-cause-from-this-tick"
+exit 6
+SH
+  _fixture_script "$SCRIPT_DIR/slice-c-test.sh" "$SCRIPT_DIR/slice-d-test.sh"
+  for n in c d; do
+    cat > "$CEO_DIR/playbooks/slice-$n.md" << PB
+---
+name: slice-$n
+description: writes its cause to stdout with a blank stderr
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: slice-$n-test.sh
+---
+# noop
+PB
+  done
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" slice-c >/dev/null 2>&1 || true
+  bash "$CRON" slice-d >/dev/null 2>&1 || true
+
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local d_line; d_line=$(printf '%s\n' "$skips" | grep "Script exited 6 for slice-d" | tail -1)
+  assert_contains "$d_line" "stdout-cause-from-this-tick" \
+    "the stdout fallback quotes the run that just failed"
+  assert_not_contains "$d_line" "stdout-cause-from-the-earlier-tick" \
+    "and is scoped by the offset too, not just the stderr path"
+  rm -f "$SCRIPT_DIR/slice-c-test.sh" "$SCRIPT_DIR/slice-d-test.sh"
+}
+
+# The log is the child's stdout now, so bash opens it before exec'ing: a failed
+# open means the playbook never ran. Reporting that as the script's own exit code
+# escalates to pending.md and Discord after three strikes, for a run that did not
+# happen. The old capture-then-flush tolerated a log-write failure; this must
+# classify it instead.
+test_an_unwritable_script_log_is_not_reported_as_a_script_failure() {
+  cat > "$SCRIPT_DIR/ro-log-test.sh" << 'SH'
+#!/bin/bash
+echo "this script should never run"
+exit 0
+SH
+  _fixture_script "$SCRIPT_DIR/ro-log-test.sh"
+  cat > "$CEO_DIR/playbooks/ro-log.md" << 'PB'
+---
+name: ro-log
+description: runs where the script logs cannot be written
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: ro-log-test.sh
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/log"
+  rm -f "$CEO_DIR/log/cron-stdout.log" "$CEO_DIR/log/cron-stderr.log"
+  # Present but unwritable, so the append fails rather than the create. As root
+  # the chmod is a no-op and this arm fails rather than passing — the safe
+  # direction, but a root CI run would look like a regression.
+  : > "$CEO_DIR/log/cron-stdout.log"
+  chmod 400 "$CEO_DIR/log/cron-stdout.log"
+  bash "$CRON" ro-log >/dev/null 2>&1 || true
+  chmod 600 "$CEO_DIR/log/cron-stdout.log"
+
+  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "script NOT run" \
+    "an unwritable log must say the script never ran"
+  assert_not_contains "$skips" "Script exited 1 for ro-log" \
+    "and must not be recorded as the playbook's own failure"
+  local out; out=$(cat "$CEO_DIR/log/cron-stdout.log" 2>/dev/null || echo "")
+  local err; err=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  assert_not_contains "$out" "this script should never run" \
+    "the script really did not run — the assertion above is not about wording"
+  rm -f "$SCRIPT_DIR/ro-log-test.sh"
+}
+
+# Two properties that only matter when things go wrong, and that capture-then-flush
+# cost: a hung playbook logged nothing while it ran, so `tail -f cron-stdout.log`
+# showed an empty file; and a killed run lost its output entirely, because the
+# flush and the tmp-file cleanup were both after the script returned.
+test_script_output_is_live_and_survives_a_killed_run() {
+  cat > "$SCRIPT_DIR/live-out-test.sh" << 'SH'
+#!/bin/bash
+echo "live-marker-from-script"
+# Both streams: they are redirected separately, so reverting only one to
+# capture-then-flush passes an arm that polls only the other — and stderr is the
+# stream that carries the diagnostic at 3am.
+echo "live-marker-on-stderr" >&2
+# Blocks on a file the test creates, rather than on a sleep, so the "is it
+# visible yet?" question has a deterministic answer. Bounded so a failing
+# assertion cannot hang the suite.
+i=0
+while [ ! -f "$LOG_DIR/stop-now" ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
+SH
+  _fixture_script "$SCRIPT_DIR/live-out-test.sh"
+  cat > "$CEO_DIR/playbooks/live-out.md" << 'PB'
+---
+name: live-out
+description: emits a line then blocks until released
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: live-out-test.sh
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/log"
+  rm -f "$CEO_DIR/log/stop-now" "$CEO_DIR/log/cron-stdout.log"
+
+  bash "$CRON" live-out >/dev/null 2>&1 &
+  local cron_pid=$! i=0 seen=""
+  while [ "$i" -lt 100 ]; do
+    if grep -q "live-marker-from-script" "$CEO_DIR/log/cron-stdout.log" 2>/dev/null \
+       && grep -q "live-marker-on-stderr" "$CEO_DIR/log/cron-stderr.log" 2>/dev/null; then
+      seen=yes; break
+    fi
+    sleep 0.1; i=$((i + 1))
+  done
+  assert_eq "$seen" "yes" \
+    "both streams must reach their logs while the script is still running"
+
+  kill -TERM "$cron_pid" 2>/dev/null || true
+  touch "$CEO_DIR/log/stop-now"
+  wait "$cron_pid" 2>/dev/null || true
+
+  local out; out=$(cat "$CEO_DIR/log/cron-stdout.log" 2>/dev/null || echo "")
+  local err; err=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  # Precisely: the parent is signalled, not the whole group, so what this pins is
+  # that the bytes written before the parent died are still on disk — which is
+  # the property capture-then-flush lost, since its flush ran after the script
+  # returned. Reverting to capture-then-flush fails this and the assertion above.
+  assert_contains "$out" "live-marker-from-script" \
+    "the bytes written before the parent died are still in the log"
+  assert_contains "$err" "live-marker-on-stderr" \
+    "on both streams — each is redirected separately and can regress alone"
+  rm -f "$SCRIPT_DIR/live-out-test.sh" "$CEO_DIR/log/stop-now"
+}
+
 test_read_tier_failure_increments_fail_count() {
   cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
