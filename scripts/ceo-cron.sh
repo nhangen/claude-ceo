@@ -1617,10 +1617,27 @@ if [ "$RUNNER" = "script" ]; then
   # logs itself would, and no script does.
   SCRIPT_OUT_LOG="$LOG_DIR/cron-stdout.log"
   SCRIPT_ERR_LOG="$LOG_DIR/cron-stderr.log"
-  : >> "$SCRIPT_OUT_LOG" 2>/dev/null || true
-  : >> "$SCRIPT_ERR_LOG" 2>/dev/null || true
-  SCRIPT_OUT_OFFSET=$(wc -c < "$SCRIPT_OUT_LOG" 2>/dev/null || echo 0)
-  SCRIPT_ERR_OFFSET=$(wc -c < "$SCRIPT_ERR_LOG" 2>/dev/null || echo 0)
+  # Probed, not tolerated. Under the old capture-then-flush the logs were a
+  # best-effort sink — `cat … >> log || true` — and a full or unmounted vault
+  # cost the log line, not the run. Now the log IS the child's stdout, so bash
+  # opens it before exec'ing: a failed open means the playbook never runs and
+  # bash returns 1, which would be recorded as `Script exited 1` and be
+  # indistinguishable from a real failure, three strikes and a Discord post
+  # later. Classify it instead.
+  if ! : >> "$SCRIPT_OUT_LOG" 2>/dev/null || ! : >> "$SCRIPT_ERR_LOG" 2>/dev/null; then
+    _record_failure "Cannot append to $LOG_DIR/cron-{stdout,stderr}.log for $TRIGGER — script NOT run (disk full or vault unmounted?)"
+    rm -f "$CEO_RUNNER_OUTCOME_FILE"
+    exit 1
+  fi
+  # Empty on failure, not 0. Zero is not a neutral default here — it is the one
+  # value that means "quote the whole shared log", which is the cross-run
+  # misattribution the offset exists to prevent. An unmeasurable log suppresses
+  # the quote instead of widening it.
+  # `tr -d` because BSD wc pads its count with leading spaces, and the numeric
+  # guard in _script_tail is a glob, not an arithmetic test — an unstripped
+  # "     42" reads as non-numeric and suppresses every failure reason.
+  SCRIPT_OUT_OFFSET=$(wc -c < "$SCRIPT_OUT_LOG" 2>/dev/null | tr -d '[:space:]') || SCRIPT_OUT_OFFSET=""
+  SCRIPT_ERR_OFFSET=$(wc -c < "$SCRIPT_ERR_LOG" 2>/dev/null | tr -d '[:space:]') || SCRIPT_ERR_OFFSET=""
   SCRIPT_EXIT=0
   "$SCRIPT_FULL" >> "$SCRIPT_OUT_LOG" 2>> "$SCRIPT_ERR_LOG" || SCRIPT_EXIT=$?
   # Explicit cleanup (not a trap): an EXIT trap here would clobber the lock-release
@@ -1657,9 +1674,36 @@ _redact_secrets() {
 # run's bytes and not the previous tick's — these logs are append-only and shared
 # by every playbook.
 _script_tail() {
-  local f="$1" off="${2:-0}"
-  [ -s "$f" ] || return 0
-  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -n 10 | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+  local f="$1" off="${2:-}" cur
+  # No `[ -s "$f" ]` early-out any more: $f is a shared append-only log that is
+  # non-empty on every host after the first tick, so the guard read as a check on
+  # this run's slice and was a check on the file. An empty log with a non-zero
+  # offset is the truncation case below, and an empty slice falls out of the
+  # pipeline as the empty string, which the caller already tests for.
+  #
+  # An unmeasurable offset means the slice cannot be identified. Saying so beats
+  # quoting the whole shared log as this run's cause.
+  # Defaulting to empty rather than to 0, and reporting rather than aborting. A
+  # `${2?...}` would make the omission loud, but it kills the subshell this runs
+  # in and takes _record_failure's remaining bookkeeping with it — the shape that
+  # bit the #395 host fallback. 0 is worse still: it is the one value that means
+  # "quote the whole shared log", which is the bug the offset exists to prevent.
+  case "$off" in
+    ''|*[!0-9]*) printf 'log offset unavailable; output not quoted'; return 0 ;;
+  esac
+  cur=$(wc -c < "$f" 2>/dev/null || echo 0)
+  if [ "$cur" -lt "$off" ]; then
+    # Shrunk since the run started: an operator clearing a bloated log, or a
+    # rotation. `tail -c +N` past EOF emits nothing, which would read as "the
+    # script produced no diagnostic" when it produced one and the slicer lost it.
+    printf 'log truncated during the run; output unavailable'
+    return 0
+  fi
+  # The inner -c cap bounds the forward read: `tail -c +N` streams from the
+  # offset to EOF, so a playbook that emitted gigabytes before dying would
+  # otherwise cost a full read of its own output on the failure path — on a host
+  # that may already be the one with the disk problem.
+  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -c 65536 | tail -n 10 | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
 
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
