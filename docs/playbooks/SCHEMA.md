@@ -8,7 +8,7 @@ Unknown values for enum fields are **rejected at parse time** with a `SKIP` diag
 
 | Field | Required | Type | Notes |
 |---|---|---|---|
-| `name` | yes | string | Unique playbook ID. Used as `ceo-cron.sh <name>` and as the cron-runs.log key. No newlines, no whitespace-only. Vault entries shadow same-named repo entries. |
+| `name` | yes | string | Unique playbook ID. Used as `ceo-cron.sh <name>` and as the cron-runs-<host>.log key. No newlines, no whitespace-only. Vault entries shadow same-named repo entries. |
 | `description` | recommended | string | Free text. Surfaced by `ceo playbook info` and used by `ceo doctor` reporting. |
 | `trigger` | yes | enum: `cron`, `manual` | Only `cron` entries get installed by `ceo playbook scan`. `manual` is runnable via `ceo-cron.sh <name>` on demand but never installed. |
 | `schedule` | required when `trigger: cron` and `status: active` | 5-field cron expression | Validated with [`_validate_cron_expr`](../../scripts/ceo). User-level overrides live in `$CEO_VAULT/CEO/schedules.json` and win at scan time. |
@@ -54,7 +54,7 @@ The default is **manual**, so a bare `ceo-cron.sh <name>` is the on-demand path 
 
 **The per-trigger cooldown applies to manual runs only.** Under `--scheduled` the daemon owns it: `ceo-schedulerd` passes cronbird a `cooldownSeconds` resolver (`settings.json`'s `cooldown_seconds`, default 1800s, capped at half the playbook's own cadence) and cronbird declines to *enqueue* a job still inside its cooldown. This script's gate instead dispatches and then `exit 0`s, which the daemon reads as a clean success — resetting the retry counter and stamping `lastSuccess` — so a failing playbook's retry could launder itself into a scheduler-level success (#298). One owner per side of the boundary (#300). A scheduled run still *stamps* `.last-run`; it just doesn't read it.
 
-`--dry-run` is a preview mode, orthogonal to run-mode. It runs every **read-only** phase (gather, the PLAN call, a read-tier model call) but mutates **no CEO state**: the EXECUTE phase is skipped, `runner: script` / `runner: skill` are not executed, and nothing is written to the approvals queue, Discord, the report intake, the host inbox, the synced daily log (`CEO/log/<TODAY>.md`), `.last-run`, `.last-scan`, the fail-counter, or `cron-runs.log`. What *would* happen is written to a preview file at `CEO/log/preview/<trigger>-<TODAY>.md`.
+`--dry-run` is a preview mode, orthogonal to run-mode. It runs every **read-only** phase (gather, the PLAN call, a read-tier model call) but mutates **no CEO state**: the EXECUTE phase is skipped, `runner: script` / `runner: skill` are not executed, and nothing is written to the approvals queue, Discord, the report intake, the host inbox, the synced daily log (`CEO/log/<TODAY>.md`), `.last-run`, `.last-scan`, the fail-counter, or `cron-runs-<host>.log`. What *would* happen is written to a preview file at `CEO/log/preview/<trigger>-<TODAY>.md`.
 
 That preview is **host-local**: `CEO/log/preview/` is excluded from Syncthing in `syncthing/shared.stignore`, so a dry-run on one host never propagates to the others. The rest of `CEO/log/` *is* synced — the daily log and the operational diagnostic journals (`cron-skips.log`, `cron-stderr.log`) — which is why the daily-log header write is also skipped in dry-run. A dry-run still appends clearly-labelled diagnostic lines to `cron-skips.log` (e.g. the `--scheduled` WARN below); that journal is the dispatcher's operational debug channel, not CEO decision-state.
 

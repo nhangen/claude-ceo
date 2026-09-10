@@ -424,23 +424,39 @@ cmd_doctor() {
 
   # Completed-but-no-output cross-check — for every active runner:script or
   # runner:ollama-agent playbook with a declared `artifact:`, if today's
-  # cron-runs.log says it completed, verify the artifact exists. This catches the
+  # cron-runs-*.log says it completed, verify the artifact exists. This catches the
   # #88 / #89 shape where the dispatcher records 'completed' but the runner
   # produced no visible side-effect. For ollama-agent this is the load-bearing
   # backstop: the bridge reports completed when the model stops, independent of
   # whether its write_file actually landed, so a failed report write would
   # otherwise be a silent success.
+  # One log per host since #397 (cron-runs-<host>.log), and this check reads
+  # only *this* host's — plus the pre-#397 bare cron-runs.log, which holds every
+  # completion recorded before the rename and everything from a host that has
+  # not picked it up yet.
+  #
+  # Reading peers' logs would be actively wrong, not merely wasteful: the
+  # artifact path is expanded with *this* host's id, so a peer's completion line
+  # for a {HOST}-keyed playbook would make doctor look for a file that was never
+  # supposed to exist here and report it missing. That false failure is live
+  # today, because the shared log carried every host's lines into this grep.
+  local _runs_logs=()
+  local _rl
+  for _rl in "$CEO_DIR/log/cron-runs.log" \
+             "$CEO_DIR/log/cron-runs-$(_cron_runs_log_host).log"; do
+    [ -f "$_rl" ] && _runs_logs+=("$_rl")
+  done
   if [ ! -f "$registry_file" ]; then
     echo "  ⚠ doctor artifact cross-check skipped: registry.json not found (run: ceo playbook scan)"
     warn=$((warn + 1))
   elif ! command -v jq &>/dev/null; then
     echo "  ⚠ doctor artifact cross-check skipped: jq not on PATH"
     warn=$((warn + 1))
-  elif [ ! -f "$CEO_DIR/log/cron-runs.log" ]; then
-    echo "  ⚠ doctor artifact cross-check skipped: cron-runs.log not found"
+  elif [ "${#_runs_logs[@]}" -eq 0 ]; then
+    echo "  ⚠ doctor artifact cross-check skipped: no cron-runs*.log found in $CEO_DIR/log"
     warn=$((warn + 1))
   else
-    # cron-runs.log lines look like: "Wed May 28 06:00:11 EDT 2026: <name> completed"
+    # cron-runs-<host>.log lines look like: "Wed May 28 06:00:11 EDT 2026: <name> completed"
     # (written by ceo-cron.sh:47 via $(date)). Force LC_TIME=C when building the
     # prefix so a localized writer/reader pair can't false-negative every match
     # (jeu. mai 28 vs Thu May 28). Anchor the playbook-name match with a regex
@@ -459,7 +475,7 @@ cmd_doctor() {
       case "$p_runner" in script|ollama-agent) ;; *) continue ;; esac
       [ "$p_status" = "active" ] || continue
       [ -n "$p_artifact" ] || continue
-      LC_TIME=C grep -F -- "$_date_prefix" "$CEO_DIR/log/cron-runs.log" 2>/dev/null \
+      LC_TIME=C grep -h -F -- "$_date_prefix" "${_runs_logs[@]}" 2>/dev/null \
         | grep -F -- "$_year" \
         | awk -v n="$p_name" '$0 ~ ": "n" completed$"' \
         | grep -q . || continue

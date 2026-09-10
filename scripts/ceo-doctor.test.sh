@@ -101,9 +101,12 @@ teardown() {
   unset CEO_SCHEDULER CEO_LAUNCHD_DIR CEO_CRONTAB_BIN CEO_SYSTEMCTL_BIN
 }
 
+# Since #397 the dispatcher writes cron-runs-<host>.log, and doctor reads the
+# whole family. Default to the per-host name (CEO_HOSTNAME is "testhost" here);
+# pass an explicit basename to seed a second host's log or the legacy file.
 _log_completed_today() {
-  local name="$1"
-  printf '%s: %s completed\n' "$(date)" "$name" >> "$CEO_DIR/log/cron-runs.log"
+  local name="$1" file="${2:-cron-runs-${CEO_HOSTNAME}.log}"
+  printf '%s: %s completed\n' "$(date)" "$name" >> "$CEO_DIR/log/$file"
 }
 
 test_doctor_flags_completed_but_missing_artifact() {
@@ -158,9 +161,9 @@ test_doctor_passes_when_artifact_present() {
 }
 
 test_doctor_skips_when_playbook_not_completed_today() {
-  # No cron-runs.log entry for value-tracker today. The check should be a
+  # No completion entry for value-tracker today. The check should be a
   # no-op — not a failure (the playbook hasn't run yet, that's not a bug).
-  : > "$CEO_DIR/log/cron-runs.log"
+  : > "$CEO_DIR/log/cron-runs-${CEO_HOSTNAME}.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   if echo "$output" | grep -qF "artifact missing"; then
@@ -205,14 +208,41 @@ EOF
 test_doctor_warns_when_cron_log_missing() {
   # Per panel H3: the cross-check used to silently skip when its preconditions
   # weren't met. The registry exists from setup() and jq is on PATH, but we
-  # leave cron-runs.log absent — the cross-check must emit a WARN naming the
-  # missing log file, not silently skip.
-  rm -f "$CEO_DIR/log/cron-runs.log"
+  # leave every cron-runs*.log absent — the cross-check must emit a WARN naming
+  # what it looked for, not silently skip.
+  rm -f "$CEO_DIR"/log/cron-runs*.log
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "doctor artifact cross-check skipped" "doctor must surface skip-reason when log absent"
-  assert_contains "$output" "cron-runs.log not found" "skip message must name the missing log"
+  assert_contains "$output" "no cron-runs*.log found" "skip message must name what it looked for"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_ignores_a_peer_hosts_runs_log() {
+  # #397 keyed the log by host, and the cross-check reads only this host's.
+  # Reading a peer's would be wrong, not merely wasteful: the artifact path is
+  # expanded with *this* host's id, so a peer's completion line for a
+  # {HOST}-keyed playbook sends doctor looking for a file that was never meant
+  # to exist here. Under the old shared log that false failure was live.
+  _log_completed_today value-tracker "cron-runs-otherhost.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  if echo "$output" | grep -qF "artifact missing"; then
+    printf '  FAIL [%s] doctor must not cross-check a peer host'"'"'s completion line\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_still_reads_the_pre_397_shared_log() {
+  # Every completion recorded before #397 is in the bare cron-runs.log, as is
+  # every completion from a host that has not picked up the new dispatcher.
+  # Dropping it from the read set would blind the cross-check to both.
+  _log_completed_today value-tracker "cron-runs.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "artifact missing or empty" \
+    "the legacy shared log must stay in the cross-check's reach"
 }
 
 test_doctor_skips_empty_artifact_field() {

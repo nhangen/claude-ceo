@@ -610,11 +610,108 @@ SH
   CEO_VERBOSE=1 bash "$CRON" log-intake >/dev/null 2>&1 || true
 
   local runs_log
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   assert_contains "$runs_log" "log-intake completed" "cron-runs.log must record successful script run"
 
   rm -f "$SCRIPT_DIR/log-intake.sh"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+
+# --- #397: the completion log is per-host -------------------------------------
+#
+# cron-runs.log lives in the Syncthing-synced vault and every host appended to
+# it, so Syncthing forked the file instead of merging: ten conflict copies by
+# 2026-09-09. Whichever copy loses takes its host's completion lines with it,
+# and `ceo doctor`'s artifact cross-check reads those lines to decide whether a
+# playbook that claimed success produced anything.
+
+_run_log_intake_as_host() {   # $1 = CEO_HOSTNAME to run under ("" = leave unset)
+  cat > "$CEO_DIR/playbooks/host-intake.md" << 'PB'
+---
+name: host-intake
+description: Test playbook for the per-host completion log
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: host-intake.sh
+---
+PB
+  cat > "$SCRIPT_DIR/host-intake.sh" << 'SH'
+#!/bin/bash
+exit 0
+SH
+  _fixture_script "$SCRIPT_DIR/host-intake.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  if [ -n "$1" ]; then
+    CEO_HOSTNAME="$1" bash "$CRON" host-intake >/dev/null 2>&1 || true
+  else
+    bash "$CRON" host-intake >/dev/null 2>&1 || true
+  fi
+  rm -f "$SCRIPT_DIR/host-intake.sh"
+}
+
+test_the_completion_log_is_keyed_by_host() {
+  _run_log_intake_as_host hostA
+
+  assert_file_exists "$CEO_DIR/log/cron-runs-hostA.log" \
+    "the completion must land in a host-keyed log"
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-hostA.log")" "host-intake completed" \
+    "and that log must carry the completion line"
+
+  # The shared file is the one Syncthing forks. Writing it alongside the
+  # per-host log would keep the conflict and make the fix invisible.
+  if [ -f "$CEO_DIR/log/cron-runs.log" ]; then
+    printf '  FAIL [%s] the shared cron-runs.log must not be written any more\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_two_hosts_write_two_logs() {
+  _run_log_intake_as_host hostA
+  rm -f "$CEO_DIR/log/.last-run-host-intake"   # else the cooldown skips the second run
+  _run_log_intake_as_host hostB
+
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-hostA.log" 2>/dev/null)" "host-intake completed" \
+    "host A's completion stays in host A's log"
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-hostB.log" 2>/dev/null)" "host-intake completed" \
+    "host B's completion stays in host B's log"
+}
+
+test_a_host_name_that_is_a_path_cannot_escape_the_log_dir() {
+  # CEO_HOSTNAME is free text and reaches this as a filename. A slash would
+  # write outside LOG_DIR (or fail the append and lose the record entirely).
+  _run_log_intake_as_host '../../escaped'
+
+  assert_file_exists "$CEO_DIR/log/cron-runs-host-..-..-escaped.log" \
+    "path separators must be flattened, not followed"
+  if [ -f "$CEO_VAULT/../escaped.log" ] || [ -f "$CEO_VAULT/escaped.log" ]; then
+    printf '  FAIL [%s] a host name traversed out of the log directory\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_an_unresolvable_host_lands_in_the_unknown_log() {
+  # No CEO_HOSTNAME and a `hostname` that answers with nothing. The record must
+  # still be written somewhere doctor's glob reaches — losing the completion
+  # line is worse than sharing a file with another unresolvable host.
+  cat > "$TEST_HOME/.bun/bin/hostname" << 'SH'
+#!/bin/bash
+echo ""
+SH
+  chmod +x "$TEST_HOME/.bun/bin/hostname"
+  _run_log_intake_as_host ''
+  rm -f "$TEST_HOME/.bun/bin/hostname"
+
+  assert_file_exists "$CEO_DIR/log/cron-runs-unknown.log" \
+    "an unresolvable host must still record its completion"
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-unknown.log" 2>/dev/null)" "host-intake completed" \
+    "and the line must be the completion, not an empty file"
 }
 
 

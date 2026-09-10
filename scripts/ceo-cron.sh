@@ -177,6 +177,18 @@ FAIL_COUNT_FILE="$LOG_DIR/.fail-count-$TRIGGER"
 # overwrites this per (trigger, day) so repeated previews don't accumulate.
 PREVIEW_DIR="$LOG_DIR/preview"
 PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
+# cron-runs.log lives in the synced vault and every host in the swarm appended
+# to it, which Syncthing cannot merge -- it forks the file instead. Ten conflict
+# copies had accumulated by 2026-09-09 (#397), and whichever copy loses takes
+# its host's completion lines with it, so `ceo doctor`'s artifact cross-check
+# can report a run missing that actually happened.
+#
+# Two fixes, because either alone leaves a hole. shared.stignore now excludes
+# CEO/log/cron-runs*.log, which is the real cure -- this is host-local runtime
+# state like the fail counters and should never have synced. But `ceo doctor`
+# warns when a host has no .stignore installed at all, so the file is also keyed
+# by host: on such a host the logs stay distinct instead of forking.
+RUNS_LOG="$LOG_DIR/cron-runs-$(_cron_runs_log_host).log"
 
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
 _v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }
@@ -250,7 +262,7 @@ _record_success() {
   echo 0 > "$FAIL_COUNT_FILE"
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
-  echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+  echo "$(date): $TRIGGER completed" >> "$RUNS_LOG"
   # High-frequency/silent-by-design playbooks don't notify Discord on success —
   # only on failure (handled in _record_failure). disk-monitor (every 6h) and
   # ticket-triage-autopilot (every 30m, silent-by-design v2 cache adapter) would

@@ -755,7 +755,7 @@ PB
 
   local fails runs_log
   fails=$(_fail_count)
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after a read-tier failure"
   if [[ "$runs_log" == *"read-tier-fail completed"* ]]; then
     printf '  FAIL [%s] read-tier failure must NOT log completed\n    runs_log: %q\n' \
@@ -892,7 +892,7 @@ PB
 
   local fails runs_log
   fails=$(_fail_count)
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after Phase-3 failure"
   if [[ "$runs_log" == *"phase3-fail completed"* ]]; then
     printf '  FAIL [%s] Phase-3 failure must NOT log completed\n    runs_log: %q\n' \
@@ -1151,7 +1151,7 @@ STUB
   # NOT contain a completion line for this playbook — that's what proves the
   # ollama branch (not an earlier preflight/schema/missing-file path) failed.
   local runs_log
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   if [[ "$runs_log" == *"ollama-fail completed"* ]]; then
     printf '  FAIL [%s] ollama failure must NOT log completed\n    runs_log: %q\n' \
       "$CURRENT_TEST" "$runs_log"
@@ -1196,7 +1196,7 @@ PB
   assert_eq "$fails" "1" "a timeout-killed (exit 124) ollama call must increment the fail count"
 
   local runs_log
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   if [[ "$runs_log" == *"ollama-killed completed"* ]]; then
     printf '  FAIL [%s] a timeout-killed run must NOT log completed\n    runs_log: %q\n' \
       "$CURRENT_TEST" "$runs_log"
@@ -1359,7 +1359,7 @@ STUB
   assert_eq "$fails" "1" "empty ollama output must increment FAIL_COUNT_FILE (alert threshold relies on this)"
 
   local runs_log
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   if [[ "$runs_log" == *"ollama-empty completed"* ]]; then
     printf '  FAIL [%s] empty ollama output must NOT log completed\n    runs_log: %q\n' \
       "$CURRENT_TEST" "$runs_log"
@@ -1407,7 +1407,7 @@ STUB
   assert_contains "$stderr_log" "model not found" "the daemon's error message must reach cron-stderr.log"
 
   local runs_log
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   if [[ "$runs_log" == *"ollama-apierror completed"* ]]; then
     printf '  FAIL [%s] a .error response must NOT log completed\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))

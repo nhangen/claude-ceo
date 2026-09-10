@@ -72,6 +72,27 @@ test_stignore_covers_every_host_local_log_file() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_stignore_covers_the_completion_log_under_both_names() {
+  # cron-runs.log is host-local runtime state like the counters above, but it is
+  # not a dotfile, so _discover_state_files never sees it and this needs its own
+  # arm. It synced for months and Syncthing forked it into ten .sync-conflict
+  # copies (#397).
+  local path
+  for path in \
+    "CEO/log/cron-runs.log" \
+    "CEO/log/cron-runs-ml1.log" \
+    "CEO/log/cron-runs-unknown.log" \
+    "CEO/log/cron-runs.sync-conflict-20260909-060125-UISIR4Z.log"
+  do
+    if _is_ignored "$path"; then
+      assert_eq "ignored" "ignored" "$path is excluded from sync"
+    else
+      assert_eq "NOT-ignored" "ignored" \
+        "$path is host-local state but no shared.stignore pattern matches it"
+    fi
+  done
+}
+
 test_bare_fail_count_pattern_would_not_cover_the_per_trigger_counters() {
   # Pins the specific regression: assert the pre-fix pattern really was the
   # problem, so this file documents a demonstrated failure rather than a theory.

@@ -376,6 +376,27 @@ _swarm_resolve_host() {
   printf '%s\n' "$host"
 }
 
+# _cron_runs_log_host
+#   This host's id, flattened to something safe as a filename component. Used
+#   only for CEO/log/cron-runs-<host>.log — both the dispatcher that writes it
+#   and `ceo doctor`'s cross-check that reads it must agree on the name, so the
+#   flattening lives here rather than in either caller.
+#
+#   Unlike _swarm_resolve_host this never fails: an unresolvable host prints
+#   "unknown". A missing swarm id is a fatal misconfiguration for swarm
+#   membership, but for a log filename, dropping the completion record outright
+#   is worse than filing it under a shared fallback name.
+_cron_runs_log_host() {
+  local host
+  host=$(_swarm_resolve_host 2>/dev/null) || host=""
+  [ -n "$host" ] || host=unknown
+  # CEO_HOSTNAME is free text and lands here as a filename: a slash would write
+  # outside the log directory, a leading dot would hide the file.
+  host=$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '-')
+  case "$host" in .*) host="host-$host" ;; esac
+  printf '%s\n' "$host"
+}
+
 # _swarm_bootstrap
 #   Create swarm.json if absent: {"schema_version":1,"hosts":[],"owners":{}}.
 #   Idempotent — an existing file (with its hosts[]/owners{}) is left untouched
