@@ -280,7 +280,7 @@ async function main(): Promise<void> {
     // collects live from git/gh/the vault, not another playbook's output, and
     // value-tracker (06:00) reads nothing from token-intake (08:45) — it would
     // already be ordered wrong if it did. cron-failure-digest is the interesting
-    // case and argues the other way: it reads log/cron-runs.log, so gating it on
+    // case and argues the other way: it reads log/cron-runs-<host>.log, so gating it on
     // its "upstreams" succeeding would suppress exactly the digest of their
     // failures. So the dependency gate stays a no-op by decision, not by
     // omission; revisit only when a playbook genuinely consumes another's file.

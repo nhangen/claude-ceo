@@ -37,6 +37,12 @@ _discover_state_files() {
 }
 
 # Does any stignore pattern glob-match this vault-relative path?
+#
+# An approximation: this is bash globbing, not Syncthing's matcher. They agree on
+# every pattern in the file today (the one difference that matters is that
+# Syncthing's `*` does not cross `/` while bash's does, and no pattern here
+# relies on it), but a green result is evidence the text is present and
+# plausible, not that Syncthing honors it.
 _is_ignored() {
   local path="$1" line
   while IFS= read -r line; do
@@ -77,6 +83,12 @@ test_stignore_covers_the_completion_log_under_both_names() {
   # not a dotfile, so _discover_state_files never sees it and this needs its own
   # arm. It synced for months and Syncthing forked it into ten .sync-conflict
   # copies (#397).
+  #
+  # Widening the discovery awk to non-dot names is the obvious repair and it is
+  # wrong: cron-skips.log and cron-stderr.log also live under CEO/log/ and are
+  # deliberately synced (SCHEMA.md), so a wider pattern reds the suite on two
+  # correct files. Hardcoding here is the price of that, and the header's
+  # derive-don't-restate promise does not reach this case.
   local path
   for path in \
     "CEO/log/cron-runs.log" \

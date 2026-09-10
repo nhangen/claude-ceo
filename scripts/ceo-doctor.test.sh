@@ -228,10 +228,10 @@ test_doctor_ignores_a_peer_hosts_runs_log() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   if echo "$output" | grep -qF "artifact missing"; then
-    printf '  FAIL [%s] doctor must not cross-check a peer host'"'"'s completion line\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
+    fail_test "doctor must not cross-check a peer host's completion line"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_says_when_the_cross_check_matched_nothing() {
@@ -248,8 +248,9 @@ test_doctor_says_when_the_cross_check_matched_nothing() {
     "a cross-check that checked nothing must say so, not look like a pass"
   if echo "$output" | grep -qF "artifacts present for today"; then
     fail_test "doctor must not claim artifacts are present when it matched none"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_flags_a_completion_log_it_is_not_reading() {
@@ -271,6 +272,14 @@ test_doctor_still_reads_the_pre_397_shared_log() {
   # Every completion recorded before #397 is in the bare cron-runs.log, as is
   # every completion from a host that has not picked up the new dispatcher.
   # Dropping it from the read set would blind the cross-check to both.
+  #
+  # This knowingly preserves one exposure: on a host with no .stignore installed,
+  # a peer still writing to the shared file has its lines read here and expanded
+  # against *this* host's {HOST} artifact path — the false failure the read-set
+  # narrowing exists to prevent. The date-prefix filter bounds it to the
+  # mixed-version window. Sunset it (drop cron-runs.log from the read set, and
+  # this arm with it) once every host in swarm.json has run the per-host
+  # dispatcher, which `ceo doctor`'s unread-log warning will show.
   _log_completed_today value-tracker "cron-runs.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
