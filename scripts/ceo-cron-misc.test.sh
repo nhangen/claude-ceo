@@ -649,7 +649,11 @@ SH
   if [ -n "$1" ]; then
     CEO_HOSTNAME="$1" bash "$CRON" host-intake >/dev/null 2>&1 || true
   else
-    bash "$CRON" host-intake >/dev/null 2>&1 || true
+    # `env -u`, not a bare call: the harness never unsets CEO_HOSTNAME, so an
+    # ambient one (a real operator variable — ~/.ceo/config, `ceo setup`) would
+    # resolve the host that this arm needs to be unresolvable, and red a correct
+    # tree on whoever has it exported.
+    env -u CEO_HOSTNAME bash "$CRON" host-intake >/dev/null 2>&1 || true
   fi
   rm -f "$SCRIPT_DIR/host-intake.sh"
 }
