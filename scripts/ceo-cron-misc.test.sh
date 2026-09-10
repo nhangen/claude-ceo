@@ -682,6 +682,57 @@ SH
     "and name the file the completions are going to instead"
 }
 
+test_an_unwritable_completion_log_is_not_swallowed() {
+  # _record_success zeroes the fail counter and stamps .last-run *before* the
+  # append. A failing append then aborts it under set -e with the streak already
+  # reset and the cooldown already stamped, and _on_exit does not record a
+  # failure because _bookkeeping_done is set. Net: the scheduler sees a failure
+  # it cannot explain, and doctor's cross-check silently skips the playbook.
+  #
+  # This is pre-existing for the old shared name, but #397 raises it: the
+  # per-host file is a *new* name, so every host's first upgraded run must
+  # create it rather than append to one that already exists — and a $LOG_DIR
+  # left root-owned by an earlier sudo run permits the old write and refuses the
+  # new one. That is the case the cron-stdout/stderr probe was written for.
+  cat > "$CEO_DIR/playbooks/ro-intake.md" << 'PB'
+---
+name: ro-intake
+description: Test playbook for an unwritable completion log
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: ro-intake.sh
+---
+PB
+  cat > "$SCRIPT_DIR/ro-intake.sh" << 'SH'
+#!/bin/bash
+exit 0
+SH
+  _fixture_script "$SCRIPT_DIR/ro-intake.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  # A directory where the log file should be: the append cannot succeed, and the
+  # failure is the kernel's rather than a permission bit teardown would have to
+  # restore (teardown does not run on an abort). The name comes from the
+  # production helper, not from a second copy of its spelling.
+  local blocked_host
+  blocked_host=$(bash -c ". '$SCRIPT_DIR/ceo-config.sh' >/dev/null 2>&1; _cron_runs_log_host")
+  mkdir -p "$CEO_DIR/log/cron-runs-$blocked_host.log"
+
+  bash "$CRON" ro-intake >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/ro-intake.sh"
+
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "cannot record the completion" \
+    "a completion that could not be written must say so, not vanish"
+  assert_contains "$skips" "ro-intake" \
+    "and name the playbook whose record was lost"
+}
+
 test_the_completion_log_is_keyed_by_host() {
   _run_log_intake_as_host hostA
 
@@ -693,10 +744,10 @@ test_the_completion_log_is_keyed_by_host() {
   # The shared file is the one Syncthing forks. Writing it alongside the
   # per-host log would keep the conflict and make the fix invisible.
   if [ -f "$CEO_DIR/log/cron-runs.log" ]; then
-    printf '  FAIL [%s] the shared cron-runs.log must not be written any more\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
+    fail_test "the shared cron-runs.log must not be written any more"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_two_hosts_write_two_logs() {
@@ -739,8 +790,9 @@ test_a_host_name_that_is_a_path_is_flattened_into_one_log_file() {
   # nothing landed outside it.
   if find "$CEO_VAULT" -name '*escaped*' -not -path "$CEO_DIR/log/*" 2>/dev/null | grep -q .; then
     fail_test "a host name component escaped out of the log directory as a path"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_an_unresolvable_host_lands_in_the_unknown_log() {

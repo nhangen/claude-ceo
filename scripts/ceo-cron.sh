@@ -264,13 +264,23 @@ _report() {
 _record_success() {
   _bookkeeping_done=1   # read by the EXIT trap installed after the lock section
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
-    _preview "Would record SUCCESS (no .last-run / fail-count reset / cron-runs.log / notify)."
+    _preview "Would record SUCCESS (no .last-run / fail-count reset / cron-runs-<host>.log / notify)."
     return 0
   fi
   echo 0 > "$FAIL_COUNT_FILE"
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
-  echo "$(date): $TRIGGER completed" >> "$RUNS_LOG"
+  # Not bare, for two reasons. Under set -e a failed append aborts _record_success
+  # here — after the fail counter is zeroed and .last-run stamped, before notify —
+  # and _on_exit records nothing because _bookkeeping_done is already 1, so the
+  # run reads as a success everywhere except the one place that matters. And
+  # doctor's cross-check treats a missing completion line as "did not run",
+  # silently skipping the playbook. The record is the thing being lost; say so
+  # rather than half-applying success. Same posture as the cron-stdout/stderr
+  # probe below, which this file already decided is the right one.
+  echo "$(date): $TRIGGER completed" >> "$RUNS_LOG" || \
+    echo "$(date): WARN — cannot record the completion for $TRIGGER in $RUNS_LOG; this run will not be cross-checked by ceo doctor" \
+      >> "$LOG_DIR/cron-skips.log" || true
   # High-frequency/silent-by-design playbooks don't notify Discord on success —
   # only on failure (handled in _record_failure). disk-monitor (every 6h) and
   # ticket-triage-autopilot (every 30m, silent-by-design v2 cache adapter) would
