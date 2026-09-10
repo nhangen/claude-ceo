@@ -710,16 +710,35 @@ test_two_hosts_write_two_logs() {
     "host B's completion stays in host B's log"
 }
 
-test_a_host_name_that_is_a_path_cannot_escape_the_log_dir() {
-  # CEO_HOSTNAME is free text and reaches this as a filename. A slash would
-  # write outside LOG_DIR (or fail the append and lose the record entirely).
+test_a_host_name_that_is_a_path_is_flattened_into_one_log_file() {
+  # CEO_HOSTNAME is free text and reaches this as a filename component.
+  #
+  # This arm used to assert the exact flattened name, which pinned the `tr`
+  # replacement character rather than the property: swapping '-' for '_' is
+  # equally safe and turned it red. It also checked for a file at
+  # $CEO_VAULT/../escaped.log, which input can never produce — RUNS_LOG glues
+  # `cron-runs-` in front of the id, so traversal would need an existing
+  # `cron-runs-..` *directory* and the append just ENOENTs. Neither half tested
+  # what actually breaks.
+  #
+  # What actually breaks is the record: an unflattened id sends the append at a
+  # path that does not resolve, the write fails, and the completion is gone. So
+  # assert the properties — one log, named `cron-runs-*`, inside the log dir,
+  # carrying the line — and let the spelling be whatever it is.
   _run_log_intake_as_host '../../escaped'
 
-  assert_file_exists "$CEO_DIR/log/cron-runs-host-..-..-escaped.log" \
-    "path separators must be flattened, not followed"
-  if [ -f "$CEO_VAULT/../escaped.log" ] || [ -f "$CEO_VAULT/escaped.log" ]; then
-    printf '  FAIL [%s] a host name traversed out of the log directory\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
+  local logs found=0 f
+  logs=$(find "$CEO_DIR/log" -maxdepth 1 -name 'cron-runs*' 2>/dev/null)
+  for f in $logs; do found=$((found + 1)); done
+  assert_eq "$found" "1" "a path-shaped host name must produce exactly one log file"
+  assert_contains "$(cat $logs 2>/dev/null)" "host-intake completed" \
+    "and the completion must actually be in it — a failed append loses the record"
+
+  # The file has to live in the log directory, not somewhere a path component
+  # took it. `find` above is already scoped there, so this pins the other half:
+  # nothing landed outside it.
+  if find "$CEO_VAULT" -name '*escaped*' -not -path "$CEO_DIR/log/*" 2>/dev/null | grep -q .; then
+    fail_test "a host name component escaped out of the log directory as a path"
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
