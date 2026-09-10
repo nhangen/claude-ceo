@@ -53,29 +53,62 @@ _is_ignored() {
   return 1
 }
 
-test_stignore_covers_every_host_local_log_file() {
-  local name example found=0
+test_no_host_local_state_is_written_under_the_synced_log_dir() {
+  # This arm used to assert that every host-local dotfile written under $LOG_DIR
+  # was matched by a shared.stignore pattern. #394 removed the need for that
+  # question by removing its subject: the per-trigger cron state, the scan
+  # marker, and the nathan-inbox cursors all moved to $HOME/.ceo/state/, so the
+  # correct assertion is now the stronger one — nothing writes host-local state
+  # there at all.
+  #
+  # That inversion matters because the old test could only ever be as good as the
+  # deployment of the file it checked. A pattern present in the tracked stignore
+  # protects a host that copied it into its vault root, and nothing verifies that
+  # copy: on 2026-09-09 both swarm hosts were found running an August copy. A
+  # path that is never written cannot leak regardless of what any host deployed.
+  #
+  # A new $LOG_DIR/.something write is the regression this catches. The fix is
+  # _ceo_state_migrate in ceo-config.sh, not a new stignore line.
+  local found=0 name
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     found=$((found + 1))
-    example="$name"
-    case "$name" in *-) example="${name}example" ;; esac
-    if _is_ignored "CEO/log/$example"; then
-      assert_eq "ignored" "ignored" "CEO/log/$example is excluded from sync"
+    fail_test "host-local state '$name' is written under the synced CEO/log/" \
+      "use _ceo_state_migrate (ceo-config.sh) so it lands in \$HOME/.ceo/state instead"
+  done < <(_discover_state_files)
+  if [ "$found" -eq 0 ]; then
+    assert_eq "0" "0" "no host-local dotfile state is written under CEO/log/"
+  fi
+}
+
+test_stignore_still_covers_the_pre_394_state_paths() {
+  # #394 moved the per-trigger cron state to $HOME/.ceo/state/, so no current
+  # source line writes these paths and the discovery step above no longer finds
+  # them. The patterns still matter: an upgrading host has the old files sitting
+  # in its vault until its first run migrates them, and hosts do not upgrade
+  # together. Removing them would resync that window.
+  #
+  # The preview entry is asserted as the directory, not a file inside it. The
+  # pattern is `CEO/log/preview/`, which Syncthing applies to the directory and
+  # everything beneath; the bash `case` in _is_ignored does not walk into it. That
+  # is the approximation _is_ignored already warns about, showing up in the one
+  # place in this file where the two matchers actually differ.
+  local path
+  for path in \
+    "CEO/log/.fail-count-morning-scan" \
+    "CEO/log/.last-run-morning-scan" \
+    "CEO/log/.last-scan" \
+    "CEO/log/.from-nathan-seen" \
+    "CEO/log/.nathan-nb-counter" \
+    "CEO/log/preview/"
+  do
+    if _is_ignored "$path"; then
+      assert_eq "ignored" "ignored" "$path is excluded from sync"
     else
       assert_eq "NOT-ignored" "ignored" \
-        "CEO/log/$example is host-local state but no shared.stignore pattern matches it"
+        "$path is legacy host-local state but no shared.stignore pattern matches it"
     fi
-  done < <(_discover_state_files)
-
-  # A discovery step that silently finds nothing would make every assertion above
-  # vacuous and this test permanently green.
-  if [ "$found" -lt 4 ]; then
-    printf '  FAIL [%s] discovery found only %d state files; the awk pattern has drifted from the source\n' \
-      "${CURRENT_TEST:-stignore}" "$found"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  done
 }
 
 test_stignore_covers_the_completion_log_under_both_names() {

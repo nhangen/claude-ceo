@@ -18,10 +18,11 @@ ceo_require_vault
 VAULT="$CEO_VAULT"
 CEO_DIR="$VAULT/CEO"
 REPORT_DIR="$CEO_DIR/reports"
-LOG_DIR="$CEO_DIR/log"
 TODAY=$(date +%Y-%m-%d)
 YESTERDAY=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
-LAST_SCAN_MARKER="$LOG_DIR/.last-scan"
+# Same file ceo-cron.sh stamps on a successful morning-scan, so both must resolve
+# it identically — it moved to the host-local state dir in #394.
+LAST_SCAN_MARKER=$(_ceo_state_migrate ".last-scan")
 
 # --- Create scan marker if missing (first run = yesterday midnight) ---
 if [ ! -f "$LAST_SCAN_MARKER" ]; then

@@ -25,7 +25,17 @@ desktop.ini
 // Node/build artifacts (if any tools run inside vault)
 node_modules
 
-// CEO runtime files that are machine-local (not vault state)
+// CEO runtime files that are machine-local (not vault state).
+//
+// The per-trigger cron state below moved to $HOME/.ceo/state/ in #394 — a host
+// running current code writes none of these paths. They stay as coverage for the
+// files an upgrading host still has lying around before its first run migrates
+// them, and because nothing guarantees every host is on current code at once.
+//
+// They are not the protection any more, which was the point of moving them: this
+// file only protects a host that copied it into its vault root, and nothing
+// verifies that copy. On 2026-09-09 both swarm hosts were found running an August
+// copy with no rule for a file added since.
 CEO/log/.last-run-*
 CEO/log/.retry-*.json
 CEO/log/.config-hash

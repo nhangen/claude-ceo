@@ -383,7 +383,7 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
   : > "$CEO_DIR/approvals/pending.md"
-  echo 2 > "$CEO_DIR/log/.fail-count-alert-host"
+  echo 2 > "$(_ceo_state)/.fail-count-alert-host"
   CEO_HOSTNAME=test-host-a bash "$CRON" alert-host >/dev/null 2>&1 || true
 
   local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
@@ -428,7 +428,7 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
   : > "$CEO_DIR/approvals/pending.md"
-  echo 2 > "$CEO_DIR/log/.fail-count-fb-host"
+  echo 2 > "$(_ceo_state)/.fail-count-fb-host"
   ( unset CEO_HOSTNAME
     CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-fb.log" bash "$CRON" fb-host >/dev/null 2>&1 ) || true
 
@@ -439,7 +439,7 @@ PB
   assert_contains "$pending" "consecutive failures on unknown" \
     "an unresolvable host must still escalate, labelled unknown"
   # The assertion that separates "the label degraded" from "the escalation died".
-  assert_file_exists "$CEO_DIR/log/.last-run-fb-host" \
+  assert_file_exists "$(_ceo_state)/.last-run-fb-host" \
     "the bookkeeping after the alert must still run"
   local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips" "could not resolve this host" \
@@ -478,7 +478,7 @@ script: ro-queue-test.sh
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   mkdir -p "$CEO_DIR/log" "$CEO_DIR/approvals"
-  echo 2 > "$CEO_DIR/log/.fail-count-ro-queue"
+  echo 2 > "$(_ceo_state)/.fail-count-ro-queue"
   rm -f "$CEO_DIR/approvals/pending.md"
   # As root, chmod 500 does not stop the write and this arm fails rather than
   # passing — the safe direction, but a root CI run would look like a regression.
@@ -486,7 +486,7 @@ PB
   CEO_HOSTNAME=test-host-a bash "$CRON" ro-queue >/dev/null 2>&1 || true
   chmod 700 "$CEO_DIR/approvals"
 
-  assert_file_exists "$CEO_DIR/log/.last-run-ro-queue" \
+  assert_file_exists "$(_ceo_state)/.last-run-ro-queue" \
     "a failed queue append must not cost the .last-run stamp"
   local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips" "could not be written to approvals/pending.md" \
@@ -1536,7 +1536,7 @@ status: active
 # morning-scan body
 PB
 
-  touch -t 202501010000 "$CEO_DIR/log/.last-scan" 2>/dev/null || touch "$CEO_DIR/log/.last-scan"
+  touch -t 202501010000 "$(_ceo_state)/.last-scan" 2>/dev/null || touch "$(_ceo_state)/.last-scan"
   mkdir -p "$CEO_VAULT/Projects" "$CEO_VAULT/Areas" "$CEO_VAULT/Daily"
   for i in $(seq 1 8); do echo "project note content $i" > "$CEO_VAULT/Projects/note-$i.md"; done
   echo "area work content" > "$CEO_VAULT/Areas/work.md"

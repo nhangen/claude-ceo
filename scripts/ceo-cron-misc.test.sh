@@ -242,7 +242,7 @@ SH
   fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 
-  assert_eq "$(cat "$CEO_DIR/log/.fail-count-skill-abort" 2>/dev/null || echo 0)" "1" \
+  assert_eq "$(cat "$(_ceo_state)/.fail-count-skill-abort" 2>/dev/null || echo 0)" "1" \
     "a skill-runner abort must be recorded, not swallowed by its cleanup trap"
   local skips
   skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
@@ -574,7 +574,7 @@ exit 0
 SH
   _fixture_script "$SCRIPT_DIR/ok-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  echo 2 > "$CEO_DIR/log/.fail-count-ok-intake"
+  echo 2 > "$(_ceo_state)/.fail-count-ok-intake"
   CEO_VERBOSE=1 bash "$CRON" ok-intake >/dev/null 2>&1 || true
 
   local fails
@@ -733,6 +733,89 @@ SH
     "and name the playbook whose record was lost"
 }
 
+# --- #394: per-trigger cron state is host-local ------------------------------
+
+# A script-runner playbook whose script exits non-zero, so _record_failure runs
+# and the failure counter is written. Named per arm so the counters do not
+# collide (_fail_count reports AMBIGUOUS on more than one).
+_write_failing_playbook() {
+  local name="$1"
+  cat > "$CEO_DIR/playbooks/$name.md" << PB
+---
+name: $name
+description: Test playbook that fails, to exercise the fail counter
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: $name.sh
+---
+PB
+  cat > "$SCRIPT_DIR/$name.sh" << 'SH'
+#!/bin/bash
+exit 1
+SH
+  _fixture_script "$SCRIPT_DIR/$name.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+}
+
+test_cron_state_is_written_outside_the_synced_vault() {
+  # The fail counter, the cooldown stamp and the preview scratch used to live
+  # under CEO/log/ and stay host-local only because each host had copied
+  # syncthing/shared.stignore into its vault root. Nothing verifies that copy —
+  # on 2026-09-09 both swarm hosts were found running an August version missing a
+  # rule for a file added since. Two hosts sharing a failure counter do not fail;
+  # they agree on a wrong number (#299).
+  _write_failing_playbook state-check
+  bash "$CRON" state-check >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/state-check.sh"
+
+  assert_file_exists "$HOME/.ceo/state/.fail-count-state-check" \
+    "the failure counter must land in the host-local state dir"
+  if [ -e "$CEO_DIR/log/.fail-count-state-check" ]; then
+    fail_test "the failure counter was written into the synced vault"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_legacy_cron_state_is_migrated_on_first_run() {
+  # An upgrading host has the old files sitting in its vault. Ignoring them would
+  # reset a failure streak (a playbook two strikes into escalation starts over)
+  # and drop a cooldown stamp (the next run fires early). Both are silent, so the
+  # migration happens rather than the state being abandoned.
+  _write_failing_playbook migr-check
+  printf '2\n' > "$CEO_DIR/log/.fail-count-migr-check"
+
+  bash "$CRON" migr-check >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/migr-check.sh"
+
+  assert_eq "$(cat "$HOME/.ceo/state/.fail-count-migr-check" 2>/dev/null)" "3" \
+    "the legacy counter must carry across and increment, not restart at 1"
+  if [ -e "$CEO_DIR/log/.fail-count-migr-check" ]; then
+    fail_test "the legacy file must be moved, not copied — a leftover resyncs"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_migration_does_not_clobber_existing_host_local_state() {
+  # A stale legacy file must never overwrite state this host already owns. Once
+  # migrated, the vault copy is a fossil — on a host that ran the old code and
+  # synced one in, it could be another machine's counter entirely.
+  _write_failing_playbook clob-check
+  printf '9\n' > "$CEO_DIR/log/.fail-count-clob-check"
+  printf '1\n' > "$HOME/.ceo/state/.fail-count-clob-check"
+
+  bash "$CRON" clob-check >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/clob-check.sh"
+
+  assert_eq "$(cat "$HOME/.ceo/state/.fail-count-clob-check" 2>/dev/null)" "2" \
+    "the host-local counter wins and increments from its own value"
+}
+
 test_the_completion_log_is_keyed_by_host() {
   _run_log_intake_as_host hostA
 
@@ -752,7 +835,7 @@ test_the_completion_log_is_keyed_by_host() {
 
 test_two_hosts_write_two_logs() {
   _run_log_intake_as_host hostA
-  rm -f "$CEO_DIR/log/.last-run-host-intake"   # else the cooldown skips the second run
+  rm -f "$(_ceo_state)/.last-run-host-intake"   # else the cooldown skips the second run
   _run_log_intake_as_host hostB
 
   assert_contains "$(cat "$CEO_DIR/log/cron-runs-hostA.log" 2>/dev/null)" "host-intake completed" \

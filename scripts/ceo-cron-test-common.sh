@@ -19,6 +19,10 @@ setup() {
   export HOME="$TEST_HOME"
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
+  # Explicit, not inherited from HOME: scripts that call ceo_pin_home_or_warn
+  # re-export HOME from passwd, so a $HOME-derived state path would write to the
+  # real user's home from inside a test. See _ceo_state_dir in ceo-config.sh.
+  export CEO_STATE_DIR="$TEST_HOME/.ceo/state"
   # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
   # the synced vault. Both `ceo playbook scan` (write) and `ceo cron` (read)
   # resolve this path; tests seed/inspect it here, not under $CEO_DIR.
@@ -34,7 +38,10 @@ setup() {
   # created in $CEO_DIR/playbooks, rather than leaking the production repo playbooks.
   export CEO_REPO_PLAYBOOK_DIR="$TEST_HOME/empty-repo-playbooks"
 
-  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports" "$CEO_REPO_PLAYBOOK_DIR" "$HOME/.ceo"
+  # $HOME/.ceo/state is where the per-trigger cron state lives since #394.
+  # Production creates it on demand in _ceo_state_migrate, but arms that seed a
+  # fail-count or a cooldown stamp write there before the dispatcher runs.
+  mkdir -p "$CEO_DIR/playbooks" "$CEO_DIR/log" "$CEO_DIR/approvals" "$CEO_DIR/reports" "$CEO_REPO_PLAYBOOK_DIR" "$HOME/.ceo" "$CEO_STATE_DIR"
   : > "$CEO_DIR/AGENTS.md"
   : > "$CEO_DIR/IDENTITY.md"
   : > "$CEO_DIR/TRAINING.md"
@@ -154,7 +161,7 @@ teardown() {
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_VAULT CEO_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE CEO_LOCK_FILE
+  unset CEO_VAULT CEO_DIR CEO_STATE_DIR TEST_HOME HOME_BACKUP PATH_BACKUP CEO_REPO_PLAYBOOK_DIR CEO_OLLAMA_SKIP_PROBE CEO_LOCK_FILE
 }
 
 
@@ -421,8 +428,11 @@ PB
 
 
 # --- #138: --dry-run preview mode ---
-# Preview file lives in non-synced host-local scratch: $CEO_DIR/log/preview/<trigger>-<TODAY>.md
-_preview_file() { echo "$CEO_DIR/log/preview/$1-$(date +%Y-%m-%d).md"; }
+# Preview output is host-local scratch. It moved out of the synced vault to
+# $HOME/.ceo/state/preview/ in #394 — the tests inherit the isolation because
+# setup() points HOME at the fixture.
+_ceo_state() { echo "$CEO_STATE_DIR"; }
+_preview_file() { echo "$(_ceo_state)/preview/$1-$(date +%Y-%m-%d).md"; }
 
 
 # --- #139: hosts: frontmatter (host-scoped scheduling, recorded not enforced) ---
@@ -432,7 +442,7 @@ _hosts_in_registry() {
 
 
 # --- #140: --test-all (fleet dry-run sweep) ---
-_test_all_report() { echo "$CEO_DIR/log/preview/test-all/$(date +%Y-%m-%d).md"; }
+_test_all_report() { echo "$(_ceo_state)/preview/test-all/$(date +%Y-%m-%d).md"; }
 
 
 # Register an active read-tier playbook at a caller-chosen schedule + preflight.
@@ -577,10 +587,10 @@ _runs_log() {
 _fail_count() {
   local trigger="${1:-}"
   if [ -n "$trigger" ]; then
-    cat "$CEO_DIR/log/.fail-count-$trigger" 2>/dev/null || echo "missing"
+    cat "$(_ceo_state)/.fail-count-$trigger" 2>/dev/null || echo "missing"
     return
   fi
-  local files=("$CEO_DIR"/log/.fail-count-*)
+  local files=("$(_ceo_state)"/.fail-count-*)
   if [ "${#files[@]}" -gt 1 ]; then echo "AMBIGUOUS(${#files[@]} counters — pass a trigger)"; return; fi
   if [ -f "${files[0]}" ]; then cat "${files[0]}"; else echo "missing"; fi
 }
