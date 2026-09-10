@@ -212,7 +212,13 @@ status: active
 # morning-scan body
 PB
 
-touch -t 202501010000 "$CEO_DIR/log/.last-scan"
+# ceo-scan.sh reads the host-local marker since #394; a seed left on the old
+# vault path silently exercises the first-run branch instead of the one
+# production takes. This harness sources no library, so the default is spelled
+# here — it must track _ceo_state_dir in ceo-config.sh.
+_dbg_state="${CEO_STATE_DIR:-$HOME/.ceo/state}"
+mkdir -p "$_dbg_state"
+touch -t 202501010000 "$_dbg_state/.last-scan"
 
 mkdir -p "$CEO_VAULT/Projects" "$CEO_VAULT/Areas"
 for i in $(seq 1 8); do

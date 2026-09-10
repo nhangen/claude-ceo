@@ -175,16 +175,41 @@ LOCK_FILE="${CEO_LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}"
 #
 # _ceo_state_migrate moves a legacy file across on the first run after upgrade, so
 # a host does not silently lose a failure streak or a cooldown stamp.
-LAST_RUN_FILE=$(_ceo_state_migrate ".last-run-${TRIGGER}")
+# _ceo_state_migrate reports degradation by status, not stderr — the scheduler
+# spawns this script with stderr ignored, so a warning written there reaches
+# nobody on exactly the runs that matter. cron-skips.log is the channel this file
+# already uses for that, and $LOG_DIR is resolved above.
+#
+# rc=2 is fatal on purpose: with no state directory the first bare redirect in
+# _record_success aborts it *after* _bookkeeping_done is set, so the EXIT trap
+# records nothing either and the run reads as an unexplained failure. Refusing to
+# dispatch is the honest answer, and it is what the script-runner branch already
+# does for an unwritable log.
+_state() {
+  local path rc=0
+  path=$(_ceo_state_migrate "$1") || rc=$?
+  case "$rc" in
+    2) mkdir -p "$LOG_DIR" 2>/dev/null || true
+       echo "$(date): ERROR — cannot create the host-local state dir for $1 ($path); ${TRIGGER:-<sweep>} NOT dispatched" \
+         >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true
+       echo "ERROR: cannot create the host-local state directory for $1" >&2
+       exit 1 ;;
+    1) mkdir -p "$LOG_DIR" 2>/dev/null || true
+       echo "$(date): WARN — could not migrate legacy state $1 out of the vault; ${TRIGGER:-<sweep>} continues with fresh state (a cooldown or failure streak may have reset)" \
+         >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true ;;
+  esac
+  printf '%s\n' "$path"
+}
+LAST_RUN_FILE=$(_state ".last-run-${TRIGGER}")
 # Per-trigger, matching LAST_RUN_FILE above. A single global counter meant any
 # healthy playbook's _record_success zeroed a failing playbook's streak, so on a
 # host running a dozen playbooks the 3-strike escalation below effectively never
 # fired — the alert this file's failure path is built around could not arrive.
-FAIL_COUNT_FILE=$(_ceo_state_migrate ".fail-count-$TRIGGER")
-LAST_SCAN_FILE=$(_ceo_state_migrate ".last-scan")
+FAIL_COUNT_FILE=$(_state ".fail-count-$TRIGGER")
+LAST_SCAN_FILE=$(_state ".last-scan")
 # Host-local, non-synced preview scratch (see output-locations.md). A dry-run
 # overwrites this per (trigger, day) so repeated previews don't accumulate.
-PREVIEW_DIR=$(_ceo_state_migrate "preview")
+PREVIEW_DIR=$(_state "preview")
 PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
 # cron-runs.log lives in the synced vault and every host in the swarm appended
 # to it, which Syncthing cannot merge -- it forks the file instead. Ten conflict

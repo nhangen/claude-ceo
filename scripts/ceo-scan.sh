@@ -22,7 +22,11 @@ TODAY=$(date +%Y-%m-%d)
 YESTERDAY=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
 # Same file ceo-cron.sh stamps on a successful morning-scan, so both must resolve
 # it identically — it moved to the host-local state dir in #394.
-LAST_SCAN_MARKER=$(_ceo_state_migrate ".last-scan")
+# The status is deliberately ignored here. It reports a state dir that could not
+# be created or a legacy file that could not be moved; either way this script
+# degrades to fresh state, and its own writes are already guarded. Only the cron
+# dispatcher refuses to run on rc=2, because only it half-applies bookkeeping.
+LAST_SCAN_MARKER=$(_ceo_state_migrate ".last-scan") || true
 
 # --- Create scan marker if missing (first run = yesterday midnight) ---
 if [ ! -f "$LAST_SCAN_MARKER" ]; then

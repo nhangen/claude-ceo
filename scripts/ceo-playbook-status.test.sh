@@ -16,6 +16,9 @@ setup() {
   export HOME="$TEST_HOME"
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
+  # Explicit rather than inherited from HOME — see _ceo_state_dir in ceo-config.sh.
+  export CEO_STATE_DIR="$TEST_HOME/.ceo/state"
+  mkdir -p "$CEO_STATE_DIR"
   # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
   # the synced vault — `ceo playbook scan` writes it there.
   REGISTRY_FILE="$HOME/.ceo/registry.json"
@@ -57,7 +60,7 @@ teardown() {
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_VAULT CEO_DIR CEO_REPO_PLAYBOOK_DIR TEST_HOME HOME_BACKUP PATH_BACKUP
+  unset CEO_VAULT CEO_DIR CEO_STATE_DIR CEO_REPO_PLAYBOOK_DIR TEST_HOME HOME_BACKUP PATH_BACKUP
 }
 
 _write_playbook() {

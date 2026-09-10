@@ -19,21 +19,60 @@ source "$SCRIPT_DIR/test-harness.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 STIGNORE="$REPO_ROOT/syncthing/shared.stignore"
 
-# Dotfile paths written under $LOG_DIR / $CEO_DIR/log by any non-test script.
-# A trailing "-" in the captured name means the source interpolated a trigger or
-# similar suffix, so the example path substitutes a concrete one.
+# Dotfile paths written under the synced CEO/log/ by any non-test script.
+#
+# Three things this has to see, all of which it missed when the arm below was
+# inverted in #394 — and a missed spelling now reads as proof, since the arm
+# passes when discovery returns nothing:
+#
+#   - `${LOG_DIR}/...` as well as `$LOG_DIR/...`
+#   - a directory held in an intermediate variable, which is how
+#     ceo-discord-report.sh wrote `.last-deliver-*` for months without this
+#     noticing, and without any stignore pattern covering it
+#   - `scripts/ceo` itself, a 2500-line CLI the old glob never scanned because it
+#     has no .sh extension
+#
+# `_ceo_state_dir`-derived paths are the correct destination and are not matched.
 _discover_state_files() {
   local f
-  for f in "$SCRIPT_DIR"/*.sh; do
+  for f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/ceo"; do
     case "$f" in
       *.test.sh|*test-common.sh|*test-harness.sh|*debug-*) continue ;;
     esac
-    awk 'match($0, /\$(LOG_DIR|CEO_DIR\/log)"?\/\.[a-z-]+/) {
-      m = substr($0, RSTART, RLENGTH)
-      sub(/^\$(LOG_DIR|CEO_DIR\/log)"?\//, "", m)
-      print m
-    }' "$f"
-  done | sort -u
+    [ -f "$f" ] || continue
+    awk '
+      BEGIN { vars["LOG_DIR"] = 1 }
+      # Any variable ever assigned something that resolves to the synced log dir
+      # joins the alternation, so a write through it is seen. LOG_DIR is seeded
+      # because it is the base name every other one derives from.
+      /^[^#]*[A-Za-z_][A-Za-z0-9_]*=.*(\$\{?LOG_DIR\}?|CEO_DIR\}?\/log|CEO_VAULT\}?\/CEO\/log)/ {
+        v = $0
+        sub(/=.*$/, "", v)            # keep the name, drop the value
+        sub(/^.*[;&|(]/, "", v)       # a second statement on the line
+        gsub(/[^A-Za-z0-9_]/, "", v)  # leading space, `local `, quotes
+        sub(/^local/, "", v)
+        if (v != "") vars[v] = 1
+      }
+      {
+        # The fully-spelled forms, which name no intermediate variable.
+        l0 = $0
+        while (match(l0, /\$\{?(CEO_DIR\}?\/log|CEO_VAULT\}?\/CEO\/log)"?\/\.[a-zA-Z-]+/)) {
+          m0 = substr(l0, RSTART, RLENGTH)
+          l0 = substr(l0, RSTART + RLENGTH)
+          sub(/^.*\//, "", m0)
+          print m0
+        }
+        for (v in vars) {
+          l = $0
+          while (match(l, "\\$\\{?" v "\\}?\"?/\\.[a-zA-Z-]+")) {
+            m = substr(l, RSTART, RLENGTH)
+            l  = substr(l, RSTART + RLENGTH)
+            sub(/^.*\//, "", m)
+            print m
+          }
+        }
+      }' "$f"
+  done | sed 's/^\.\././' | sort -u
 }
 
 # Does any stignore pattern glob-match this vault-relative path?
@@ -51,6 +90,35 @@ _is_ignored() {
     case "$path" in $line) return 0 ;; esac
   done < "$STIGNORE"
   return 1
+}
+
+test_the_discovery_step_can_still_see_a_violation() {
+  # The positive control for the arm below. That arm's entire content is "discovery
+  # returned nothing", so a discovery step that has quietly gone blind is
+  # indistinguishable from a clean tree — the test reports success at the moment it
+  # stops working. #394 shipped exactly that: the pattern matched only the literal
+  # `$LOG_DIR/.x` form, so `.last-deliver-*`, written through an intermediate
+  # variable, was invisible and had been syncing between hosts unnoticed.
+  #
+  # Each spelling below is one that was missed. Seed it, prove discovery finds it,
+  # remove it.
+  local probe="$SCRIPT_DIR/zz-stignore-probe.sh" spelling found
+  for spelling in \
+    'echo x > "$LOG_DIR/.probe-plain"' \
+    'echo x > "${LOG_DIR}/.probe-braced"' \
+    '_d="$CEO_DIR/log"; echo x > "$_d/.probe-indirect"' \
+    '  _dd="$CEO_DIR/log"; _p="$_dd/.probe-indented"' \
+    'local _e="$CEO_DIR/log"; echo x > "$_e/.probe-local"'
+  do
+    printf '#!/bin/bash\n%s\n' "$spelling" > "$probe"
+    found=$(_discover_state_files | grep -c '^\.probe-' || true)
+    rm -f "$probe"
+    if [ "$found" -ge 1 ]; then
+      assert_eq "seen" "seen" "discovery sees: $spelling"
+    else
+      assert_eq "BLIND" "seen" "discovery is blind to: $spelling"
+    fi
+  done
 }
 
 test_no_host_local_state_is_written_under_the_synced_log_dir() {

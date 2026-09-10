@@ -761,6 +761,77 @@ SH
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 }
 
+test_an_uncreatable_state_dir_refuses_to_dispatch() {
+  # The state dir used to be $LOG_DIR, which this script creates with a checked
+  # mkdir. Moving it to $HOME/.ceo/state put it behind a mkdir whose failure was
+  # discarded — and the first consumer is a bare redirect in _record_success,
+  # which under set -e aborts *after* _bookkeeping_done is set, so the EXIT trap
+  # records nothing either. The run then reads as an unexplained non-zero with the
+  # failure streak silently reset. Realistic trigger: $HOME/.ceo root-owned by an
+  # earlier sudo run, the same cause the script-runner log probe anticipates.
+  _write_failing_playbook nodir-check
+
+  # A file where the directory must be: the failure is the kernel's, not a
+  # permission bit teardown would have to restore (teardown does not run on an
+  # abort).
+  rm -rf "$CEO_STATE_DIR"
+  : > "$CEO_STATE_DIR"
+
+  local rc=0
+  bash "$CRON" nodir-check >/dev/null 2>&1 || rc=$?
+  rm -f "$SCRIPT_DIR/nodir-check.sh" "$CEO_STATE_DIR"
+
+  assert_eq "$rc" "1" "an uncreatable state dir must stop the run, not half-apply bookkeeping"
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "NOT dispatched" \
+    "and say so where cron failures are read, not on the stderr the scheduler ignores"
+  assert_contains "$skips" "nodir-check" "and name the playbook"
+}
+
+test_production_honors_CEO_STATE_DIR_not_just_HOME() {
+  # CEO_STATE_DIR exists because seven playbook scripts call ceo_pin_home_or_warn,
+  # which re-exports HOME from passwd — so a $HOME-derived path escapes a fixture
+  # and writes the developer's real ~/.ceo/state. That happened once during #394.
+  #
+  # The harness sets HOME and CEO_STATE_DIR to the same fixture, so every other arm
+  # passes whether or not the override is honored. This one points it somewhere HOME
+  # is not, which is the only way to tell the two apart — and the only suite that
+  # noticed the override being removed did so *by* committing the violation.
+  local elsewhere="$TEST_HOME/elsewhere-state"
+  mkdir -p "$elsewhere"
+  _write_failing_playbook override-check
+  CEO_STATE_DIR="$elsewhere" bash "$CRON" override-check >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/override-check.sh"
+
+  assert_file_exists "$elsewhere/.fail-count-override-check" \
+    "production must resolve the state dir through CEO_STATE_DIR, not \$HOME"
+  if [ -e "$HOME/.ceo/state/.fail-count-override-check" ]; then
+    fail_test "the override was ignored and \$HOME won"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_the_two_last_scan_writers_agree_on_the_path() {
+  # ceo-cron.sh stamps .last-scan on a successful morning-scan; ceo-scan.sh reads
+  # and creates it. The comment on ceo-scan.sh calls that agreement load-bearing
+  # and nothing pinned it — renaming one side left both suites green, because a
+  # reader that finds nothing just takes the first-run branch and behaves the same.
+  #
+  # Both sides are asked for their path here rather than either being spelled out.
+  local cron_side scan_side
+  cron_side=$(bash -c ". '$SCRIPT_DIR/ceo-config.sh' >/dev/null 2>&1; _ceo_state_migrate .last-scan")
+  scan_side=$(bash -c "
+    set -euo pipefail
+    CEO_VAULT='$CEO_VAULT' CEO_STATE_DIR='$CEO_STATE_DIR'
+    . '$SCRIPT_DIR/ceo-config.sh' >/dev/null 2>&1
+    grep -n 'last-scan' '$SCRIPT_DIR/ceo-scan.sh' | head -1")
+  assert_contains "$scan_side" "_ceo_state_migrate" \
+    "ceo-scan.sh must resolve .last-scan through the same helper the dispatcher uses"
+  assert_contains "$cron_side" "/.last-scan" "and that helper must yield the marker path"
+}
+
 test_cron_state_is_written_outside_the_synced_vault() {
   # The fail counter, the cooldown stamp and the preview scratch used to live
   # under CEO/log/ and stay host-local only because each host had copied
@@ -772,7 +843,7 @@ test_cron_state_is_written_outside_the_synced_vault() {
   bash "$CRON" state-check >/dev/null 2>&1 || true
   rm -f "$SCRIPT_DIR/state-check.sh"
 
-  assert_file_exists "$HOME/.ceo/state/.fail-count-state-check" \
+  assert_file_exists "$(_ceo_state)/.fail-count-state-check" \
     "the failure counter must land in the host-local state dir"
   if [ -e "$CEO_DIR/log/.fail-count-state-check" ]; then
     fail_test "the failure counter was written into the synced vault"
@@ -792,7 +863,7 @@ test_legacy_cron_state_is_migrated_on_first_run() {
   bash "$CRON" migr-check >/dev/null 2>&1 || true
   rm -f "$SCRIPT_DIR/migr-check.sh"
 
-  assert_eq "$(cat "$HOME/.ceo/state/.fail-count-migr-check" 2>/dev/null)" "3" \
+  assert_eq "$(cat "$(_ceo_state)/.fail-count-migr-check" 2>/dev/null)" "3" \
     "the legacy counter must carry across and increment, not restart at 1"
   if [ -e "$CEO_DIR/log/.fail-count-migr-check" ]; then
     fail_test "the legacy file must be moved, not copied — a leftover resyncs"
@@ -807,12 +878,12 @@ test_migration_does_not_clobber_existing_host_local_state() {
   # synced one in, it could be another machine's counter entirely.
   _write_failing_playbook clob-check
   printf '9\n' > "$CEO_DIR/log/.fail-count-clob-check"
-  printf '1\n' > "$HOME/.ceo/state/.fail-count-clob-check"
+  printf '1\n' > "$(_ceo_state)/.fail-count-clob-check"
 
   bash "$CRON" clob-check >/dev/null 2>&1 || true
   rm -f "$SCRIPT_DIR/clob-check.sh"
 
-  assert_eq "$(cat "$HOME/.ceo/state/.fail-count-clob-check" 2>/dev/null)" "2" \
+  assert_eq "$(cat "$(_ceo_state)/.fail-count-clob-check" 2>/dev/null)" "2" \
     "the host-local counter wins and increments from its own value"
 }
 

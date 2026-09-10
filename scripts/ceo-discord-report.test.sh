@@ -7,6 +7,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPORT="$SCRIPT_DIR/ceo-discord-report.sh"
 
 source "$SCRIPT_DIR/test-harness.sh"
+# For _ceo_state_dir and _doctor_check_freshness: the arms below drive both sides
+# of the delivery-stamp contract through the production definitions rather than
+# spelling the path a third time.
+# shellcheck source=ceo-config.sh
+source "$SCRIPT_DIR/ceo-config.sh"
+# _doctor_check_freshness lives in the CLI, which runs its dispatcher when
+# sourced, so it is pulled in per-call inside a subshell below rather than here.
 
 setup() {
   TMP=$(mktemp -d)
@@ -14,6 +21,11 @@ setup() {
   PATH_BACKUP="$PATH"
   export HOME="$TMP/home"
   export CEO_DIR="$TMP/vault/CEO"
+  export CEO_VAULT="$TMP/vault"
+  # Explicit: this script sources ceo-config.sh, and a $HOME-derived state path
+  # would escape the fixture in any caller that pins HOME from passwd.
+  export CEO_STATE_DIR="$TMP/home/.ceo/state"
+  mkdir -p "$CEO_STATE_DIR"
   export CEO_SECRETS_FILE="$TMP/secrets.json"
   export CEO_DISCORD_REPORT_DEBUG_LOG="$TMP/debug.log"
   mkdir -p "$HOME/.bun/bin" "$CEO_DIR" "$TMP/curl"
@@ -48,7 +60,7 @@ teardown() {
   rm -rf "$TMP"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_DIR CEO_SECRETS_FILE CEO_DISCORD_REPORT_DEBUG_LOG CURL_CAPTURE_DIR CEO_DISCORD_REPORT_WEBHOOK
+  unset CEO_DIR CEO_VAULT CEO_STATE_DIR CEO_SECRETS_FILE CEO_DISCORD_REPORT_DEBUG_LOG CURL_CAPTURE_DIR CEO_DISCORD_REPORT_WEBHOOK
 }
 
 test_silent_without_report_webhook() {
@@ -254,12 +266,61 @@ test_records_last_deliver_timestamp_on_successful_post() {
   # runs but silently stops posting.
   echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
   printf 'full report body' | "$REPORT" morning-brief >/dev/null 2>&1
-  local f="$CEO_DIR/log/.last-deliver-morning-brief"
+  # Resolved through the production helper, not spelled a second time here. The
+  # whole defect this arm guards against in #400 was the writer and `ceo doctor`'s
+  # reader disagreeing about the directory, and a test that hardcodes its own
+  # third spelling cannot see that.
+  local f
+  f="$(_ceo_state_dir)/.last-deliver-morning-brief"
   assert_eq "$([ -f "$f" ] && echo yes || echo no)" "yes" \
     "a successful post must record .last-deliver-<trigger>"
   assert_eq "$(cat "$f" 2>/dev/null | grep -cE '^[0-9]+$')" "1" \
     ".last-deliver must hold a numeric epoch"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+
+  # It must NOT be in the synced vault: whether this machine delivered says
+  # nothing about whether another did, and the stamp had no stignore entry at
+  # all, so it replicated — one host's delivery marking another's as fresh.
+  if [ -e "$CEO_DIR/log/.last-deliver-morning-brief" ]; then
+    fail_test "the delivery stamp was written into the synced vault"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_the_delivery_stamp_lands_where_doctor_reads_it() {
+  # The #400 blocker: the reader moved to the host-local state dir and this writer
+  # did not, so doctor looked for the stamp where nothing wrote it. Its absent-file
+  # branch is deliberately non-flagging, so the check reported a permanent
+  # all-clear — the exact silent-delivery failure it was built to catch.
+  #
+  # Driving both sides here is the point: a test that names the path itself would
+  # have stayed green through that break.
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  printf 'full report body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local reg="$TMP/reg.json" out
+  cat > "$reg" << 'REG'
+{"playbooks":[{"name":"morning-brief","status":"active","schedule":"0 6 * * *","discord_report":true}]}
+REG
+  # Asserted on the complaint, not on its absence. The reader's absent-file branch
+  # is deliberately non-flagging, so "no output" is what a *broken* reader
+  # produces — the same all-clear the real break produced. Reading the clock 40
+  # days ahead makes the just-written stamp stale, so a reader that actually finds
+  # it must say so, and only a reader that finds it can.
+  local future; future=$(( $(date +%s) + 3456000 ))
+  out=$( source "$SCRIPT_DIR/ceo" >/dev/null 2>&1; _doctor_check_freshness "$reg" "$(_ceo_state_dir)" "$future" 2>&1 || true )
+  assert_contains "$out" "hasn't DELIVERED" \
+    "doctor must read the delivery stamp the reporter just wrote"
+
+  # And the converse: pointed at the directory the stamp used to live in, the
+  # reader finds nothing and is silent. That silence is what shipped.
+  local blind
+  blind=$( source "$SCRIPT_DIR/ceo" >/dev/null 2>&1; _doctor_check_freshness "$reg" "$CEO_DIR/log" "$future" 2>&1 || true )
+  if echo "$blind" | grep -qF "hasn't DELIVERED"; then
+    fail_test "the arm cannot distinguish a working reader from a blind one"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
 }
 
 test_no_last_deliver_when_gated_out() {

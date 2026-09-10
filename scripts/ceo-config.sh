@@ -376,8 +376,7 @@ _ceo_registry_path() {
 # wrong — so the fix is the override, not removing the pin.
 _ceo_state_dir() {
   : "${HOME:?HOME must be set to resolve the host-local state directory}"
-  printf '%s
-' "${CEO_STATE_DIR:-$HOME/.ceo/state}"
+  printf '%s\n' "${CEO_STATE_DIR:-$HOME/.ceo/state}"
 }
 
 # Legacy location of the same state, inside the synced vault. Read-only, and only
@@ -387,8 +386,7 @@ _ceo_state_dir() {
 # scheduler, a bare `ceo` invocation) must not call it.
 _ceo_legacy_state_dir() {
   : "${CEO_VAULT:?CEO_VAULT must be set to resolve the legacy state directory}"
-  printf '%s
-' "$CEO_VAULT/CEO/log"
+  printf '%s\n' "$CEO_VAULT/CEO/log"
 }
 
 # _ceo_state_migrate <basename>
@@ -397,21 +395,35 @@ _ceo_legacy_state_dir() {
 #   no-op once migrated — the `[ -e ]` on the new path is the whole guard, so the
 #   cost after the first run is two stats.
 #
-#   A failed move is not fatal and not silent: the caller gets the new path
-#   regardless, so the run proceeds with fresh state rather than aborting, and the
-#   reason goes to stderr where the dispatcher routes it to cron-skips.log. Losing
-#   one cooldown stamp is a double-run at worst; refusing to dispatch is not.
+#   Degradation is reported through the exit status, never through stderr. The
+#   scheduler spawns the dispatcher with `stderr: "ignore"`
+#   (lib/scheduler/src/main.ts), so a warning written here would reach nobody on
+#   the runs that matter — the same defect #398 found in the completion log. The
+#   path is printed either way, so a caller that ignores the status still works.
+#
+#   **2** — the state directory could not be created. Nothing will be readable or
+#   writable there; the caller should refuse to dispatch rather than let a bare
+#   redirect abort it halfway through bookkeeping.
+#   **1** — a legacy file could not be moved. The run proceeds with fresh state:
+#   losing one cooldown stamp is a double-run at worst, and refusing to dispatch
+#   over it is worse. Worth journalling, not worth aborting.
 _ceo_state_migrate() {
-  local name="$1" new_dir legacy
+  local name="$1" new_dir legacy rc=0
   new_dir=$(_ceo_state_dir) || return 1
-  mkdir -p "$new_dir" 2>/dev/null || true
-  if [ ! -e "$new_dir/$name" ] && [ -n "${CEO_VAULT:-}" ] && [ -e "$CEO_VAULT/CEO/log/$name" ]; then
-    legacy="$CEO_VAULT/CEO/log/$name"
-    mv "$legacy" "$new_dir/$name" 2>/dev/null \
-      || echo "WARN — could not migrate host-local state $legacy to $new_dir/$name; continuing with fresh state" >&2
+  # Not `|| true`. A state dir that cannot be created sends every later read and
+  # write at a path that does not exist, and the first of those in _record_success
+  # is a bare redirect under `set -e` — which aborts it *after* _bookkeeping_done
+  # is set, so the EXIT trap declines to record the failure too. The caller needs
+  # to know, and the status is how it finds out.
+  mkdir -p "$new_dir" 2>/dev/null || rc=2
+  if [ "$rc" -eq 0 ] && [ ! -e "$new_dir/$name" ] && [ -n "${CEO_VAULT:-}" ]; then
+    legacy="$(_ceo_legacy_state_dir)/$name"
+    if [ -e "$legacy" ]; then
+      mv "$legacy" "$new_dir/$name" 2>/dev/null || rc=1
+    fi
   fi
-  printf '%s
-' "$new_dir/$name"
+  printf '%s\n' "$new_dir/$name"
+  return "$rc"
 }
 
 # enabled.json is host-local like the registry: it lists the `each`-scope
