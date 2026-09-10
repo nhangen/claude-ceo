@@ -778,11 +778,12 @@ test_a_host_name_that_is_a_path_is_flattened_into_one_log_file() {
   # carrying the line — and let the spelling be whatever it is.
   _run_log_intake_as_host '../../escaped'
 
-  local logs found=0 f
+  local logs found
   logs=$(find "$CEO_DIR/log" -maxdepth 1 -name 'cron-runs*' 2>/dev/null)
-  for f in $logs; do found=$((found + 1)); done
+  found=$(printf '%s' "$logs" | grep -c . || true)
   assert_eq "$found" "1" "a path-shaped host name must produce exactly one log file"
-  assert_contains "$(cat $logs 2>/dev/null)" "host-intake completed" \
+  assert_contains "$(find "$CEO_DIR/log" -maxdepth 1 -name 'cron-runs*' -exec cat {} + 2>/dev/null)" \
+    "host-intake completed" \
     "and the completion must actually be in it — a failed append loses the record"
 
   # The file has to live in the log directory, not somewhere a path component
