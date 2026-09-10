@@ -452,6 +452,29 @@ cmd_doctor() {
              "$CEO_DIR/log/cron-runs-$_self_host.log"; do
     [ -f "$_rl" ] && _runs_logs+=("$_rl")
   done
+
+  # A sibling cron-runs*.log carrying *today's* lines means something on this
+  # machine is recording completions where this check will never look — the cron
+  # writer resolved a different id than this reader (a different HOME under
+  # launchd, a CEO_HOSTNAME set in one environment and not the other), or it fell
+  # back to `unknown`. Those runs are simply absent from the #88/#89 backstop,
+  # and nothing else in the system would ever say so. Peers' logs are excluded
+  # from the *read* set on purpose; this warns about them rather than reading
+  # them, which is the distinction the block above turns on.
+  local _unread_prefix _unread=""
+  _unread_prefix=$(LC_TIME=C date '+%a %b %e')
+  for _rl in "$CEO_DIR"/log/cron-runs-*.log; do
+    [ -f "$_rl" ] || continue
+    case "$_rl" in "$CEO_DIR/log/cron-runs-$_self_host.log") continue ;; esac
+    LC_TIME=C grep -qF -- "$_unread_prefix" "$_rl" 2>/dev/null || continue
+    _unread="$_unread $(basename "$_rl")"
+  done
+  if [ -n "$_unread" ]; then
+    echo "  ⚠ completions recorded today in a log this host is not being cross-checked against:$_unread"
+    echo "    (this host reads cron-runs-$_self_host.log — set CEO_HOSTNAME consistently, or the runs in those files go unverified)"
+    warn=$((warn + 1))
+  fi
+
   if [ ! -f "$registry_file" ]; then
     echo "  ⚠ doctor artifact cross-check skipped: registry.json not found (run: ceo playbook scan)"
     warn=$((warn + 1))
@@ -504,7 +527,15 @@ cmd_doctor() {
         _missing=$((_missing + 1))
       fi
     done < <(jq -c '.playbooks[]' "$registry_file" 2>/dev/null)
-    if [ "$_checked" -gt 0 ] && [ "$_missing" -eq 0 ]; then
+    if [ "$_checked" -eq 0 ]; then
+      # Silence here used to be indistinguishable from a pass, which is the one
+      # thing a backstop must never be: the ✓ below is gated on _checked > 0 and
+      # there was no other branch, so a cross-check reading the wrong file — a
+      # host id that drifted between the cron writer and this reader, or runs
+      # filed under `unknown` — reported exactly what a healthy host reports.
+      echo "  ⚠ artifact cross-check matched no completions today in ${_runs_logs[*]}"
+      warn=$((warn + 1))
+    elif [ "$_missing" -eq 0 ]; then
       echo "  ✓ Playbook artifacts present for today's completed runs ($_checked checked)"
       ok=$((ok + 1))
     fi

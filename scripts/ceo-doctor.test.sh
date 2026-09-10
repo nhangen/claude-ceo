@@ -234,6 +234,39 @@ test_doctor_ignores_a_peer_hosts_runs_log() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_doctor_says_when_the_cross_check_matched_nothing() {
+  # The ✓ line prints only when _checked > 0 and nothing is missing, and there
+  # was no else. So a cross-check that matched no completion at all — wrong log
+  # file, a host id that drifted between the cron writer and this reader, a run
+  # filed under `unknown` — emitted nothing, which reads exactly like a clean
+  # pass. The comment on this check calls it the load-bearing backstop for
+  # ollama-agent; it could switch itself off without a word.
+  : > "$CEO_DIR/log/cron-runs-${CEO_HOSTNAME}.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "artifact cross-check matched no completions" \
+    "a cross-check that checked nothing must say so, not look like a pass"
+  if echo "$output" | grep -qF "artifacts present for today"; then
+    fail_test "doctor must not claim artifacts are present when it matched none"
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_flags_a_completion_log_it_is_not_reading() {
+  # The drift case: the cron writer resolved one host id and this reader
+  # resolves another, or the writer fell back to `unknown`. Doctor then opens a
+  # file with nothing in it and — before the previous arm — said nothing. A
+  # sibling cron-runs*.log carrying *today's* lines is the signal that the two
+  # sides disagree, and it is the only signal there is.
+  _log_completed_today value-tracker "cron-runs-unknown.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "cron-runs-unknown.log" \
+    "doctor must name a completion log it is not reading"
+  assert_contains "$output" "not being cross-checked" \
+    "and say what the consequence is"
+}
+
 test_doctor_still_reads_the_pre_397_shared_log() {
   # Every completion recorded before #397 is in the bare cron-runs.log, as is
   # every completion from a host that has not picked up the new dispatcher.
