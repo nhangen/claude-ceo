@@ -189,6 +189,10 @@ PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
 # warns when a host has no .stignore installed at all, so the file is also keyed
 # by host: on such a host the logs stay distinct instead of forking.
 RUNS_LOG_HOST=$(_cron_runs_log_host) || {
+  # $LOG_DIR is created much later in the run, and this is the one message that
+  # must survive a first-ever run on a fresh install — which is where an
+  # unresolved host is most likely.
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
   # Not fatal — the completion still gets recorded. But it lands in a file
   # doctor's cross-check will not open on a host that can resolve itself, so
   # saying nothing here is how a run goes missing from the #88/#89 backstop
@@ -279,7 +283,7 @@ _record_success() {
   # rather than half-applying success. Same posture as the cron-stdout/stderr
   # probe below, which this file already decided is the right one.
   echo "$(date): $TRIGGER completed" >> "$RUNS_LOG" || \
-    echo "$(date): WARN — cannot record the completion for $TRIGGER in $RUNS_LOG; this run will not be cross-checked by ceo doctor" \
+    echo "$(date): ERROR — cannot record the completion for $TRIGGER in $RUNS_LOG; this run will not be cross-checked by ceo doctor" \
       >> "$LOG_DIR/cron-skips.log" || true
   # High-frequency/silent-by-design playbooks don't notify Discord on success —
   # only on failure (handled in _record_failure). disk-monitor (every 6h) and

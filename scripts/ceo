@@ -461,12 +461,26 @@ cmd_doctor() {
   # and nothing else in the system would ever say so. Peers' logs are excluded
   # from the *read* set on purpose; this warns about them rather than reading
   # them, which is the distinction the block above turns on.
-  local _unread_prefix _unread=""
+  #
+  # A *registered* peer's log is not drift — on a host with no .stignore the
+  # whole swarm's logs are on disk by design, which is the state the per-host
+  # keying exists to survive. swarm.json's hosts[] is the discriminator: warn on
+  # an id nobody registered (`unknown`, or one that drifted between this host's
+  # cron and interactive environments), stay quiet about the rest.
+  local _unread_prefix _unread="" _peers="" _swarm_file
   _unread_prefix=$(LC_TIME=C date '+%a %b %e')
+  _swarm_file=$(_swarm_path 2>/dev/null) || _swarm_file=""
+  if [ -n "$_swarm_file" ] && [ -f "$_swarm_file" ] && command -v jq &>/dev/null; then
+    _peers=$(jq -r '.hosts[]? // empty' "$_swarm_file" 2>/dev/null) || _peers=""
+  fi
   for _rl in "$CEO_DIR"/log/cron-runs-*.log; do
     [ -f "$_rl" ] || continue
     case "$_rl" in "$CEO_DIR/log/cron-runs-$_self_host.log") continue ;; esac
     LC_TIME=C grep -qF -- "$_unread_prefix" "$_rl" 2>/dev/null || continue
+    local _id="${_rl##*/cron-runs-}"; _id="${_id%.log}"
+    if [ -n "$_peers" ] && printf '%s\n' "$_peers" | grep -qxF -- "$_id"; then
+      continue
+    fi
     _unread="$_unread $(basename "$_rl")"
   done
   if [ -n "$_unread" ]; then
@@ -533,8 +547,13 @@ cmd_doctor() {
       # there was no other branch, so a cross-check reading the wrong file — a
       # host id that drifted between the cron writer and this reader, or runs
       # filed under `unknown` — reported exactly what a healthy host reports.
-      echo "  ⚠ artifact cross-check matched no completions today in ${_runs_logs[*]}"
-      warn=$((warn + 1))
+      #
+      # Reported, not warned. Zero is the honest state between midnight and the
+      # day's first artifact-declaring run, so warning here would fire on every
+      # healthy host each morning and teach the reader to skip the line — which
+      # is how you lose a signal you just added. The drift case has its own
+      # warning above, and that one names the file.
+      echo "  ? artifact cross-check matched no completions today in ${_runs_logs[*]}"
     elif [ "$_missing" -eq 0 ]; then
       echo "  ✓ Playbook artifacts present for today's completed runs ($_checked checked)"
       ok=$((ok + 1))

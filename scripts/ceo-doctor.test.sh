@@ -268,6 +268,33 @@ test_doctor_flags_a_completion_log_it_is_not_reading() {
     "and say what the consequence is"
 }
 
+test_doctor_does_not_flag_a_registered_peers_log() {
+  # On a host with no .stignore installed, the whole swarm's completion logs are
+  # on disk — that is the state the per-host keying exists to survive, not a
+  # fault. Warning about it would fire on every such host every day and hand the
+  # reader advice ("set CEO_HOSTNAME consistently") that is wrong for their
+  # situation. swarm.json's hosts[] separates a registered peer from a drifted
+  # or unresolvable id, which is what the warning is actually for.
+  cat > "$CEO_DIR/swarm.json" << 'SWARM'
+{"schema_version": 1, "hosts": ["testhost", "peer-ml1"], "owners": {}}
+SWARM
+  _log_completed_today value-tracker "cron-runs-peer-ml1.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  if echo "$output" | grep -qF "not being cross-checked"; then
+    fail_test "a registered swarm peer's log must not be reported as drift"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+
+  # And the unregistered case still warns, so the skip above is a discriminator
+  # rather than a blanket mute.
+  _log_completed_today value-tracker "cron-runs-unknown.log"
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "cron-runs-unknown.log" \
+    "an id nobody registered must still be reported"
+}
+
 test_doctor_still_reads_the_pre_397_shared_log() {
   # Every completion recorded before #397 is in the bare cron-runs.log, as is
   # every completion from a host that has not picked up the new dispatcher.
