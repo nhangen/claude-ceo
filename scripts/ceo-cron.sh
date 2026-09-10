@@ -177,6 +177,30 @@ FAIL_COUNT_FILE="$LOG_DIR/.fail-count-$TRIGGER"
 # overwrites this per (trigger, day) so repeated previews don't accumulate.
 PREVIEW_DIR="$LOG_DIR/preview"
 PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
+# cron-runs.log lives in the synced vault and every host in the swarm appended
+# to it, which Syncthing cannot merge -- it forks the file instead. Ten conflict
+# copies had accumulated by 2026-09-09 (#397), and whichever copy loses takes
+# its host's completion lines with it, so `ceo doctor`'s artifact cross-check
+# can report a run missing that actually happened.
+#
+# Two fixes, because either alone leaves a hole. shared.stignore now excludes
+# CEO/log/cron-runs*.log, which is the real cure -- this is host-local runtime
+# state like the fail counters and should never have synced. But `ceo doctor`
+# warns when a host has no .stignore installed at all, so the file is also keyed
+# by host: on such a host the logs stay distinct instead of forking.
+RUNS_LOG_HOST=$(_cron_runs_log_host) || {
+  # $LOG_DIR is created much later in the run, and this is the one message that
+  # must survive a first-ever run on a fresh install — which is where an
+  # unresolved host is most likely.
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  # Not fatal — the completion still gets recorded. But it lands in a file
+  # doctor's cross-check will not open on a host that can resolve itself, so
+  # saying nothing here is how a run goes missing from the #88/#89 backstop
+  # with no trace. Same shape as the alert-host fallback below.
+  echo "$(date): WARN — could not resolve this host for the completion log (set CEO_HOSTNAME); recording to cron-runs-unknown.log, which ceo doctor's artifact cross-check does not read" \
+    >> "$LOG_DIR/cron-skips.log" || true
+}
+RUNS_LOG="$LOG_DIR/cron-runs-$RUNS_LOG_HOST.log"
 
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
 _v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }
@@ -244,13 +268,23 @@ _report() {
 _record_success() {
   _bookkeeping_done=1   # read by the EXIT trap installed after the lock section
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
-    _preview "Would record SUCCESS (no .last-run / fail-count reset / cron-runs.log / notify)."
+    _preview "Would record SUCCESS (no .last-run / fail-count reset / cron-runs-<host>.log / notify)."
     return 0
   fi
   echo 0 > "$FAIL_COUNT_FILE"
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
-  echo "$(date): $TRIGGER completed" >> "$LOG_DIR/cron-runs.log"
+  # Not bare, for two reasons. Under set -e a failed append aborts _record_success
+  # here — after the fail counter is zeroed and .last-run stamped, before notify —
+  # and _on_exit records nothing because _bookkeeping_done is already 1, so the
+  # run reads as a success everywhere except the one place that matters. And
+  # doctor's cross-check treats a missing completion line as "did not run",
+  # silently skipping the playbook. The record is the thing being lost; say so
+  # rather than half-applying success. Same posture as the cron-stdout/stderr
+  # probe below, which this file already decided is the right one.
+  echo "$(date): $TRIGGER completed" >> "$RUNS_LOG" || \
+    echo "$(date): ERROR — cannot record the completion for $TRIGGER in $RUNS_LOG; this run will not be cross-checked by ceo doctor" \
+      >> "$LOG_DIR/cron-skips.log" || true
   # High-frequency/silent-by-design playbooks don't notify Discord on success —
   # only on failure (handled in _record_failure). disk-monitor (every 6h) and
   # ticket-triage-autopilot (every 30m, silent-by-design v2 cache adapter) would

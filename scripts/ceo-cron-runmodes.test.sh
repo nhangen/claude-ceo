@@ -253,7 +253,7 @@ STUB
   assert_fails "dry-run must not post to Discord" test -f "$CURL_CAPTURE_DIR/payload.json"
   local pf; pf=$(_preview_file dr-read)
   assert_contains "$(cat "$pf" 2>/dev/null)" "Preview body from the read model." "preview must capture the model output"
-  assert_not_contains "$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null)" "dr-read completed" "dry-run must not append to cron-runs.log"
+  assert_not_contains "$(_runs_log)" "dr-read completed" "dry-run must not append to cron-runs.log"
   assert_fails "dry-run must not create the synced daily log file CEO/log/<TODAY>.md" test -f "$CEO_DIR/log/$(date +%Y-%m-%d).md"
 
   unset CURL_CAPTURE_DIR

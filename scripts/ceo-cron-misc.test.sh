@@ -610,11 +610,208 @@ SH
   CEO_VERBOSE=1 bash "$CRON" log-intake >/dev/null 2>&1 || true
 
   local runs_log
-  runs_log=$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null || echo "")
+  runs_log=$(_runs_log)
   assert_contains "$runs_log" "log-intake completed" "cron-runs.log must record successful script run"
 
   rm -f "$SCRIPT_DIR/log-intake.sh"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+
+# --- #397: the completion log is per-host -------------------------------------
+#
+# cron-runs.log lives in the Syncthing-synced vault and every host appended to
+# it, so Syncthing forked the file instead of merging: ten conflict copies by
+# 2026-09-09. Whichever copy loses takes its host's completion lines with it,
+# and `ceo doctor`'s artifact cross-check reads those lines to decide whether a
+# playbook that claimed success produced anything.
+
+_run_log_intake_as_host() {   # $1 = CEO_HOSTNAME to run under ("" = leave unset)
+  cat > "$CEO_DIR/playbooks/host-intake.md" << 'PB'
+---
+name: host-intake
+description: Test playbook for the per-host completion log
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: host-intake.sh
+---
+PB
+  cat > "$SCRIPT_DIR/host-intake.sh" << 'SH'
+#!/bin/bash
+exit 0
+SH
+  _fixture_script "$SCRIPT_DIR/host-intake.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  if [ -n "$1" ]; then
+    CEO_HOSTNAME="$1" bash "$CRON" host-intake >/dev/null 2>&1 || true
+  else
+    # `env -u`, not a bare call: the harness never unsets CEO_HOSTNAME, so an
+    # ambient one (a real operator variable — ~/.ceo/config, `ceo setup`) would
+    # resolve the host that this arm needs to be unresolvable, and red a correct
+    # tree on whoever has it exported.
+    env -u CEO_HOSTNAME bash "$CRON" host-intake >/dev/null 2>&1 || true
+  fi
+  rm -f "$SCRIPT_DIR/host-intake.sh"
+}
+
+test_an_unresolvable_host_says_so_in_cron_skips() {
+  # The fallback to `unknown` is deliberate — aborting a playbook run over a log
+  # filename is disproportionate. But mute is the wrong kind of tolerant: the
+  # completions go somewhere `ceo doctor`'s cross-check does not read, and
+  # nothing anywhere says the host could not be resolved. `_record_failure`
+  # already settled how this is handled (ceo-cron.sh:316-335); match it.
+  cat > "$TEST_HOME/.bun/bin/hostname" << 'SH'
+#!/bin/bash
+echo ""
+SH
+  chmod +x "$TEST_HOME/.bun/bin/hostname"
+  _run_log_intake_as_host ''
+  rm -f "$TEST_HOME/.bun/bin/hostname"
+
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "WARN" \
+    "an unresolvable host must record a WARN, not fall back in silence"
+  assert_contains "$skips" "CEO_HOSTNAME" \
+    "and the WARN must name the setting that fixes it"
+  assert_contains "$skips" "cron-runs-unknown.log" \
+    "and name the file the completions are going to instead"
+}
+
+test_an_unwritable_completion_log_is_not_swallowed() {
+  # _record_success zeroes the fail counter and stamps .last-run *before* the
+  # append. A failing append then aborts it under set -e with the streak already
+  # reset and the cooldown already stamped, and _on_exit does not record a
+  # failure because _bookkeeping_done is set. Net: the scheduler sees a failure
+  # it cannot explain, and doctor's cross-check silently skips the playbook.
+  #
+  # This is pre-existing for the old shared name, but #397 raises it: the
+  # per-host file is a *new* name, so every host's first upgraded run must
+  # create it rather than append to one that already exists — and a $LOG_DIR
+  # left root-owned by an earlier sudo run permits the old write and refuses the
+  # new one. That is the case the cron-stdout/stderr probe was written for.
+  cat > "$CEO_DIR/playbooks/ro-intake.md" << 'PB'
+---
+name: ro-intake
+description: Test playbook for an unwritable completion log
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: script
+script: ro-intake.sh
+---
+PB
+  cat > "$SCRIPT_DIR/ro-intake.sh" << 'SH'
+#!/bin/bash
+exit 0
+SH
+  _fixture_script "$SCRIPT_DIR/ro-intake.sh"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+
+  # A directory where the log file should be: the append cannot succeed, and the
+  # failure is the kernel's rather than a permission bit teardown would have to
+  # restore (teardown does not run on an abort). The name comes from the
+  # production helper, not from a second copy of its spelling.
+  local blocked_host
+  blocked_host=$(bash -c ". '$SCRIPT_DIR/ceo-config.sh' >/dev/null 2>&1; _cron_runs_log_host")
+  mkdir -p "$CEO_DIR/log/cron-runs-$blocked_host.log"
+
+  bash "$CRON" ro-intake >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/ro-intake.sh"
+
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "cannot record the completion" \
+    "a completion that could not be written must say so, not vanish"
+  assert_contains "$skips" "ro-intake" \
+    "and name the playbook whose record was lost"
+}
+
+test_the_completion_log_is_keyed_by_host() {
+  _run_log_intake_as_host hostA
+
+  assert_file_exists "$CEO_DIR/log/cron-runs-hostA.log" \
+    "the completion must land in a host-keyed log"
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-hostA.log")" "host-intake completed" \
+    "and that log must carry the completion line"
+
+  # The shared file is the one Syncthing forks. Writing it alongside the
+  # per-host log would keep the conflict and make the fix invisible.
+  if [ -f "$CEO_DIR/log/cron-runs.log" ]; then
+    fail_test "the shared cron-runs.log must not be written any more"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_two_hosts_write_two_logs() {
+  _run_log_intake_as_host hostA
+  rm -f "$CEO_DIR/log/.last-run-host-intake"   # else the cooldown skips the second run
+  _run_log_intake_as_host hostB
+
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-hostA.log" 2>/dev/null)" "host-intake completed" \
+    "host A's completion stays in host A's log"
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-hostB.log" 2>/dev/null)" "host-intake completed" \
+    "host B's completion stays in host B's log"
+}
+
+test_a_host_name_that_is_a_path_is_flattened_into_one_log_file() {
+  # CEO_HOSTNAME is free text and reaches this as a filename component.
+  #
+  # This arm used to assert the exact flattened name, which pinned the `tr`
+  # replacement character rather than the property: swapping '-' for '_' is
+  # equally safe and turned it red. It also checked for a file at
+  # $CEO_VAULT/../escaped.log, which input can never produce — RUNS_LOG glues
+  # `cron-runs-` in front of the id, so traversal would need an existing
+  # `cron-runs-..` *directory* and the append just ENOENTs. Neither half tested
+  # what actually breaks.
+  #
+  # What actually breaks is the record: an unflattened id sends the append at a
+  # path that does not resolve, the write fails, and the completion is gone. So
+  # assert the properties — one log, named `cron-runs-*`, inside the log dir,
+  # carrying the line — and let the spelling be whatever it is.
+  _run_log_intake_as_host '../../escaped'
+
+  local logs found
+  logs=$(find "$CEO_DIR/log" -maxdepth 1 -name 'cron-runs*' 2>/dev/null)
+  found=$(printf '%s' "$logs" | grep -c . || true)
+  assert_eq "$found" "1" "a path-shaped host name must produce exactly one log file"
+  assert_contains "$(find "$CEO_DIR/log" -maxdepth 1 -name 'cron-runs*' -exec cat {} + 2>/dev/null)" \
+    "host-intake completed" \
+    "and the completion must actually be in it — a failed append loses the record"
+
+  # The file has to live in the log directory, not somewhere a path component
+  # took it. `find` above is already scoped there, so this pins the other half:
+  # nothing landed outside it.
+  if find "$CEO_VAULT" -name '*escaped*' -not -path "$CEO_DIR/log/*" 2>/dev/null | grep -q .; then
+    fail_test "a host name component escaped out of the log directory as a path"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_an_unresolvable_host_lands_in_the_unknown_log() {
+  # No CEO_HOSTNAME and a `hostname` that answers with nothing. The record must
+  # still be written somewhere doctor's glob reaches — losing the completion
+  # line is worse than sharing a file with another unresolvable host.
+  cat > "$TEST_HOME/.bun/bin/hostname" << 'SH'
+#!/bin/bash
+echo ""
+SH
+  chmod +x "$TEST_HOME/.bun/bin/hostname"
+  _run_log_intake_as_host ''
+  rm -f "$TEST_HOME/.bun/bin/hostname"
+
+  assert_file_exists "$CEO_DIR/log/cron-runs-unknown.log" \
+    "an unresolvable host must still record its completion"
+  assert_contains "$(cat "$CEO_DIR/log/cron-runs-unknown.log" 2>/dev/null)" "host-intake completed" \
+    "and the line must be the completion, not an empty file"
 }
 
 

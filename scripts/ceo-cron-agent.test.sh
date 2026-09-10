@@ -182,7 +182,7 @@ test_runner_ollama_agent_success() {
   bash "$CRON" agent-ok >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ollama-agent success must exit 0"
   [ -f "$HOME/agent-invoked.txt" ] || { printf '  FAIL [%s] bridge must be invoked on success\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
-  assert_contains "$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null)" "agent-ok completed" "success must record to cron-runs.log"
+  assert_contains "$(_runs_log)" "agent-ok completed" "success must record to cron-runs.log"
 }
 
 

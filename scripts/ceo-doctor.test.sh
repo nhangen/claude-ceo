@@ -101,9 +101,12 @@ teardown() {
   unset CEO_SCHEDULER CEO_LAUNCHD_DIR CEO_CRONTAB_BIN CEO_SYSTEMCTL_BIN
 }
 
+# Since #397 the dispatcher writes cron-runs-<host>.log, and doctor reads the
+# whole family. Default to the per-host name (CEO_HOSTNAME is "testhost" here);
+# pass an explicit basename to seed a second host's log or the legacy file.
 _log_completed_today() {
-  local name="$1"
-  printf '%s: %s completed\n' "$(date)" "$name" >> "$CEO_DIR/log/cron-runs.log"
+  local name="$1" file="${2:-cron-runs-${CEO_HOSTNAME}.log}"
+  printf '%s: %s completed\n' "$(date)" "$name" >> "$CEO_DIR/log/$file"
 }
 
 test_doctor_flags_completed_but_missing_artifact() {
@@ -158,9 +161,9 @@ test_doctor_passes_when_artifact_present() {
 }
 
 test_doctor_skips_when_playbook_not_completed_today() {
-  # No cron-runs.log entry for value-tracker today. The check should be a
+  # No completion entry for value-tracker today. The check should be a
   # no-op — not a failure (the playbook hasn't run yet, that's not a bug).
-  : > "$CEO_DIR/log/cron-runs.log"
+  : > "$CEO_DIR/log/cron-runs-${CEO_HOSTNAME}.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   if echo "$output" | grep -qF "artifact missing"; then
@@ -205,14 +208,110 @@ EOF
 test_doctor_warns_when_cron_log_missing() {
   # Per panel H3: the cross-check used to silently skip when its preconditions
   # weren't met. The registry exists from setup() and jq is on PATH, but we
-  # leave cron-runs.log absent — the cross-check must emit a WARN naming the
-  # missing log file, not silently skip.
-  rm -f "$CEO_DIR/log/cron-runs.log"
+  # leave every cron-runs*.log absent — the cross-check must emit a WARN naming
+  # what it looked for, not silently skip.
+  rm -f "$CEO_DIR"/log/cron-runs*.log
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "doctor artifact cross-check skipped" "doctor must surface skip-reason when log absent"
-  assert_contains "$output" "cron-runs.log not found" "skip message must name the missing log"
+  assert_contains "$output" "no cron-runs*.log found" "skip message must name what it looked for"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_ignores_a_peer_hosts_runs_log() {
+  # #397 keyed the log by host, and the cross-check reads only this host's.
+  # Reading a peer's would be wrong, not merely wasteful: the artifact path is
+  # expanded with *this* host's id, so a peer's completion line for a
+  # {HOST}-keyed playbook sends doctor looking for a file that was never meant
+  # to exist here. Under the old shared log that false failure was live.
+  _log_completed_today value-tracker "cron-runs-otherhost.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  if echo "$output" | grep -qF "artifact missing"; then
+    fail_test "doctor must not cross-check a peer host's completion line"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_doctor_says_when_the_cross_check_matched_nothing() {
+  # The ✓ line prints only when _checked > 0 and nothing is missing, and there
+  # was no else. So a cross-check that matched no completion at all — wrong log
+  # file, a host id that drifted between the cron writer and this reader, a run
+  # filed under `unknown` — emitted nothing, which reads exactly like a clean
+  # pass. The comment on this check calls it the load-bearing backstop for
+  # ollama-agent; it could switch itself off without a word.
+  : > "$CEO_DIR/log/cron-runs-${CEO_HOSTNAME}.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "artifact cross-check matched no completions" \
+    "a cross-check that checked nothing must say so, not look like a pass"
+  if echo "$output" | grep -qF "artifacts present for today"; then
+    fail_test "doctor must not claim artifacts are present when it matched none"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_doctor_flags_a_completion_log_it_is_not_reading() {
+  # The drift case: the cron writer resolved one host id and this reader
+  # resolves another, or the writer fell back to `unknown`. Doctor then opens a
+  # file with nothing in it and — before the previous arm — said nothing. A
+  # sibling cron-runs*.log carrying *today's* lines is the signal that the two
+  # sides disagree, and it is the only signal there is.
+  _log_completed_today value-tracker "cron-runs-unknown.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "cron-runs-unknown.log" \
+    "doctor must name a completion log it is not reading"
+  assert_contains "$output" "not being cross-checked" \
+    "and say what the consequence is"
+}
+
+test_doctor_does_not_flag_a_registered_peers_log() {
+  # On a host with no .stignore installed, the whole swarm's completion logs are
+  # on disk — that is the state the per-host keying exists to survive, not a
+  # fault. Warning about it would fire on every such host every day and hand the
+  # reader advice ("set CEO_HOSTNAME consistently") that is wrong for their
+  # situation. swarm.json's hosts[] separates a registered peer from a drifted
+  # or unresolvable id, which is what the warning is actually for.
+  cat > "$CEO_DIR/swarm.json" << 'SWARM'
+{"schema_version": 1, "hosts": ["testhost", "peer-ml1"], "owners": {}}
+SWARM
+  _log_completed_today value-tracker "cron-runs-peer-ml1.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  if echo "$output" | grep -qF "not being cross-checked"; then
+    fail_test "a registered swarm peer's log must not be reported as drift"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+
+  # And the unregistered case still warns, so the skip above is a discriminator
+  # rather than a blanket mute.
+  _log_completed_today value-tracker "cron-runs-unknown.log"
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "cron-runs-unknown.log" \
+    "an id nobody registered must still be reported"
+}
+
+test_doctor_still_reads_the_pre_397_shared_log() {
+  # Every completion recorded before #397 is in the bare cron-runs.log, as is
+  # every completion from a host that has not picked up the new dispatcher.
+  # Dropping it from the read set would blind the cross-check to both.
+  #
+  # This knowingly preserves one exposure: on a host with no .stignore installed,
+  # a peer still writing to the shared file has its lines read here and expanded
+  # against *this* host's {HOST} artifact path — the false failure the read-set
+  # narrowing exists to prevent. The date-prefix filter bounds it to the
+  # mixed-version window. Sunset it (drop cron-runs.log from the read set, and
+  # this arm with it) once every host in swarm.json has run the per-host
+  # dispatcher, which `ceo doctor`'s unread-log warning will show.
+  _log_completed_today value-tracker "cron-runs.log"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "artifact missing or empty" \
+    "the legacy shared log must stay in the cross-check's reach"
 }
 
 test_doctor_skips_empty_artifact_field() {

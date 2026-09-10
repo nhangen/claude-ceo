@@ -424,23 +424,82 @@ cmd_doctor() {
 
   # Completed-but-no-output cross-check — for every active runner:script or
   # runner:ollama-agent playbook with a declared `artifact:`, if today's
-  # cron-runs.log says it completed, verify the artifact exists. This catches the
+  # cron-runs-*.log says it completed, verify the artifact exists. This catches the
   # #88 / #89 shape where the dispatcher records 'completed' but the runner
   # produced no visible side-effect. For ollama-agent this is the load-bearing
   # backstop: the bridge reports completed when the model stops, independent of
   # whether its write_file actually landed, so a failed report write would
   # otherwise be a silent success.
+  # One log per host since #397 (cron-runs-<host>.log), and this check reads
+  # only *this* host's — plus the pre-#397 bare cron-runs.log, which holds every
+  # completion recorded before the rename and everything from a host that has
+  # not picked it up yet.
+  #
+  # Reading peers' logs would be actively wrong, not merely wasteful: the
+  # artifact path is expanded with *this* host's id, so a peer's completion line
+  # for a {HOST}-keyed playbook would make doctor look for a file that was never
+  # supposed to exist here and report it missing. That false failure is live
+  # today, because the shared log carried every host's lines into this grep.
+  local _runs_logs=()
+  local _rl _self_host
+  # `|| true` because the helper returns 1 when it fell back to "unknown". That
+  # is a signal for the dispatcher, which can warn about it; here it just means
+  # doctor reads cron-runs-unknown.log too, which is the correct read set for a
+  # host in that state. Left bare, the non-zero status inside a `for` word list
+  # is a set -e hazard for no gain.
+  _self_host=$(_cron_runs_log_host) || true
+  for _rl in "$CEO_DIR/log/cron-runs.log" \
+             "$CEO_DIR/log/cron-runs-$_self_host.log"; do
+    [ -f "$_rl" ] && _runs_logs+=("$_rl")
+  done
+
+  # A sibling cron-runs*.log carrying *today's* lines means something on this
+  # machine is recording completions where this check will never look — the cron
+  # writer resolved a different id than this reader (a different HOME under
+  # launchd, a CEO_HOSTNAME set in one environment and not the other), or it fell
+  # back to `unknown`. Those runs are simply absent from the #88/#89 backstop,
+  # and nothing else in the system would ever say so. Peers' logs are excluded
+  # from the *read* set on purpose; this warns about them rather than reading
+  # them, which is the distinction the block above turns on.
+  #
+  # A *registered* peer's log is not drift — on a host with no .stignore the
+  # whole swarm's logs are on disk by design, which is the state the per-host
+  # keying exists to survive. swarm.json's hosts[] is the discriminator: warn on
+  # an id nobody registered (`unknown`, or one that drifted between this host's
+  # cron and interactive environments), stay quiet about the rest.
+  local _unread_prefix _unread="" _peers="" _swarm_file
+  _unread_prefix=$(LC_TIME=C date '+%a %b %e')
+  _swarm_file=$(_swarm_path 2>/dev/null) || _swarm_file=""
+  if [ -n "$_swarm_file" ] && [ -f "$_swarm_file" ] && command -v jq &>/dev/null; then
+    _peers=$(jq -r '.hosts[]? // empty' "$_swarm_file" 2>/dev/null) || _peers=""
+  fi
+  for _rl in "$CEO_DIR"/log/cron-runs-*.log; do
+    [ -f "$_rl" ] || continue
+    case "$_rl" in "$CEO_DIR/log/cron-runs-$_self_host.log") continue ;; esac
+    LC_TIME=C grep -qF -- "$_unread_prefix" "$_rl" 2>/dev/null || continue
+    local _id="${_rl##*/cron-runs-}"; _id="${_id%.log}"
+    if [ -n "$_peers" ] && printf '%s\n' "$_peers" | grep -qxF -- "$_id"; then
+      continue
+    fi
+    _unread="$_unread $(basename "$_rl")"
+  done
+  if [ -n "$_unread" ]; then
+    echo "  ⚠ completions recorded today in a log this host is not being cross-checked against:$_unread"
+    echo "    (this host reads cron-runs-$_self_host.log — set CEO_HOSTNAME consistently, or the runs in those files go unverified)"
+    warn=$((warn + 1))
+  fi
+
   if [ ! -f "$registry_file" ]; then
     echo "  ⚠ doctor artifact cross-check skipped: registry.json not found (run: ceo playbook scan)"
     warn=$((warn + 1))
   elif ! command -v jq &>/dev/null; then
     echo "  ⚠ doctor artifact cross-check skipped: jq not on PATH"
     warn=$((warn + 1))
-  elif [ ! -f "$CEO_DIR/log/cron-runs.log" ]; then
-    echo "  ⚠ doctor artifact cross-check skipped: cron-runs.log not found"
+  elif [ "${#_runs_logs[@]}" -eq 0 ]; then
+    echo "  ⚠ doctor artifact cross-check skipped: no cron-runs*.log found in $CEO_DIR/log"
     warn=$((warn + 1))
   else
-    # cron-runs.log lines look like: "Wed May 28 06:00:11 EDT 2026: <name> completed"
+    # cron-runs-<host>.log lines look like: "Wed May 28 06:00:11 EDT 2026: <name> completed"
     # (written by ceo-cron.sh:47 via $(date)). Force LC_TIME=C when building the
     # prefix so a localized writer/reader pair can't false-negative every match
     # (jeu. mai 28 vs Thu May 28). Anchor the playbook-name match with a regex
@@ -459,7 +518,7 @@ cmd_doctor() {
       case "$p_runner" in script|ollama-agent) ;; *) continue ;; esac
       [ "$p_status" = "active" ] || continue
       [ -n "$p_artifact" ] || continue
-      LC_TIME=C grep -F -- "$_date_prefix" "$CEO_DIR/log/cron-runs.log" 2>/dev/null \
+      LC_TIME=C grep -h -F -- "$_date_prefix" "${_runs_logs[@]}" 2>/dev/null \
         | grep -F -- "$_year" \
         | awk -v n="$p_name" '$0 ~ ": "n" completed$"' \
         | grep -q . || continue
@@ -482,7 +541,20 @@ cmd_doctor() {
         _missing=$((_missing + 1))
       fi
     done < <(jq -c '.playbooks[]' "$registry_file" 2>/dev/null)
-    if [ "$_checked" -gt 0 ] && [ "$_missing" -eq 0 ]; then
+    if [ "$_checked" -eq 0 ]; then
+      # Silence here used to be indistinguishable from a pass, which is the one
+      # thing a backstop must never be: the ✓ below is gated on _checked > 0 and
+      # there was no other branch, so a cross-check reading the wrong file — a
+      # host id that drifted between the cron writer and this reader, or runs
+      # filed under `unknown` — reported exactly what a healthy host reports.
+      #
+      # Reported, not warned. Zero is the honest state between midnight and the
+      # day's first artifact-declaring run, so warning here would fire on every
+      # healthy host each morning and teach the reader to skip the line — which
+      # is how you lose a signal you just added. The drift case has its own
+      # warning above, and that one names the file.
+      echo "  ? artifact cross-check matched no completions today in ${_runs_logs[*]}"
+    elif [ "$_missing" -eq 0 ]; then
       echo "  ✓ Playbook artifacts present for today's completed runs ($_checked checked)"
       ok=$((ok + 1))
     fi

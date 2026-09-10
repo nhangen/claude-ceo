@@ -35,6 +35,13 @@ CEO/log/.config-hash
 // bug #299 fixed — one host's healthy run zeroing another's failure streak —
 // one level up. ceo-stignore-coverage.test.sh now enforces the coverage.
 CEO/log/.fail-count*
+// The dispatcher's completion log. Every host appended to one shared
+// CEO/log/cron-runs.log, which Syncthing forks rather than merges: ten
+// .sync-conflict copies by 2026-09-09 (#397). It is host-local runtime state
+// like the counters above, so it should never have synced. #397 also keys the
+// file by host (cron-runs-<host>.log); the glob covers both names and the
+// conflict copies already in the vault.
+CEO/log/cron-runs*.log
 CEO/log/.last-scan
 CEO/log/.from-nathan-seen
 CEO/log/.nathan-nb-counter

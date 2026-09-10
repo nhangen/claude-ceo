@@ -40,7 +40,7 @@ test_test_all_implies_dry_run_no_side_effects() {
   _register_status_playbook ta-noeffect active
   CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" --test-all >/dev/null 2>&1 || true
   assert_fails "--test-all must not stamp .last-run for any swept playbook" test -f "$CEO_DIR/log/.last-run-ta-noeffect"
-  assert_not_contains "$(cat "$CEO_DIR/log/cron-runs.log" 2>/dev/null)" "ta-noeffect completed" "--test-all must not append to cron-runs.log"
+  assert_not_contains "$(_runs_log)" "ta-noeffect completed" "--test-all must not append to cron-runs.log"
   assert_fails "--test-all must not invoke notify/Discord for any swept playbook" test -s "$TEST_HOME/notify-debug.log"
 }
 

@@ -560,6 +560,14 @@ STUB
   export CEO_PT_EVENT_CMD="$HOME/.bun/bin/pt-event-stub --db $PT_EVENT_DB"
 }
 
+# The dispatcher's completion log is keyed by host since #397
+# (cron-runs-<host>.log), so a test cannot name the file: `hostname -s` differs
+# per machine. Read the whole family, including the pre-#397 bare name, so an
+# assertion stays true whichever file the run wrote to.
+_runs_log() {
+  cat "$CEO_DIR"/log/cron-runs.log "$CEO_DIR"/log/cron-runs-*.log 2>/dev/null || true
+}
+
 # Per-trigger fail counters (#298 — the counter used to be one global file, so a
 # healthy playbook's success zeroed a failing playbook's streak). With no
 # argument this reads the only counter present, which is what nearly every test
