@@ -188,7 +188,15 @@ PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
 # state like the fail counters and should never have synced. But `ceo doctor`
 # warns when a host has no .stignore installed at all, so the file is also keyed
 # by host: on such a host the logs stay distinct instead of forking.
-RUNS_LOG="$LOG_DIR/cron-runs-$(_cron_runs_log_host).log"
+RUNS_LOG_HOST=$(_cron_runs_log_host) || {
+  # Not fatal — the completion still gets recorded. But it lands in a file
+  # doctor's cross-check will not open on a host that can resolve itself, so
+  # saying nothing here is how a run goes missing from the #88/#89 backstop
+  # with no trace. Same shape as the alert-host fallback below.
+  echo "$(date): WARN — could not resolve this host for the completion log (set CEO_HOSTNAME); recording to cron-runs-unknown.log, which ceo doctor's artifact cross-check does not read" \
+    >> "$LOG_DIR/cron-skips.log" || true
+}
+RUNS_LOG="$LOG_DIR/cron-runs-$RUNS_LOG_HOST.log"
 
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
 _v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }

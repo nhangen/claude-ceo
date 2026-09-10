@@ -441,9 +441,15 @@ cmd_doctor() {
   # supposed to exist here and report it missing. That false failure is live
   # today, because the shared log carried every host's lines into this grep.
   local _runs_logs=()
-  local _rl
+  local _rl _self_host
+  # `|| true` because the helper returns 1 when it fell back to "unknown". That
+  # is a signal for the dispatcher, which can warn about it; here it just means
+  # doctor reads cron-runs-unknown.log too, which is the correct read set for a
+  # host in that state. Left bare, the non-zero status inside a `for` word list
+  # is a set -e hazard for no gain.
+  _self_host=$(_cron_runs_log_host) || true
   for _rl in "$CEO_DIR/log/cron-runs.log" \
-             "$CEO_DIR/log/cron-runs-$(_cron_runs_log_host).log"; do
+             "$CEO_DIR/log/cron-runs-$_self_host.log"; do
     [ -f "$_rl" ] && _runs_logs+=("$_rl")
   done
   if [ ! -f "$registry_file" ]; then

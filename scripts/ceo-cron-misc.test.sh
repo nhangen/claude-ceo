@@ -658,6 +658,30 @@ SH
   rm -f "$SCRIPT_DIR/host-intake.sh"
 }
 
+test_an_unresolvable_host_says_so_in_cron_skips() {
+  # The fallback to `unknown` is deliberate — aborting a playbook run over a log
+  # filename is disproportionate. But mute is the wrong kind of tolerant: the
+  # completions go somewhere `ceo doctor`'s cross-check does not read, and
+  # nothing anywhere says the host could not be resolved. `_record_failure`
+  # already settled how this is handled (ceo-cron.sh:316-335); match it.
+  cat > "$TEST_HOME/.bun/bin/hostname" << 'SH'
+#!/bin/bash
+echo ""
+SH
+  chmod +x "$TEST_HOME/.bun/bin/hostname"
+  _run_log_intake_as_host ''
+  rm -f "$TEST_HOME/.bun/bin/hostname"
+
+  local skips
+  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  assert_contains "$skips" "WARN" \
+    "an unresolvable host must record a WARN, not fall back in silence"
+  assert_contains "$skips" "CEO_HOSTNAME" \
+    "and the WARN must name the setting that fixes it"
+  assert_contains "$skips" "cron-runs-unknown.log" \
+    "and name the file the completions are going to instead"
+}
+
 test_the_completion_log_is_keyed_by_host() {
   _run_log_intake_as_host hostA
 

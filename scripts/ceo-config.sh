@@ -382,19 +382,27 @@ _swarm_resolve_host() {
 #   and `ceo doctor`'s cross-check that reads it must agree on the name, so the
 #   flattening lives here rather than in either caller.
 #
-#   Unlike _swarm_resolve_host this never fails: an unresolvable host prints
+#   Unlike _swarm_resolve_host this never aborts: an unresolvable host prints
 #   "unknown". A missing swarm id is a fatal misconfiguration for swarm
 #   membership, but for a log filename, dropping the completion record outright
 #   is worse than filing it under a shared fallback name.
+#
+#   It does **return 1** on that fallback, so a caller can say so. Tolerating an
+#   unresolvable host silently is the failure mode, not the fallback itself:
+#   `cron-runs-unknown.log` is a file `ceo doctor`'s cross-check will not read on
+#   a host that can resolve itself, so a run recorded there is invisible. The
+#   status is the whole difference between this and `ceo-cron.sh`'s alert-host
+#   fallback, which prints a WARN.
 _cron_runs_log_host() {
-  local host
+  local host fell_back=0
   host=$(_swarm_resolve_host 2>/dev/null) || host=""
-  [ -n "$host" ] || host=unknown
+  if [ -z "$host" ]; then host=unknown; fell_back=1; fi
   # CEO_HOSTNAME is free text and lands here as a filename: a slash would write
   # outside the log directory, a leading dot would hide the file.
   host=$(printf '%s' "$host" | tr -c 'A-Za-z0-9._-' '-')
   case "$host" in .*) host="host-$host" ;; esac
   printf '%s\n' "$host"
+  return "$fell_back"
 }
 
 # _swarm_bootstrap
