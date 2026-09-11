@@ -203,6 +203,31 @@ RUNS_LOG="$LOG_DIR/cron-runs-$RUNS_LOG_HOST.log"
 # could not follow them out of it, and one writer per file means syncing them
 # costs no conflicts.
 SKIPS_LOG="$LOG_DIR/cron-skips-$RUNS_LOG_HOST.log"
+# Probed, not assumed. Every append to this file is unguarded, and it is where
+# every failure reason goes — including #398's "cannot record the completion".
+# An unwritable one loses the reason on every channel while the run still
+# increments the streak and stamps .last-run, so it looks fully bookkept and says
+# nothing. #399 makes that the *upgrade* case rather than a rarity: the name is
+# new, so the first run on each host must create the file rather than append to a
+# long-existing one.
+#
+# The refusal cannot use _record_failure — that writes here. It goes to the
+# approvals queue, which is the other channel a human actually reads.
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+if ! : >> "$SKIPS_LOG" 2>/dev/null; then
+  mkdir -p "$CEO_DIR/approvals" 2>/dev/null || true
+  {
+    echo ""
+    echo "## $TODAY $NOW — ALERT ($RUNS_LOG_HOST)"
+    echo ""
+    echo "- [ ] **CEO cron cannot write its failure journal** — ${TRIGGER:-<sweep>} NOT dispatched"
+    echo "    - file: $SKIPS_LOG"
+    echo "    - why it matters: every failure reason is written there, so a run would fail silently"
+    echo "    - action needed: on $RUNS_LOG_HOST, fix ownership/permissions on $LOG_DIR (a root-owned file from an earlier sudo run is the usual cause)"
+  } >> "$CEO_DIR/approvals/pending.md" 2>/dev/null || true
+  echo "ERROR: cannot write $SKIPS_LOG — refusing to dispatch ${TRIGGER:-<sweep>} rather than fail silently" >&2
+  exit 1
+fi
 CRON_STDOUT_LOG="$LOG_DIR/cron-stdout-$RUNS_LOG_HOST.log"
 CRON_STDERR_LOG="$LOG_DIR/cron-stderr-$RUNS_LOG_HOST.log"
 
@@ -422,7 +447,7 @@ _record_failure() {
 - [ ] **CEO cron failing repeatedly** — $fails consecutive failures on $alert_host
   - trigger: $TRIGGER
   - last error: $reason
-  - action needed: on $alert_host, check cron-raw.log and cron-skips.log
+  - action needed: on $alert_host, check cron-raw.log and $(basename "$SKIPS_LOG")
 ALERTEOF
   fi
   date +%s > "$LAST_RUN_FILE"
@@ -791,16 +816,16 @@ _ollama_run() {
   case "$to" in
     ''|*[!0-9]*)
       echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT='$to' is not a non-negative integer; using 300" \
-        >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
+        >> "$CRON_STDERR_LOG"
       to=300 ;;
     0)
       echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT=0 disables the wall-clock cap (hang risk)" \
-        >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}" ;;
+        >> "$CRON_STDERR_LOG" ;;
   esac
   case "$num_ctx" in
     ''|*[!0-9]*|0)
       echo "$(date): WARNING — CEO_OLLAMA_NUM_CTX='$num_ctx' is not a positive integer; using 32768" \
-        >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
+        >> "$CRON_STDERR_LOG"
       num_ctx=32768 ;;
   esac
 
@@ -808,7 +833,7 @@ _ollama_run() {
   req=$(jq -Rs --arg model "$model" --argjson num_ctx "$num_ctx" \
     '{model:$model, prompt:., stream:false, options:{num_ctx:$num_ctx}}') || {
     echo "$(date): WARNING — failed to encode ollama request (model: $model)" \
-      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
+      >> "$CRON_STDERR_LOG"
     return 1
   }
   # --fail-with-body (not -f): HTTP 4xx/5xx still exits non-zero, but the body is
@@ -819,19 +844,19 @@ _ollama_run() {
   # diagnostic. A failed parse routes to the failure path with the body logged.
   if ! printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then
     echo "$(date): WARNING — ollama returned non-JSON or empty body (curl exit $rc, model: $model, host: $host): $(printf '%s' "$resp" | head -c 200)" \
-      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
+      >> "$CRON_STDERR_LOG"
     return "$(( rc != 0 ? rc : 1 ))"
   fi
   local err
   err=$(printf '%s' "$resp" | jq -r '.error // empty')
   if [ -n "$err" ]; then
     echo "$(date): WARNING — ollama API error (curl exit $rc, model: $model): $err" \
-      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
+      >> "$CRON_STDERR_LOG"
     return "$(( rc != 0 ? rc : 1 ))"
   fi
   if [ "$rc" -ne 0 ]; then
     echo "$(date): WARNING — ollama API call failed (curl exit $rc, model: $model, host: $host)" \
-      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
+      >> "$CRON_STDERR_LOG"
     return "$rc"
   fi
   printf '%s' "$resp" | jq -r '.response // empty'
@@ -1716,7 +1741,7 @@ if [ "$RUNNER" = "script" ]; then
   # indistinguishable from a real failure, three strikes and a Discord post
   # later. Classify it instead.
   if ! : >> "$SCRIPT_OUT_LOG" 2>/dev/null || ! : >> "$SCRIPT_ERR_LOG" 2>/dev/null; then
-    _record_failure "Cannot append to $LOG_DIR/cron-{stdout,stderr}.log for $TRIGGER — script NOT run (root-owned log from an earlier sudo run?)"
+    _record_failure "Cannot append to $SCRIPT_OUT_LOG or $SCRIPT_ERR_LOG for $TRIGGER — script NOT run (root-owned log from an earlier sudo run?)"
     rm -f "$CEO_RUNNER_OUTCOME_FILE"
     exit 1
   fi
@@ -2509,7 +2534,7 @@ if [ -z "$SAFE_ACTIONS" ]; then
   # proposals were queued for approval when nothing had been written.
   _actions_note="none (all actions were high-stakes, $KEPT_ACTION_COUNT written to approvals"
   if [ "$DROPPED_ACTIONS" -gt 0 ]; then
-    _actions_note="$_actions_note, $DROPPED_ACTIONS ignored as template/malformed — see cron-skips.log"
+    _actions_note="$_actions_note, $DROPPED_ACTIONS ignored as template/malformed — see $(basename "$SKIPS_LOG")"
   fi
   _actions_note="$_actions_note)"
   _v "No safe actions to execute (all high-stakes). Done."

@@ -887,6 +887,83 @@ test_migration_does_not_clobber_existing_host_local_state() {
     "the host-local counter wins and increments from its own value"
 }
 
+test_an_unwritable_skips_journal_refuses_to_dispatch() {
+  # The skips journal is where every failure reason goes, including #398's
+  # "cannot record the completion". Every append to it is unguarded, so an
+  # unwritable one loses the reason on every channel while the run still
+  # increments the streak and stamps .last-run — fully bookkept and silent.
+  #
+  # #399 makes that the upgrade case rather than a rarity: the filename is new,
+  # so the first run on each host has to CREATE it. A CEO/log/ that is read-only
+  # or root-owned from an earlier sudo run succeeds on the long-existing
+  # cron-skips.log and fails on cron-skips-<host>.log.
+  #
+  # The refusal cannot go through _record_failure — that writes here — so it goes
+  # to the approvals queue, the other channel a human reads.
+  _write_failing_playbook unwritable-skips
+  local skips; skips=$(_skips_log_path)
+  rm -f "$skips"
+  mkdir -p "$skips"   # a directory where the file must be: the kernel refuses,
+                      # and teardown has no permission bit to restore
+
+  local rc=0
+  bash "$CRON" unwritable-skips >/dev/null 2>&1 || rc=$?
+  rm -f "$SCRIPT_DIR/unwritable-skips.sh"
+  rmdir "$skips" 2>/dev/null || true
+
+  assert_eq "$rc" "1" "an unwritable failure journal must stop the run, not fail silently"
+  local pending; pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "cannot write its failure journal" \
+    "and say so on the one channel that is not the broken file"
+  assert_contains "$pending" "unwritable-skips" "naming the playbook that was not dispatched"
+}
+
+test_the_host_slug_is_safe_as_a_filename() {
+  # _ceo_host_slug names four file families now and has no direct arm. Its
+  # flattening is what stops a CEO_HOSTNAME containing a path separator from
+  # sending a write outside the log directory, or a leading dot from hiding the
+  # file from every glob that reads the family.
+  local slug
+  slug=$(CEO_HOSTNAME='a/b/c' _host_slug)
+  case "$slug" in
+    */*) fail_test "a path separator survived the flattening: $slug" ;;
+    *)   ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
+  esac
+
+  slug=$(CEO_HOSTNAME='.hidden' _host_slug)
+  case "$slug" in
+    .*) fail_test "a leading dot survived: $slug would hide the file from the family glob" ;;
+    *)  ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
+  esac
+
+  # Never empty: cron-skips-.log would collide across every host that produced it.
+  slug=$(CEO_HOSTNAME='///' _host_slug)
+  if [ -z "$slug" ]; then
+    fail_test "an all-separator host name flattened to empty"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
+test_no_source_line_writes_a_shared_journal_name() {
+  # The runtime tripwire in teardown only sees paths the suite actually
+  # dispatches through. This reads the source instead, so a bare-name write on a
+  # branch no arm exercises is caught too — reverting one dry-run line was green
+  # across 87 tests before this existed.
+  #
+  # Comments and the deliberate cron-skips-unknown.log literal are excluded: the
+  # first is prose, the second is the host-slug failure path, which cannot use
+  # $SKIPS_LOG because SKIPS_LOG is derived from the slug it is failing over.
+  local offenders
+  offenders=$(sed 's/#.*//' "$SCRIPT_DIR/ceo-cron.sh" \
+    | grep -nE '(LOG_DIR|CEO_DIR/log)"?/cron-(skips|stdout|stderr)\.log' || true)
+  if [ -n "$offenders" ]; then
+    fail_test "ceo-cron.sh writes a shared journal name #399 keyed by host" "$offenders"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
 test_the_dispatcher_journals_are_keyed_by_host() {
   # cron-skips/stdout/stderr had one copy each that every host appended to, so
   # Syncthing forked them — three .sync-conflict copies were on disk when #399 was
@@ -914,6 +991,46 @@ test_the_dispatcher_journals_are_keyed_by_host() {
   done
 }
 
+test_operator_facing_strings_name_a_journal_that_exists() {
+  # The three-strike alert and the unwritable-journal failure reason are the two
+  # places a woken operator is told which file to open. Both still named the bare
+  # cron-skips.log / cron-{stdout,stderr}.log after #399 keyed them, because the
+  # bulk edit converted writes and no test pinned the prose. An alert that names a
+  # path present on no host reads as "the journal was never written" — the
+  # diagnostic channel looks broken at exactly the moment it matters.
+  #
+  # Asserted against the live log directory rather than a literal, so the next
+  # rename cannot detach them again.
+  _write_failing_playbook strings-check
+  local i
+  for i in 1 2 3; do
+    rm -f "$CEO_STATE_DIR/.last-run-strings-check"
+    bash "$CRON" strings-check >/dev/null 2>&1 || true
+  done
+  rm -f "$SCRIPT_DIR/strings-check.sh"
+
+  local pending named
+  pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
+  assert_contains "$pending" "action needed" "three failures must raise the alert"
+
+  named=$(printf '%s\n' "$pending" | grep -oE 'cron-[a-z]+[a-zA-Z0-9._-]*\.log' | sort -u)
+  assert_contains "$named" "cron-" "the alert must name a journal to open"
+
+  # A retired bare name is the regression: those exist on no host by
+  # construction, unlike cron-raw.log, which a script-runner run simply never
+  # writes.
+  local f retired
+  for f in $named; do
+    for retired in cron-skips.log cron-stdout.log cron-stderr.log cron-runs.log; do
+      if [ "$f" = "$retired" ]; then
+        fail_test "the alert names $f — a name #397/#399 retired, present on no host"
+      fi
+    done
+  done
+  assert_contains "$named" "$(basename "$(_skips_log_path)")" \
+    "and must name this host's skips journal, which is where the reason went"
+}
+
 test_two_hosts_write_separate_journals() {
   _write_failing_playbook j2-check
   CEO_HOSTNAME=hostJ1 bash "$CRON" j2-check >/dev/null 2>&1 || true
@@ -923,6 +1040,17 @@ test_two_hosts_write_separate_journals() {
 
   assert_file_exists "$CEO_DIR/log/cron-skips-hostJ1.log" "host J1 writes its own journal"
   assert_file_exists "$CEO_DIR/log/cron-skips-hostJ2.log" "host J2 writes its own journal"
+
+  # Existence alone is satisfied by two empty files beside one forked shared one.
+  # Separation is the property #399 actually buys, so assert each host's lines are
+  # in its own file and not in the other's.
+  local j1 j2
+  j1=$(cat "$CEO_DIR/log/cron-skips-hostJ1.log" 2>/dev/null || echo "")
+  j2=$(cat "$CEO_DIR/log/cron-skips-hostJ2.log" 2>/dev/null || echo "")
+  assert_contains "$j1" "j2-check" "host J1's journal carries its own run"
+  assert_contains "$j2" "j2-check" "host J2's journal carries its own run"
+  assert_eq "$(printf '%s\n' "$j1" | grep -c 'j2-check' || true)" "1" \
+    "and exactly one run's worth — not both hosts' lines in one file"
 }
 
 test_the_completion_log_is_keyed_by_host() {

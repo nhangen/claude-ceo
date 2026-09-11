@@ -149,6 +149,31 @@ test_no_host_local_state_is_written_under_the_synced_log_dir() {
   fi
 }
 
+test_the_dispatcher_journals_are_deliberately_not_ignored() {
+  # The central design call in #399, and the one thing that differs from #394:
+  # the journals are keyed by host but stay IN the synced vault. They are
+  # diagnostic output rather than decision state, cron-failure-digest reads them
+  # by a vault-relative path and could not follow them out, and one writer per
+  # file means syncing costs no conflicts.
+  #
+  # It was documented in three places and asserted nowhere, so a future "tidy the
+  # stignore" pass could silently reverse it — and the symptom would be a digest
+  # that reports no failures forever, on a host that has them.
+  local path
+  for path in \
+    "CEO/log/cron-skips-ml1.log" \
+    "CEO/log/cron-stdout-ml1.log" \
+    "CEO/log/cron-stderr-ml1.log"
+  do
+    if _is_ignored "$path"; then
+      assert_eq "ignored" "NOT-ignored" \
+        "$path must keep syncing — it is a journal, and the digest reads the family"
+    else
+      assert_eq "NOT-ignored" "NOT-ignored" "$path syncs, as intended"
+    fi
+  done
+}
+
 test_stignore_still_covers_the_pre_394_state_paths() {
   # #394 moved the per-trigger cron state to $HOME/.ceo/state/, so no current
   # source line writes these paths and the discovery step above no longer finds
