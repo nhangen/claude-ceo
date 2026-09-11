@@ -96,3 +96,71 @@ def test_git_malformed_quoting_is_an_error(tmp_path):
     assert "error" in result
     assert "ValueError" in result["error"]
     assert [e["tool"] for e in tb.tool_errors] == ["git"]
+
+
+def _repo(tmp_path):
+    """A real git repo, since the point is what git itself does with a refusal."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+    return tmp_path
+
+
+def test_refused_git_commit_is_recorded(tmp_path):
+    """A git that git itself refused reaches the cron dispatcher as a clean run.
+
+    ToolBox.git sets "error" only on TimeoutExpired, so a non-zero returncode
+    carries no error key, _note_tool_error finds nothing, and .tool_errors stays
+    empty. scripts/ceo-cron.sh gates on len(tool_errors) > 0, so the run is
+    recorded successful with the commit never made — the failure #215 and the
+    write_file arm above exist to prevent, with no equivalent for git.
+    """
+    _repo(tmp_path)
+    tb = ToolBox(cwd=str(tmp_path))
+    result = json.loads(tb.dispatch("git", {"args": ["commit", "-m", "nothing staged"]}))
+    assert result["returncode"] != 0, "precondition: git must refuse an empty commit"
+    assert "error" in result, "a refused git commit must carry an error key"
+    assert [e["tool"] for e in tb.tool_errors] == ["git"]
+
+
+def test_read_verb_exiting_nonzero_is_not_an_error(tmp_path):
+    """Read verbs exit non-zero as a normal answer, not a failure.
+
+    `diff --quiet` returns 1 to mean "there are differences". Treating that as an
+    operational error would fail runs that did exactly what they meant to, so the
+    guard has to key on the subcommand rather than the returncode alone.
+    """
+    repo = _repo(tmp_path)
+    (repo / "f.txt").write_text("a")
+    subprocess.run(["git", "-C", str(repo), "add", "f.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "one"], check=True)
+    (repo / "f.txt").write_text("b")
+
+    tb = ToolBox(cwd=str(repo))
+    result = json.loads(tb.dispatch("git", {"args": ["diff", "--quiet"]}))
+    assert result["returncode"] != 0, "precondition: diff --quiet signals differences"
+    assert tb.tool_errors == [], "a read verb's non-zero exit must not be an operational error"
+
+
+def test_successful_git_records_no_error(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "f.txt").write_text("a")
+    tb = ToolBox(cwd=str(repo))
+    tb.dispatch("git", {"args": ["add", "f.txt"]})
+    assert tb.tool_errors == []
+
+
+def test_bare_git_is_recorded(tmp_path):
+    """Decided here rather than left open: an empty argv is always a caller bug.
+
+    `git` with no subcommand prints usage and exits 1. It mutates nothing, so an
+    allowlist keyed on the subcommand leaves it benign — but a git call that named
+    no subcommand did not do the work the caller intended, and reporting it clean
+    hides that from the same gate. It is recorded.
+    """
+    _repo(tmp_path)
+    tb = ToolBox(cwd=str(tmp_path))
+    result = json.loads(tb.dispatch("git", {"args": []}))
+    assert result["returncode"] != 0, "precondition: bare git exits non-zero"
+    assert "error" in result
+    assert [e["tool"] for e in tb.tool_errors] == ["git"]
