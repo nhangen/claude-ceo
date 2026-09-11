@@ -161,7 +161,7 @@ teardown() {
   # Here rather than in an arm because this runs after all ~200 of them, and the
   # fixture's CEO_DIR accumulates every write the suite made.
   local _bare
-  for _bare in cron-skips cron-stdout cron-stderr; do
+  for _bare in cron-skips cron-stdout cron-stderr cron-raw; do
     if [ -e "${CEO_DIR:-}/log/$_bare.log" ]; then
       printf '  FAIL [%s] wrote the shared %s.log — #399 keyed it by host; use $SKIPS_LOG / $CRON_STDOUT_LOG / $CRON_STDERR_LOG\n' \
         "${CURRENT_TEST:-teardown}" "$_bare"
