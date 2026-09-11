@@ -120,7 +120,7 @@ JSON
   assert_contains "$report" "chunked-scan-sentinel" "today's report must contain synthesized output from chunked scan"
 
   local skips
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   if echo "$skips" | grep -q "exceeds budget"; then
     printf '  FAIL [%s] chunked scan must not fall through to the budget-exceeded failure path\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
@@ -159,7 +159,7 @@ PB
   fi
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "ollama runner requires tier:read" "skips log must record reject reason"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -339,7 +339,7 @@ STUB
   assert_eq "$fails" "1" "model self-reporting **Status:** failed must increment FAIL_COUNT_FILE (silent-success invariant)"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "self-reported" "cron-skips.log must record self-reported-failure reason"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -590,7 +590,7 @@ PB
   assert_eq "$rc" "1" "cron must exit 1 when registry has no schema_version (after retry)"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "schema_version" "cron-skips.log must record schema_version reason"
   assert_contains "$skips_log" "jq parse:" "code-3 path must capture a registry diagnostic for the next occurrence"
 
@@ -629,7 +629,7 @@ PB
   assert_eq "$rc" "1" "cron must exit 1 when registry schema_version is below current"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "schema_version" "cron-skips.log must record schema_version reason"
 
   local fails
@@ -828,7 +828,7 @@ PB
   assert_eq "$rc" "78" "missing-script field must exit 78 (fatal config error), not a retryable 1"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "runner:script but no script field" "missing-script error must be logged"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1256,10 +1256,11 @@ test_pending_drip_skips_when_pending_md_empty() {
 
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
 
-  local skip_log="$CEO_DIR/log/cron-skips.log"
-  assert_file_exists "$skip_log" "preflight skip must write cron-skips.log"
+  # The family, not this host's file: the dispatch above sets CEO_HOSTNAME, so it
+  # writes cron-skips-testhost.log while _skips_log_path names the ambient host.
   local skip_body
-  skip_body=$(cat "$skip_log" 2>/dev/null)
+  skip_body=$(_skips_log)
+  assert_contains "$skip_body" "Skipping" "preflight skip must write a skips journal"
   assert_contains "$skip_body" "preflight 'has_pending_items' returned no-work" \
     "empty Pending.md must trigger preflight no-work skip even when approvals/pending.md is populated"
 

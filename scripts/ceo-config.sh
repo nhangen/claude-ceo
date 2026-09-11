@@ -455,11 +455,14 @@ _swarm_resolve_host() {
   printf '%s\n' "$host"
 }
 
-# _cron_runs_log_host
-#   This host's id, flattened to something safe as a filename component. Used
-#   only for CEO/log/cron-runs-<host>.log — both the dispatcher that writes it
-#   and `ceo doctor`'s cross-check that reads it must agree on the name, so the
-#   flattening lives here rather than in either caller.
+# _ceo_host_slug
+#   This host's id, flattened to something safe as a filename component. Every
+#   per-host file under CEO/log/ is named through this — the completion log
+#   (#397) and the three dispatcher journals (#399) — so writers and readers
+#   agree by construction rather than by each spelling it.
+#
+#   Named for what it is rather than for its first caller: it was
+#   _cron_runs_log_host until three more families started using it.
 #
 #   Unlike _swarm_resolve_host this never aborts: an unresolvable host prints
 #   "unknown". A missing swarm id is a fatal misconfiguration for swarm
@@ -472,7 +475,7 @@ _swarm_resolve_host() {
 #   a host that can resolve itself, so a run recorded there is invisible. The
 #   status is the whole difference between this and `ceo-cron.sh`'s alert-host
 #   fallback, which prints a WARN.
-_cron_runs_log_host() {
+_ceo_host_slug() {
   local host fell_back=0
   host=$(_swarm_resolve_host 2>/dev/null) || host=""
   if [ -z "$host" ]; then host=unknown; fell_back=1; fi

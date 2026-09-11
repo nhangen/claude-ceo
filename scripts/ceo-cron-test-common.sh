@@ -152,6 +152,23 @@ STUB
 }
 
 teardown() {
+  # Every arm that dispatches is a tripwire for the #399 keying, not just the one
+  # arm that probes it. A single arm can only catch a bare-name write on the code
+  # path it happens to exercise — reverting one dry-run line was green across 87
+  # tests, which is the shape of the next regression: someone adds a log line and
+  # spells the old name by habit.
+  #
+  # Here rather than in an arm because this runs after all ~200 of them, and the
+  # fixture's CEO_DIR accumulates every write the suite made.
+  local _bare
+  for _bare in cron-skips cron-stdout cron-stderr; do
+    if [ -e "${CEO_DIR:-}/log/$_bare.log" ]; then
+      printf '  FAIL [%s] wrote the shared %s.log — #399 keyed it by host; use $SKIPS_LOG / $CRON_STDOUT_LOG / $CRON_STDERR_LOG\n' \
+        "${CURRENT_TEST:-teardown}" "$_bare"
+      FAILS=$((FAILS + 1))
+    fi
+  done
+
   # Before rm -rf below, since the register lives inside TEST_HOME.
   if [ -f "$TEST_HOME/.fixture-scripts" ]; then
     while IFS= read -r f || [ -n "$f" ]; do
@@ -569,6 +586,26 @@ STUB
   chmod +x "$HOME/.bun/bin/pt-event-stub"
   export CEO_PT_EVENT_CMD="$HOME/.bun/bin/pt-event-stub --db $PT_EVENT_DB"
 }
+
+# The three dispatcher journals are keyed by host since #399, so a test cannot
+# name the file — `hostname -s` differs per machine. Read the whole family,
+# including the pre-#399 bare names, so an assertion stays true whichever file
+# the run wrote to.
+_skips_log()  { cat "$CEO_DIR"/log/cron-skips.log  "$CEO_DIR"/log/cron-skips-*.log  2>/dev/null || true; }
+_stdout_log() { cat "$CEO_DIR"/log/cron-stdout.log "$CEO_DIR"/log/cron-stdout-*.log 2>/dev/null || true; }
+_stderr_log() { cat "$CEO_DIR"/log/cron-stderr.log "$CEO_DIR"/log/cron-stderr-*.log 2>/dev/null || true; }
+
+# The single file this host writes, for arms that need a path rather than the
+# contents — seeding one, truncating it, or making it unwritable. Resolved
+# through the production helper so the test never spells the name itself.
+#
+# Only valid when the run under test uses the ambient host. An arm that
+# dispatches with CEO_HOSTNAME set writes a different file, and must read the
+# family with _skips_log / _stdout_log / _stderr_log instead.
+_skips_log_path()  { echo "$CEO_DIR/log/cron-skips-$(_host_slug).log"; }
+_stdout_log_path() { echo "$CEO_DIR/log/cron-stdout-$(_host_slug).log"; }
+_stderr_log_path() { echo "$CEO_DIR/log/cron-stderr-$(_host_slug).log"; }
+_host_slug() { bash -c ". '$SCRIPT_DIR/ceo-config.sh' >/dev/null 2>&1; _ceo_host_slug"; }
 
 # The dispatcher's completion log is keyed by host since #397
 # (cron-runs-<host>.log), so a test cannot name the file: `hostname -s` differs
