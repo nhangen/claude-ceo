@@ -167,15 +167,49 @@ TODAY=$(date +%Y-%m-%d)
 NOW=$(date +%H:%M)
 LOG_FILE="$LOG_DIR/$TODAY.md"
 LOCK_FILE="${CEO_LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}"
-LAST_RUN_FILE="$LOG_DIR/.last-run-${TRIGGER}"
+# The cron state below lives in $HOME/.ceo/state, not in the synced vault. It
+# used to sit under CEO/log/ and depend on each host having copied
+# syncthing/shared.stignore into its vault root — protection nothing verifies, and
+# which both hosts were found missing an entry from on 2026-09-09 (#394). Two
+# hosts sharing a failure counter do not fail; they agree on a wrong number.
+#
+# _ceo_state_migrate moves a legacy file across on the first run after upgrade, so
+# a host does not silently lose a failure streak or a cooldown stamp.
+# _ceo_state_migrate reports degradation by status, not stderr — the scheduler
+# spawns this script with stderr ignored, so a warning written there reaches
+# nobody on exactly the runs that matter. cron-skips.log is the channel this file
+# already uses for that, and $LOG_DIR is resolved above.
+#
+# rc=2 is fatal on purpose: with no state directory the first bare redirect in
+# _record_success aborts it *after* _bookkeeping_done is set, so the EXIT trap
+# records nothing either and the run reads as an unexplained failure. Refusing to
+# dispatch is the honest answer, and it is what the script-runner branch already
+# does for an unwritable log.
+_state() {
+  local path rc=0
+  path=$(_ceo_state_migrate "$1") || rc=$?
+  case "$rc" in
+    2) mkdir -p "$LOG_DIR" 2>/dev/null || true
+       echo "$(date): ERROR — cannot create the host-local state dir for $1 ($path); ${TRIGGER:-<sweep>} NOT dispatched" \
+         >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true
+       echo "ERROR: cannot create the host-local state directory for $1" >&2
+       exit 1 ;;
+    1) mkdir -p "$LOG_DIR" 2>/dev/null || true
+       echo "$(date): WARN — could not migrate legacy state $1 out of the vault; ${TRIGGER:-<sweep>} continues with fresh state (a cooldown or failure streak may have reset)" \
+         >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true ;;
+  esac
+  printf '%s\n' "$path"
+}
+LAST_RUN_FILE=$(_state ".last-run-${TRIGGER}")
 # Per-trigger, matching LAST_RUN_FILE above. A single global counter meant any
 # healthy playbook's _record_success zeroed a failing playbook's streak, so on a
 # host running a dozen playbooks the 3-strike escalation below effectively never
 # fired — the alert this file's failure path is built around could not arrive.
-FAIL_COUNT_FILE="$LOG_DIR/.fail-count-$TRIGGER"
+FAIL_COUNT_FILE=$(_state ".fail-count-$TRIGGER")
+LAST_SCAN_FILE=$(_state ".last-scan")
 # Host-local, non-synced preview scratch (see output-locations.md). A dry-run
 # overwrites this per (trigger, day) so repeated previews don't accumulate.
-PREVIEW_DIR="$LOG_DIR/preview"
+PREVIEW_DIR=$(_state "preview")
 PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
 # cron-runs.log lives in the synced vault and every host in the swarm appended
 # to it, which Syncthing cannot merge -- it forks the file instead. Ten conflict
@@ -273,7 +307,7 @@ _record_success() {
   fi
   echo 0 > "$FAIL_COUNT_FILE"
   date +%s > "$LAST_RUN_FILE"
-  [ "$TRIGGER" = "morning-scan" ] && touch "$LOG_DIR/.last-scan"
+  [ "$TRIGGER" = "morning-scan" ] && touch "$LAST_SCAN_FILE"
   # Not bare, for two reasons. Under set -e a failed append aborts _record_success
   # here — after the fail counter is zeroed and .last-run stamped, before notify —
   # and _on_exit records nothing because _bookkeeping_done is already 1, so the
@@ -964,7 +998,10 @@ _run_test_all() {
   host="${CEO_HOSTNAME:-$(hostname -s)}"
   : "${host:?HOST resolution failed; set CEO_HOSTNAME or fix hostname}"
 
-  local out_dir="$LOG_DIR/preview/test-all"
+  # Under PREVIEW_DIR, which moved to the host-local state dir in #394 — a fleet
+  # smoke-test's output stays on the host that ran it, which was already the
+  # stated intent when it lived in the stignored CEO/log/preview/.
+  local out_dir="$PREVIEW_DIR/test-all"
   local out="$out_dir/${TODAY}.md"
   mkdir -p "$out_dir"
   # Truncate the per-day child stdout journal so repeated same-day sweeps don't
@@ -993,7 +1030,11 @@ _run_test_all() {
   local details="" name child_exit child_err preview result
   while IFS= read -r name; do
     [ -z "$name" ] && continue
-    preview="$LOG_DIR/preview/${name}-${TODAY}.md"
+    # Each child writes its own PREVIEW_FILE; the sweep reads them back, so both
+    # sides must resolve the same root. It moved to the host-local state dir in
+    # #394 — reconstructing the old CEO/log path here would find nothing and
+    # report every playbook as "no preview".
+    preview="$PREVIEW_DIR/${name}-${TODAY}.md"
     # Clear any stale same-day single-dry-run preview so the classifier reads
     # only THIS sweep's output. A child that exits 0 without writing a preview
     # (e.g. a chat-only playbook) would otherwise inherit a stale "would run".

@@ -39,20 +39,26 @@ test_scan_does_not_leak_repo_playbooks_into_the_test_registry() {
 test_test_all_implies_dry_run_no_side_effects() {
   _register_status_playbook ta-noeffect active
   CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" --test-all >/dev/null 2>&1 || true
-  assert_fails "--test-all must not stamp .last-run for any swept playbook" test -f "$CEO_DIR/log/.last-run-ta-noeffect"
+  assert_fails "--test-all must not stamp .last-run for any swept playbook" test -f "$(_ceo_state)/.last-run-ta-noeffect"
   assert_not_contains "$(_runs_log)" "ta-noeffect completed" "--test-all must not append to cron-runs.log"
   assert_fails "--test-all must not invoke notify/Discord for any swept playbook" test -s "$TEST_HOME/notify-debug.log"
 }
 
 
-# The aggregate report lives under CEO/log/preview/, the host-local (stignored)
-# scratch tree — a fleet smoke-test stays on the host that ran it.
+# The aggregate report is host-local — a fleet smoke-test stays on the host that
+# ran it. It used to get that from CEO/log/preview/ being stignored; since #394
+# it is simply outside the synced vault, which does not depend on any host having
+# deployed the ignore file.
 test_test_all_report_is_under_host_local_preview() {
   _register_status_playbook ta-local active
   bash "$CRON" --test-all >/dev/null 2>&1 || true
   local report; report=$(_test_all_report)
-  assert_contains "$report" "/log/preview/test-all/" "sweep report must live under the host-local preview tree"
+  assert_contains "$report" "/preview/test-all/" "sweep report must live under the preview tree"
   assert_file_exists "$report" "sweep report must exist at the host-local path"
+  case "$report" in
+    "$CEO_VAULT"/*) fail_test "the sweep report is inside the synced vault: $report" ;;
+    *)              ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
+  esac
 }
 
 
@@ -245,7 +251,7 @@ STUB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" dp-write --dry-run --depth plan >/dev/null 2>&1 || true
   assert_eq "$(wc -l < "$HOME/claude-calls.log" 2>/dev/null | tr -d ' ')" "1" "plan depth on tier:write must run PLAN once (EXECUTE skipped)"
-  assert_fails "plan-depth write dry-run must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dp-write"
+  assert_fails "plan-depth write dry-run must not stamp .last-run" test -f "$(_ceo_state)/.last-run-dp-write"
 }
 
 

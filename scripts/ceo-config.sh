@@ -347,6 +347,85 @@ _ceo_registry_path() {
   printf '%s\n' "$HOME/.ceo/registry.json"
 }
 
+# Per-trigger cron state — the failure counter, the cooldown stamp, the
+# morning-scan stamp, and the dry-run preview scratch. Host-local like the
+# registry, and for a sharper reason: two hosts sharing a failure counter agree
+# on a wrong number and nothing fails (#299 — a stignore pattern that stopped
+# matching after a rename synced every per-trigger counter, and the only symptom
+# was a 3-strike alert firing early or never).
+#
+# These lived under CEO/log/ and were kept host-local by `syncthing/shared.stignore`,
+# which is protection each host has to copy into its vault by hand. Nothing
+# verifies that copy: the repo test can assert the pattern is in the tracked file,
+# never that a given machine deployed it. On 2026-09-09 both swarm hosts were found
+# running an August copy with no rule for a file added since — the #397 completion
+# log. `.fail-count*` survived only because the August copy already carried it.
+# State that must not sync belongs outside the synced tree, not behind a rule
+# somebody has to remember to install.
+#
+# CEO_STATE_DIR overrides the location, and a **test must set it** rather than
+# relying on a fixture HOME. Seven playbook scripts call `ceo_pin_home_or_warn`,
+# which re-exports HOME from passwd unconditionally — so inside those, `$HOME` is
+# the real user's home no matter what the caller exported, and a $HOME-derived
+# path silently escapes the fixture and writes to the developer's actual
+# ~/.ceo/state (`test-writes-stay-in-the-fixture`). That is not hypothetical: it
+# happened once while this helper was being written, which is why the override
+# exists and why both cron and nathan-inbox harnesses export it in setup().
+#
+# The pin is correct for production — under cron and launchd HOME is unset or
+# wrong — so the fix is the override, not removing the pin.
+_ceo_state_dir() {
+  : "${HOME:?HOME must be set to resolve the host-local state directory}"
+  printf '%s\n' "${CEO_STATE_DIR:-$HOME/.ceo/state}"
+}
+
+# Legacy location of the same state, inside the synced vault. Read-only, and only
+# to migrate: `_ceo_state_migrate` moves a file here to its new home the first
+# time a host runs the new code, so an upgrade does not silently reset a failure
+# streak or a cooldown. Requires CEO_VAULT, so callers that have no vault (the
+# scheduler, a bare `ceo` invocation) must not call it.
+_ceo_legacy_state_dir() {
+  : "${CEO_VAULT:?CEO_VAULT must be set to resolve the legacy state directory}"
+  printf '%s\n' "$CEO_VAULT/CEO/log"
+}
+
+# _ceo_state_migrate <basename>
+#   Print the host-local path for <basename>, moving the legacy copy into place
+#   first if this host still has one and the new one is absent. Idempotent, and a
+#   no-op once migrated — the `[ -e ]` on the new path is the whole guard, so the
+#   cost after the first run is two stats.
+#
+#   Degradation is reported through the exit status, never through stderr. The
+#   scheduler spawns the dispatcher with `stderr: "ignore"`
+#   (lib/scheduler/src/main.ts), so a warning written here would reach nobody on
+#   the runs that matter — the same defect #398 found in the completion log. The
+#   path is printed either way, so a caller that ignores the status still works.
+#
+#   **2** — the state directory could not be created. Nothing will be readable or
+#   writable there; the caller should refuse to dispatch rather than let a bare
+#   redirect abort it halfway through bookkeeping.
+#   **1** — a legacy file could not be moved. The run proceeds with fresh state:
+#   losing one cooldown stamp is a double-run at worst, and refusing to dispatch
+#   over it is worse. Worth journalling, not worth aborting.
+_ceo_state_migrate() {
+  local name="$1" new_dir legacy rc=0
+  new_dir=$(_ceo_state_dir) || return 1
+  # Not `|| true`. A state dir that cannot be created sends every later read and
+  # write at a path that does not exist, and the first of those in _record_success
+  # is a bare redirect under `set -e` — which aborts it *after* _bookkeeping_done
+  # is set, so the EXIT trap declines to record the failure too. The caller needs
+  # to know, and the status is how it finds out.
+  mkdir -p "$new_dir" 2>/dev/null || rc=2
+  if [ "$rc" -eq 0 ] && [ ! -e "$new_dir/$name" ] && [ -n "${CEO_VAULT:-}" ]; then
+    legacy="$(_ceo_legacy_state_dir)/$name"
+    if [ -e "$legacy" ]; then
+      mv "$legacy" "$new_dir/$name" 2>/dev/null || rc=1
+    fi
+  fi
+  printf '%s\n' "$new_dir/$name"
+  return "$rc"
+}
+
 # enabled.json is host-local like the registry: it lists the `each`-scope
 # playbook names THIS machine runs. The scheduler daemon reads the same path.
 # (`single`-scope playbooks are not gated here — they run on their assigned

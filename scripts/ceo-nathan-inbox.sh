@@ -42,8 +42,16 @@ EXPIRY_DAYS="${CEO_NATHAN_EXPIRY_DAYS:-7}"
 
 LOG_DIR="$CEO_DIR/log"
 PROPOSALS="$LOG_DIR/proposed-answers.md"
-SEEN="$LOG_DIR/.from-nathan-seen"
-NB_COUNTER="$LOG_DIR/.nathan-nb-counter"
+# Host-local cursors, not vault state: which of Nathan's notes this machine has
+# already processed, and its own nudge counter. Moved out of the synced tree with
+# the rest of the per-host cron state in #394 — two hosts sharing a "seen" cursor
+# means one of them silently skips notes it never read.
+# The status is deliberately ignored here. It reports a state dir that could not
+# be created or a legacy file that could not be moved; either way this script
+# degrades to fresh state, and its own writes are already guarded. Only the cron
+# dispatcher refuses to run on rc=2, because only it half-applies bookkeeping.
+SEEN=$(_ceo_state_migrate ".from-nathan-seen") || true
+NB_COUNTER=$(_ceo_state_migrate ".nathan-nb-counter") || true
 ARCHIVE_DIR="$LOG_DIR/from-nathan"
 CANDIDATES="$CEO_DIR/training/_candidates.md"
 NEEDS_REVIEW="$CEO_DIR/needs-review/nathan-inbox.md"

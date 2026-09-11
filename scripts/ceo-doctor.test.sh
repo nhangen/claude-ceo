@@ -18,6 +18,10 @@ setup() {
   export HOME="$TEST_HOME"
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
+  # Explicit rather than inherited from HOME — see _ceo_state_dir in ceo-config.sh.
+  # `scripts/ceo` does not pin HOME today, but nothing asserts that it never will.
+  export CEO_STATE_DIR="$TEST_HOME/.ceo/state"
+  mkdir -p "$CEO_STATE_DIR"
   export CEO_HOSTNAME="testhost"
   # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
   # the synced vault — doctor reads it from there.
@@ -97,7 +101,7 @@ teardown() {
   rm -rf "$TEST_HOME"
   export PATH="$PATH_BACKUP"
   export HOME="$HOME_BACKUP"
-  unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_HOSTNAME CEO_PLUTIL_BIN
+  unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_STATE_DIR CEO_HOSTNAME CEO_PLUTIL_BIN
   unset CEO_SCHEDULER CEO_LAUNCHD_DIR CEO_CRONTAB_BIN CEO_SYSTEMCTL_BIN
 }
 
@@ -216,6 +220,28 @@ test_doctor_warns_when_cron_log_missing() {
   assert_contains "$output" "doctor artifact cross-check skipped" "doctor must surface skip-reason when log absent"
   assert_contains "$output" "no cron-runs*.log found" "skip message must name what it looked for"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_reads_cooldown_stamps_from_the_host_local_state_dir() {
+  # cmd_doctor's two state reads were unwired: reverting both to the pre-#394
+  # CEO/log path was green across every suite. That matters because doctor is the
+  # tool that detects a wedged playbook — pointed at a directory nothing writes it
+  # reads an empty dir and calls every playbook "pending, not stale", so the
+  # staleness detector goes quiet and reports health.
+  #
+  # The stamp is written where production writes it, and only doctor's own output
+  # is asserted, so the arm fails if cmd_doctor looks anywhere else.
+  cat > "$REGISTRY_FILE" << 'REG'
+{"schema_version":3,"generated":"2026-09-09T00:00:00Z","playbooks":[
+  {"name":"stale-pb","status":"active","schedule":"0 6 * * *","runner":"script","discord_report":false}
+]}
+REG
+  printf '%s\n' "1000000000" > "$CEO_STATE_DIR/.last-run-stale-pb"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "stale-pb" \
+    "doctor must read the cooldown stamp from the host-local state dir"
+  assert_contains "$output" "hasn't run in" "and report it as stale"
 }
 
 test_doctor_ignores_a_peer_hosts_runs_log() {

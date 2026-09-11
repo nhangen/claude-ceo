@@ -80,7 +80,7 @@ PB
 JSON
 
   # Set last-scan marker to the past so all vault files look new to ceo-scan.sh
-  touch -t 202501010000 "$CEO_DIR/log/.last-scan" 2>/dev/null || touch "$CEO_DIR/log/.last-scan"
+  touch -t 202501010000 "$(_ceo_state)/.last-scan" 2>/dev/null || touch "$(_ceo_state)/.last-scan"
 
   # Create vault files to populate VAULT_CHANGES_BY_DOMAIN
   mkdir -p "$CEO_VAULT/Projects" "$CEO_VAULT/Areas"

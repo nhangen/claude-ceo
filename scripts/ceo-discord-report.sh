@@ -21,6 +21,15 @@ set -euo pipefail
 #
 # Exits 0 always after argument validation; report delivery must not break cron.
 
+# Sourced for _ceo_state_migrate: the delivery stamp below and `ceo doctor`'s
+# staleness check that reads it must resolve the same path, and one definition is
+# the only way to keep that true across a move (#394). This file previously used
+# no shared helper at all — see the inline $HOME/.ceo/registry.json below, which
+# has the same duplication problem and is left for a follow-up.
+_DR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=ceo-config.sh
+source "$_DR_DIR/ceo-config.sh"
+
 TRIGGER="${1:-}"
 CONTENT="${2:-}"
 
@@ -182,10 +191,19 @@ total=$((total + sent))
 # blocked us (the allow-list bug that silently killed the morning report for a
 # week), we'd have exited above and this timestamp would go stale — which is
 # exactly what doctor watches for.
-_deliver_dir="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/log"
-mkdir -p "$_deliver_dir" 2>/dev/null || true
+#
+# Host-local, like the cooldown stamp doctor reads beside it: whether *this*
+# machine delivered says nothing about whether another did. It lived under
+# CEO/log/ with no shared.stignore entry at all, so it has been replicating
+# between hosts — one host's delivery marking another's as fresh, which is the
+# same defect this stamp exists to detect. Moved with the rest in #394.
 if [ "$total" -gt 0 ]; then
-date +%s > "$_deliver_dir/.last-deliver-${TRIGGER}" 2>/dev/null || true
+  # The status is deliberately ignored here. It reports a state dir that could not
+  # be created or a legacy file that could not be moved; either way this script
+  # degrades to fresh state, and its own writes are already guarded. Only the cron
+  # dispatcher refuses to run on rc=2, because only it half-applies bookkeeping.
+  _deliver_stamp=$(_ceo_state_migrate ".last-deliver-${TRIGGER}") || true
+  date +%s > "$_deliver_stamp" 2>/dev/null || true
 fi
 
 # Prior-day full report append (morning-brief only by default). The Obsidian

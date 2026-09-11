@@ -18,6 +18,11 @@ setup() {
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_DIR="$CEO_VAULT/CEO"
   export CEO_HOSTNAME="testhost"
+  # This script calls ceo_pin_home_or_warn, which re-exports HOME from passwd —
+  # so the host-local state path must be given explicitly or it resolves to the
+  # developer's real ~/.ceo/state. See _ceo_state_dir in ceo-config.sh.
+  export CEO_STATE_DIR="$TEST_HOME/.ceo/state"
+  mkdir -p "$CEO_STATE_DIR"
   mkdir -p "$CEO_DIR"
   touch "$CEO_DIR/inbox.md"  # satisfy ceo_validate_vault
 
@@ -54,7 +59,7 @@ teardown() {
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset CEO_VAULT CEO_DIR CEO_HOSTNAME TEST_HOME HOME_BACKUP PATH_BACKUP
+  unset CEO_VAULT CEO_DIR CEO_HOSTNAME CEO_STATE_DIR TEST_HOME HOME_BACKUP PATH_BACKUP
   unset CEO_NATHAN_DROPBOX CEO_PENDING_FILE CEO_NATHAN_EXPIRY_DAYS
   unset CEO_NATHAN_CONFIDENCE_MIN CEO_NATHAN_NOW_EPOCH CEO_NATHAN_PROPOSE_CMD
   unset PROPOSE_QID PROPOSE_CONF PROPOSE_FAIL PROPOSE_INVOKED_LOG

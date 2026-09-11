@@ -188,7 +188,7 @@ SH
 test_dry_run_does_not_write_last_run() {
   _register_status_playbook dr-nolastrun active
   bash "$CRON" dr-nolastrun --dry-run >/dev/null 2>&1 || true
-  assert_fails "dry-run must not write the .last-run stamp" test -f "$CEO_DIR/log/.last-run-dr-nolastrun"
+  assert_fails "dry-run must not write the .last-run stamp" test -f "$(_ceo_state)/.last-run-dr-nolastrun"
   assert_file_exists "$(_preview_file dr-nolastrun)" "dry-run must still produce a preview"
 }
 
@@ -198,7 +198,7 @@ test_dry_run_does_not_write_last_run() {
 test_dry_run_bypasses_cooldown() {
   _register_status_playbook dr-cool active
   bash "$CRON" dr-cool --manual >/dev/null 2>&1 || true
-  assert_file_exists "$CEO_DIR/log/.last-run-dr-cool" "real run must stamp last-run"
+  assert_file_exists "$(_ceo_state)/.last-run-dr-cool" "real run must stamp last-run"
   bash "$CRON" dr-cool --dry-run >/dev/null 2>&1 || true
   assert_file_exists "$(_preview_file dr-cool)" "dry-run must run despite a recent real run (cooldown bypassed)"
 }
@@ -288,7 +288,7 @@ STUB
   bash "$CRON" dr-write --dry-run >/dev/null 2>&1 || true
 
   assert_eq "$(wc -l < "$HOME/claude-calls.log" 2>/dev/null | tr -d ' ')" "1" "dry-run tier:write must run PLAN only — EXECUTE must be skipped"
-  assert_fails "write-tier dry-run must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dr-write"
+  assert_fails "write-tier dry-run must not stamp .last-run" test -f "$(_ceo_state)/.last-run-dr-write"
   assert_not_contains "$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null)" "deploy the thing" "dry-run must not append high-stakes proposals to the approvals queue"
   local pf; pf=$(_preview_file dr-write)
   assert_contains "$(cat "$pf" 2>/dev/null)" "deploy the thing" "preview must list the deferred high-stakes action"
@@ -672,19 +672,30 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   # has_pending_items is false (no PENDING_ASK_QUESTIONS), so preflight returns no-work.
   bash "$CRON" dr-pf --dry-run >/dev/null 2>&1 || true
-  assert_fails "dry-run preflight-skip must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dr-pf"
+  assert_fails "dry-run preflight-skip must not stamp .last-run" test -f "$(_ceo_state)/.last-run-dr-pf"
   assert_contains "$(cat "$(_preview_file dr-pf)" 2>/dev/null)" "no-work" "preview must record the preflight no-work skip"
 }
 
 
-# The preview dir lives under CEO/log/, which is a SYNCED vault tree (only the
-# dotfiles in shared.stignore are host-local). For the preview to be the
-# host-local scratch the design promises, CEO/log/preview/ must be excluded from
-# sync — otherwise a dry-run on one host propagates its preview to every host.
-test_dry_run_preview_dir_excluded_from_sync() {
-  local stignore="$SCRIPT_DIR/../syncthing/shared.stignore"
-  assert_file_exists "$stignore" "shared.stignore must exist"
-  assert_contains "$(cat "$stignore" 2>/dev/null)" "CEO/log/preview/" "preview dir must be stignored so dry-run output stays host-local"
+# A dry-run's preview is host-local scratch: one host's preview must never
+# propagate to the others.
+#
+# It used to get that from CEO/log/preview/ being listed in shared.stignore,
+# which this arm asserted. #394 moved it out of the synced vault entirely, so the
+# assertion moved with it — a path outside the vault is host-local whether or not
+# a given machine ever copied the ignore file into its vault root, and nothing
+# verifies that copy. The stignore entry stays as legacy coverage for the window
+# before an upgrading host's first run migrates the old directory across; that is
+# asserted in ceo-stignore-coverage.test.sh, not here.
+test_dry_run_preview_is_outside_the_synced_vault() {
+  _register_status_playbook dr-local active
+  bash "$CRON" dr-local --dry-run >/dev/null 2>&1 || true
+  local preview; preview=$(_preview_file dr-local)
+  assert_file_exists "$preview" "a dry-run must produce a preview"
+  case "$preview" in
+    "$CEO_VAULT"/*) fail_test "the dry-run preview is inside the synced vault: $preview" ;;
+    *)              ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
+  esac
 }
 
 
@@ -703,7 +714,7 @@ test_dry_run_under_scheduled_warns() {
 # (read-tier claude exit 1 reaches _record_failure.)
 test_dry_run_failure_path_has_no_side_effects() {
   _register_status_playbook dr-fail active
-  echo 3 > "$CEO_DIR/log/.fail-count-dr-fail"
+  echo 3 > "$(_ceo_state)/.fail-count-dr-fail"
   cat > "$HOME/.bun/bin/claude" << 'STUB'
 #!/bin/bash
 cat >/dev/null
@@ -714,7 +725,7 @@ STUB
   bash "$CRON" dr-fail --dry-run >/dev/null 2>&1 || true
 
   assert_eq "$(_fail_count)" "3" "dry-run failure must not increment the fail-count"
-  assert_fails "dry-run failure must not stamp .last-run" test -f "$CEO_DIR/log/.last-run-dr-fail"
+  assert_fails "dry-run failure must not stamp .last-run" test -f "$(_ceo_state)/.last-run-dr-fail"
   assert_contains "$(cat "$(_preview_file dr-fail)" 2>/dev/null)" "Would record FAILURE" "preview must record the would-be failure"
 }
 
@@ -978,7 +989,7 @@ test_abort_before_failure_handling_is_still_recorded() {
   assert_eq "$rc" "78" "an un-bookkept abort must exit 78 so the scheduler records a failure, not a success"
 
   local fails skips
-  fails=$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)
+  fails=$(cat "$(_ceo_state)/.fail-count-pending-drip" 2>/dev/null || echo 0)
   assert_eq "$fails" "1" "an abort must increment the fail count — that counter is what escalates at 3"
   skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
   assert_contains "$skips" "without recording a result" \
@@ -1004,7 +1015,7 @@ test_repeated_aborts_escalate_to_pending_alert() {
 
   local attempt=0
   while [ "$attempt" -lt 3 ]; do
-    rm -f "$CEO_DIR/log/.last-run-pending-drip"
+    rm -f "$(_ceo_state)/.last-run-pending-drip"
     CEO_HOSTNAME=testhost bash "$sandbox/ceo-cron.sh" pending-drip --scheduled >/dev/null 2>&1 || true
     attempt=$((attempt + 1))
   done
@@ -1013,7 +1024,7 @@ test_repeated_aborts_escalate_to_pending_alert() {
   pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
   assert_contains "$pending" "CEO cron failing repeatedly" \
     "three aborts must escalate to an ALERT in approvals/pending.md"
-  assert_eq "$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)" "3" "fail count must reach 3"
+  assert_eq "$(cat "$(_ceo_state)/.fail-count-pending-drip" 2>/dev/null || echo 0)" "3" "fail count must reach 3"
   rm -rf "$sandbox"
 }
 
@@ -1027,10 +1038,10 @@ test_healthy_playbook_does_not_reset_another_playbooks_failure_streak() {
   local sandbox; sandbox=$(_sandbox_with_aborting_gather)
 
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$sandbox/ceo-cron.sh" pending-drip >/dev/null 2>&1 || true
-  assert_eq "$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)" "1" "abort recorded"
+  assert_eq "$(cat "$(_ceo_state)/.fail-count-pending-drip" 2>/dev/null || echo 0)" "1" "abort recorded"
 
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" healthy-one >/dev/null 2>&1 || true
-  assert_eq "$(cat "$CEO_DIR/log/.fail-count-pending-drip" 2>/dev/null || echo 0)" "1" \
+  assert_eq "$(cat "$(_ceo_state)/.fail-count-pending-drip" 2>/dev/null || echo 0)" "1" \
     "a different playbook succeeding must not clear this one's failure streak"
   rm -rf "$sandbox"
 }
@@ -1050,7 +1061,7 @@ test_scheduled_runs_defer_the_cooldown_gate_to_cronbird() {
 
   bash "$CRON" rm-sched-cool --scheduled >/dev/null 2>&1 || true
   assert_file_exists "$HOME/claude-invoked.txt" "first scheduled run must dispatch"
-  assert_file_exists "$CEO_DIR/log/.last-run-rm-sched-cool" \
+  assert_file_exists "$(_ceo_state)/.last-run-rm-sched-cool" \
     "a scheduled run must still stamp last-run — the manual gate and ceo doctor both read it"
   rm -f "$HOME/claude-invoked.txt"
 
