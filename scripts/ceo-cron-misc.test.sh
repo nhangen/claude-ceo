@@ -1002,8 +1002,8 @@ test_operator_facing_strings_name_a_journal_that_exists() {
   # Asserted against the live log directory rather than a literal, so the next
   # rename cannot detach them again.
   _write_failing_playbook strings-check
-  local i
-  for i in 1 2 3; do
+  local _
+  for _ in 1 2 3; do
     rm -f "$CEO_STATE_DIR/.last-run-strings-check"
     bash "$CRON" strings-check >/dev/null 2>&1 || true
   done
