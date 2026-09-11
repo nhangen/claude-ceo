@@ -393,7 +393,7 @@ PB
   assert_contains "$pending" "— ALERT (test-host-a)" "the heading names the host"
   assert_contains "$pending" "consecutive failures on test-host-a" \
     "the count line names the host — this is the sentence a reader quotes"
-  assert_contains "$pending" "on test-host-a, check cron-raw.log" \
+  assert_contains "$pending" "on test-host-a, check cron-raw-test-host-a.log" \
     "the action line names the host whose logs to open"
   rm -f "$SCRIPT_DIR/alert-host-test.sh"
 }
@@ -1722,7 +1722,7 @@ PB
   # human investigating "why is morning-brief over budget on Tuesdays" has an
   # artifact to inspect (mirrors the claude failure-path capture).
   local raw_log
-  raw_log=$(cat "$CEO_DIR/log/cron-raw.log" 2>/dev/null || echo "")
+  raw_log=$(_raw_log)
   assert_contains "$raw_log" "Prompt exceeds budget" "cron-raw.log must capture budget-exceeded events"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }

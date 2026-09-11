@@ -692,7 +692,7 @@ cmd_test() {
     # file is readable here too, so pointing at a single name would send the
     # reader to a path that may not exist on this machine.
     echo "Check: $CEO_DIR/log/cron-skips-*.log"
-    echo "Check: $CEO_DIR/log/cron-raw.log"
+    echo "Check: $CEO_DIR/log/cron-raw-*.log"
   fi
 }
 

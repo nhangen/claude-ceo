@@ -956,7 +956,7 @@ test_no_source_line_writes_a_shared_journal_name() {
   # $SKIPS_LOG because SKIPS_LOG is derived from the slug it is failing over.
   local offenders
   offenders=$(sed 's/#.*//' "$SCRIPT_DIR/ceo-cron.sh" \
-    | grep -nE '(LOG_DIR|CEO_DIR/log)"?/cron-(skips|stdout|stderr)\.log' || true)
+    | grep -nE '(LOG_DIR|CEO_DIR/log)"?/cron-(skips|stdout|stderr|raw)\.log' || true)
   if [ -n "$offenders" ]; then
     fail_test "ceo-cron.sh writes a shared journal name #399 keyed by host" "$offenders"
   else
@@ -1021,7 +1021,7 @@ test_operator_facing_strings_name_a_journal_that_exists() {
   # writes.
   local f retired
   for f in $named; do
-    for retired in cron-skips.log cron-stdout.log cron-stderr.log cron-runs.log; do
+    for retired in cron-skips.log cron-stdout.log cron-stderr.log cron-runs.log cron-raw.log; do
       if [ "$f" = "$retired" ]; then
         fail_test "the alert names $f — a name #397/#399 retired, present on no host"
       fi

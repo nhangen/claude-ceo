@@ -230,6 +230,12 @@ if ! : >> "$SKIPS_LOG" 2>/dev/null; then
 fi
 CRON_STDOUT_LOG="$LOG_DIR/cron-stdout-$RUNS_LOG_HOST.log"
 CRON_STDERR_LOG="$LOG_DIR/cron-stderr-$RUNS_LOG_HOST.log"
+# The fourth and last file of this shape. It holds the raw model output and the
+# Claude transient/auth-failure dumps, which are often the only record of *why* a
+# run failed — the skips journal frequently carries just a classification. It is
+# also the first file the three-strike alert tells a woken operator to open, so a
+# forked copy loses exactly what they came for.
+RAW_LOG="$LOG_DIR/cron-raw-$RUNS_LOG_HOST.log"
 
 # The cron state below lives in $HOME/.ceo/state, not in the synced vault. It
 # used to sit under CEO/log/ and depend on each host having copied
@@ -447,7 +453,7 @@ _record_failure() {
 - [ ] **CEO cron failing repeatedly** — $fails consecutive failures on $alert_host
   - trigger: $TRIGGER
   - last error: $reason
-  - action needed: on $alert_host, check cron-raw.log and $(basename "$SKIPS_LOG")
+  - action needed: on $alert_host, check $(basename "$RAW_LOG") and $(basename "$SKIPS_LOG")
 ALERTEOF
   fi
   date +%s > "$LAST_RUN_FILE"
@@ -611,9 +617,9 @@ _route_claude_failure() {
 **Playbook:** $PLAYBOOK_REL
 **Note:** Claude API transiently unavailable (rate-limit / 5xx / network) in $phase. Raw output saved to cron-raw.log."
       echo "$(date) [$TRIGGER] Transient ($phase):" >> "$SKIPS_LOG"
-      echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
-      echo "$output" >> "$LOG_DIR/cron-raw.log"
-      echo "---" >> "$LOG_DIR/cron-raw.log"
+      echo "$(date) [$TRIGGER] $phase output:" >> "$RAW_LOG"
+      echo "$output" >> "$RAW_LOG"
+      echo "---" >> "$RAW_LOG"
       exit 0
       ;;
     auth)
@@ -622,9 +628,9 @@ _route_claude_failure() {
 **Playbook:** $PLAYBOOK_REL
 **Note:** Claude authentication failed in $phase — automation is down until re-auth. Fix: ssh to this host, run \`claude\`, then /login. Raw output saved to cron-raw.log."
       echo "$(date) [$TRIGGER] AUTH FAILURE ($phase):" >> "$SKIPS_LOG"
-      echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
-      echo "$output" >> "$LOG_DIR/cron-raw.log"
-      echo "---" >> "$LOG_DIR/cron-raw.log"
+      echo "$(date) [$TRIGGER] $phase output:" >> "$RAW_LOG"
+      echo "$output" >> "$RAW_LOG"
+      echo "---" >> "$RAW_LOG"
       _record_failure "Claude auth failure in $phase for $TRIGGER — host needs re-login"
       # 78 = cronbird's FATAL_EXIT_CODE (src/core/constants.ts): fail fast to the
       # attempt cap instead of burning three dispatches on a host that stays
@@ -659,7 +665,7 @@ _dispatch_single_output() {
       _report action "$trigger" "**Status:** completed (unparseable output)
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution succeeded but log format could not be parsed ($model_label)."
-      printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$LOG_DIR/cron-raw.log"
+      printf '%s [%s] Unparseable output (%s):\n%s\n---\n' "$(date)" "$trigger" "$model_label" "$output" >> "$RAW_LOG"
       _record_success
       return 0
     fi
@@ -902,7 +908,7 @@ END_LOG_ENTRY"
 
   if [ "$chunk_budget" -le 512 ]; then
     printf '%s [%s] chunked scan: base prompt alone is %s bytes, no room to chunk\n' \
-      "$(date)" "$trigger" "$base_bytes" >> "$LOG_DIR/cron-raw.log"
+      "$(date)" "$trigger" "$base_bytes" >> "$RAW_LOG"
     return 1
   fi
 
@@ -941,7 +947,7 @@ $piece"
     if [ "$chunk_exit" -ne 0 ] || [ -z "$(printf '%s' "$chunk_out" | tr -d '[:space:]')" ]; then
       _v "  WARNING: chunk $i/$n_chunks failed (exit $chunk_exit) — skipping"
       printf '%s [%s] chunked scan: chunk %s/%s failed (exit %s)\n' \
-        "$(date)" "$trigger" "$i" "$n_chunks" "$chunk_exit" >> "$LOG_DIR/cron-raw.log"
+        "$(date)" "$trigger" "$i" "$n_chunks" "$chunk_exit" >> "$RAW_LOG"
       failed_chunks=$(( failed_chunks + 1 ))
       continue
     fi
@@ -952,7 +958,7 @@ ${chunk_out}"
 
   if [ -z "$(printf '%s' "$partial_findings" | tr -d '[:space:]')" ]; then
     printf '%s [%s] chunked scan: all %s chunks failed or empty\n' \
-      "$(date)" "$trigger" "$n_chunks" >> "$LOG_DIR/cron-raw.log"
+      "$(date)" "$trigger" "$n_chunks" >> "$RAW_LOG"
     return 1
   fi
 
@@ -963,7 +969,7 @@ ${chunk_out}"
   if [ "$failed_chunks" -gt 0 ]; then
     local drop_pct=$(( failed_chunks * 100 / n_chunks ))
     printf '%s [%s] chunked scan: %s/%s fragments dropped (%s%%)\n' \
-      "$(date)" "$trigger" "$failed_chunks" "$n_chunks" "$drop_pct" >> "$LOG_DIR/cron-raw.log"
+      "$(date)" "$trigger" "$failed_chunks" "$n_chunks" "$drop_pct" >> "$RAW_LOG"
     if [ "$drop_pct" -gt "${CEO_SCAN_MAX_DROP_PCT:-25}" ]; then
       return 1
     fi
@@ -997,7 +1003,7 @@ ${partial_findings}"
     2>>"$CRON_STDERR_LOG") || synth_exit=$?
   if [ "$synth_exit" -ne 0 ] || [ -z "$(printf '%s' "$synth_out" | tr -d '[:space:]')" ]; then
     printf '%s [%s] chunked scan synthesis failed (exit %s)\n' \
-      "$(date)" "$trigger" "$synth_exit" >> "$LOG_DIR/cron-raw.log"
+      "$(date)" "$trigger" "$synth_exit" >> "$RAW_LOG"
     return 1
   fi
 
@@ -2248,7 +2254,7 @@ END_LOG_ENTRY"
       fi
       _v "FAILED (prompt exceeds budget: $OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes)"
       printf '%s [%s] Prompt exceeds budget (%s bytes > %s) for model: %s\n---\n' \
-        "$(date)" "$TRIGGER" "$OLLAMA_PROMPT_BYTES" "$CEO_OLLAMA_MAX_PROMPT_BYTES" "$OLLAMA_MODEL" >> "$LOG_DIR/cron-raw.log"
+        "$(date)" "$TRIGGER" "$OLLAMA_PROMPT_BYTES" "$CEO_OLLAMA_MAX_PROMPT_BYTES" "$OLLAMA_MODEL" >> "$RAW_LOG"
       _record_failure "ollama prompt exceeds budget ($OLLAMA_PROMPT_BYTES > $CEO_OLLAMA_MAX_PROMPT_BYTES bytes) for $TRIGGER (model: $OLLAMA_MODEL)"
       exit 1
     fi
@@ -2258,13 +2264,13 @@ END_LOG_ENTRY"
     if [ "$OLLAMA_EXIT" -ne 0 ]; then
       _v "FAILED (exit: $OLLAMA_EXIT)"
       printf '%s [%s] ollama non-zero exit %s (model: %s):\n%s\n---\n' \
-        "$(date)" "$TRIGGER" "$OLLAMA_EXIT" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$LOG_DIR/cron-raw.log"
+        "$(date)" "$TRIGGER" "$OLLAMA_EXIT" "$OLLAMA_MODEL" "$OLLAMA_OUT" >> "$RAW_LOG"
       _record_failure "ollama exited $OLLAMA_EXIT for $TRIGGER (model: $OLLAMA_MODEL)"
       exit "$OLLAMA_EXIT"
     fi
     if [ -z "$(printf '%s' "$OLLAMA_OUT" | tr -d '[:space:]')" ]; then
       _v "FAILED (empty output)"
-      printf '%s [%s] Empty ollama output (model: %s)\n---\n' "$(date)" "$TRIGGER" "$OLLAMA_MODEL" >> "$LOG_DIR/cron-raw.log"
+      printf '%s [%s] Empty ollama output (model: %s)\n---\n' "$(date)" "$TRIGGER" "$OLLAMA_MODEL" >> "$RAW_LOG"
       _record_failure "ollama returned empty output for $TRIGGER (model: $OLLAMA_MODEL)"
       exit 1
     fi
@@ -2309,9 +2315,9 @@ END_LOG_ENTRY"
     _report action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
 **Note:** Single-call execution failed (exit: $SINGLE_EXIT). Raw output saved to cron-raw.log."
-    echo "$(date) [$TRIGGER] Single-call output:" >> "$LOG_DIR/cron-raw.log"
-    echo "$SINGLE_RAW" >> "$LOG_DIR/cron-raw.log"
-    echo "---" >> "$LOG_DIR/cron-raw.log"
+    echo "$(date) [$TRIGGER] Single-call output:" >> "$RAW_LOG"
+    echo "$SINGLE_RAW" >> "$RAW_LOG"
+    echo "---" >> "$RAW_LOG"
     _record_failure "Single-call execution failed for $TRIGGER (exit: $SINGLE_EXIT)"
     exit "$SINGLE_EXIT"
   fi
@@ -2387,9 +2393,9 @@ PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with
 if [ $PLAN_EXIT -ne 0 ]; then
   _route_claude_failure "$PLAN_EXIT" "$PLAN_OUTPUT" "plan"
   _v "Phase 1 FAILED (exit: $PLAN_EXIT)"
-  echo "$(date) [$TRIGGER] Plan output:" >> "$LOG_DIR/cron-raw.log"
-  echo "$PLAN_OUTPUT" >> "$LOG_DIR/cron-raw.log"
-  echo "---" >> "$LOG_DIR/cron-raw.log"
+  echo "$(date) [$TRIGGER] Plan output:" >> "$RAW_LOG"
+  echo "$PLAN_OUTPUT" >> "$RAW_LOG"
+  echo "---" >> "$RAW_LOG"
   _record_failure "Phase 1 (plan) failed for $TRIGGER (exit: $PLAN_EXIT)"
   exit 1
 fi
@@ -2601,9 +2607,9 @@ END_LOG_ENTRY"
     _report action "$TRIGGER" "**Status:** failed
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution phase failed (exit: $EXEC_EXIT). Raw output saved to cron-raw.log."
-    echo "$(date) [$TRIGGER] Exec output:" >> "$LOG_DIR/cron-raw.log"
-    echo "$EXEC_OUTPUT" >> "$LOG_DIR/cron-raw.log"
-    echo "---" >> "$LOG_DIR/cron-raw.log"
+    echo "$(date) [$TRIGGER] Exec output:" >> "$RAW_LOG"
+    echo "$EXEC_OUTPUT" >> "$RAW_LOG"
+    echo "---" >> "$RAW_LOG"
     _record_failure "Phase 3 (exec) failed for $TRIGGER (exit: $EXEC_EXIT)"
     exit "$EXEC_EXIT"
   else
@@ -2622,9 +2628,9 @@ END_LOG_ENTRY"
       _report action "$TRIGGER" "**Status:** completed (unparseable output)
 **Playbook:** $PLAYBOOK_REL
 **Note:** Execution succeeded but log format could not be parsed. Raw output saved to cron-raw.log."
-      echo "$(date) [$TRIGGER] Unparseable exec output:" >> "$LOG_DIR/cron-raw.log"
-      echo "$EXEC_OUTPUT" >> "$LOG_DIR/cron-raw.log"
-      echo "---" >> "$LOG_DIR/cron-raw.log"
+      echo "$(date) [$TRIGGER] Unparseable exec output:" >> "$RAW_LOG"
+      echo "$EXEC_OUTPUT" >> "$RAW_LOG"
+      echo "---" >> "$RAW_LOG"
     fi
   fi
 fi
