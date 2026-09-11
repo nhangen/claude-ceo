@@ -25,6 +25,17 @@ MAX_READ = 20000       # chars returned by read_file
 # .unknown_calls.
 ERROR_RELEVANT_TOOLS = {"write_file", "git", "run_shell"}
 
+# git subcommands that change something. A non-zero exit from one of these is an
+# operational failure the cron gate must see; a non-zero exit from a read verb is
+# that verb's answer — `diff --quiet` returns 1 to say "there are differences",
+# and failing a run over it would fail runs that did exactly what they meant to.
+# So the guard keys on the subcommand, not on the returncode alone.
+MUTATING_GIT_SUBCOMMANDS = {
+    "add", "am", "apply", "branch", "checkout", "cherry-pick", "clean", "clone",
+    "commit", "fetch", "init", "merge", "mv", "pull", "push", "rebase", "reset",
+    "restore", "revert", "rm", "stash", "switch", "tag", "worktree",
+}
+
 
 def _clip(s, n):
     s = s or ""
@@ -63,9 +74,17 @@ class ToolBox:
                                text=True, timeout=self.timeout)
         except subprocess.TimeoutExpired:
             return json.dumps({"returncode": None, "error": f"timeout>{self.timeout}s"})
-        return json.dumps({"returncode": p.returncode,
-                           "stdout": _clip(p.stdout, MAX_OUTPUT),
-                           "stderr": _clip(p.stderr, MAX_OUTPUT)})
+        out = {"returncode": p.returncode,
+               "stdout": _clip(p.stdout, MAX_OUTPUT),
+               "stderr": _clip(p.stderr, MAX_OUTPUT)}
+        # Gated here rather than at the caller, so no caller can opt out
+        # (safety-invariant-scope step 4). An empty argv counts: a git call that
+        # named no subcommand did not do the work its caller intended, and
+        # reporting it clean hides that from the same gate.
+        if p.returncode != 0 and (not argv or argv[0] in MUTATING_GIT_SUBCOMMANDS):
+            sub = argv[0] if argv else "(no subcommand)"
+            out["error"] = f"git {sub} exited {p.returncode}: {_clip(p.stderr, 500)}"
+        return json.dumps(out)
 
     def read_file(self, path):
         f = self._resolve(path)
