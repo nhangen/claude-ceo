@@ -72,7 +72,7 @@ test_runner_ollama_agent_tool_error_records_failure() {
     FAILS=$((FAILS + 1))
   fi
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "tool error" "cron-skips.log must record the tool-error failure reason"
   assert_contains "$skips_log" "write_file" "the failure reason must name the failing tool"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -150,8 +150,8 @@ test_runner_ollama_agent_ingest_skips_when_pt_absent() {
     printf '  FAIL [%s] hallucinated run must still fail its gate even when pt is absent\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "pattern-tracker absent" "pt-absent must log a skip notice"
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unknown tool call" "the gate failure must still be recorded"
+  assert_contains "$(_skips_log)" "pattern-tracker absent" "pt-absent must log a skip notice"
+  assert_contains "$(_skips_log)" "unknown tool call" "the gate failure must still be recorded"
   unset CEO_PT_REPO
 }
 
@@ -169,7 +169,7 @@ STUB
   export CEO_PT_FINDING_CMD="$HOME/.bun/bin/pt-fail --db /tmp/x"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" agent-ptfail >/dev/null 2>&1 || true
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "ingest failed" "a pt ingest failure must log a notice, never crash the run"
+  assert_contains "$(_skips_log)" "ingest failed" "a pt ingest failure must log a notice, never crash the run"
   unset CEO_PT_FINDING_CMD
 }
 
@@ -242,7 +242,7 @@ STUB
   export CEO_AGENT_RUN_ID="run-evt-3"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" agent-evt3 >/dev/null 2>&1 || true
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)
+  local skips; skips=$(_skips_log)
   assert_contains "$skips" "event-add failed (rc=7)" "a failed event-add must write a NOTICE to cron-skips.log"
   unset CEO_AGENT_RUN_ID CEO_PT_EVENT_CMD
 }
@@ -277,7 +277,7 @@ test_runner_ollama_agent_high_stakes_refused_before_dispatch() {
     printf '  FAIL [%s] high-stakes must NOT invoke the bridge (gate is cron-side)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "may not run high-stakes" "refusal reason must be logged"
+  assert_contains "$(_skips_log)" "may not run high-stakes" "refusal reason must be logged"
 }
 
 
@@ -291,7 +291,7 @@ test_runner_ollama_agent_hallucinated_calls_is_failure() {
     printf '  FAIL [%s] a run with unknown_calls must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unknown tool call" "hallucinated call must be recorded as failure"
+  assert_contains "$(_skips_log)" "unknown tool call" "hallucinated call must be recorded as failure"
 }
 
 
@@ -305,7 +305,7 @@ test_runner_ollama_agent_incomplete_is_failure() {
     printf '  FAIL [%s] completed:false must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "did not complete" "incomplete run must be recorded as failure"
+  assert_contains "$(_skips_log)" "did not complete" "incomplete run must be recorded as failure"
 }
 
 
@@ -348,7 +348,7 @@ PB
     printf '  FAIL [%s] missing registry must fail before invoking the bridge\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "no 'registry' field" "missing-registry error must be logged"
+  assert_contains "$(_skips_log)" "no 'registry' field" "missing-registry error must be logged"
 }
 
 
@@ -373,7 +373,7 @@ STUB
   fi
   # The failure must be RECORDED (fail-count incremented), not a bare set -e crash.
   assert_eq "$(_fail_count)" "1" "malformed output must increment the fail count (not crash before recording)"
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unparseable output" "parse failure reason must be logged"
+  assert_contains "$(_skips_log)" "unparseable output" "parse failure reason must be logged"
 }
 
 
@@ -387,7 +387,7 @@ test_runner_ollama_agent_missing_bridge_command_is_failure() {
     printf '  FAIL [%s] a missing bridge command must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "bridge exited" "missing bridge command must be recorded as a failure"
+  assert_contains "$(_skips_log)" "bridge exited" "missing bridge command must be recorded as a failure"
 }
 
 run_tests

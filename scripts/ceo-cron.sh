@@ -167,6 +167,45 @@ TODAY=$(date +%Y-%m-%d)
 NOW=$(date +%H:%M)
 LOG_FILE="$LOG_DIR/$TODAY.md"
 LOCK_FILE="${CEO_LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}"
+# cron-runs.log lives in the synced vault and every host in the swarm appended
+# to it, which Syncthing cannot merge -- it forks the file instead. Ten conflict
+# copies had accumulated by 2026-09-09 (#397), and whichever copy loses takes
+# its host's completion lines with it, so `ceo doctor`'s artifact cross-check
+# can report a run missing that actually happened.
+#
+# Two fixes, because either alone leaves a hole. shared.stignore now excludes
+# CEO/log/cron-runs*.log, which is the real cure -- this is host-local runtime
+# state like the fail counters and should never have synced. But `ceo doctor`
+# warns when a host has no .stignore installed at all, so the file is also keyed
+# by host: on such a host the logs stay distinct instead of forking.
+RUNS_LOG_HOST=$(_ceo_host_slug) || {
+  # $LOG_DIR is created much later in the run, and this is the one message that
+  # must survive a first-ever run on a fresh install — which is where an
+  # unresolved host is most likely.
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  # Not fatal — the completion still gets recorded. But it lands in a file
+  # doctor's cross-check will not open on a host that can resolve itself, so
+  # saying nothing here is how a run goes missing from the #88/#89 backstop
+  # with no trace. Same shape as the alert-host fallback below.
+  echo "$(date): WARN — could not resolve this host for the completion log (set CEO_HOSTNAME); recording to cron-runs-unknown.log, which ceo doctor's artifact cross-check does not read" \
+    >> "$LOG_DIR/cron-skips-unknown.log" || true
+}
+RUNS_LOG="$LOG_DIR/cron-runs-$RUNS_LOG_HOST.log"
+# The three dispatcher journals, keyed by host for the same reason the completion
+# log is: every host appended to one copy of each and Syncthing forks rather than
+# merges. Three .sync-conflict copies were on disk when #399 was filed, and
+# cron-skips.log is where #398 routes the one line saying a completion record was
+# lost — a fork there can drop exactly that.
+#
+# Unlike the state in #394 these stay in the synced vault, deliberately. They are
+# journals, not decision state: a peer's ERROR line is worth reading, the
+# cron-failure-digest playbook reaches them by a path relative to the vault and
+# could not follow them out of it, and one writer per file means syncing them
+# costs no conflicts.
+SKIPS_LOG="$LOG_DIR/cron-skips-$RUNS_LOG_HOST.log"
+CRON_STDOUT_LOG="$LOG_DIR/cron-stdout-$RUNS_LOG_HOST.log"
+CRON_STDERR_LOG="$LOG_DIR/cron-stderr-$RUNS_LOG_HOST.log"
+
 # The cron state below lives in $HOME/.ceo/state, not in the synced vault. It
 # used to sit under CEO/log/ and depend on each host having copied
 # syncthing/shared.stignore into its vault root — protection nothing verifies, and
@@ -191,12 +230,12 @@ _state() {
   case "$rc" in
     2) mkdir -p "$LOG_DIR" 2>/dev/null || true
        echo "$(date): ERROR — cannot create the host-local state dir for $1 ($path); ${TRIGGER:-<sweep>} NOT dispatched" \
-         >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true
+         >> "$SKIPS_LOG" 2>/dev/null || true
        echo "ERROR: cannot create the host-local state directory for $1" >&2
        exit 1 ;;
     1) mkdir -p "$LOG_DIR" 2>/dev/null || true
        echo "$(date): WARN — could not migrate legacy state $1 out of the vault; ${TRIGGER:-<sweep>} continues with fresh state (a cooldown or failure streak may have reset)" \
-         >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true ;;
+         >> "$SKIPS_LOG" 2>/dev/null || true ;;
   esac
   printf '%s\n' "$path"
 }
@@ -211,30 +250,7 @@ LAST_SCAN_FILE=$(_state ".last-scan")
 # overwrites this per (trigger, day) so repeated previews don't accumulate.
 PREVIEW_DIR=$(_state "preview")
 PREVIEW_FILE="$PREVIEW_DIR/${TRIGGER}-${TODAY}.md"
-# cron-runs.log lives in the synced vault and every host in the swarm appended
-# to it, which Syncthing cannot merge -- it forks the file instead. Ten conflict
-# copies had accumulated by 2026-09-09 (#397), and whichever copy loses takes
-# its host's completion lines with it, so `ceo doctor`'s artifact cross-check
-# can report a run missing that actually happened.
-#
-# Two fixes, because either alone leaves a hole. shared.stignore now excludes
-# CEO/log/cron-runs*.log, which is the real cure -- this is host-local runtime
-# state like the fail counters and should never have synced. But `ceo doctor`
-# warns when a host has no .stignore installed at all, so the file is also keyed
-# by host: on such a host the logs stay distinct instead of forking.
-RUNS_LOG_HOST=$(_cron_runs_log_host) || {
-  # $LOG_DIR is created much later in the run, and this is the one message that
-  # must survive a first-ever run on a fresh install — which is where an
-  # unresolved host is most likely.
-  mkdir -p "$LOG_DIR" 2>/dev/null || true
-  # Not fatal — the completion still gets recorded. But it lands in a file
-  # doctor's cross-check will not open on a host that can resolve itself, so
-  # saying nothing here is how a run goes missing from the #88/#89 backstop
-  # with no trace. Same shape as the alert-host fallback below.
-  echo "$(date): WARN — could not resolve this host for the completion log (set CEO_HOSTNAME); recording to cron-runs-unknown.log, which ceo doctor's artifact cross-check does not read" \
-    >> "$LOG_DIR/cron-skips.log" || true
-}
-RUNS_LOG="$LOG_DIR/cron-runs-$RUNS_LOG_HOST.log"
+
 
 # --- Verbose mode (set CEO_VERBOSE=1 for stdout progress) ---
 _v() { [ "${CEO_VERBOSE:-}" = "1" ] && echo "  $*" || true; }
@@ -318,7 +334,7 @@ _record_success() {
   # probe below, which this file already decided is the right one.
   echo "$(date): $TRIGGER completed" >> "$RUNS_LOG" || \
     echo "$(date): ERROR — cannot record the completion for $TRIGGER in $RUNS_LOG; this run will not be cross-checked by ceo doctor" \
-      >> "$LOG_DIR/cron-skips.log" || true
+      >> "$SKIPS_LOG" || true
   # High-frequency/silent-by-design playbooks don't notify Discord on success —
   # only on failure (handled in _record_failure). disk-monitor (every 6h) and
   # ticket-triage-autopilot (every 30m, silent-by-design v2 cache adapter) would
@@ -340,7 +356,7 @@ _record_success() {
   fi
   if [ "$SUCCESS_NOTIFY" = "1" ] && [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
     "$SCRIPT_DIR/ceo-notify.sh" success "$TRIGGER" >/dev/null 2>&1 || \
-      echo "$(date): WARN — ceo-notify.sh success exited non-zero for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date): WARN — ceo-notify.sh success exited non-zero for $TRIGGER" >> "$SKIPS_LOG"
   fi
 }
 
@@ -348,7 +364,7 @@ _record_failure() {
   local reason="$1"
   _bookkeeping_done=1   # read by the EXIT trap installed after the lock section
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
-    echo "$(date): DRY-RUN — would record failure: $reason" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): DRY-RUN — would record failure: $reason" >> "$SKIPS_LOG"
     # Surface to stderr too: a dry-run exits 0, so without this an operator
     # smoke-testing a broken gh/registry would see "preview written" and miss
     # that a real run would have failed and escalated.
@@ -356,7 +372,7 @@ _record_failure() {
     _preview "Would record FAILURE: $reason (no fail-count increment / pending alert / notify / .last-run)."
     return 0
   fi
-  echo "$(date): ERROR — $reason" >> "$LOG_DIR/cron-skips.log"
+  echo "$(date): ERROR — $reason" >> "$SKIPS_LOG"
   local fails
   fails=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
   fails=$((fails + 1))
@@ -390,7 +406,7 @@ _record_failure() {
       # point is letting a reader identify the machine, is worse than either.
       alert_host=unknown
       echo "$(date): WARN — could not resolve this host for the $TRIGGER alert (set CEO_HOSTNAME); naming it unknown" \
-        >> "$LOG_DIR/cron-skips.log"
+        >> "$SKIPS_LOG"
     fi
     # The append is checked for the same reason the resolution is: nothing in the
     # production path creates $CEO_DIR/approvals, so a fresh or unmounted vault
@@ -399,7 +415,7 @@ _record_failure() {
     # cron-skips.log still says only that the run failed.
     cat >> "$CEO_DIR/approvals/pending.md" << ALERTEOF || \
       echo "$(date): WARN — three-strike alert for $TRIGGER could not be written to approvals/pending.md" \
-        >> "$LOG_DIR/cron-skips.log"
+        >> "$SKIPS_LOG"
 
 ## $TODAY $NOW — ALERT ($alert_host)
 
@@ -412,7 +428,7 @@ ALERTEOF
   date +%s > "$LAST_RUN_FILE"
   if [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
     "$SCRIPT_DIR/ceo-notify.sh" failure "$TRIGGER" "$reason" >/dev/null 2>&1 || \
-      echo "$(date): WARN — ceo-notify.sh failure exited non-zero for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date): WARN — ceo-notify.sh failure exited non-zero for $TRIGGER" >> "$SKIPS_LOG"
   fi
 }
 
@@ -445,12 +461,12 @@ _ingest_hallucinated_calls() {
         line_no: .key,
         panel_variant: "local-agent",
         source: "ollama-agent"
-      }' 2>>"$LOG_DIR/cron-stderr.log") || jq_rc=$?
+      }' 2>>"$CRON_STDERR_LOG") || jq_rc=$?
   # The caller only invokes this when unknown_calls is non-empty, so an empty or
   # failed construction means the findings were LOST — surface it (skip-WITH-
   # notice), never conflate a jq error with "nothing to ingest".
   if [ "$jq_rc" -ne 0 ] || [ -z "$jsonl" ]; then
-    echo "$(date): NOTICE — hallucinated-call finding construction failed (jq rc=$jq_rc) for $TRIGGER; finding(s) NOT persisted" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): NOTICE — hallucinated-call finding construction failed (jq rc=$jq_rc) for $TRIGGER; finding(s) NOT persisted" >> "$SKIPS_LOG"
     return 0
   fi
 
@@ -458,20 +474,20 @@ _ingest_hallucinated_calls() {
   if [ -n "${CEO_PT_FINDING_CMD:-}" ]; then
     local _pt_cmd
     read -r -a _pt_cmd <<< "$CEO_PT_FINDING_CMD"
-    printf '%s\n' "$jsonl" | "${_pt_cmd[@]}" >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
+    printf '%s\n' "$jsonl" | "${_pt_cmd[@]}" >>"$CRON_STDERR_LOG" 2>&1 || pt_rc=$?
   else
     local pt_repo="${CEO_PT_REPO:-$HOME/ML-AI/claude/pattern-tracker}"
     if [ ! -d "$pt_repo" ]; then
-      echo "$(date): NOTICE — pattern-tracker absent at $pt_repo; skipped ingesting hallucinated-call finding(s) for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date): NOTICE — pattern-tracker absent at $pt_repo; skipped ingesting hallucinated-call finding(s) for $TRIGGER" >> "$SKIPS_LOG"
       return 0
     fi
     local pt_db="${CEO_PT_DB:-$pt_repo/data/events.db}"
     printf '%s\n' "$jsonl" \
       | ( cd "$pt_repo" && python3 -m lib.pt_cli finding-add --db "$pt_db" ) \
-        >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
+        >>"$CRON_STDERR_LOG" 2>&1 || pt_rc=$?
   fi
   if [ "$pt_rc" -ne 0 ]; then
-    echo "$(date): NOTICE — pattern-tracker ingest failed (rc=$pt_rc) for $TRIGGER; hallucinated-call finding(s) NOT persisted" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): NOTICE — pattern-tracker ingest failed (rc=$pt_rc) for $TRIGGER; hallucinated-call finding(s) NOT persisted" >> "$SKIPS_LOG"
   fi
 }
 
@@ -505,25 +521,25 @@ _emit_run_event() {
       error_tail: ({run_id: $rid, model: $model, completed: (.completed // false),
                     turns: (.turns // 0), calls: ((.calls // []) | length),
                     unknown: ((.unknown_calls // []) | length)} | tojson)
-    }' 2>>"$LOG_DIR/cron-stderr.log") || return 0
+    }' 2>>"$CRON_STDERR_LOG") || return 0
   [ -z "$row" ] && return 0
   if [ -n "${CEO_PT_EVENT_CMD:-}" ]; then
     local _pt_cmd
     read -r -a _pt_cmd <<< "$CEO_PT_EVENT_CMD"
-    printf '%s\n' "$row" | "${_pt_cmd[@]}" >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
+    printf '%s\n' "$row" | "${_pt_cmd[@]}" >>"$CRON_STDERR_LOG" 2>&1 || pt_rc=$?
   else
     local pt_repo="${CEO_PT_REPO:-$HOME/ML-AI/claude/pattern-tracker}"
     if [ ! -d "$pt_repo" ]; then
-      echo "$(date): NOTICE — pattern-tracker absent at $pt_repo; skipped event-add for $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date): NOTICE — pattern-tracker absent at $pt_repo; skipped event-add for $TRIGGER" >> "$SKIPS_LOG"
       return 0
     fi
     local pt_db="${CEO_PT_DB:-$pt_repo/data/events.db}"
     printf '%s\n' "$row" \
       | ( cd "$pt_repo" && python3 -m lib.pt_cli event-add --db "$pt_db" ) \
-        >>"$LOG_DIR/cron-stderr.log" 2>&1 || pt_rc=$?
+        >>"$CRON_STDERR_LOG" 2>&1 || pt_rc=$?
   fi
   if [ "$pt_rc" -ne 0 ]; then
-    echo "$(date): NOTICE — pattern-tracker event-add failed (rc=$pt_rc) for $TRIGGER; run event NOT persisted" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): NOTICE — pattern-tracker event-add failed (rc=$pt_rc) for $TRIGGER; run event NOT persisted" >> "$SKIPS_LOG"
   fi
 }
 
@@ -560,7 +576,7 @@ _route_claude_failure() {
     transient)
       if [ "$phase" = "single-call" ] && [ "${CEO_CRON_OLLAMA_FALLBACK:-0}" != "1" ]; then
         _v "Claude unavailable (transient)! Falling back to ollama..."
-        echo "$(date) [$TRIGGER] Transient failure (Claude). Falling back to ollama." >> "$LOG_DIR/cron-skips.log"
+        echo "$(date) [$TRIGGER] Transient failure (Claude). Falling back to ollama." >> "$SKIPS_LOG"
         export CEO_CRON_OLLAMA_FALLBACK=1
         _release_lock
         exec bash "$SCRIPT_DIR/ceo-cron.sh" "$TRIGGER"
@@ -569,7 +585,7 @@ _route_claude_failure() {
       _report action "$TRIGGER" "**Status:** skipped: unavailable
 **Playbook:** $PLAYBOOK_REL
 **Note:** Claude API transiently unavailable (rate-limit / 5xx / network) in $phase. Raw output saved to cron-raw.log."
-      echo "$(date) [$TRIGGER] Transient ($phase):" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date) [$TRIGGER] Transient ($phase):" >> "$SKIPS_LOG"
       echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
       echo "$output" >> "$LOG_DIR/cron-raw.log"
       echo "---" >> "$LOG_DIR/cron-raw.log"
@@ -580,7 +596,7 @@ _route_claude_failure() {
       _report action "$TRIGGER" "**Status:** failed: auth
 **Playbook:** $PLAYBOOK_REL
 **Note:** Claude authentication failed in $phase — automation is down until re-auth. Fix: ssh to this host, run \`claude\`, then /login. Raw output saved to cron-raw.log."
-      echo "$(date) [$TRIGGER] AUTH FAILURE ($phase):" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date) [$TRIGGER] AUTH FAILURE ($phase):" >> "$SKIPS_LOG"
       echo "$(date) [$TRIGGER] $phase output:" >> "$LOG_DIR/cron-raw.log"
       echo "$output" >> "$LOG_DIR/cron-raw.log"
       echo "---" >> "$LOG_DIR/cron-raw.log"
@@ -775,16 +791,16 @@ _ollama_run() {
   case "$to" in
     ''|*[!0-9]*)
       echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT='$to' is not a non-negative integer; using 300" \
-        >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+        >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
       to=300 ;;
     0)
       echo "$(date): WARNING — CEO_OLLAMA_TIMEOUT=0 disables the wall-clock cap (hang risk)" \
-        >> "${LOG_DIR:-/tmp}/cron-stderr.log" ;;
+        >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}" ;;
   esac
   case "$num_ctx" in
     ''|*[!0-9]*|0)
       echo "$(date): WARNING — CEO_OLLAMA_NUM_CTX='$num_ctx' is not a positive integer; using 32768" \
-        >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+        >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
       num_ctx=32768 ;;
   esac
 
@@ -792,7 +808,7 @@ _ollama_run() {
   req=$(jq -Rs --arg model "$model" --argjson num_ctx "$num_ctx" \
     '{model:$model, prompt:., stream:false, options:{num_ctx:$num_ctx}}') || {
     echo "$(date): WARNING — failed to encode ollama request (model: $model)" \
-      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
     return 1
   }
   # --fail-with-body (not -f): HTTP 4xx/5xx still exits non-zero, but the body is
@@ -803,19 +819,19 @@ _ollama_run() {
   # diagnostic. A failed parse routes to the failure path with the body logged.
   if ! printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then
     echo "$(date): WARNING — ollama returned non-JSON or empty body (curl exit $rc, model: $model, host: $host): $(printf '%s' "$resp" | head -c 200)" \
-      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
     return "$(( rc != 0 ? rc : 1 ))"
   fi
   local err
   err=$(printf '%s' "$resp" | jq -r '.error // empty')
   if [ -n "$err" ]; then
     echo "$(date): WARNING — ollama API error (curl exit $rc, model: $model): $err" \
-      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
     return "$(( rc != 0 ? rc : 1 ))"
   fi
   if [ "$rc" -ne 0 ]; then
     echo "$(date): WARNING — ollama API call failed (curl exit $rc, model: $model, host: $host)" \
-      >> "${LOG_DIR:-/tmp}/cron-stderr.log"
+      >> "${CRON_STDERR_LOG:-/tmp/cron-stderr.log}"
     return "$rc"
   fi
   printf '%s' "$resp" | jq -r '.response // empty'
@@ -896,7 +912,7 @@ $piece"
 
     chunk_exit=0
     chunk_out=$(printf '%s' "$chunk_prompt" | _ollama_run "$model" \
-      2>>"$LOG_DIR/cron-stderr.log") || chunk_exit=$?
+      2>>"$CRON_STDERR_LOG") || chunk_exit=$?
     if [ "$chunk_exit" -ne 0 ] || [ -z "$(printf '%s' "$chunk_out" | tr -d '[:space:]')" ]; then
       _v "  WARNING: chunk $i/$n_chunks failed (exit $chunk_exit) — skipping"
       printf '%s [%s] chunked scan: chunk %s/%s failed (exit %s)\n' \
@@ -953,7 +969,7 @@ ${partial_findings}"
 
   synth_exit=0
   synth_out=$(printf '%s' "$synth_prompt" | _ollama_run "$model" \
-    2>>"$LOG_DIR/cron-stderr.log") || synth_exit=$?
+    2>>"$CRON_STDERR_LOG") || synth_exit=$?
   if [ "$synth_exit" -ne 0 ] || [ -z "$(printf '%s' "$synth_out" | tr -d '[:space:]')" ]; then
     printf '%s [%s] chunked scan synthesis failed (exit %s)\n' \
       "$(date)" "$trigger" "$synth_exit" >> "$LOG_DIR/cron-raw.log"
@@ -1107,7 +1123,7 @@ fi
 if command -v flock &>/dev/null && [ -z "${CEO_TEST_FORCE_MKDIR_LOCK:-}" ]; then
   exec 200>"$LOCK_FILE"
   if ! flock -w 30 200; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$SKIPS_LOG"
     exit 0
   fi
   # No rm trap: flock releases on FD close. Unlinking the inode while another
@@ -1131,7 +1147,7 @@ else
     if [ -f "$LOCK_DIR/pid" ]; then
       _holder=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
       if [ -n "$_holder" ] && ! kill -0 "$_holder" 2>/dev/null; then
-        echo "$(date): Reclaiming stale lock from dead PID $_holder" >> "$LOG_DIR/cron-skips.log"
+        echo "$(date): Reclaiming stale lock from dead PID $_holder" >> "$SKIPS_LOG"
         rm -f "$LOCK_DIR/pid" 2>/dev/null || true
         rmdir "$LOCK_DIR" 2>/dev/null || true
         continue
@@ -1140,7 +1156,7 @@ else
     sleep 1
   done
   if ! $_lock_acquired; then
-    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Skipping $TRIGGER — another CEO cron is running (timed out after 30s)" >> "$SKIPS_LOG"
     exit 0
   fi
 fi
@@ -1212,24 +1228,24 @@ if [ "$RUN_MODE" != "scheduled" ] && [ "${CEO_FORCE:-}" != "1" ] && [ "${CEO_DRY
   NOW_EPOCH=$(date +%s)
   COOLDOWN=$(_cfg '.cooldown_seconds' '1800')
   if [ $((NOW_EPOCH - LAST_RUN)) -lt "$COOLDOWN" ]; then
-    echo "$(date): Skipping $TRIGGER — last run too recent ($(( (NOW_EPOCH - LAST_RUN) / 60 ))m ago)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Skipping $TRIGGER — last run too recent ($(( (NOW_EPOCH - LAST_RUN) / 60 ))m ago)" >> "$SKIPS_LOG"
     exit 0
   fi
 fi
 
 # --- Pre-flight: gh auth ---
 if ! command -v gh &>/dev/null; then
-  echo "$(date): ERROR — gh CLI not found on PATH=$PATH" >> "$LOG_DIR/cron-stderr.log"
+  echo "$(date): ERROR — gh CLI not found on PATH=$PATH" >> "$CRON_STDERR_LOG"
   _v "ERROR: gh CLI not found"
 elif ! gh auth status &>/dev/null 2>&1; then
-  echo "$(date): WARNING — gh CLI not authenticated. PR-related playbooks will fail." >> "$LOG_DIR/cron-skips.log"
+  echo "$(date): WARNING — gh CLI not authenticated. PR-related playbooks will fail." >> "$SKIPS_LOG"
   _v "WARNING: gh CLI not authenticated"
 fi
 
 # --- Validate vault ---
 _v "Vault: $CEO_DIR"
 if [ ! -f "$CEO_DIR/AGENTS.md" ]; then
-  echo "$(date): ERROR — CEO vault structure not found at $CEO_DIR" >> "$LOG_DIR/cron-skips.log"
+  echo "$(date): ERROR — CEO vault structure not found at $CEO_DIR" >> "$SKIPS_LOG"
   _v "ERROR: AGENTS.md not found — is the vault synced?"
   exit 1
 fi
@@ -1303,7 +1319,7 @@ _registry_diag() {
     echo "  head -c 256 of $REGISTRY_FILE:"
     head -c 256 "$REGISTRY_FILE" 2>&1 | sed 's/^/    /'
     echo "  jq parse: $(jq -e . "$REGISTRY_FILE" >/dev/null 2>&1 && echo ok || echo FAILED)"
-  } >> "$LOG_DIR/cron-skips.log"
+  } >> "$SKIPS_LOG"
 }
 
 REGISTRY_RC=0
@@ -1320,17 +1336,17 @@ fi
 case "$REGISTRY_RC" in
   0) ;;
   1)
-    echo "$(date): FATAL — registry.json not found. Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): FATAL — registry.json not found. Run: ceo playbook scan" >> "$SKIPS_LOG"
     _v "FATAL: registry.json not found. Run: ceo playbook scan"
     exit 1 ;;
   2)
-    echo "$(date): FATAL — registry.json schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): FATAL — registry.json schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary). Run: ceo playbook scan" >> "$SKIPS_LOG"
     _record_failure "registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on older binary)"
     _v "FATAL: registry.json schema_version too old. Run: ceo playbook scan"
     exit 1 ;;
   3)
     _registry_diag "schema_version unreadable/malformed after retry"
-    echo "$(date): FATAL — registry.json schema_version unreadable/malformed after retry (corrupt registry or persistent sync issue). Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): FATAL — registry.json schema_version unreadable/malformed after retry (corrupt registry or persistent sync issue). Run: ceo playbook scan" >> "$SKIPS_LOG"
     _record_failure "registry.json schema_version unreadable/malformed after retry"
     _v "FATAL: registry.json unreadable. Run: ceo playbook scan"
     exit 1 ;;
@@ -1338,7 +1354,7 @@ esac
 
 ENTRY=$(jq -r --arg t "$TRIGGER" '.playbooks[] | select(.name == $t)' "$REGISTRY_FILE" 2>/dev/null)
 if [ -z "$ENTRY" ]; then
-  echo "$(date): ERROR — No playbook registered for trigger '$TRIGGER'. Run: ceo playbook scan" >> "$LOG_DIR/cron-skips.log"
+  echo "$(date): ERROR — No playbook registered for trigger '$TRIGGER'. Run: ceo playbook scan" >> "$SKIPS_LOG"
   _v "ERROR: No playbook registered for '$TRIGGER'"
   exit 1
 fi
@@ -1404,7 +1420,7 @@ INPUTS_JSON=$(echo "$ENTRY" | jq -c '.inputs' 2>/dev/null) || INPUTS_JSON="null"
 
 # Chat-only playbooks cannot run via cron
 if [ "$TRIGGER_TYPE" = "chat" ]; then
-  echo "$(date): Playbook '$TRIGGER' is chat-only. Run: ceo chat $TRIGGER" >> "$LOG_DIR/cron-skips.log"
+  echo "$(date): Playbook '$TRIGGER' is chat-only. Run: ceo chat $TRIGGER" >> "$SKIPS_LOG"
   _v "Playbook '$TRIGGER' is chat-only. Run: ceo chat $TRIGGER"
   exit 0
 fi
@@ -1417,7 +1433,7 @@ fi
 _v "Playbook: $PLAYBOOK_REL (model: $MODEL, preflight: $PREFLIGHT, status: $STATUS)"
 
 if [ ! -f "$PLAYBOOK_FILE" ]; then
-  echo "$(date): ERROR — Playbook file not found: $PLAYBOOK_FILE (trigger: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
+  echo "$(date): ERROR — Playbook file not found: $PLAYBOOK_FILE (trigger: $TRIGGER)" >> "$SKIPS_LOG"
   _v "ERROR: Playbook file not found at $PLAYBOOK_FILE"
   exit 1
 fi
@@ -1434,11 +1450,11 @@ case "$RUN_MODE:$STATUS" in
   scheduled:active) ;;
   manual:active|manual:draft|manual:disabled|manual:unset) ;;
   scheduled:draft|scheduled:disabled|scheduled:unset)
-    echo "$(date): Playbook '$TRIGGER' not runnable in scheduled mode (status: $STATUS)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Playbook '$TRIGGER' not runnable in scheduled mode (status: $STATUS)" >> "$SKIPS_LOG"
     exit 0
     ;;
   *)
-    echo "$(date): Playbook '$TRIGGER' not runnable — unexpected run-mode:status '$RUN_MODE:$STATUS'" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Playbook '$TRIGGER' not runnable — unexpected run-mode:status '$RUN_MODE:$STATUS'" >> "$SKIPS_LOG"
     exit 0
     ;;
 esac
@@ -1446,7 +1462,7 @@ esac
 # A scheduler firing in dry-run does no work — surface it so a cron/daemon stuck
 # in dry-run is observable rather than silently inert.
 if [ "${CEO_DRY_RUN:-}" = "1" ] && [ "$RUN_MODE" = "scheduled" ]; then
-  echo "$(date): WARN — $TRIGGER invoked with --dry-run under --scheduled; previewing only, no side effects" >> "$LOG_DIR/cron-skips.log"
+  echo "$(date): WARN — $TRIGGER invoked with --dry-run under --scheduled; previewing only, no side effects" >> "$SKIPS_LOG"
 fi
 
 # --- Run preflight check ---
@@ -1454,7 +1470,7 @@ PREFLIGHT_FN="preflight_${PREFLIGHT}"
 if type "$PREFLIGHT_FN" &>/dev/null; then
   if ! "$PREFLIGHT_FN"; then
     _v "Preflight '$PREFLIGHT' says no work to do. Skipping."
-    echo "$(date): Skipping $TRIGGER — preflight '$PREFLIGHT' returned no-work" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): Skipping $TRIGGER — preflight '$PREFLIGHT' returned no-work" >> "$SKIPS_LOG"
     if [ "${CEO_DRY_RUN:-}" = "1" ]; then
       _preview "Preflight '$PREFLIGHT' returned no-work — a real run would skip here (no .last-run stamp in dry-run)."
     else
@@ -1582,7 +1598,7 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
-    --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$LOG_DIR/cron-stderr.log") || AGENT_RC=$?
+    --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"
@@ -1651,18 +1667,18 @@ if [ "$RUNNER" = "script" ]; then
   export CEO_MODEL_SOURCE="declared"
   export CEO_RUNNER_ARTIFACT="$SCRIPT_PATH"
   if [ -z "$SCRIPT_PATH" ]; then
-    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:script but no script field" >> "$SKIPS_LOG"
     _v "ERROR: runner:script requires a script field"
     exit 1
   fi
   SCRIPT_FULL="$SCRIPT_DIR/$SCRIPT_PATH"
   if [ ! -f "$SCRIPT_FULL" ]; then
-    echo "$(date): ERROR — Script not found: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): ERROR — Script not found: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$SKIPS_LOG"
     _v "ERROR: Script not found at $SCRIPT_FULL"
     exit 1
   fi
   if [ ! -x "$SCRIPT_FULL" ]; then
-    echo "$(date): ERROR — Script not executable: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): ERROR — Script not executable: $SCRIPT_FULL (playbook: $TRIGGER)" >> "$SKIPS_LOG"
     _v "ERROR: Script not executable at $SCRIPT_FULL"
     exit 1
   fi
@@ -1690,8 +1706,8 @@ if [ "$RUNNER" = "script" ]; then
   # which is the state you want at 3am. The global lock serializes ticks, so no
   # other playbook can append inside the window; a script that writes to these
   # logs itself would, and no script does.
-  SCRIPT_OUT_LOG="$LOG_DIR/cron-stdout.log"
-  SCRIPT_ERR_LOG="$LOG_DIR/cron-stderr.log"
+  SCRIPT_OUT_LOG="$CRON_STDOUT_LOG"
+  SCRIPT_ERR_LOG="$CRON_STDERR_LOG"
   # Probed, not tolerated. Under the old capture-then-flush the logs were a
   # best-effort sink — `cat … >> log || true` — and a full or unmounted vault
   # cost the log line, not the run. Now the log IS the child's stdout, so bash
@@ -1819,12 +1835,12 @@ if [ "$RUNNER" = "skill" ]; then
   export CEO_RUNNER_ARTIFACT="$SKILL_NAME"
   
   if [ -z "$SKILL_NAME" ]; then
-    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:skill but no 'skill' field" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:skill but no 'skill' field" >> "$SKIPS_LOG"
     _record_failure "Playbook '$TRIGGER' has runner:skill but no 'skill' field"
     exit 1
   fi
   if [ -z "$OUT_PATTERN" ]; then
-    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:skill but no 'out_pattern' field" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date): ERROR — Playbook '$TRIGGER' has runner:skill but no 'out_pattern' field" >> "$SKIPS_LOG"
     _record_failure "Playbook '$TRIGGER' has runner:skill but no 'out_pattern' field"
     exit 1
   fi
@@ -1878,7 +1894,7 @@ if [ "$RUNNER" = "skill" ]; then
   _skill_cleanup() { rm -rf "$TMP_DIR"; }
   export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
   SKILL_EXIT=0
-  "$SKILL_SCRIPT" --out "$TMP_DIR" >/dev/null 2>>"$LOG_DIR/cron-stderr.log" || SKILL_EXIT=$?
+  "$SKILL_SCRIPT" --out "$TMP_DIR" >/dev/null 2>>"$CRON_STDERR_LOG" || SKILL_EXIT=$?
   
   if [ "$SKILL_EXIT" -ne 0 ]; then
     _record_failure "Skill exited $SKILL_EXIT for $TRIGGER"
@@ -2016,7 +2032,7 @@ if [ "$TIER" = "read" ]; then
   fi
 
   if [ "${CEO_GATHER_STATUS:-ok}" != "ok" ]; then
-    echo "$(date) [$TRIGGER] WARN — Gather phase $CEO_GATHER_STATUS: $CEO_GATHER_REASONS" >> "$LOG_DIR/cron-skips.log"
+    echo "$(date) [$TRIGGER] WARN — Gather phase $CEO_GATHER_STATUS: $CEO_GATHER_REASONS" >> "$SKIPS_LOG"
     _v "WARN: Gather phase $CEO_GATHER_STATUS — $CEO_GATHER_REASONS"
     
     if [ "$CEO_GATHER_STATUS" = "failed" ] || [ "$CEO_GATHER_STATUS" = "empty" ]; then
@@ -2141,13 +2157,13 @@ END_LOG_ENTRY"
         exit 1
       fi
       _OLLAMA_HOST=$(_ollama_host)
-      if ! curl -fsS --max-time 3 "$_OLLAMA_HOST/api/tags" >/dev/null 2>>"$LOG_DIR/cron-stderr.log"; then
+      if ! curl -fsS --max-time 3 "$_OLLAMA_HOST/api/tags" >/dev/null 2>>"$CRON_STDERR_LOG"; then
         _record_failure "ollama daemon not reachable at $_OLLAMA_HOST (playbook: $TRIGGER)"
         exit 1
       fi
     else
       _v "NOTE: CEO_OLLAMA_SKIP_PROBE set, skipping daemon probe"
-      echo "$(date): NOTE — $TRIGGER skipping ollama daemon probe (CEO_OLLAMA_SKIP_PROBE set)" >> "$LOG_DIR/cron-skips.log"
+      echo "$(date): NOTE — $TRIGGER skipping ollama daemon probe (CEO_OLLAMA_SKIP_PROBE set)" >> "$SKIPS_LOG"
     fi
     # Rate-limit fallback (CEO_CRON_OLLAMA_FALLBACK=1) flips RUNNER=ollama at
     # runtime for a claude-tier playbook whose frontmatter `model:` is a Claude
@@ -2213,7 +2229,7 @@ END_LOG_ENTRY"
     fi
 
     OLLAMA_EXIT=0
-    OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | _ollama_run "$OLLAMA_MODEL" 2>>"$LOG_DIR/cron-stderr.log") || OLLAMA_EXIT=$?
+    OLLAMA_OUT=$(printf '%s' "$OLLAMA_PROMPT" | _ollama_run "$OLLAMA_MODEL" 2>>"$CRON_STDERR_LOG") || OLLAMA_EXIT=$?
     if [ "$OLLAMA_EXIT" -ne 0 ]; then
       _v "FAILED (exit: $OLLAMA_EXIT)"
       printf '%s [%s] ollama non-zero exit %s (model: %s):\n%s\n---\n' \
@@ -2245,7 +2261,7 @@ END_LOG_ENTRY"
 
   SINGLE_EXIT=0
   SINGLE_RAW=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
-    --model "$MODEL" --disallowedTools "Bash,Write,Edit" --output-format json 2>>"$LOG_DIR/cron-stderr.log") || SINGLE_EXIT=$?
+    --model "$MODEL" --disallowedTools "Bash,Write,Edit" --output-format json 2>>"$CRON_STDERR_LOG") || SINGLE_EXIT=$?
   # jq exits non-zero (parse error) when SINGLE_RAW isn't valid JSON — e.g. a
   # session-limit banner printed instead of the JSON envelope. Under set -e
   # that would kill the script here, before the rate-limit check below ever
@@ -2341,7 +2357,7 @@ _v "Phase 1: Planning (read-only, max 5 min)..."
 PLAN_EXIT=0
 _v "Using model: $MODEL"
 PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
-  --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$LOG_DIR/cron-stderr.log") || PLAN_EXIT=$?
+  --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$CRON_STDERR_LOG") || PLAN_EXIT=$?
 
 if [ $PLAN_EXIT -ne 0 ]; then
   _route_claude_failure "$PLAN_EXIT" "$PLAN_OUTPUT" "plan"
@@ -2430,7 +2446,7 @@ _strip_template_actions() {
 # this file already appends here.
 _drop_action() {
   _v "  Ignoring ACTION ($2): $1"
-  echo "$(date): NOTICE — $TRIGGER ignored ACTION ($2): $1" >> "$LOG_DIR/cron-skips.log" 2>/dev/null || true
+  echo "$(date): NOTICE — $TRIGGER ignored ACTION ($2): $1" >> "$SKIPS_LOG" 2>/dev/null || true
 }
 
 # Filter before the tier split, not after. The filtered lane was the deferred
@@ -2551,7 +2567,7 @@ END_LOG_ENTRY"
   _v "Phase 3: Executing $SAFE_COUNT safe actions (max 10 min)..."
   EXEC_EXIT=0
   EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 600) claude --print --max-turns 20 \
-    --model "$MODEL" 2>>"$LOG_DIR/cron-stderr.log") || EXEC_EXIT=$?
+    --model "$MODEL" 2>>"$CRON_STDERR_LOG") || EXEC_EXIT=$?
 
   _v "Phase 3 done (exit: $EXEC_EXIT)"
   if [ $EXEC_EXIT -ne 0 ]; then

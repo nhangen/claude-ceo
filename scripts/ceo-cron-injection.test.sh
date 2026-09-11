@@ -362,7 +362,7 @@ STUB
   assert_eq "$rc" "0" "cron must exit 0 after falling back to ollama"
   
   local skip_log
-  skip_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skip_log=$(_skips_log)
   assert_contains "$skip_log" "Falling back to ollama" "cron-skips.log must mention fallback"
   
   local ollama_invoked
@@ -454,7 +454,7 @@ STUB
   assert_eq "$ollama_invoked" "" "ollama must NOT be invoked on auth failure"
 
   local skip_log
-  skip_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skip_log=$(_skips_log)
   assert_contains "$skip_log" "AUTH FAILURE" "cron-skips.log must record the auth failure"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -483,7 +483,7 @@ PB
   assert_eq "$rc" "0" "cron must exit 0 on failed gather"
   
   local skip_log
-  skip_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skip_log=$(_skips_log)
   assert_contains "$skip_log" "Gather phase empty" "cron-skips.log must mention gather phase empty"
   
   local report
@@ -555,7 +555,7 @@ PB
   assert_eq "$rc" "1" "runner:skill must exit 1 when skill is missing"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "Skill script not found" "skips log must record missing skill script"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -583,7 +583,7 @@ PB
   assert_eq "$rc" "1" "runner:skill must exit 1 when credentials are missing"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "missing credential(s) MISSING_TEST_VAR" "skips log must record missing credential"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -616,7 +616,7 @@ EOF
   assert_eq "$rc" "1" "runner:skill must exit 1 when skill output is missing"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "Skill produced no output file" "skips log must record missing output file failure"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -655,7 +655,7 @@ EOF
   assert_eq "$rc" "1" "runner:skill must exit 1 when skill output is empty"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "Skill produced empty output" "skips log must record empty output failure"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }

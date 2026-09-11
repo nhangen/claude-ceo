@@ -264,4 +264,4 @@ wc -l < "$TEST_HOME/ollama-invoked-model.txt" 2>/dev/null || echo 0
 echo "=== Today's report (full) ==="
 cat "$CEO_DIR/reports/$_today.md" 2>/dev/null || echo "(none)"
 echo "=== cron-skips.log ==="
-cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "(none)"
+cat "$CEO_DIR"/log/cron-skips.log "$CEO_DIR"/log/cron-skips-*.log 2>/dev/null || echo "(none)"

@@ -245,7 +245,7 @@ SH
   assert_eq "$(cat "$(_ceo_state)/.fail-count-skill-abort" 2>/dev/null || echo 0)" "1" \
     "a skill-runner abort must be recorded, not swallowed by its cleanup trap"
   local skips
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   assert_contains "$skips" "without recording a result" \
     "the abort must leave an ERROR line naming it as un-bookkept"
   if [ -d "${LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}.d" ]; then
@@ -512,7 +512,7 @@ SH
   CEO_VERBOSE=1 bash "$CRON" stderr-intake >/dev/null 2>&1 || true
 
   local stderr_log
-  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "synthetic-script-stderr-sentinel" \
     "script stderr must be appended to cron-stderr.log"
 
@@ -673,7 +673,7 @@ SH
   rm -f "$TEST_HOME/.bun/bin/hostname"
 
   local skips
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   assert_contains "$skips" "WARN" \
     "an unresolvable host must record a WARN, not fall back in silence"
   assert_contains "$skips" "CEO_HOSTNAME" \
@@ -719,14 +719,14 @@ SH
   # restore (teardown does not run on an abort). The name comes from the
   # production helper, not from a second copy of its spelling.
   local blocked_host
-  blocked_host=$(bash -c ". '$SCRIPT_DIR/ceo-config.sh' >/dev/null 2>&1; _cron_runs_log_host")
+  blocked_host=$(_host_slug)
   mkdir -p "$CEO_DIR/log/cron-runs-$blocked_host.log"
 
   bash "$CRON" ro-intake >/dev/null 2>&1 || true
   rm -f "$SCRIPT_DIR/ro-intake.sh"
 
   local skips
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   assert_contains "$skips" "cannot record the completion" \
     "a completion that could not be written must say so, not vanish"
   assert_contains "$skips" "ro-intake" \
@@ -783,7 +783,7 @@ test_an_uncreatable_state_dir_refuses_to_dispatch() {
 
   assert_eq "$rc" "1" "an uncreatable state dir must stop the run, not half-apply bookkeeping"
   local skips
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   assert_contains "$skips" "NOT dispatched" \
     "and say so where cron failures are read, not on the stderr the scheduler ignores"
   assert_contains "$skips" "nodir-check" "and name the playbook"
@@ -885,6 +885,44 @@ test_migration_does_not_clobber_existing_host_local_state() {
 
   assert_eq "$(cat "$(_ceo_state)/.fail-count-clob-check" 2>/dev/null)" "2" \
     "the host-local counter wins and increments from its own value"
+}
+
+test_the_dispatcher_journals_are_keyed_by_host() {
+  # cron-skips/stdout/stderr had one copy each that every host appended to, so
+  # Syncthing forked them — three .sync-conflict copies were on disk when #399 was
+  # filed. cron-skips is the sharpest case: #398 routes the one line saying a
+  # completion record was lost into it, so a fork there can drop exactly that.
+  #
+  # These stay in the synced vault on purpose, unlike the state moved in #394 —
+  # they are journals, the digest playbook reaches them by a vault-relative path,
+  # and one writer per file means syncing them costs no conflicts.
+  _write_failing_playbook journal-check
+  bash "$CRON" journal-check >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/journal-check.sh"
+
+  assert_file_exists "$(_skips_log_path)" "the skips journal must be keyed by host"
+  assert_contains "$(cat "$(_skips_log_path)")" "journal-check" \
+    "and carry this run's line"
+
+  local shared
+  for shared in cron-skips cron-stdout cron-stderr; do
+    if [ -e "$CEO_DIR/log/$shared.log" ]; then
+      fail_test "the shared $shared.log must not be written any more — that is the file that forks"
+    else
+      ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    fi
+  done
+}
+
+test_two_hosts_write_separate_journals() {
+  _write_failing_playbook j2-check
+  CEO_HOSTNAME=hostJ1 bash "$CRON" j2-check >/dev/null 2>&1 || true
+  rm -f "$CEO_STATE_DIR/.last-run-j2-check"
+  CEO_HOSTNAME=hostJ2 bash "$CRON" j2-check >/dev/null 2>&1 || true
+  rm -f "$SCRIPT_DIR/j2-check.sh"
+
+  assert_file_exists "$CEO_DIR/log/cron-skips-hostJ1.log" "host J1 writes its own journal"
+  assert_file_exists "$CEO_DIR/log/cron-skips-hostJ2.log" "host J2 writes its own journal"
 }
 
 test_the_completion_log_is_keyed_by_host() {
@@ -1072,7 +1110,7 @@ test_unknown_preflight_is_recorded_not_whispered() {
   _write_unknown_preflight_playbook
   bash "$CRON" ghost-gate >/dev/null 2>&1
   local skips
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   assert_contains "$skips" "no_such_gate" \
     "cron-skips.log must name the preflight that could not be resolved"
   assert_contains "$skips" "ERROR" \

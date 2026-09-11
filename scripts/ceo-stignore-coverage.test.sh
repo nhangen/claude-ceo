@@ -186,7 +186,7 @@ test_stignore_covers_the_completion_log_under_both_names() {
   # copies (#397).
   #
   # Widening the discovery awk to non-dot names is the obvious repair and it is
-  # wrong: cron-skips.log and cron-stderr.log also live under CEO/log/ and are
+  # wrong: the cron-skips/stdout/stderr journals also live under CEO/log/ and are
   # deliberately synced (SCHEMA.md), so a wider pattern reds the suite on two
   # correct files. Hardcoding here is the price of that, and the header's
   # derive-don't-restate promise does not reach this case.

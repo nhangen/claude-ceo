@@ -227,7 +227,7 @@ PB
   bash "$CRON" script-fail >/dev/null 2>&1 || true
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "Script exited 1 for script-fail — output:" \
     "failure record must include the output prefix"
   assert_contains "$skips_log" "conflict: duplicate directory found" \
@@ -267,7 +267,7 @@ PB
   bash "$CRON" script-verbose >/dev/null 2>&1 || true
 
   local line len
-  line=$(grep "Script exited 1 for script-verbose" "$CEO_DIR/log/cron-skips.log" 2>/dev/null | tail -1)
+  line=$(grep "Script exited 1 for script-verbose" "$(_skips_log_path)" 2>/dev/null | tail -1)
   len=${#line}
   assert_eq "$([ "$len" -le 1500 ] && echo bounded || echo "unbounded:$len")" "bounded" \
     "the recorded reason must stay bounded regardless of how much the script emitted"
@@ -306,7 +306,7 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" script-leak >/dev/null 2>&1 || true
 
-  local skips_log; skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips_log; skips_log=$(_skips_log)
   assert_contains "$skips_log" "Script exited 1 for script-leak" \
     "the failure must still be recorded"
   assert_not_contains "$skips_log" "ghp_AAAABBBBCCCCDDDDEEEE" \
@@ -347,7 +347,7 @@ PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" script-stdout >/dev/null 2>&1 || true
 
-  local skips_log; skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips_log; skips_log=$(_skips_log)
   assert_contains "$skips_log" "STDOUT-DIAGNOSTIC the real error" \
     "a whitespace-only stderr must not suppress the stdout diagnostic"
   rm -f "$SCRIPT_DIR/stdout-failing-script-test.sh"
@@ -441,7 +441,7 @@ PB
   # The assertion that separates "the label degraded" from "the escalation died".
   assert_file_exists "$(_ceo_state)/.last-run-fb-host" \
     "the bookkeeping after the alert must still run"
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   assert_contains "$skips" "could not resolve this host" \
     "and the degradation is logged, not swallowed by the resolver's 2>/dev/null"
   # The notify is the last thing _record_failure does, so it is the cheapest
@@ -488,7 +488,7 @@ PB
 
   assert_file_exists "$(_ceo_state)/.last-run-ro-queue" \
     "a failed queue append must not cost the .last-run stamp"
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   assert_contains "$skips" "could not be written to approvals/pending.md" \
     "and the dropped escalation says so, rather than reading as a plain failure"
   rm -f "$SCRIPT_DIR/ro-queue-test.sh"
@@ -530,7 +530,7 @@ PB
   bash "$CRON" slice-a >/dev/null 2>&1 || true
   bash "$CRON" slice-b >/dev/null 2>&1 || true
 
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   local b_line; b_line=$(printf '%s\n' "$skips" | grep "Script exited 4 for slice-b" | tail -1)
   assert_contains "$b_line" "cause-from-this-tick" "the tail quotes the run that just failed"
   assert_not_contains "$b_line" "cause-from-the-earlier-tick" \
@@ -604,7 +604,7 @@ PB
   bash "$CRON" slice-c >/dev/null 2>&1 || true
   bash "$CRON" slice-d >/dev/null 2>&1 || true
 
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   local d_line; d_line=$(printf '%s\n' "$skips" | grep "Script exited 6 for slice-d" | tail -1)
   assert_contains "$d_line" "stdout-cause-from-this-tick" \
     "the stdout fallback quotes the run that just failed"
@@ -641,22 +641,22 @@ script: ro-log-test.sh
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   mkdir -p "$CEO_DIR/log"
-  rm -f "$CEO_DIR/log/cron-stdout.log" "$CEO_DIR/log/cron-stderr.log"
+  rm -f "$(_stdout_log_path)" "$(_stderr_log_path)"
   # Present but unwritable, so the append fails rather than the create. As root
   # the chmod is a no-op and this arm fails rather than passing — the safe
   # direction, but a root CI run would look like a regression.
-  : > "$CEO_DIR/log/cron-stdout.log"
-  chmod 400 "$CEO_DIR/log/cron-stdout.log"
+  : > "$(_stdout_log_path)"
+  chmod 400 "$(_stdout_log_path)"
   bash "$CRON" ro-log >/dev/null 2>&1 || true
-  chmod 600 "$CEO_DIR/log/cron-stdout.log"
+  chmod 600 "$(_stdout_log_path)"
 
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   assert_contains "$skips" "script NOT run" \
     "an unwritable log must say the script never ran"
   assert_not_contains "$skips" "Script exited 1 for ro-log" \
     "and must not be recorded as the playbook's own failure"
-  local out; out=$(cat "$CEO_DIR/log/cron-stdout.log" 2>/dev/null || echo "")
-  local err; err=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  local out; out=$(_stdout_log)
+  local err; err=$(_stderr_log)
   assert_not_contains "$out" "this script should never run" \
     "the script really did not run — the assertion above is not about wording"
   rm -f "$SCRIPT_DIR/ro-log-test.sh"
@@ -697,13 +697,13 @@ script: live-out-test.sh
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   mkdir -p "$CEO_DIR/log"
-  rm -f "$CEO_DIR/log/stop-now" "$CEO_DIR/log/cron-stdout.log"
+  rm -f "$CEO_DIR/log/stop-now" "$(_stdout_log_path)"
 
   bash "$CRON" live-out >/dev/null 2>&1 &
   local cron_pid=$! i=0 seen=""
   while [ "$i" -lt 100 ]; do
-    if grep -q "live-marker-from-script" "$CEO_DIR/log/cron-stdout.log" 2>/dev/null \
-       && grep -q "live-marker-on-stderr" "$CEO_DIR/log/cron-stderr.log" 2>/dev/null; then
+    if grep -q "live-marker-from-script" "$(_stdout_log_path)" 2>/dev/null \
+       && grep -q "live-marker-on-stderr" "$(_stderr_log_path)" 2>/dev/null; then
       seen=yes; break
     fi
     sleep 0.1; i=$((i + 1))
@@ -715,8 +715,8 @@ PB
   touch "$CEO_DIR/log/stop-now"
   wait "$cron_pid" 2>/dev/null || true
 
-  local out; out=$(cat "$CEO_DIR/log/cron-stdout.log" 2>/dev/null || echo "")
-  local err; err=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  local out; out=$(_stdout_log)
+  local err; err=$(_stderr_log)
   # Precisely: the parent is signalled, not the whole group, so what this pins is
   # that the bytes written before the parent died are still on disk — which is
   # the property capture-then-flush lost, since its flush ran after the script
@@ -954,7 +954,7 @@ PB
   assert_eq "$rc" "1" "dispatcher must reject unknown runner with exit 1"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "Unknown runner 'scrpt'" "skips log must record unknown-runner rejection"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1159,7 +1159,7 @@ STUB
   fi
 
   local stderr_log
-  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "ollama-error-sentinel" "ollama stderr must be appended to cron-stderr.log"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1230,7 +1230,7 @@ PB
   assert_contains "$rec" "--max-time 300" "non-numeric CEO_OLLAMA_TIMEOUT must fall back to 300, not reach curl verbatim"
 
   local stderr_log
-  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "CEO_OLLAMA_TIMEOUT='abc'" "a rejected timeout value must be warned about"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1402,7 +1402,7 @@ STUB
   assert_eq "$fails" "1" "a 200 body carrying .error must increment FAIL_COUNT_FILE"
 
   local stderr_log
-  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "ollama API error" "the API .error text must be logged, not swallowed"
   assert_contains "$stderr_log" "model not found" "the daemon's error message must reach cron-stderr.log"
 
@@ -1449,7 +1449,7 @@ STUB
   assert_eq "$fails" "1" "a non-JSON ollama body must increment FAIL_COUNT_FILE"
 
   local stderr_log
-  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "non-JSON or empty body" "a non-JSON body must log a diagnostic, not fail silently"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1480,7 +1480,7 @@ PB
   assert_eq "$numctx" "32768" "non-integer CEO_OLLAMA_NUM_CTX must fall back to 32768, not reach the request verbatim"
 
   local stderr_log
-  stderr_log=$(cat "$CEO_DIR/log/cron-stderr.log" 2>/dev/null || echo "")
+  stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "CEO_OLLAMA_NUM_CTX='abc'" "a rejected num_ctx value must be warned about"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -1569,7 +1569,7 @@ PB
   assert_eq "${calls:-0}" "1" "a ~25-32 KB prompt must be a single call at the default budget (90000), not chunked"
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   if echo "$skips_log" | grep -q "exceeds budget"; then
     printf '  FAIL [%s] the scan prompt must NOT hit the budget-exceeded path at the default (90000)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
@@ -1715,7 +1715,7 @@ PB
   fi
 
   local skips_log
-  skips_log=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips_log=$(_skips_log)
   assert_contains "$skips_log" "exceeds budget (" "skips log must record oversized-prompt reason with byte counts"
 
   # Forensic capture: the offending prompt context lands in cron-raw.log so a

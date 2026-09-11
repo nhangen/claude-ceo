@@ -32,7 +32,7 @@ test_cron_scheduled_mode_skips_draft_playbook() {
   _register_status_playbook rm-draft2 draft
   bash "$CRON" rm-draft2 --scheduled >/dev/null 2>&1 || true
   assert_fails "scheduled run of a draft must NOT dispatch" test -f "$HOME/claude-invoked.txt"
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "rm-draft2" "draft skip must be logged"
+  assert_contains "$(_skips_log)" "rm-draft2" "draft skip must be logged"
 }
 
 
@@ -67,7 +67,7 @@ PB
   assert_contains "$(jq -r '.playbooks[].name' "$REGISTRY_FILE" 2>/dev/null)" "rm-nostatus" "missing-status playbook must be registered (so the gate, not a missing entry, is what skips it)"
   bash "$CRON" rm-nostatus --scheduled >/dev/null 2>&1 || true
   assert_fails "scheduled run of a missing-status playbook must NOT dispatch (SCHEMA: missing = not active)" test -f "$HOME/claude-invoked.txt"
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "not runnable in scheduled mode" "skip must come from the run-mode gate, not a missing registry entry"
+  assert_contains "$(_skips_log)" "not runnable in scheduled mode" "skip must come from the run-mode gate, not a missing registry entry"
 }
 
 
@@ -145,7 +145,7 @@ test_cron_catchall_skips_unknown_status() {
   jq '(.playbooks[] | select(.name=="rm-weird") | .status) = "bogus"' "$reg" > "$reg.tmp" && mv "$reg.tmp" "$reg"
   bash "$CRON" rm-weird --manual >/dev/null 2>&1 || true
   assert_fails "out-of-set status must never dispatch (defense-in-depth catch-all)" test -f "$HOME/claude-invoked.txt"
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "unexpected run-mode:status" "catch-all must emit its distinct diagnostic"
+  assert_contains "$(_skips_log)" "unexpected run-mode:status" "catch-all must emit its distinct diagnostic"
 }
 
 
@@ -514,7 +514,7 @@ STUB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" nhs-pipe >/dev/null 2>&1 || true
 
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   assert_contains "$skips" "nhs-pipe ignored ACTION" \
     "an ambiguous field boundary on the executed lane must be dropped"
   assert_contains "$skips" "shifts the command field" \
@@ -580,7 +580,7 @@ STUB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" nhs-filter >/dev/null 2>&1 || true
 
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   assert_contains "$skips" "nhs-filter ignored ACTION" \
     "a placeholder on the non-high-stakes lane must be filtered, not executed"
   assert_contains "$skips" "unsubstituted template token" \
@@ -612,7 +612,7 @@ STUB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   bash "$CRON" hs-skiplog >/dev/null 2>&1 || true
 
-  local skips; skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  local skips; skips=$(_skips_log)
   assert_contains "$skips" "ignored ACTION" \
     "a dropped action must be recorded outside verbose mode"
   assert_contains "$skips" "hs-skiplog" \
@@ -705,7 +705,7 @@ test_dry_run_under_scheduled_warns() {
   _register_status_playbook dr-sched active
   bash "$CRON" dr-sched --scheduled --dry-run >/dev/null 2>&1 || true
   assert_file_exists "$(_preview_file dr-sched)" "dry-run under scheduled must still preview"
-  assert_contains "$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null)" "dry-run" "a dry-run under --scheduled must emit a WARN"
+  assert_contains "$(_skips_log)" "dry-run" "a dry-run under --scheduled must emit a WARN"
 }
 
 
@@ -991,7 +991,7 @@ test_abort_before_failure_handling_is_still_recorded() {
   local fails skips
   fails=$(cat "$(_ceo_state)/.fail-count-pending-drip" 2>/dev/null || echo 0)
   assert_eq "$fails" "1" "an abort must increment the fail count — that counter is what escalates at 3"
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   assert_contains "$skips" "without recording a result" \
     "an abort must leave an ERROR line naming it as un-bookkept"
   rm -rf "$sandbox"
@@ -1070,7 +1070,7 @@ test_scheduled_runs_defer_the_cooldown_gate_to_cronbird() {
     "second scheduled run must dispatch — cronbird owns the cooldown, this script must not skip-with-0"
 
   local skips
-  skips=$(cat "$CEO_DIR/log/cron-skips.log" 2>/dev/null || echo "")
+  skips=$(_skips_log)
   assert_not_contains "$skips" "last run too recent" \
     "a scheduled run must not log a cooldown skip; that line is the false success"
 }

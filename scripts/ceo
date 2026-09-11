@@ -447,7 +447,7 @@ cmd_doctor() {
   # doctor reads cron-runs-unknown.log too, which is the correct read set for a
   # host in that state. Left bare, the non-zero status inside a `for` word list
   # is a set -e hazard for no gain.
-  _self_host=$(_cron_runs_log_host) || true
+  _self_host=$(_ceo_host_slug) || true
   for _rl in "$CEO_DIR/log/cron-runs.log" \
              "$CEO_DIR/log/cron-runs-$_self_host.log"; do
     [ -f "$_rl" ] && _runs_logs+=("$_rl")
@@ -688,7 +688,10 @@ cmd_test() {
     fi
   else
     echo "FAILED (exit code: $exit_code)"
-    echo "Check: $CEO_DIR/log/cron-skips.log"
+    # Glob, not one name: the journals are keyed by host since #399 and a peer's
+    # file is readable here too, so pointing at a single name would send the
+    # reader to a path that may not exist on this machine.
+    echo "Check: $CEO_DIR/log/cron-skips-*.log"
     echo "Check: $CEO_DIR/log/cron-raw.log"
   fi
 }
