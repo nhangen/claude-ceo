@@ -60,7 +60,7 @@ def _track(usage_tracker, key, value):
 
 
 def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
-              verify_cmd=None, usage_tracker=None):
+              verify_cmd=None, usage_tracker=None, num_ctx=None):
     """Run one task to completion (a turn with no tool calls) or the turn cap.
 
     Returns a record: completed, turns, the full transcript, and the toolbox's
@@ -101,6 +101,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     turns = 0
     ollama_input_tokens = 0
     ollama_output_tokens = 0
+    warnings = []
     for key, value in (("ollama_input_tokens", 0), ("ollama_output_tokens", 0),
                        ("turns", 0), ("verified", None)):
         _track(usage_tracker, key, value)
@@ -114,6 +115,22 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
         ollama_output_tokens += usage.get("output", 0)
         _track(usage_tracker, "ollama_input_tokens", ollama_input_tokens)
         _track(usage_tracker, "ollama_output_tokens", ollama_output_tokens)
+        # The durable overflow signal. #376 detects it by matching the daemon's
+        # own wording, which a reword upstream silently disables; this reads the
+        # count the daemon already reports. Naming the turn is the point — the
+        # pre-dispatch estimate cannot see a prompt that grows comfortable-to-
+        # overrunning across turns, and that is the common shape.
+        #
+        # Skipped rather than defaulted when num_ctx is unknown: a default warns
+        # on every run against a model with a larger real window, and a warning
+        # that fires when nothing is wrong stops being read.
+        turn_input = usage.get("input", 0)
+        if num_ctx and turn_input >= num_ctx * 0.9:
+            warnings.append(
+                "turn %d: prompt used %d of %d context tokens (>=90%%) -- "
+                "output may be truncated" % (turns, turn_input, num_ctx)
+            )
+            _track(usage_tracker, "warnings", list(warnings))
         transcript.append(msg)
         messages.append(msg)
         calls = msg.get("tool_calls") or []
@@ -175,6 +192,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
         "run_id": run_id,
         "ollama_input_tokens": ollama_input_tokens,
         "ollama_output_tokens": ollama_output_tokens,
+        "warnings": warnings,
         "transcript": transcript,
         "calls": toolbox.calls,
         "unknown_calls": toolbox.unknown_calls,
