@@ -664,3 +664,63 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     assert tracker["verified"] is None
     assert tracker["ollama_input_tokens"] == 3
     assert tracker["turns"] == 1
+
+
+# --- #384: context overflow detected from the token count, not a daemon string ---
+
+def _usage_transport(input_counts):
+    """A transport returning a fixed prompt_eval_count per turn, then stopping.
+
+    The last turn makes no tool call, which is how run_agent ends a run.
+    """
+    seq = list(input_counts)
+
+    def transport(messages, tools):
+        i = min(len(seq) - 1, max(0, len(messages) // 2))
+        return ({"role": "assistant", "content": "done"},
+                {"input": seq[i], "output": 5})
+    return transport
+
+
+def test_overflow_warns_from_token_count(tmp_path):
+    """The durable overflow signal is prompt_eval_count against num_ctx.
+
+    #376 detects overflow by matching ollama's own wording ("no user query found
+    in messages"). That is the daemon's message, not an API contract: a reword
+    upstream silently reverts every overflow to a generic HTTP 500 with nothing
+    saying the diagnostic stopped working. The count is already in hand —
+    parse_chat_response returns usage["input"] — and nothing compared it to
+    num_ctx.
+    """
+    tb = ToolBox(cwd=tmp_path)
+    rec = run_agent("t", "s", _usage_transport([3700]), tb, TOOLS,
+                    turn_cap=1, num_ctx=4096)
+    assert rec["warnings"], "a prompt at 90% of num_ctx must warn"
+    assert any("context" in w.lower() for w in rec["warnings"])
+    assert any("1" in w for w in rec["warnings"]), "the warning must name the turn"
+
+
+def test_no_warning_well_under_the_limit(tmp_path):
+    tb = ToolBox(cwd=tmp_path)
+    rec = run_agent("t", "s", _usage_transport([1000]), tb, TOOLS,
+                    turn_cap=1, num_ctx=4096)
+    assert rec["warnings"] == [], "a prompt with room to spare must not warn"
+
+
+def test_warning_reaches_the_usage_tracker(tmp_path):
+    """The caller's tracker is what the ledger and the CLI read, so the warning
+    has to land there too — a record field alone is invisible to both."""
+    tb = ToolBox(cwd=tmp_path)
+    tracker = {}
+    run_agent("t", "s", _usage_transport([4000]), tb, TOOLS,
+              turn_cap=1, num_ctx=4096, usage_tracker=tracker)
+    assert tracker.get("warnings"), "the overflow warning must reach the usage tracker"
+
+
+def test_num_ctx_absent_disables_the_check(tmp_path):
+    """num_ctx is optional: a caller that does not know it gets no false warning
+    rather than a guess. Defaulting to a number would warn on every run against a
+    model whose real window is larger."""
+    tb = ToolBox(cwd=tmp_path)
+    rec = run_agent("t", "s", _usage_transport([999999]), tb, TOOLS, turn_cap=1)
+    assert rec["warnings"] == []
