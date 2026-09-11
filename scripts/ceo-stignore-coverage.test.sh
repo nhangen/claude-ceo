@@ -163,7 +163,8 @@ test_the_dispatcher_journals_are_deliberately_not_ignored() {
   for path in \
     "CEO/log/cron-skips-ml1.log" \
     "CEO/log/cron-stdout-ml1.log" \
-    "CEO/log/cron-stderr-ml1.log"
+    "CEO/log/cron-stderr-ml1.log" \
+    "CEO/log/cron-raw-ml1.log"
   do
     if _is_ignored "$path"; then
       assert_eq "ignored" "NOT-ignored" \

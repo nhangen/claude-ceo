@@ -594,6 +594,7 @@ STUB
 _skips_log()  { cat "$CEO_DIR"/log/cron-skips.log  "$CEO_DIR"/log/cron-skips-*.log  2>/dev/null || true; }
 _stdout_log() { cat "$CEO_DIR"/log/cron-stdout.log "$CEO_DIR"/log/cron-stdout-*.log 2>/dev/null || true; }
 _stderr_log() { cat "$CEO_DIR"/log/cron-stderr.log "$CEO_DIR"/log/cron-stderr-*.log 2>/dev/null || true; }
+_raw_log()    { cat "$CEO_DIR"/log/cron-raw.log    "$CEO_DIR"/log/cron-raw-*.log    2>/dev/null || true; }
 
 # The single file this host writes, for arms that need a path rather than the
 # contents — seeding one, truncating it, or making it unwritable. Resolved
@@ -605,6 +606,7 @@ _stderr_log() { cat "$CEO_DIR"/log/cron-stderr.log "$CEO_DIR"/log/cron-stderr-*.
 _skips_log_path()  { echo "$CEO_DIR/log/cron-skips-$(_host_slug).log"; }
 _stdout_log_path() { echo "$CEO_DIR/log/cron-stdout-$(_host_slug).log"; }
 _stderr_log_path() { echo "$CEO_DIR/log/cron-stderr-$(_host_slug).log"; }
+_raw_log_path()    { echo "$CEO_DIR/log/cron-raw-$(_host_slug).log"; }
 _host_slug() { bash -c ". '$SCRIPT_DIR/ceo-config.sh' >/dev/null 2>&1; _ceo_host_slug"; }
 
 # The dispatcher's completion log is keyed by host since #397
