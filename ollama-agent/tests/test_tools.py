@@ -25,6 +25,76 @@ def test_successful_write_records_no_error(tmp_path):
     assert tb.tool_errors == []
 
 
+def test_edit_file_replaces_unique_string(tmp_path):
+    f = tmp_path / "code.py"
+    f.write_text("def foo():\n    return 1\n")
+    tb = ToolBox(cwd=str(tmp_path))
+    res = json.loads(tb.dispatch("edit_file", {
+        "path": "code.py",
+        "old_string": "return 1",
+        "new_string": "return 2",
+    }))
+    assert "error" not in res
+    assert res["path"] == str(f)
+    assert f.read_text() == "def foo():\n    return 2\n"
+    assert tb.tool_errors == []
+
+
+def test_edit_file_absent_anchor_is_error_and_recorded(tmp_path):
+    f = tmp_path / "code.py"
+    f.write_text("def foo():\n    return 1\n")
+    tb = ToolBox(cwd=str(tmp_path))
+    res = json.loads(tb.dispatch("edit_file", {
+        "path": "code.py",
+        "old_string": "return 999",
+        "new_string": "return 2",
+    }))
+    assert "error" in res
+    assert "old_string not found" in res["error"]
+    assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+
+
+def test_edit_file_ambiguous_anchor_is_error_and_recorded(tmp_path):
+    f = tmp_path / "code.py"
+    f.write_text("x = 1\nx = 1\n")
+    tb = ToolBox(cwd=str(tmp_path))
+    res = json.loads(tb.dispatch("edit_file", {
+        "path": "code.py",
+        "old_string": "x = 1",
+        "new_string": "x = 2",
+    }))
+    assert "error" in res
+    assert "found 2 times" in res["error"]
+    assert "must be unique" in res["error"]
+    assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+
+
+def test_edit_file_missing_file_is_error_and_recorded(tmp_path):
+    tb = ToolBox(cwd=str(tmp_path))
+    res = json.loads(tb.dispatch("edit_file", {
+        "path": "nonexistent.py",
+        "old_string": "foo",
+        "new_string": "bar",
+    }))
+    assert "error" in res
+    assert "not a file" in res["error"]
+    assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+
+
+def test_edit_file_empty_old_string_is_error_and_recorded(tmp_path):
+    f = tmp_path / "code.py"
+    f.write_text("def foo(): pass\n")
+    tb = ToolBox(cwd=str(tmp_path))
+    res = json.loads(tb.dispatch("edit_file", {
+        "path": "code.py",
+        "old_string": "",
+        "new_string": "bar",
+    }))
+    assert "error" in res
+    assert "old_string must not be empty" in res["error"]
+    assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+
+
 def test_run_shell_nonzero_exit_is_not_an_error(tmp_path):
     tb = ToolBox(cwd=str(tmp_path))
     result = json.loads(tb.dispatch("run_shell", {"command": "exit 3"}))

@@ -98,6 +98,15 @@ def test_write_then_read_file_roundtrip(tmp_path):
     assert out["content"] == "content here"
 
 
+def test_edit_file_in_toolbox(tmp_path):
+    tb = ToolBox(cwd=tmp_path)
+    tb.write_file("file.txt", "line 1\nline 2\n")
+    out = json.loads(tb.edit_file("file.txt", "line 2", "line two"))
+    assert "error" not in out
+    read = json.loads(tb.read_file("file.txt"))
+    assert read["content"] == "line 1\nline two\n"
+
+
 def test_read_missing_file_is_error_not_crash(tmp_path):
     out = json.loads(ToolBox(cwd=tmp_path).read_file("nope.txt"))
     assert "error" in out
