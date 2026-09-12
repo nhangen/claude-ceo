@@ -84,6 +84,7 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
         "turns": rec.get("turns"),
         "completed": rec.get("completed"),
         "verified": rec.get("verified"),
+        "gated": rec.get("gated"),
         "reason": rec.get("reason"),
     }
     prov = provenance or {}

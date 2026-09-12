@@ -120,3 +120,24 @@ def test_append_run_records_error_and_killed_reasons(tmp_path):
     lines = [json.loads(line) for line in p.read_text().strip().splitlines()]
     assert lines[0]["reason"] == "error"
     assert lines[1]["reason"] == "killed"
+
+
+def test_append_run_records_gated_field(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(completed=False, verified=None, gated=True, reason="error"),
+               "m", "t", "/c", path=str(p))
+    append_run(_rec(completed=False, verified=None, gated=False, reason="error"),
+               "m", "t", "/c", path=str(p))
+    lines = [json.loads(line) for line in p.read_text().strip().splitlines()]
+    assert lines[0]["gated"] is True
+    assert lines[0]["verified"] is None
+    assert lines[1]["gated"] is False
+    assert lines[1]["verified"] is None
+
+
+def test_append_run_gated_absent_reads_as_null(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    rec = _rec()
+    rec.pop("gated", None)
+    append_run(rec, "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["gated"] is None
