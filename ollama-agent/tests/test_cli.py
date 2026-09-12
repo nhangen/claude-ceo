@@ -631,6 +631,8 @@ def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, ca
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["completed"] is False
+    assert row["gated"] is False
+    assert row["verified"] is None
     assert row["reason"] == "error"
     assert row["ollama_input_tokens"] == 0
     assert row["ollama_output_tokens"] == 0
@@ -688,8 +690,30 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["gated"] is True
     assert row["verified"] is False
     assert row["ollama_input_tokens"] == 7
+
+
+def test_cli_crashed_run_with_gate_before_eval_records_gated_true_verified_none(tmp_path, monkeypatch, capsys):
+    # #386: A gated run that dies on turn 1 (e.g. transport error) before the gate
+    # ever runs records (gated=True, verified=None) — distinguishing "died before gate"
+    # from ungated (gated=False, verified=None).
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def immediate_fail(messages, tools):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: immediate_fail)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--verify-cmd", "pytest", "--turn-cap", "5"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["gated"] is True
+    assert row["verified"] is None
+    assert row["completed"] is False
 
 
 def test_cli_sigterm_writes_a_killed_ledger_row(tmp_path):

@@ -653,15 +653,19 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     # and nothing else in the suite notices.
     tracker = {}
     gated = _script(({"role": "assistant", "content": "done"}, {"input": 10, "output": 20}))
-    run_agent("task", "sys", gated, ToolBox(cwd=tmp_path), TOOLS,
-              turn_cap=1, verify_cmd="false", usage_tracker=tracker)
+    rec1 = run_agent("task", "sys", gated, ToolBox(cwd=tmp_path), TOOLS,
+                     turn_cap=1, verify_cmd="false", usage_tracker=tracker)
     assert tracker["verified"] is False
+    assert tracker["gated"] is True
+    assert rec1["gated"] is True
     assert tracker["ollama_input_tokens"] == 10
 
     second = _script(({"role": "assistant", "content": "done"}, {"input": 3, "output": 4}))
-    run_agent("task", "sys", second, ToolBox(cwd=tmp_path), TOOLS,
-              turn_cap=1, usage_tracker=tracker)
+    rec2 = run_agent("task", "sys", second, ToolBox(cwd=tmp_path), TOOLS,
+                     turn_cap=1, usage_tracker=tracker)
     assert tracker["verified"] is None
+    assert tracker["gated"] is False
+    assert rec2["gated"] is False
     assert tracker["ollama_input_tokens"] == 3
     assert tracker["turns"] == 1
 
