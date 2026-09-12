@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -10,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ollama_agent import ToolBox, TOOLS, run_agent  # noqa: E402
 from ollama_agent.agent import _normalize_args, _tool_calls_from_content  # noqa: E402
 from ollama_agent.tools import _clip, MAX_OUTPUT, MAX_READ  # noqa: E402
-from ollama_agent.transport import parse_chat_response  # noqa: E402
+from ollama_agent.transport import ollama_transport, parse_chat_response  # noqa: E402
 
 
 # --- real tools ---
@@ -587,6 +588,13 @@ def test_parse_chat_response_healthy_200_quoting_the_sentinel_returns():
     assert usage == {"input": 10, "output": 5}
 
 
+def test_parse_chat_response_unparseable_json_raises_runtimeerror():
+    # #385: A 200 containing non-JSON (HTML error page, proxy glitch) must raise
+    # RuntimeError so it is caught by cli.py and recorded in the ledger.
+    with pytest.raises(RuntimeError, match="ollama 200: unparseable body: <html>"):
+        parse_chat_response(200, "<html>502 Bad Gateway</html>")
+
+
 # --- why the run ended (reason) ---
 #
 # The ledger's outcome was a two-field truth table with a null in it:
@@ -724,3 +732,70 @@ def test_num_ctx_absent_disables_the_check(tmp_path):
     tb = ToolBox(cwd=tmp_path)
     rec = run_agent("t", "s", _usage_transport([999999]), tb, TOOLS, turn_cap=1)
     assert rec["warnings"] == []
+
+
+# --- #385: transport non-UTF8 decode replace and retry visibility ---
+
+class _RawBytesResp(io.BytesIO):
+    def __init__(self, raw_bytes, headers=None, status=200):
+        super().__init__(raw_bytes)
+        self.status = status
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def test_ollama_transport_handles_non_utf8_200_body(monkeypatch):
+    raw = b'{"message": {"role": "assistant", "content": "hello \xff\xfe"}, "prompt_eval_count": 5, "eval_count": 2}'
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
+    msg, usage = t([{"role": "user", "content": "hi"}], [])
+    assert "hello" in msg["content"]
+    assert usage == {"input": 5, "output": 2}
+
+
+def test_ollama_transport_handles_non_utf8_error_body(monkeypatch):
+    import urllib.error
+
+    class _FakeHTTPError(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1/api/chat", 400, "Bad Request", {}, io.BytesIO(b"error \xff\xfe"))
+
+    def raise_http_error(req, timeout=None):
+        raise _FakeHTTPError()
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
+    with pytest.raises(RuntimeError, match="ollama HTTP 400: error"):
+        t([{"role": "user", "content": "hi"}], [])
+
+
+def test_ollama_transport_logs_warning_on_retry(monkeypatch, capsys):
+    import urllib.error
+
+    call_count = 0
+
+    class _Fake503(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1/api/chat", 503, "Service Unavailable", {}, io.BytesIO(b"overloaded"))
+
+    def fail_then_succeed(req, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _Fake503()
+        return _RawBytesResp(b'{"message": {"role": "assistant", "content": "recovered"}, "prompt_eval_count": 1, "eval_count": 1}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_then_succeed)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
+    msg, usage = t([{"role": "user", "content": "hi"}], [])
+    assert msg["content"] == "recovered"
+    err = capsys.readouterr().err
+    assert "warning: ollama HTTP 503 on attempt 1/3, retrying in 0.2s" in err
+
