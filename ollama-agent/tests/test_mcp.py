@@ -150,9 +150,12 @@ def test_toolbox_dispatches_mcp_tool(tmp_path):
 
 
 def test_toolbox_mcp_error_recorded_not_crash(tmp_path):
+    # #271: MCP tool failures must land in tool_errors so the cron gate sees them
     tb = ToolBox(cwd=tmp_path, mcp_client=FakeClient(raises=True), mcp_names={"mcp__echo": "echo"})
     out = json.loads(tb.dispatch("mcp__echo", {}))
     assert "error" in out and "MCPError" in out["error"]
+    assert [e["tool"] for e in tb.tool_errors] == ["mcp__echo"]
+    assert "MCPError" in tb.tool_errors[0]["error"]
 
 
 def test_toolbox_unknown_mcp_name_still_unknown(tmp_path):
