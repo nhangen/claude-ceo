@@ -23,7 +23,7 @@ MAX_READ = 20000       # chars returned by read_file
 # tokenized (unbalanced quote) raises and so does set one: the model asked for a
 # mutation that never ran. unknown tools/skills are gated separately via
 # .unknown_calls.
-ERROR_RELEVANT_TOOLS = {"write_file", "git", "run_shell"}
+ERROR_RELEVANT_TOOLS = {"write_file", "edit_file", "git", "run_shell"}
 
 # git subcommands that change something. A non-zero exit from one of these is an
 # operational failure the cron gate must see; a non-zero exit from a read verb is
@@ -99,6 +99,22 @@ class ToolBox:
         f.write_text(data)
         return json.dumps({"path": str(f), "bytes": len(data.encode())})
 
+    def edit_file(self, path, old_string, new_string):
+        f = self._resolve(path)
+        if not f.is_file():
+            return json.dumps({"error": f"not a file: {path}"})
+        if not old_string:
+            return json.dumps({"error": "old_string must not be empty"})
+        content = f.read_text(errors="replace")
+        count = content.count(old_string)
+        if count == 0:
+            return json.dumps({"error": f"old_string not found in {path}"})
+        if count > 1:
+            return json.dumps({"error": f"old_string found {count} times in {path} (must be unique)"})
+        new_data = content.replace(old_string, new_string if new_string is not None else "", 1)
+        f.write_text(new_data)
+        return json.dumps({"path": str(f), "bytes": len(new_data.encode())})
+
     def list_dir(self, path="."):
         d = self._resolve(path)
         if not d.is_dir():
@@ -128,6 +144,7 @@ class ToolBox:
             "git": lambda a: self.git(a.get("args", [])),
             "read_file": lambda a: self.read_file(a.get("path", "")),
             "write_file": lambda a: self.write_file(a.get("path", ""), a.get("content", "")),
+            "edit_file": lambda a: self.edit_file(a.get("path", ""), a.get("old_string", ""), a.get("new_string", "")),
             "list_dir": lambda a: self.list_dir(a.get("path", ".")),
             "use_skill": lambda a: self.use_skill(a.get("name", "")),
         }.get(name)
@@ -180,6 +197,13 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}, "content": {"type": "string"}},
             "required": ["path", "content"]}}},
+    {"type": "function", "function": {"name": "edit_file",
+        "description": "Replace a unique occurrence of old_string with new_string in an existing file (relative to the working directory). Errors if old_string is not found or appears multiple times.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Path to the file to edit."},
+            "old_string": {"type": "string", "description": "The exact unique substring to replace."},
+            "new_string": {"type": "string", "description": "The replacement content."}},
+            "required": ["path", "old_string", "new_string"]}}},
     {"type": "function", "function": {"name": "list_dir",
         "description": "List the entries of a directory (relative to the working directory).",
         "parameters": {"type": "object", "properties": {
