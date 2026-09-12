@@ -813,6 +813,14 @@ test_production_honors_CEO_STATE_DIR_not_just_HOME() {
   fi
 }
 
+test_production_honors_CEO_REGISTRY_FILE_not_just_HOME() {
+  local elsewhere="$TEST_HOME/elsewhere-reg.json"
+  local path
+  path=$(CEO_REGISTRY_FILE="$elsewhere" bash -c "source '$SCRIPT_DIR/ceo-config.sh'; _ceo_registry_path")
+  assert_eq "$path" "$elsewhere" "production helper must resolve registry through CEO_REGISTRY_FILE, not \$HOME"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_the_two_last_scan_writers_agree_on_the_path() {
   # ceo-cron.sh stamps .last-scan on a successful morning-scan; ceo-scan.sh reads
   # and creates it. The comment on ceo-scan.sh calls that agreement load-bearing
