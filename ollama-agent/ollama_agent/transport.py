@@ -6,6 +6,7 @@ others. Treating "no exception" as success would record an HTTP error as a model
 turn (non-throwing-client-success-check).
 """
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -112,7 +113,10 @@ def parse_chat_response(status, body, provenance=None):
         if CONTEXT_OVERFLOW_SENTINEL in body:
             raise _context_overflow_error(status, body[:200])
         raise RuntimeError(f"ollama HTTP {status}: {body[:200]}")
-    data = json.loads(body)
+    try:
+        data = json.loads(body)
+    except ValueError as e:
+        raise RuntimeError(f"ollama {status}: unparseable body: {body[:200]}") from e
     # The model that ANSWERED, which against a router is not the one we asked
     # for. `local-coder` resolved to a 14.8b build while the docs said 27b
     # (#667), and this field was being parsed and discarded on every turn.
@@ -174,7 +178,7 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     _note_headers(provenance, getattr(resp, "headers", None))
-                    return parse_chat_response(resp.status, resp.read().decode(),
+                    return parse_chat_response(resp.status, resp.read().decode(errors="replace"),
                                                provenance=provenance)
             except urllib.error.HTTPError as e:
                 try:
@@ -182,7 +186,7 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         # Headers first: parse_chat_response raises on an error
                         # body, and a failed turn still needs to name its backend.
                         _note_headers(provenance, getattr(e, "headers", None))
-                        return parse_chat_response(e.code, e.read().decode(),
+                        return parse_chat_response(e.code, e.read().decode(errors="replace"),
                                                    provenance=provenance)
                     # The endpoint that just 503'd. Without this a flaky backend
                     # that fails twice before a healthy one answers is invisible,
@@ -194,6 +198,10 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         ) from e
                 finally:
                     e.close()
+                print(
+                    f"warning: ollama HTTP {e.code} on attempt {attempt}/{MAX_HTTP_ATTEMPTS}, retrying in {RETRY_BACKOFF_SECONDS * attempt:.1f}s",
+                    file=sys.stderr,
+                )
                 time.sleep(RETRY_BACKOFF_SECONDS * attempt)
             except urllib.error.URLError as e:
                 raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e
