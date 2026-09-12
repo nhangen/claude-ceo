@@ -164,3 +164,16 @@ def test_bare_git_is_recorded(tmp_path):
     assert result["returncode"] != 0, "precondition: bare git exits non-zero"
     assert "error" in result
     assert [e["tool"] for e in tb.tool_errors] == ["git"]
+
+
+def test_mcp_tool_error_recorded_in_tool_errors(tmp_path):
+    # #271: Every bridged MCP tool call failure must be captured in tool_errors
+    class FailingMCP:
+        def call_tool(self, name, args):
+            raise RuntimeError("mcp server timed out")
+
+    tb = ToolBox(cwd=str(tmp_path), mcp_client=FailingMCP(), mcp_names={"mcp__custom_tool": "custom_tool"})
+    res = json.loads(tb.dispatch("mcp__custom_tool", {}))
+    assert "error" in res
+    assert [e["tool"] for e in tb.tool_errors] == ["mcp__custom_tool"]
+    assert "RuntimeError" in tb.tool_errors[0]["error"]

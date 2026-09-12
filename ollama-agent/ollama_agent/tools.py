@@ -149,8 +149,9 @@ class ToolBox:
     def _note_tool_error(self, name, result):
         """Record a mutating-tool failure so the dispatcher (cron) can fail a
         completed-but-errored run (#215). Inspects the result's "error" key —
-        absence-of-throw is not success (non-throwing-client-success-check)."""
-        if name not in ERROR_RELEVANT_TOOLS:
+        absence-of-throw is not success (non-throwing-client-success-check).
+        Every MCP tool dispatch is treated as error-relevant (#271)."""
+        if name not in ERROR_RELEVANT_TOOLS and name not in self.mcp_names:
             return
         try:
             parsed = json.loads(result)
