@@ -260,6 +260,19 @@ test_no_registry_flag_field_falls_back_to_settings() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_registry_honors_CEO_REGISTRY_FILE_override() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local custom_reg="$TMP/custom-registry.json"
+  echo '{"playbooks":[{"name":"morning-override","discord_report":true}]}' > "$custom_reg"
+
+  printf 'custom brief' | CEO_REGISTRY_FILE="$custom_reg" "$REPORT" morning-override >/dev/null 2>&1
+
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "custom brief" \
+    "ceo-discord-report.sh must resolve registry via CEO_REGISTRY_FILE override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_records_last_deliver_timestamp_on_successful_post() {
   # The signal `ceo doctor` watches: a successful delivery writes a per-trigger
   # timestamp. Its ABSENCE/staleness is how the watchdog detects a report that

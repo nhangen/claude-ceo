@@ -1028,4 +1028,32 @@ test_assert_primary_host_accepts_prior_day_report_triggers_key() {
     "discord_prior_day_report_triggers must be a registered settings key (no unknown-key warning)"
 }
 
+test_ceo_registry_path_defaults_to_home() {
+  local path
+  path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "$TEST_HOME/.ceo/registry.json" "_ceo_registry_path must default to \$HOME/.ceo/registry.json"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_registry_path_honors_override() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_REGISTRY_FILE="/custom/reg.json" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "/custom/reg.json" "_ceo_registry_path must honor CEO_REGISTRY_FILE override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_defaults_to_home() {
+  local path
+  path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "$TEST_HOME/.ceo/enabled.json" "_ceo_enabled_path must default to \$HOME/.ceo/enabled.json"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_honors_override() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor CEO_ENABLED_FILE override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests

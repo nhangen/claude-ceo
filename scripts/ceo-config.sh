@@ -342,9 +342,12 @@ CEO_REGISTRY_SCHEMA_VERSION=3
 # hosts scanning would otherwise both rewrite the synced file and produce
 # Syncthing .sync-conflict copies. The vault keeps only the playbook .md
 # definitions (which scan reads). The scheduler daemon reads the same path.
+#
+# CEO_REGISTRY_FILE overrides the location, and a test must set it rather than
+# relying on a fixture HOME when running scripts that re-export HOME.
 _ceo_registry_path() {
   : "${HOME:?HOME must be set to resolve the host-local registry path}"
-  printf '%s\n' "$HOME/.ceo/registry.json"
+  printf '%s\n' "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
 }
 
 # Per-trigger cron state — the failure counter, the cooldown stamp, the
@@ -430,9 +433,12 @@ _ceo_state_migrate() {
 # playbook names THIS machine runs. The scheduler daemon reads the same path.
 # (`single`-scope playbooks are not gated here — they run on their assigned
 # owner host, recorded in the synced swarm.json owners map.)
+#
+# CEO_ENABLED_FILE overrides the location, and a test must set it rather than
+# relying on a fixture HOME when running scripts that re-export HOME.
 _ceo_enabled_path() {
   : "${HOME:?HOME must be set to resolve the host-local enabled path}"
-  printf '%s\n' "$HOME/.ceo/enabled.json"
+  printf '%s\n' "${CEO_ENABLED_FILE:-$HOME/.ceo/enabled.json}"
 }
 
 # Unlike registry.json (host-local), swarm.json IS synced: it describes the

@@ -21,11 +21,9 @@ set -euo pipefail
 #
 # Exits 0 always after argument validation; report delivery must not break cron.
 
-# Sourced for _ceo_state_migrate: the delivery stamp below and `ceo doctor`'s
-# staleness check that reads it must resolve the same path, and one definition is
-# the only way to keep that true across a move (#394). This file previously used
-# no shared helper at all — see the inline $HOME/.ceo/registry.json below, which
-# has the same duplication problem and is left for a follow-up.
+# Sourced for _ceo_state_migrate and _ceo_registry_path: the delivery stamp below,
+# the registry, and `ceo doctor`'s staleness check that reads them must resolve
+# the same paths, and shared definitions are the only way to keep that true (#394, #401).
 _DR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=ceo-config.sh
 source "$_DR_DIR/ceo-config.sh"
@@ -59,7 +57,7 @@ _dlog() {
 # orphaning delivery (settings.json is hand-maintained and never synced to names).
 _registry_report_flag() {
   local field="$1"
-  local reg="${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
+  local reg; reg="$(_ceo_registry_path)"
   [ -f "$reg" ] || { echo absent; return; }
   local val
   # Deliberately avoid jq's `//` here: `false // "absent"` returns "absent"
