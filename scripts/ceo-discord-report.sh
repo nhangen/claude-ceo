@@ -49,7 +49,7 @@ _dlog() {
 }
 
 # Resolve a boolean delivery flag for $TRIGGER from the host-local registry
-# ($HOME/.ceo/registry.json), written from playbook frontmatter by
+# (see _ceo_registry_path), written from playbook frontmatter by
 # `ceo playbook scan`. Echoes `true`, `false`, or `absent`. `absent` covers a
 # missing registry, a missing entry, or an entry that predates the flag field —
 # in all three the caller falls back to the settings.json allow-list. Making the
