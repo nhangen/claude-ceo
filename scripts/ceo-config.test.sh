@@ -1067,6 +1067,71 @@ test_ceo_state_dir_empty_override_falls_back() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_ceo_state_dir_defaults_to_home() {
+  local path
+  path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "$TEST_HOME/.ceo/state" "_ceo_state_dir must default to \$HOME/.ceo/state"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_honors_override() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "/custom/state" "_ceo_state_dir must honor CEO_STATE_DIR override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# Override makes HOME irrelevant (#425): when an override is provided,
+# the path helper must succeed even if HOME is unset.
+test_ceo_registry_path_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_REGISTRY_FILE="/custom/reg.json" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "/custom/reg.json" "_ceo_registry_path must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "/custom/state" "_ceo_state_dir must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# When no override is set and HOME is unset, the path helpers must abort loudly.
+test_ceo_registry_path_aborts_on_unset_home_when_no_override() {
+  local err
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_registry_path" 2>&1 || true)
+  assert_fails "_ceo_registry_path must exit non-zero when HOME is unset and no override is given" \
+    env -u HOME bash -c "source '$LIB'; _ceo_registry_path"
+  assert_contains "$err" "HOME must be set to resolve the host-local registry path" \
+    "error message must guide that HOME is required"
+}
+
+test_ceo_enabled_path_aborts_on_unset_home_when_no_override() {
+  local err
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_enabled_path" 2>&1 || true)
+  assert_fails "_ceo_enabled_path must exit non-zero when HOME is unset and no override is given" \
+    env -u HOME bash -c "source '$LIB'; _ceo_enabled_path"
+  assert_contains "$err" "HOME must be set to resolve the host-local enabled path" \
+    "error message must guide that HOME is required"
+}
+
+test_ceo_state_dir_aborts_on_unset_home_when_no_override() {
+  local err
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_state_dir" 2>&1 || true)
+  assert_fails "_ceo_state_dir must exit non-zero when HOME is unset and no override is given" \
+    env -u HOME bash -c "source '$LIB'; _ceo_state_dir"
+  assert_contains "$err" "HOME must be set to resolve the host-local state directory" \
+    "error message must guide that HOME is required"
+}
+
 test_ceo_enabled_path_defaults_to_home() {
   local path
   path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_enabled_path")
@@ -1082,3 +1147,4 @@ test_ceo_enabled_path_honors_override() {
 }
 
 run_tests
+
