@@ -135,7 +135,15 @@ The `hosts` field formerly declared which machines a playbook may run on:
 
 ### Use disabled to durably tear down
 
-`disabled` is "I previously had this installed and want it removed everywhere." Flipping `active → disabled` and running `ceo playbook scan` removes the cron line on the next scan. Unlike a draft, `disabled` is the explicit "stop running" signal, distinct from "still working on it."
+`disabled` is "I previously had this installed and want it removed everywhere." Unlike a draft, `disabled` is the explicit "stop running" signal, distinct from "still working on it."
+
+To durably disable a playbook across the fleet:
+1. Update `status: disabled` in the repo definition (`docs/playbooks/<name>.md`).
+2. Run `ceo playbook sync` to propagate the change into the vault copies (`$CEO_VAULT/CEO/playbooks/`), or update the vault copy directly. (Note: `ceo playbook scan` scans the vault first, and vault copies shadow repo copies—editing the repo file alone will not take effect on any host if shadowed by an existing vault file).
+3. Run `ceo playbook scan` on the owner host for a `scope: single` playbook (or on all relevant hosts for `scope: each` playbooks) to update `~/.ceo/registry.json`.
+4. Verify the new status with `ceo playbook list`.
+
+Note that `ceo playbook disable <name>` is a *different* mechanism: it writes host-local `~/.ceo/enabled.json` to toggle off a `scope: each` playbook on that specific machine. It does not alter playbook frontmatter and does not disable a `scope: single` playbook fleet-wide.
 
 ## Validation
 
@@ -156,7 +164,7 @@ Any failure: the playbook is skipped with a diagnostic line. The dispatcher will
 ceo playbook scan --dry-run
 ```
 
-Walks the same parse path and prints the cron block that would be installed, without touching the crontab or rewriting the registry. Useful when iterating on a draft, or when verifying what a sibling machine would do after a `git pull`.
+Walks the same parse path and prints what would be registered, without rewriting `~/.ceo/registry.json`. Useful when iterating on a draft, or when verifying what a sibling machine would do after a `git pull`.
 
 ## Related
 
