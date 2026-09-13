@@ -1042,6 +1042,15 @@ test_ceo_registry_path_honors_override() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_ceo_registry_path_empty_override_falls_back() {
+  # `:-` not `-`: an empty override is treated as unset rather than as an error,
+  # matching _ceo_state_dir. Pinned because the two spellings differ only here.
+  local path
+  path=$(HOME="$TEST_HOME" CEO_REGISTRY_FILE="" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "$TEST_HOME/.ceo/registry.json" "an empty CEO_REGISTRY_FILE must fall back to \$HOME, not resolve to /.ceo/registry.json"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_ceo_enabled_path_defaults_to_home() {
   local path
   path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_enabled_path")
