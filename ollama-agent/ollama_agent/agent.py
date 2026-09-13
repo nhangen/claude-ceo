@@ -88,7 +88,9 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
 
     `reason` says why the loop ended in one field, so a consumer needn't join
     two nullable ones: "ok" (the model stopped and the gate passed, or none
-    was configured), "turn-cap" (ungated run out of turns),
+    was configured), "turn-cap" (out of turns; if `verify_gated` is true the
+    model never stopped, so the gate never ran — the two fields disambiguate,
+    and this is NOT necessarily an ungated run),
     "verify-failed" (out of turns, gate last observed red), "error" (crashed run),
     or "killed" (interrupted run).
     """

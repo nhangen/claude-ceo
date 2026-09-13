@@ -69,6 +69,18 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     omitted. An absent key means a row from before this existed; a null means a
     run that was recorded and had nothing to report. Collapsing the two would
     make every old row look like a fresh unattributed one.
+
+    `verify_gated` follows the same rule and has three states, not two. True and
+    False mean the run was recorded as having, or not having, a `--verify-cmd`.
+    Null means the record carried no opinion — a row written before #386, or a
+    crash so early nothing had decided yet — and says nothing about whether a
+    gate was configured. It is NOT the delegation gate behind `--ungated`; a run
+    can be ungated in that sense and `verify_gated: true` here, and the standard
+    ollama-batch invocation is exactly that.
+
+    `scripts/ceo-model-ledger.sh` appends claude-tier rows to this same file and
+    emits no `verify_gated` at all. Those rows carry `writer`, which is how a
+    reader tells them from pre-#386 Python rows.
     """
     p = Path(path) if path is not None else ledger_path()
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
