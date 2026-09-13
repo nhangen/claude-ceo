@@ -60,6 +60,7 @@ Commands:
   next        Show post-setup instructions (survives terminal clear)
   test        Run a quick smoke test of the CEO system
   doctor      Check system health (deps, vault, cron, auth)
+  status      Show scheduler status and playbook health (next-fire times, heartbeat)
   preflight   Show which triggers would run vs skip (zero API calls)
   chat        Interactive CEO conversation for a playbook (e.g. ceo chat inbox)
   cron        Run a cron trigger autonomously (e.g. ceo cron pr-triage)
@@ -801,6 +802,7 @@ cmd_playbook() {
   case "$subcmd" in
     scan) cmd_playbook_scan "$@" ;;
     list) cmd_playbook_list "$@" ;;
+    next-runs) cmd_playbook_next_runs "$@" ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
     sync) cmd_playbook_sync "$@" ;;
@@ -1196,20 +1198,22 @@ _playbook_sub_usage() {
       echo "  --check     Report what would change and exit 1 on drift; write nothing."
       echo "              (--dry-run is an accepted alias.)"
       ;;
-    list)     echo "Usage: ceo playbook list" ;;
-    info)     echo "Usage: ceo playbook info <name>" ;;
-    enable)   echo "Usage: ceo playbook enable <name>" ;;
-    disable)  echo "Usage: ceo playbook disable <name>" ;;
-    assign)   echo "Usage: ceo playbook assign <name> <host>" ;;
-    *)        _playbook_overview ;;
+    list)      echo "Usage: ceo playbook list" ;;
+    next-runs) echo "Usage: ceo playbook next-runs [--within <dur>] [--json]" ;;
+    info)      echo "Usage: ceo playbook info <name>" ;;
+    enable)    echo "Usage: ceo playbook enable <name>" ;;
+    disable)   echo "Usage: ceo playbook disable <name>" ;;
+    assign)    echo "Usage: ceo playbook assign <name> <host>" ;;
+    *)         _playbook_overview ;;
   esac
 }
 
 _playbook_overview() {
-  echo "Usage: ceo playbook <scan|list|info|diff|sync|enable|disable|assign>"
+  echo "Usage: ceo playbook <scan|list|next-runs|info|diff|sync|enable|disable|assign>"
   echo ""
   echo "  scan [--dry-run]      Discover playbooks, update host-local registry"
   echo "  list                  Show all registered playbooks with scope + state"
+  echo "  next-runs             Show upcoming playbook fire times"
   echo "  info <name>           Show details for one playbook"
   echo "  diff [--quiet]        Detect drift between vault and repo playbooks"
   echo "  sync [--check]        Reconcile vault playbooks from the repo"
@@ -2371,6 +2375,34 @@ cmd_playbook_list() {
   _playbook_rows
 }
 
+cmd_playbook_next_runs() {
+  _wants_help "$@" && { _playbook_sub_usage next-runs; return 0; }
+  if ! command -v bun &>/dev/null; then
+    echo "ERROR: bun is required for playbook next-runs (bun not found on PATH)" >&2
+    return 1
+  fi
+  local sched_dir="$INSTALL_DIR/lib/scheduler"
+  if [ ! -d "$sched_dir" ]; then
+    echo "ERROR: scheduler lib directory not found: $sched_dir" >&2
+    return 1
+  fi
+  ( cd "$sched_dir" && bun run src/status.ts next-runs "$@" )
+}
+
+cmd_status() {
+  _wants_help "$@" && { echo "Usage: ceo status [--json]"; return 0; }
+  if ! command -v bun &>/dev/null; then
+    echo "ERROR: bun is required for status (bun not found on PATH)" >&2
+    return 1
+  fi
+  local sched_dir="$INSTALL_DIR/lib/scheduler"
+  if [ ! -d "$sched_dir" ]; then
+    echo "ERROR: scheduler lib directory not found: $sched_dir" >&2
+    return 1
+  fi
+  ( cd "$sched_dir" && bun run src/status.ts status "$@" )
+}
+
 cmd_playbook_enable() {
   _wants_help "$@" && { _playbook_sub_usage enable; return 0; }
   local name="${1:-}"
@@ -2775,7 +2807,7 @@ fi
 # ungated in exactly the silent way this whole change is about.
 case "${1:-help}" in
   help|-h|--help) ;;
-  setup|pr-sources|next|doctor|preflight|test|chat|cron|playbook|schedule|swarm|creds)
+  setup|pr-sources|next|doctor|status|preflight|test|chat|cron|playbook|schedule|swarm|creds)
     if _wants_help "${@:2}"; then
       case "$1" in
         playbook) _playbook_sub_usage "${2:-}" ;;
@@ -2783,6 +2815,7 @@ case "${1:-help}" in
         # creds answers help itself, and one level down `creds check --help`
         # read the flag as a playbook name and demanded a vault.
         creds)    cmd_creds help ;;
+        status)   echo "Usage: ceo status [--json]" ;;
         *)        cmd_help ;;
       esac
       exit 0
@@ -2801,6 +2834,7 @@ case "${1:-help}" in
   pr-sources) cmd_pr_sources ;;
   next)     cmd_next ;;
   doctor)   cmd_doctor ;;
+  status)   ceo_require_vault; _bind_vault; shift; cmd_status "$@" ;;
   preflight) ceo_require_vault; _bind_vault; cmd_preflight ;;
   test)     ceo_require_vault; _bind_vault; cmd_test ;;
   chat)     ceo_require_vault; _bind_vault; shift; cmd_chat "$@" ;;
