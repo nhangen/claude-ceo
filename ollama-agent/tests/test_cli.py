@@ -446,6 +446,45 @@ def test_cli_ungated_opt_in_runs(tmp_path, monkeypatch, capsys):
     assert "system" in captured       # run_agent reached
 
 
+def test_cli_empty_verify_cmd_refuses(tmp_path, monkeypatch, capsys):
+    # bool("") is False, so an empty gate would be dropped in silence and the row
+    # would read verify_gated=False — byte-identical to a run launched with no
+    # gate at all. Refuse instead: the operator asked for verification and the
+    # ledger must never claim they didn't. Refusal, not a warning, because these
+    # runs happen under ceo-cron where stderr goes nowhere.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--ungated", "--verify-cmd", ""])
+    assert rc == 2
+    assert "REFUSED" in capsys.readouterr().err
+    assert "system" not in captured   # run_agent never reached
+
+
+def test_cli_whitespace_verify_cmd_refuses(tmp_path, monkeypatch, capsys):
+    # A whitespace-only gate is worse than an empty one: it is truthy, so it
+    # would record verify_gated=True and then exit 0 without running anything,
+    # forging the strongest assurance pair the ledger carries.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--ungated", "--verify-cmd", "   "])
+    assert rc == 2
+    assert "REFUSED" in capsys.readouterr().err
+    assert "system" not in captured
+
+
+def test_cli_omitted_verify_cmd_still_runs_ungated(tmp_path, monkeypatch, capsys):
+    # The refusal above must not catch the ordinary no-gate run: omitting the
+    # flag entirely is how you ask for one, and it stays a normal exit 0.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--ungated"])
+    assert rc == 0
+    assert "system" in captured
+
+
 def _transport_kwargs(tmp_path, monkeypatch, argv):
     """Run main() offline and return the kwargs it handed ollama_transport."""
     captured = {}

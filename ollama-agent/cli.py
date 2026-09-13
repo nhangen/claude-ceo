@@ -199,6 +199,18 @@ def main(argv=None):
               "registered task instead.", file=sys.stderr)
         return 2
 
+    # An empty or whitespace-only --verify-cmd is never what the operator meant,
+    # and both failure modes write a row that lies. "" is falsy, so the gate is
+    # dropped and verify_gated=False makes the row identical to a deliberate
+    # no-gate run. "   " is truthy, so the gate "runs", exits 0 having verified
+    # nothing, and records verify_gated=True with verified=True — the strongest
+    # assurance the ledger carries. Refuse rather than warn: these runs happen
+    # under ceo-cron, which discards stderr.
+    if a.verify_cmd is not None and not a.verify_cmd.strip():
+        print("REFUSED: --verify-cmd is empty. Omit the flag to run without a "
+              "verification gate.", file=sys.stderr)
+        return 2
+
     # Governance: a registered task is gated before any model call. A non-delegable
     # tier (high-stakes) or unknown runner/tier is refused here — never run.
     spec = None
