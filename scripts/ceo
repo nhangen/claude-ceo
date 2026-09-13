@@ -409,10 +409,12 @@ cmd_doctor() {
     echo "  ✗ Playbook drift detected — run: ceo playbook diff"
     fail=$((fail + 1))
     mkdir -p "$(dirname "$alert_file")"
+    local _since; _since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
+    [ -z "$_since" ] && _since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     {
       echo "---"
       echo "status: drift"
-      echo "since: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "since: $_since"
       echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       echo "---"
       echo ""
@@ -1942,8 +1944,29 @@ cmd_playbook_scan() {
     done
   fi
 
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
   if [ "$shadowed_drift" -gt 0 ]; then
     echo "  WARN  $shadowed_drift repo playbook(s) shadowed by a DIFFERING vault copy — scan used the vault version, which may be stale. Run 'ceo playbook sync' to reconcile from the repo." >&2
+    if [ "$dry_run" -eq 0 ]; then
+      mkdir -p "$(dirname "$alert_file")"
+      local _drift_since; _drift_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
+      [ -z "$_drift_since" ] && _drift_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      {
+        echo "---"
+        echo "status: drift"
+        echo "since: $_drift_since"
+        echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "---"
+        echo ""
+        echo "# Playbook drift"
+        echo ""
+        echo "$shadowed_drift repo playbook(s) shadowed by differing vault copies. Run \`ceo playbook sync\` to reconcile from the repo."
+      } > "$alert_file"
+    fi
+  elif [ "$dry_run" -eq 0 ] && [ -f "$alert_file" ]; then
+    if [ -d "$repo_playbook_dir" ] && cmd_playbook_diff --quiet >/dev/null 2>&1; then
+      rm -f "$alert_file"
+    fi
   fi
 
   if [ "$dry_run" -eq 1 ]; then
