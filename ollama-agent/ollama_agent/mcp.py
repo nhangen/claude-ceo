@@ -11,9 +11,11 @@ agent's failure path rather than reading as a successful tool turn
 (non-throwing-client-success-check).
 """
 import json
+import os
 import select
 import shlex
 import subprocess
+import time
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -105,6 +107,7 @@ class StdioMCPTransport:
     def __init__(self, command, cwd=None, timeout=30):
         argv = command if isinstance(command, list) else shlex.split(command)
         self.timeout = timeout
+        self._buf = ""
         self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True, cwd=cwd, bufsize=1)
 
@@ -117,14 +120,37 @@ class StdioMCPTransport:
     def recv(self):
         # Bound the read: a server that is alive but never writes a response would
         # otherwise block readline() forever and hang the whole agent (the sibling
-        # ollama_transport bounds its read for the same reason). select on the pipe
-        # surfaces a stuck server as a typed error instead of a silent hang.
+        # ollama_transport bounds its read for the same reason). Incremental read
+        # with os.read inside a deadline loop bounds partial-line reads (#272).
         if not self.proc.stdout:
             raise MCPError("server has no stdout")
-        ready, _, _ = select.select([self.proc.stdout], [], [], self.timeout)
-        if not ready:
-            raise MCPError(f"server did not respond within {self.timeout}s")
-        line = self.proc.stdout.readline()
+        fd = self.proc.stdout.fileno()
+        deadline = time.monotonic() + self.timeout
+        while "\n" not in self._buf:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MCPError(f"server did not respond within {self.timeout}s")
+            ready, _, _ = select.select([fd], [], [], max(0.0, remaining))
+            if not ready:
+                raise MCPError(f"server did not respond within {self.timeout}s")
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError as e:
+                raise MCPError(f"server stdout read error: {e}") from e
+            if not chunk:
+                if not self._buf:
+                    raise MCPError("server closed stdout (crashed or exited)")
+                break
+            self._buf += chunk.decode(errors="replace")
+
+        if "\n" not in self._buf:
+            if not self._buf:
+                raise MCPError("server closed stdout (crashed or exited)")
+            line, self._buf = self._buf, ""
+        else:
+            line, self._buf = self._buf.split("\n", 1)
+
+        line = line.strip()
         if not line:
             raise MCPError("server closed stdout (crashed or exited)")
         return json.loads(line)

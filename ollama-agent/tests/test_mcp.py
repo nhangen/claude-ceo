@@ -241,3 +241,21 @@ def test_stdio_transport_send_on_none_stdin_raises(tmp_path):
     with pytest.raises(MCPError, match="stdin closed"):
         transport.send({"x": 1})
     transport.close()
+
+
+def test_stdio_transport_recv_times_out_on_partial_line_server(tmp_path):
+    # #272: A server that writes a partial line and stalls must timeout within ~timeout,
+    # not block indefinitely until server exits.
+    import time
+    server = tmp_path / "partial.py"
+    server.write_text("import sys, time\nsys.stdout.write('{\"jsonrpc\": \"2.0\"')\nsys.stdout.flush()\ntime.sleep(30)")
+    transport = StdioMCPTransport([sys.executable, str(server)], timeout=1)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(MCPError, match="did not respond within"):
+            transport.recv()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 5, f"expected timeout in ~1s, took {elapsed:.2f}s"
+    finally:
+        transport.close()
+
