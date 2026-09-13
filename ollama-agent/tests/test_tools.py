@@ -52,6 +52,11 @@ def test_edit_file_absent_anchor_is_error_and_recorded(tmp_path):
     assert "error" in res
     assert "old_string not found" in res["error"]
     assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+    # A refusal must also not have written. Asserting only the error passes an
+    # implementation that writes and *then* refuses — verified: moving the
+    # uniqueness check below f.write_bytes left the whole suite green.
+    assert f.read_text() == "def foo():\n    return 1\n"
+
 
 
 def test_edit_file_ambiguous_anchor_is_error_and_recorded(tmp_path):
@@ -67,6 +72,11 @@ def test_edit_file_ambiguous_anchor_is_error_and_recorded(tmp_path):
     assert "found 2 times" in res["error"]
     assert "must be unique" in res["error"]
     assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+    # A refusal must also not have written. Asserting only the error passes an
+    # implementation that writes and *then* refuses — verified: moving the
+    # uniqueness check below f.write_bytes left the whole suite green.
+    assert f.read_text() == "x = 1\nx = 1\n"
+
 
 
 def test_edit_file_missing_file_is_error_and_recorded(tmp_path):
@@ -93,6 +103,11 @@ def test_edit_file_empty_old_string_is_error_and_recorded(tmp_path):
     assert "error" in res
     assert "old_string must not be empty" in res["error"]
     assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+    # A refusal must also not have written. Asserting only the error passes an
+    # implementation that writes and *then* refuses — verified: moving the
+    # uniqueness check below f.write_bytes left the whole suite green.
+    assert f.read_text() == "def foo(): pass\n"
+
 
 
 def test_run_shell_nonzero_exit_is_not_an_error(tmp_path):
@@ -234,3 +249,90 @@ def test_bare_git_is_recorded(tmp_path):
     assert result["returncode"] != 0, "precondition: bare git exits non-zero"
     assert "error" in result
     assert [e["tool"] for e in tb.tool_errors] == ["git"]
+
+
+# --- #408 review: the success path must not corrupt what it did not touch ---
+
+def test_non_utf8_file_is_refused_not_mangled(tmp_path):
+    """`read_text(errors="replace")` then `write_text` round-trips U+FFFD back to disk.
+
+    read_file uses the same flag safely because it never writes. edit_file is the
+    first tool to round-trip it, so a byte the model never targeted is destroyed
+    while the result reads `{"path":…, "bytes":…}` with an empty .tool_errors —
+    the #382 shape reappearing inside the fix for it.
+    """
+    f = tmp_path / "latin.txt"
+    f.write_bytes(b"header\nname = caf\xe9\nANCHOR\nfooter\n")
+    before = f.read_bytes()
+
+    tb = ToolBox(cwd=str(tmp_path))
+    result = json.loads(tb.dispatch("edit_file", {
+        "path": "latin.txt", "old_string": "ANCHOR", "new_string": "REPLACED"}))
+
+    assert "error" in result, "an undecodable file must be refused, not silently rewritten"
+    assert f.read_bytes() == before, "a refused edit must leave the file byte-identical"
+    assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+
+
+def test_crlf_line_endings_survive_an_edit(tmp_path):
+    """`read_text` folds CRLF to \\n and `write_text` writes os.linesep back.
+
+    A one-line edit therefore rewrites every line ending in the file — a
+    whole-file diff from a tool whose entire contract is "replace one unique
+    occurrence", which is the deletion-heavy shape #407 exists to prevent.
+    """
+    f = tmp_path / "crlf.txt"
+    f.write_bytes(b"a = 1\r\nb = 2\r\nc = 3\r\n")
+
+    tb = ToolBox(cwd=str(tmp_path))
+    json.loads(tb.dispatch("edit_file", {
+        "path": "crlf.txt", "old_string": "b = 2", "new_string": "b = 9"}))
+
+    assert f.read_bytes() == b"a = 1\r\nb = 9\r\nc = 3\r\n", \
+        "only the anchor may change; line endings elsewhere must be untouched"
+
+
+def test_omitted_new_string_is_refused(tmp_path):
+    """An omitted third field turns an edit into a deletion, reported as success.
+
+    Routine for the small local models this bridge targets — which is why
+    _normalize_args exists at all. An explicit "" stays a legal deletion; an
+    absent key is a caller bug.
+    """
+    f = tmp_path / "del.py"
+    f.write_text("def f():\n    return 1\n")
+
+    tb = ToolBox(cwd=str(tmp_path))
+    result = json.loads(tb.dispatch("edit_file", {
+        "path": "del.py", "old_string": "    return 1\n"}))
+
+    assert "error" in result, "an absent new_string must be refused, not treated as a deletion"
+    assert f.read_text() == "def f():\n    return 1\n", "and the file must be untouched"
+    assert [e["tool"] for e in tb.tool_errors] == ["edit_file"]
+
+
+def test_explicit_empty_new_string_still_deletes(tmp_path):
+    """The converse: deleting the anchor is a legitimate edit when asked for."""
+    f = tmp_path / "del2.py"
+    f.write_text("def f():\n    return 1\n")
+    tb = ToolBox(cwd=str(tmp_path))
+    result = json.loads(tb.dispatch("edit_file", {
+        "path": "del2.py", "old_string": "    return 1\n", "new_string": ""}))
+    assert "error" not in result
+    assert f.read_text() == "def f():\n"
+
+
+def test_overlapping_matches_count_as_ambiguous(tmp_path):
+    """`str.count` is non-overlapping, so the uniqueness promise is not kept.
+
+    "aaa".count("aa") == 1 although "aa" matches at index 0 and 1. The edit then
+    lands at the first position, which may not be the one the model meant — and
+    uniqueness is the single invariant this tool is built on.
+    """
+    f = tmp_path / "ov.txt"
+    f.write_text("aaa")
+    tb = ToolBox(cwd=str(tmp_path))
+    result = json.loads(tb.dispatch("edit_file", {
+        "path": "ov.txt", "old_string": "aa", "new_string": "B"}))
+    assert "error" in result, "overlapping matches must read as ambiguous"
+    assert f.read_text() == "aaa", "and the file must be untouched"

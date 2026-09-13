@@ -23,6 +23,8 @@ MAX_READ = 20000       # chars returned by read_file
 # tokenized (unbalanced quote) raises and so does set one: the model asked for a
 # mutation that never ran. unknown tools/skills are gated separately via
 # .unknown_calls.
+_MISSING = object()
+
 ERROR_RELEVANT_TOOLS = {"write_file", "edit_file", "git", "run_shell"}
 
 # git subcommands that change something. A non-zero exit from one of these is an
@@ -99,21 +101,47 @@ class ToolBox:
         f.write_text(data)
         return json.dumps({"path": str(f), "bytes": len(data.encode())})
 
-    def edit_file(self, path, old_string, new_string):
+    def edit_file(self, path, old_string, new_string=_MISSING):
         f = self._resolve(path)
         if not f.is_file():
             return json.dumps({"error": f"not a file: {path}"})
         if not old_string:
             return json.dumps({"error": "old_string must not be empty"})
-        content = f.read_text(errors="replace")
-        count = content.count(old_string)
-        if count == 0:
+        # Distinguished from an explicit "": small models routinely drop a field,
+        # and defaulting the absent case to "" turns a mis-emitted edit into a
+        # silent deletion that reports success.
+        if new_string is _MISSING or new_string is None:
+            return json.dumps({"error": 'new_string is required (pass "" to delete old_string)'})
+        # Bytes, decoded strictly, rather than read_text(errors="replace").
+        # read_file may use that flag safely because it never writes; this tool
+        # rounds the substitution back to disk, so one undecodable byte anywhere
+        # in the file becomes U+FFFD and a line the model never named is
+        # destroyed — reported as a clean edit. Refusing is the honest answer:
+        # this tool cannot edit such a file safely.
+        try:
+            content = f.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as e:
+            return json.dumps({"error": f"{path} is not valid UTF-8 ({e}); edit_file cannot edit it safely"})
+        # find(), not count(): str.count is non-overlapping, so "aaa".count("aa")
+        # is 1 while "aa" matches at two positions. Uniqueness is the one
+        # invariant this tool rests on, and count() does not establish it.
+        positions, i = [], content.find(old_string)
+        while i != -1:
+            positions.append(i)
+            i = content.find(old_string, i + 1)
+        if not positions:
             return json.dumps({"error": f"old_string not found in {path}"})
-        if count > 1:
-            return json.dumps({"error": f"old_string found {count} times in {path} (must be unique)"})
-        new_data = content.replace(old_string, new_string if new_string is not None else "", 1)
-        f.write_text(new_data)
-        return json.dumps({"path": str(f), "bytes": len(new_data.encode())})
+        if len(positions) > 1:
+            return json.dumps({"error": f"old_string found {len(positions)} times in {path} (must be unique)"})
+        at = positions[0]
+        new_data = content[:at] + new_string + content[at + len(old_string):]
+        # write_bytes, not write_text: write_text translates "\n" through
+        # os.linesep and read_text already folded CRLF away, so a one-line edit
+        # to a CRLF file rewrote every line ending in it — a whole-file diff from
+        # a tool whose contract is "replace one unique occurrence".
+        f.write_bytes(new_data.encode("utf-8"))
+        return json.dumps({"path": str(f), "bytes": len(new_data.encode()),
+                           "replaced": len(old_string), "inserted": len(new_string)})
 
     def list_dir(self, path="."):
         d = self._resolve(path)
@@ -144,7 +172,7 @@ class ToolBox:
             "git": lambda a: self.git(a.get("args", [])),
             "read_file": lambda a: self.read_file(a.get("path", "")),
             "write_file": lambda a: self.write_file(a.get("path", ""), a.get("content", "")),
-            "edit_file": lambda a: self.edit_file(a.get("path", ""), a.get("old_string", ""), a.get("new_string", "")),
+            "edit_file": lambda a: self.edit_file(a.get("path", ""), a.get("old_string", ""), a.get("new_string", _MISSING)),
             "list_dir": lambda a: self.list_dir(a.get("path", ".")),
             "use_skill": lambda a: self.use_skill(a.get("name", "")),
         }.get(name)
