@@ -647,13 +647,28 @@ def test_run_agent_updates_usage_tracker_across_turns(tmp_path):
     assert tracker["turns"] == 2
 
 
+def test_run_agent_returns_verify_gated_from_the_verify_cmd(tmp_path):
+    # The return key and the tracker reset are separate promises that happened to
+    # share one test. This one owns the return contract: whatever else changes
+    # about tracker reuse, run_agent's record still says whether a gate was
+    # configured.
+    with_gate = _script(({"role": "assistant", "content": "done"}, {"input": 1, "output": 1}))
+    rec = run_agent("task", "sys", with_gate, ToolBox(cwd=tmp_path), TOOLS,
+                    turn_cap=1, verify_cmd="true")
+    assert rec["verify_gated"] is True
+
+    without = _script(({"role": "assistant", "content": "done"}, {"input": 1, "output": 1}))
+    rec = run_agent("task", "sys", without, ToolBox(cwd=tmp_path), TOOLS, turn_cap=1)
+    assert rec["verify_gated"] is False
+
+
 def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     # The docstring promises a reused tracker does not double-count and that a
     # stale `verified` cannot leak forward. Without the entry reset both are false
     # and nothing else in the suite notices.
     tracker = {}
-    gated = _script(({"role": "assistant", "content": "done"}, {"input": 10, "output": 20}))
-    rec1 = run_agent("task", "sys", gated, ToolBox(cwd=tmp_path), TOOLS,
+    first = _script(({"role": "assistant", "content": "done"}, {"input": 10, "output": 20}))
+    rec1 = run_agent("task", "sys", first, ToolBox(cwd=tmp_path), TOOLS,
                      turn_cap=1, verify_cmd="false", usage_tracker=tracker)
     assert tracker["verified"] is False
     assert tracker["verify_gated"] is True
