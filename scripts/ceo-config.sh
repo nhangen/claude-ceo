@@ -931,20 +931,39 @@ ceo_validate_vault() {
 # Returns:
 #   0  at least one "- [ ]" line exists in any inbox source
 #   1  no unchecked items, or no inbox sources present
+#   2  cannot tell (IO error / unreadable inbox file) — reason printed to stdout
 # ---------------------------------------------------------------------------
 ceo_inbox_has_unchecked() {
   local dir="${CEO_DIR:?CEO_DIR must be set before ceo_inbox_has_unchecked}"
-  if [ -f "$dir/inbox.md" ] && grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null; then
-    return 0
+  local degraded=0 degraded_reasons="" rc=0
+
+  if [ -f "$dir/inbox.md" ]; then
+    rc=0
+    grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    elif [ "$rc" -gt 1 ]; then
+      degraded=1
+      degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox file '$dir/inbox.md' (grep rc=$rc)"
+    fi
   fi
   if [ -d "$dir/inbox" ]; then
     local f
     for f in "$dir/inbox/"*.md; do
       [ -f "$f" ] || continue
-      if grep -q "^- \[ \]" "$f" 2>/dev/null; then
+      rc=0
+      grep -q "^- \[ \]" "$f" 2>/dev/null || rc=$?
+      if [ "$rc" -eq 0 ]; then
         return 0
+      elif [ "$rc" -gt 1 ]; then
+        degraded=1
+        degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox file '$f' (grep rc=$rc)"
       fi
     done
+  fi
+  if [ "$degraded" -eq 1 ]; then
+    echo "inbox scan degraded: $degraded_reasons"
+    return 2
   fi
   return 1
 }

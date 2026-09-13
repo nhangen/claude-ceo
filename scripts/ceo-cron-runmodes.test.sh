@@ -676,6 +676,63 @@ PB
   assert_contains "$(cat "$(_preview_file dr-pf)" 2>/dev/null)" "no-work" "preview must record the preflight no-work skip"
 }
 
+# When preflight fails (state 2 / cannot tell), a real run must record failure,
+# increment fail count, and NOT log a contradictory "returned no-work".
+test_preflight_cannot_tell_records_failure_and_does_not_log_no_work() {
+  cat > "$CEO_DIR/playbooks/pf-fail.md" << 'PB'
+---
+name: pf-fail
+description: preflight failure fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_pending_items
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  # Make Pending.md unreadable so gather is degraded
+  printf -- '- [ ] question\n' > "$CEO_VAULT/Pending.md"
+  chmod 000 "$CEO_VAULT/Pending.md"
+  bash "$CRON" pf-fail >/dev/null 2>&1 || true
+  chmod 644 "$CEO_VAULT/Pending.md"
+
+  local skips; skips=$(_skips_log)
+  assert_contains "$skips" "ERROR — Pending items search degraded" "preflight failure must log ERROR to skips log"
+  assert_not_contains "$skips" "returned no-work" "preflight failure must NOT log 'returned no-work'"
+  assert_file_exists "$(_ceo_state)/.last-run-pf-fail" "real run failure records last-run stamp"
+}
+
+# When preflight fails (state 2) in a dry-run, preview must record would-be failure,
+# must NOT preview no-work, must NOT stamp .last-run, and skips log must NOT log no-work.
+test_dry_run_preflight_cannot_tell_previews_failure_and_does_not_preview_no_work() {
+  cat > "$CEO_DIR/playbooks/dr-pf-fail.md" << 'PB'
+---
+name: dr-pf-fail
+description: dry-run preflight failure fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_pending_items
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  # Make Pending.md unreadable so gather is degraded
+  printf -- '- [ ] question\n' > "$CEO_VAULT/Pending.md"
+  chmod 000 "$CEO_VAULT/Pending.md"
+  bash "$CRON" dr-pf-fail --dry-run >/dev/null 2>&1 || true
+  chmod 644 "$CEO_VAULT/Pending.md"
+
+  assert_fails "dry-run preflight failure must not stamp .last-run" test -f "$(_ceo_state)/.last-run-dr-pf-fail"
+  local prev; prev=$(cat "$(_preview_file dr-pf-fail)" 2>/dev/null)
+  assert_contains "$prev" "Would record FAILURE" "preview must record would-be failure"
+  assert_not_contains "$prev" "returned no-work" "preview must NOT record preflight no-work"
+  local skips; skips=$(_skips_log)
+  assert_contains "$skips" "DRY-RUN — would record failure" "skips log records dry-run failure"
+  assert_not_contains "$skips" "returned no-work" "skips log must NOT record returned no-work"
+}
+
 
 # A dry-run's preview is host-local scratch: one host's preview must never
 # propagate to the others.

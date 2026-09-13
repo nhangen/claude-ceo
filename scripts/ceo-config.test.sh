@@ -246,6 +246,49 @@ test_inbox_has_unchecked_with_legacy_clean_and_shadow_dirty() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+_inbox_check_out() {
+  local ceo_dir="$1"
+  bash -c "
+    set -uo pipefail
+    source '$LIB'
+    out=\$(CEO_DIR='$ceo_dir' ceo_inbox_has_unchecked) || rc=\$?
+    echo \"RC=\${rc:-0}|OUT=\$out\"
+  "
+}
+
+test_inbox_has_unchecked_returns_state_2_when_legacy_inbox_unreadable() {
+  mkdir -p "$TEST_HOME/CEO"
+  printf -- '- [ ] unreadable\n' > "$TEST_HOME/CEO/inbox.md"
+  chmod 000 "$TEST_HOME/CEO/inbox.md"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 644 "$TEST_HOME/CEO/inbox.md"
+  assert_contains "$res" "RC=2" "unreadable legacy inbox.md must return rc 2 (cannot tell)"
+  assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inbox_has_unchecked_returns_state_2_when_shadow_file_unreadable() {
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [ ] unreadable-shadow\n' > "$TEST_HOME/CEO/inbox/host-c.md"
+  chmod 000 "$TEST_HOME/CEO/inbox/host-c.md"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 644 "$TEST_HOME/CEO/inbox/host-c.md"
+  assert_contains "$res" "RC=2" "unreadable per-host shadow file must return rc 2 (cannot tell)"
+  assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inbox_has_unchecked_prefers_work_present_over_unreadable_file() {
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [ ] unreadable-shadow\n' > "$TEST_HOME/CEO/inbox/host-bad.md"
+  printf -- '- [ ] readable-shadow\n' > "$TEST_HOME/CEO/inbox/host-good.md"
+  chmod 000 "$TEST_HOME/CEO/inbox/host-bad.md"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 644 "$TEST_HOME/CEO/inbox/host-bad.md"
+  assert_contains "$res" "RC=0" "readable unchecked items outrank unreadable files"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_resolve_real_home_ignores_env_HOME() {
   # Regression guard: rtk and ccusage discover state via $HOME-rooted paths.
   # When the script is invoked from env -i / sandbox / sudo without -E, $HOME
