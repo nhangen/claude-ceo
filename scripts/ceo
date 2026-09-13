@@ -624,7 +624,7 @@ cmd_doctor() {
   local _fresh_out _fr_stale
   # The cooldown stamps moved to the host-local state dir in #394; the dispatcher
   # writes them there, so this reads there.
-  _fresh_out=$(_doctor_check_freshness "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}" "$(_ceo_state_dir)")
+  _fresh_out=$(_doctor_check_freshness "$(_ceo_registry_path)" "$(_ceo_state_dir)")
   # `|| true`: under `set -e` a non-matching grep exits 1 and aborts cmd_doctor
   # before it prints its Result line — so doctor silently truncated on exactly
   # the healthy hosts where there was nothing to report.

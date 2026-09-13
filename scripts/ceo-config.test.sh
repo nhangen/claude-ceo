@@ -1028,4 +1028,57 @@ test_assert_primary_host_accepts_prior_day_report_triggers_key() {
     "discord_prior_day_report_triggers must be a registered settings key (no unknown-key warning)"
 }
 
+test_ceo_registry_path_defaults_to_home() {
+  local path
+  path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "$TEST_HOME/.ceo/registry.json" "_ceo_registry_path must default to \$HOME/.ceo/registry.json"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_registry_path_honors_override() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_REGISTRY_FILE="/custom/reg.json" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "/custom/reg.json" "_ceo_registry_path must honor CEO_REGISTRY_FILE override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# All three path helpers spell the fallback `${VAR:-$HOME/...}`. `:-` and `-`
+# differ only for a set-but-empty value, where `-` would resolve to a bare
+# /.ceo/... at the filesystem root. One arm per helper, because a flip at any
+# one site is invisible to the others.
+test_ceo_registry_path_empty_override_falls_back() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_REGISTRY_FILE="" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "$TEST_HOME/.ceo/registry.json" "an empty CEO_REGISTRY_FILE must fall back to \$HOME, not resolve to /.ceo/registry.json"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_empty_override_falls_back() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_ENABLED_FILE="" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "$TEST_HOME/.ceo/enabled.json" "an empty CEO_ENABLED_FILE must fall back to \$HOME, not resolve to /.ceo/enabled.json"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_empty_override_falls_back() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_STATE_DIR="" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "$TEST_HOME/.ceo/state" "an empty CEO_STATE_DIR must fall back to \$HOME, not resolve to /.ceo/state"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_defaults_to_home() {
+  local path
+  path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "$TEST_HOME/.ceo/enabled.json" "_ceo_enabled_path must default to \$HOME/.ceo/enabled.json"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_honors_override() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor CEO_ENABLED_FILE override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests

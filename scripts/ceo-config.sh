@@ -341,10 +341,16 @@ CEO_REGISTRY_SCHEMA_VERSION=3
 # The generated registry.json lives host-local, not in the synced vault: two
 # hosts scanning would otherwise both rewrite the synced file and produce
 # Syncthing .sync-conflict copies. The vault keeps only the playbook .md
-# definitions (which scan reads). The scheduler daemon reads the same path.
+# definitions (which scan reads).
+#
+# CEO_REGISTRY_FILE is test-only. The scheduler daemon builds its own path from
+# $HOME (lib/scheduler/src/runtime.ts registryPath) and honors no override, so
+# setting this in production splits the CLI's writes from the daemon's reads
+# with nothing logged on either side. A test sets it to point somewhere $HOME is
+# not, which is the only way to prove the path is not hardcoded.
 _ceo_registry_path() {
   : "${HOME:?HOME must be set to resolve the host-local registry path}"
-  printf '%s\n' "$HOME/.ceo/registry.json"
+  printf '%s\n' "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
 }
 
 # Per-trigger cron state — the failure counter, the cooldown stamp, the
@@ -427,12 +433,17 @@ _ceo_state_migrate() {
 }
 
 # enabled.json is host-local like the registry: it lists the `each`-scope
-# playbook names THIS machine runs. The scheduler daemon reads the same path.
-# (`single`-scope playbooks are not gated here — they run on their assigned
-# owner host, recorded in the synced swarm.json owners map.)
+# playbook names THIS machine runs. (`single`-scope playbooks are not gated
+# here — they run on their assigned owner host, recorded in the synced
+# swarm.json owners map.)
+#
+# CEO_ENABLED_FILE is test-only, for the same reason as CEO_REGISTRY_FILE above:
+# the daemon's enabledPath reads $HOME and honors no override, and parseEnabled
+# treats an absent file as "nothing enabled here", so a production override
+# stops each-scope dispatch silently.
 _ceo_enabled_path() {
   : "${HOME:?HOME must be set to resolve the host-local enabled path}"
-  printf '%s\n' "$HOME/.ceo/enabled.json"
+  printf '%s\n' "${CEO_ENABLED_FILE:-$HOME/.ceo/enabled.json}"
 }
 
 # Unlike registry.json (host-local), swarm.json IS synced: it describes the
