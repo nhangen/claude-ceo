@@ -25,6 +25,12 @@ DEFAULT_SYSTEM = (
     "When the task is done, reply with a short summary and no further tool calls."
 )
 
+# Empirical tokenization density for local open-weights LLMs (Llama/Qwen/Gemma)
+# under Byte-Pair Encoding (BPE): ~3-4 characters per token across mixed code,
+# markdown, and JSON schemas. 3 chars/token provides a conservative pre-dispatch
+# ceiling for estimating turn-1 context fit.
+CHARS_PER_TOKEN = 3
+
 
 def _warn_if_stale_scores(generated_at, stale_days):
     """Eval-score staleness logs a warning but never refuses (a re-pulled model
@@ -309,11 +315,12 @@ def main(argv=None):
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
                                  num_ctx=a.num_ctx, timeout=a.timeout, think=a.think,
                                  provenance=provenance)
-    prompt_chars = len(system) + len(a.task)
-    print(f"prompt: {prompt_chars} chars (system={len(system)}, task={len(a.task)}) | num_ctx={a.num_ctx}",
+    tools_chars = len(json.dumps(tools)) if tools else 0
+    prompt_chars = len(system) + len(a.task) + tools_chars
+    print(f"prompt (turn 1 estimate): {prompt_chars} chars (system={len(system)}, task={len(a.task)}, tools={tools_chars}) | num_ctx={a.num_ctx}",
           file=sys.stderr)
-    if prompt_chars > a.num_ctx * 3:
-        print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
+    if prompt_chars > a.num_ctx * CHARS_PER_TOKEN:
+        print(f"warning: turn 1 prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * CHARS_PER_TOKEN} chars); consider --num-ctx",
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
                      "verified": None}

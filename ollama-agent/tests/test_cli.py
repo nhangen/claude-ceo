@@ -525,7 +525,8 @@ def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):
                    "--no-rules", "--no-skills", "--num-ctx", "32768"])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "prompt:" in err
+    assert "prompt (turn 1 estimate):" in err
+    assert "tools=" in err
     assert "num_ctx=32768" in err
 
 
@@ -536,8 +537,19 @@ def test_cli_warns_when_prompt_may_overflow_context(tmp_path, monkeypatch, capsy
                    "--no-rules", "--no-skills", "--num-ctx", "100"])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "warning: prompt size" in err
+    assert "warning: turn 1 prompt size" in err
     assert "may exceed num_ctx=100" in err
+
+
+def test_cli_turn1_estimate_includes_tools(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--num-ctx", "32768"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    tools_len = len(json.dumps(cli.TOOLS))
+    assert f"tools={tools_len}" in err
 
 
 def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch, capsys):

@@ -19,7 +19,8 @@ RETRY_BACKOFF_SECONDS = 0.2
 # front until the user turn is gone, then reports this. It is the daemon's
 # message, not an API contract (observed on ollama through 2026-09), so a reword
 # upstream silently reverts overflow to the generic raises below. The durable
-# signal is prompt_eval_count against num_ctx, not this string.
+# primary signal is prompt_eval_count against num_ctx in agent.py; this sentinel
+# serves as a secondary diagnostic hint when a turn fails before counts return.
 CONTEXT_OVERFLOW_SENTINEL = "no user query found in messages"
 CONTEXT_OVERFLOW_REMEDIATION = (
     "Increase --num-ctx (e.g. --num-ctx 65536) or reduce prompt size with "
