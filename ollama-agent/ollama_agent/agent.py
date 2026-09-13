@@ -76,7 +76,10 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     cwd and the stop is accepted only if it exits 0. A non-zero exit feeds the
     failure back and the loop continues, so the run drives to a green gate rather
     than to the model's own say-so. `verified` is None when no gate is configured,
-    else the last check's pass/fail; the turn cap still bounds the loop.
+    else the last check's pass/fail; the turn cap still bounds the loop. The
+    verify probe executes directly via `toolbox.run_shell` rather than `dispatch`,
+    so verify executions never appear in `calls` or `tool_errors` (it is the
+    harness's verification probe, not a tool call invoked by the model).
 
     `usage_tracker` is an optional caller-owned dict, mutated in place every turn
     so the caller can read what a run burned even when this function raises
