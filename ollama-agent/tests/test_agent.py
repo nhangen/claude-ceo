@@ -98,6 +98,15 @@ def test_write_then_read_file_roundtrip(tmp_path):
     assert out["content"] == "content here"
 
 
+def test_edit_file_in_toolbox(tmp_path):
+    tb = ToolBox(cwd=tmp_path)
+    tb.write_file("file.txt", "line 1\nline 2\n")
+    out = json.loads(tb.edit_file("file.txt", "line 2", "line two"))
+    assert "error" not in out
+    read = json.loads(tb.read_file("file.txt"))
+    assert read["content"] == "line 1\nline two\n"
+
+
 def test_read_missing_file_is_error_not_crash(tmp_path):
     out = json.loads(ToolBox(cwd=tmp_path).read_file("nope.txt"))
     assert "error" in out
@@ -724,3 +733,39 @@ def test_num_ctx_absent_disables_the_check(tmp_path):
     tb = ToolBox(cwd=tmp_path)
     rec = run_agent("t", "s", _usage_transport([999999]), tb, TOOLS, turn_cap=1)
     assert rec["warnings"] == []
+
+
+def test_edit_file_through_the_loop_leaves_the_rest_byte_identical(tmp_path):
+    """The capability this tool exists for, exercised end to end.
+
+    #382 and #384 were both whole-file rewrites that deleted functions the model
+    was not asked to touch. The unit arms prove edit_file replaces a unique
+    anchor; this proves a model driving it through run_agent changes only what it
+    named. Asserted on bytes, because the two failure modes found in review --
+    U+FFFD substitution and CRLF folding -- are invisible to a text comparison.
+    """
+    src = tmp_path / "mod.py"
+    original = (
+        "def alpha():\n    return 1\n\n"
+        "def beta():\n    return 2\n\n"
+        "def gamma():\n    return 3\n"
+    )
+    src.write_bytes(original.encode())
+
+    calls = [{"function": {"name": "edit_file", "arguments": {
+        "path": "mod.py", "old_string": "    return 2", "new_string": "    return 22"}}}]
+
+    def transport(messages, tools):
+        if len(messages) <= 2:
+            return ({"role": "assistant", "content": "", "tool_calls": calls}, {"input": 1, "output": 1})
+        return ({"role": "assistant", "content": "done"}, {"input": 1, "output": 1})
+
+    tb = ToolBox(cwd=str(tmp_path))
+    rec = run_agent("edit beta", "s", transport, tb, TOOLS, turn_cap=3)
+
+    assert rec["tool_errors"] == []
+    expected = original.replace("    return 2\n\ndef gamma", "    return 22\n\ndef gamma")
+    assert src.read_bytes() == expected.encode(), \
+        "only the named anchor may change; every other byte must survive"
+    assert b"def alpha" in src.read_bytes() and b"def gamma" in src.read_bytes(), \
+        "the functions the model did not name must still exist"

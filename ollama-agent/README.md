@@ -69,7 +69,7 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
 
 ## Tools
 
-The model is given five real tools, each bounded (timeout + truncated output) and scoped to `--cwd`:
+The model is given six real tools, each bounded (timeout + truncated output) and scoped to `--cwd`:
 
 | Tool | Does |
 |------|------|
@@ -77,6 +77,7 @@ The model is given five real tools, each bounded (timeout + truncated output) an
 | `git` | run a git subcommand |
 | `read_file` | read a file under cwd |
 | `write_file` | write a file under cwd (creates parent dirs) |
+| `edit_file` | replace one unique occurrence in an existing file, leaving the rest untouched |
 | `list_dir` | list a directory under cwd |
 
 **Trust boundary:** `run_shell` runs arbitrary commands by design — that *is* the tool.

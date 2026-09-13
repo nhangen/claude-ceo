@@ -22,6 +22,10 @@ from ollama_agent.ledger import append_run
 DEFAULT_SYSTEM = (
     "You are a local engineering agent operating inside a single working directory. "
     "Use the provided tools to inspect and modify files and run commands. "
+    "To change part of an existing file, use edit_file: it replaces one unique "
+    "occurrence and leaves the rest of the file untouched. Use write_file only to "
+    "create a new file, or when you genuinely intend to replace the whole contents "
+    "-- rewriting a file you were asked to edit loses the parts you did not think about. "
     "When the task is done, reply with a short summary and no further tool calls."
 )
 
