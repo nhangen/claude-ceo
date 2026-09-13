@@ -136,8 +136,9 @@ def test_append_run_records_verify_gated_field(tmp_path):
 
 
 def test_append_run_verify_gated_absent_reads_as_null(tmp_path):
+    # _rec() deliberately omits verify_gated: it models a record built by code
+    # from before the field existed. append_run must write null there, not False
+    # — an absent key says nothing about whether the run had a gate.
     p = tmp_path / "runs.jsonl"
-    rec = _rec()
-    rec.pop("verify_gated", None)
-    append_run(rec, "m", "t", "/c", path=str(p))
+    append_run(_rec(), "m", "t", "/c", path=str(p))
     assert json.loads(p.read_text().strip())["verify_gated"] is None
