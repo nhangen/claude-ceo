@@ -260,7 +260,11 @@ test_no_registry_flag_field_falls_back_to_settings() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-test_registry_honors_CEO_REGISTRY_FILE_override() {
+test_registry_path_is_not_hardcoded_in_discord_report() {
+  # Not a regression test for the helper fold: the pre-fold line had its own
+  # inline ${CEO_REGISTRY_FILE:-...} and this passed against it too. What it
+  # pins is that the path keeps coming from _ceo_registry_path — it fails if
+  # the helper is reverted, and it would fail on a future re-hardcode here.
   echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
   echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
   local custom_reg="$TMP/custom-registry.json"
