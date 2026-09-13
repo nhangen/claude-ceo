@@ -118,6 +118,16 @@ as text, breaking the loop. Native tool-search (deferring tools behind a
 gpt-oss:20b refuses, deepseek-r1:70b hallucinates calls. So `oll-code` defaults
 to a curated always-loaded set; for broad MCP with a local model, use the bridge.
 
+## Conventions
+
+The harness relies on five load-bearing conventions to preserve correctness across slices:
+
+- **Explicit success checks** — never treat absence-of-throw as success (`non-throwing-client-success-check`). Parse error-in-200-body (transport), JSON-RPC `error` + `isError` (MCP), and `error` keys in tool results.
+- **Reject-don't-default** — enum fields validate at parse AND gate at dispatch (`enum-config-typo-fallback`). Missing/corrupt scores refuse, never pass.
+- **Mutation-check tests** — every regression test states (in a comment) what reversion makes it fail (`test-the-fix-not-the-investigation`).
+- **Governance-as-test** — policy decisions (empty registry, no delegable tiers) are encoded as CI-failing tests, not comments (`test_committed_registry_ships_empty`, `test_committed_registry_enables_no_delegable_tier`).
+- **Characterize accepted risks** — intentional non-features (no path jail) get an explicit characterization test so removing the property is a deliberate act (`test_resolve_absolute_path_escapes_cwd_no_jail`).
+
 ## Tests
 
 ```bash

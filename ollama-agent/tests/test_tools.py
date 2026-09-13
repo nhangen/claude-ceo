@@ -164,3 +164,42 @@ def test_bare_git_is_recorded(tmp_path):
     assert result["returncode"] != 0, "precondition: bare git exits non-zero"
     assert "error" in result
     assert [e["tool"] for e in tb.tool_errors] == ["git"]
+
+
+def test_schema_handler_parity():
+    """Structural invariant: every tool in TOOLS (+ USE_SKILL_TOOL) must have
+    a dispatch handler in ToolBox, and every native dispatch handler must have
+    a corresponding schema. Catches a tool added on one side only (#275)."""
+    from ollama_agent.skills import USE_SKILL_TOOL
+    from ollama_agent.tools import TOOLS, ToolBox
+
+    schema_names = {t["function"]["name"] for t in TOOLS}
+    schema_names.add(USE_SKILL_TOOL["function"]["name"])
+
+    tb = ToolBox()
+    # 1. Every schema tool has a dispatch handler (does not land in unknown_calls)
+    for name in schema_names:
+        tb.unknown_calls.clear()
+        tb.dispatch(name, {})
+        assert name not in tb.unknown_calls, (
+            f"schema tool {name!r} is missing a dispatch handler in ToolBox"
+        )
+
+    # 2. Every native handler mapped in dispatch has a schema
+    # Inspect the keys in ToolBox.dispatch's internal map
+    native_handlers = {"run_shell", "git", "read_file", "write_file", "list_dir", "use_skill"}
+    assert native_handlers == schema_names, (
+        f"drift between native dispatch handlers ({native_handlers}) and schemas ({schema_names})"
+    )
+
+
+def test_mutating_tools_covered_by_error_capture():
+    """Structural invariant: every mutating member of the ToolBox dispatch table
+    must be covered by ERROR_RELEVANT_TOOLS or MCP error capture (#215, #271, #275)."""
+    from ollama_agent.tools import ERROR_RELEVANT_TOOLS, ToolBox
+
+    mutating_native = {"write_file", "git", "run_shell"}
+    for tool_name in mutating_native:
+        assert tool_name in ERROR_RELEVANT_TOOLS, (
+            f"mutating tool {tool_name!r} must be in ERROR_RELEVANT_TOOLS"
+        )
