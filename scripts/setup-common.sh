@@ -433,7 +433,7 @@ ceo_setup_write_next_steps() {
     echo "  4. Run: claude plugin add nhangen/claude-ceo"
     echo "  5. Run: ceo doctor  (verify everything is configured)"
     echo "  6. Run: ceo pr-sources  (pick which gh/glab accounts to query, if you skipped it)"
-    echo "  7. Run: ceo playbook scan  (register playbooks + install cron)"
+    echo "  7. Run: ceo playbook scan  (register playbooks into host-local registry)"
     echo "  8. Test interactive:  cd $VAULT && claude"
     echo "     Then type:  /ceo"
     echo "  9. Test cron:  ceo test"

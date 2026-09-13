@@ -548,6 +548,22 @@ test_doctor_notes_schedulerd_absent_without_failing() {
   assert_not_contains "$output" "heartbeat stale" "absent daemon must not be reported stale"
 }
 
+test_doctor_reports_wsl_service_hint_when_schedulerd_absent_on_wsl() {
+  rm -rf "$HOME/.ceo/schedulerd"
+  local output
+  output=$(
+    PATH="$TEST_HOME/stubs:$PATH"
+    export HOME="$TEST_HOME" CEO_VAULT="$CEO_VAULT"
+    # Override ceo_detect_os in subshell to simulate WSL
+    source "$SCRIPT_DIR/ceo-config.sh"
+    ceo_detect_os() { echo "wsl"; }
+    # Run cmd_doctor directly
+    source "$SCRIPT_DIR/ceo"
+    cmd_doctor 2>&1 || true
+  )
+  assert_contains "$output" "ceo-schedulerd.service" "doctor on WSL must mention ceo-schedulerd.service"
+}
+
 test_doctor_flags_malformed_schedulerd_heartbeat() {
   mkdir -p "$HOME/.ceo/schedulerd"
   printf '{"host":"testhost","dispatched_minute":{}}\n' > "$HOME/.ceo/schedulerd/heartbeat.json"
