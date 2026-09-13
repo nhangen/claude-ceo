@@ -346,8 +346,8 @@ CEO_REGISTRY_SCHEMA_VERSION=3
 # CEO_REGISTRY_FILE is test-only. The scheduler daemon builds its own path from
 # $HOME (lib/scheduler/src/runtime.ts registryPath) and honors no override, so
 # setting this in production splits the CLI's writes from the daemon's reads
-# with nothing logged on either side. A test sets it to keep a $HOME-derived
-# path inside its fixture.
+# with nothing logged on either side. A test sets it to point somewhere $HOME is
+# not, which is the only way to prove the path is not hardcoded.
 _ceo_registry_path() {
   : "${HOME:?HOME must be set to resolve the host-local registry path}"
   printf '%s\n' "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
