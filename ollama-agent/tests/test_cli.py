@@ -446,6 +446,28 @@ def test_cli_ungated_opt_in_runs(tmp_path, monkeypatch, capsys):
     assert "system" in captured       # run_agent reached
 
 
+def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tmp_path, monkeypatch):
+    # main() seeds verify_gated into the tracker at construction, and run_agent
+    # resets it again on entry. Every other crash test crashes INSIDE run_agent,
+    # so they read the reset value and the seed is dead weight to them. This one
+    # crashes in the window between the two — run_agent raising before its reset
+    # loop, or a kill landing during _install_kill_handlers() — which is the only
+    # place the seed is what the row is built from.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: None))
+
+    def boom(*a, **k):
+        raise RuntimeError("died before reset")
+
+    monkeypatch.setattr(cli, "run_agent", boom)
+    assert cli.main(["--ungated", "--task", "w", "--cwd", str(tmp_path),
+                     "--no-rules", "--no-skills", "--verify-cmd", "pytest"]) == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["verify_gated"] is True
+    assert row["verified"] is None
+
+
 def test_cli_empty_verify_cmd_refuses(tmp_path, monkeypatch, capsys):
     # bool("") is False, so an empty gate would be dropped in silence and the row
     # would read verify_gated=False — byte-identical to a run launched with no
