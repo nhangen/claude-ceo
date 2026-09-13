@@ -108,11 +108,13 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
         "completed": False,
         # From the tracker, not a hardcoded None, so a gated run whose check went
         # red before it crashed records False rather than reading as ungated.
-        # With `gated`, (gated=True, verified=None) distinguishes a run that died
-        # before the gate first ran from an ungated run (gated=False, verified=None).
+        # With `verify_gated`, (verify_gated=True, verified=None) distinguishes a run
+        # that died before the gate first ran from one configured with no gate at all
+        # (verify_gated=False). The name is deliberately not `gated`: in this CLI that
+        # word means the delegation gate behind --ungated, which is unrelated.
         # True is unreachable here: a green gate breaks and returns normally.
         "verified": usage_tracker.get("verified"),
-        "gated": usage_tracker.get("gated", False),
+        "verify_gated": usage_tracker.get("verify_gated"),
         "reason": reason,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
@@ -316,7 +318,7 @@ def main(argv=None):
         print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
-                     "verified": None, "gated": bool(a.verify_cmd)}
+                     "verified": None, "verify_gated": bool(a.verify_cmd)}
     _install_kill_handlers()
     rec = None
     exit_code = 0

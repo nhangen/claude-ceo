@@ -631,7 +631,7 @@ def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, ca
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["completed"] is False
-    assert row["gated"] is False
+    assert row["verify_gated"] is False
     assert row["verified"] is None
     assert row["reason"] == "error"
     assert row["ollama_input_tokens"] == 0
@@ -690,15 +690,15 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
-    assert row["gated"] is True
+    assert row["verify_gated"] is True
     assert row["verified"] is False
     assert row["ollama_input_tokens"] == 7
 
 
-def test_cli_crashed_run_with_gate_before_eval_records_gated_true_verified_none(tmp_path, monkeypatch, capsys):
+def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verified_none(tmp_path, monkeypatch, capsys):
     # #386: A gated run that dies on turn 1 (e.g. transport error) before the gate
-    # ever runs records (gated=True, verified=None) — distinguishing "died before gate"
-    # from ungated (gated=False, verified=None).
+    # ever runs records (verify_gated=True, verified=None) — distinguishing "died before gate"
+    # from one with no gate configured (verify_gated=False, verified=None).
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
 
@@ -711,7 +711,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_gated_true_verified_none(
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
-    assert row["gated"] is True
+    assert row["verify_gated"] is True
     assert row["verified"] is None
     assert row["completed"] is False
 
