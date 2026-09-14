@@ -533,6 +533,93 @@ def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
     assert errors[0].closed
 
 
+def test_transport_retries_transient_read_error_then_succeeds(monkeypatch, capsys):
+    import ollama_agent.transport as t
+
+    calls = {"n": 0}
+
+    class _FlakyReadResp(_FakeResp):
+        def read(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("The read operation timed out")
+            return self._body.encode()
+
+    monkeypatch.setattr(
+        t.urllib.request, "urlopen",
+        lambda req, timeout: _FlakyReadResp(200, json.dumps({
+            "message": {"role": "assistant", "content": "ok"},
+            "prompt_eval_count": 7,
+            "eval_count": 11,
+        }))
+    )
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
+
+    prov = {}
+    msg, usage = t.ollama_transport("local-coder", host="localhost:11434", provenance=prov)(
+        [{"role": "user", "content": "hi"}], [])
+
+    assert msg["content"] == "ok"
+    assert usage == {"input": 7, "output": 11}
+    assert calls["n"] == 2
+    assert prov["retried_statuses"] == ["TimeoutError@1"]
+    err = capsys.readouterr().err
+    assert "warning: ollama TimeoutError (attempt 1/3) for model local-coder; retrying in 0.2s..." in err
+
+
+def test_transport_read_error_stops_after_bounded_retries(monkeypatch, capsys):
+    import ollama_agent.transport as t
+
+    class _ResetReadResp(_FakeResp):
+        def read(self):
+            raise ConnectionResetError("[Errno 104] Connection reset by peer")
+
+    monkeypatch.setattr(
+        t.urllib.request, "urlopen",
+        lambda req, timeout: _ResetReadResp(200, "")
+    )
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
+
+    prov = {}
+    with pytest.raises(
+        RuntimeError,
+        match=r"ollama ConnectionResetError reading http://router:40114/api/chat for model local-coder after 3 attempts:.*reset",
+    ):
+        t.ollama_transport("local-coder", host="router:40114", provenance=prov)(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert prov["retried_statuses"] == ["ConnectionResetError@1", "ConnectionResetError@2"]
+    err = capsys.readouterr().err
+    assert "attempt 1/3" in err
+    assert "attempt 2/3" in err
+    assert "attempt 3/3" not in err
+
+
+def test_transport_incomplete_read_retries_then_raises(monkeypatch, capsys):
+    import http.client
+    import ollama_agent.transport as t
+
+    class _IncompleteReadResp(_FakeResp):
+        def read(self):
+            raise http.client.IncompleteRead(b"partial payload")
+
+    monkeypatch.setattr(
+        t.urllib.request, "urlopen",
+        lambda req, timeout: _IncompleteReadResp(200, "")
+    )
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
+
+    prov = {}
+    with pytest.raises(
+        RuntimeError,
+        match=r"ollama IncompleteRead reading http://router:40114/api/chat for model local-coder after 3 attempts:.*IncompleteRead\(15 bytes read\)",
+    ):
+        t.ollama_transport("local-coder", host="router:40114", provenance=prov)(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert prov["retried_statuses"] == ["IncompleteRead@1", "IncompleteRead@2"]
+
+
 # --- transport success check ---
 
 def test_parse_chat_response_ok():
