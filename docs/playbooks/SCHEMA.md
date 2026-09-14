@@ -135,7 +135,25 @@ The `hosts` field formerly declared which machines a playbook may run on:
 
 ### Use disabled to durably tear down
 
-`disabled` is "I previously had this installed and want it removed everywhere." Flipping `active → disabled` and running `ceo playbook scan` removes the cron line on the next scan. Unlike a draft, `disabled` is the explicit "stop running" signal, distinct from "still working on it."
+`disabled` is "I previously had this installed and want it to stop running everywhere." Unlike
+`draft`, it is the explicit tear-down signal, not "still working on it."
+
+**Important — the vault shadows the repo.** `ceo playbook scan` reads definitions from the
+*vault* (`$CEO_VAULT/CEO/playbooks/`). If a vault copy exists for this playbook, it shadows
+the repo version — editing the repo doc alone changes nothing on any host until the vault copy
+is updated. The correct sequence to stop a playbook is:
+
+1. Edit `status: disabled` in the repo doc (`docs/playbooks/<name>.md`).
+2. Run `ceo playbook sync` on any host with the repo mounted (repo wins; vault is
+   overwritten with the updated doc).
+3. Run `ceo playbook scan` on every *owner* host for a `scope: single` playbook (the
+   daemon reads the host-local `~/.ceo/registry.json` that scan writes; it never scans on
+   its own).
+4. Verify with `ceo playbook list` — the playbook should appear tagged `· disabled here`.
+
+**`ceo playbook disable` is a different mechanism.** It writes host-local
+`~/.ceo/enabled.json` and only selects among `scope: each` playbooks. It is *not* the
+right tool for disabling a `scope: single` playbook.
 
 ## Validation
 

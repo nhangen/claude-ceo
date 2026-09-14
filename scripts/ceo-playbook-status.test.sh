@@ -236,4 +236,73 @@ test_doctor_surfaces_drafts() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# Invariant: for any committed repo playbook whose status is not 'active',
+# no scan output may record it as 'active' in the registry. This catches
+# vault-shadow mismatches and parse regressions without pinning individual
+# playbook names. Uses git archive HEAD to read committed files so the test
+# fixture stays isolated from the working tree.
+test_committed_non_active_playbooks_not_active_in_registry() {
+  local repo_root
+  repo_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "SKIP test_committed_non_active_playbooks_not_active_in_registry: not in a git repo"
+    return 0
+  }
+
+  # Extract committed playbooks into an isolated temp dir via git archive.
+  local archive_dir="$TEST_HOME/archive-playbooks"
+  mkdir -p "$archive_dir"
+  # git archive outputs a tar whose paths start with 'docs/playbooks/';
+  # strip the two leading components so *.md land directly in archive_dir.
+  git -C "$repo_root" archive HEAD -- docs/playbooks/ \
+    | tar -x -C "$archive_dir" --strip-components=2 2>/dev/null || true
+
+  # If the repo has no committed playbooks yet (fresh clone), skip gracefully.
+  local md_count
+  md_count=$(find "$archive_dir" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+  if [ "$md_count" -eq 0 ]; then
+    echo "SKIP test_committed_non_active_playbooks_not_active_in_registry: no committed playbooks"
+    return 0
+  fi
+
+  export CEO_REPO_PLAYBOOK_DIR="$archive_dir"
+  local scan_out
+  scan_out=$(bash "$CEO_CLI" playbook scan 2>&1) || {
+    echo "scan failed in invariant test; output:" >&2
+    echo "$scan_out" >&2
+    assert_eq "scan-exit" "0" "scan must succeed for the invariant test to be meaningful"
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    return 1
+  }
+  # Registry must exist after a successful scan.
+  if [ ! -f "$REGISTRY_FILE" ]; then
+    assert_eq "registry" "present" "registry must exist after a successful scan"
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    return 1
+  fi
+
+  local failed=0
+  local f name fm_status reg_status
+  for f in "$archive_dir"/*.md; do
+    [ -f "$f" ] || continue
+    name=$(grep -m1 '^name:[[:space:]]*' "$f" 2>/dev/null \
+           | sed 's/^name:[[:space:]]*//' | tr -d '\r')
+    fm_status=$(grep -m1 '^status:[[:space:]]*' "$f" 2>/dev/null \
+                | sed 's/^status:[[:space:]]*//' | tr -d '\r')
+    [ -z "$name" ] && continue
+    # active playbooks are expected active — only non-active ones must not be.
+    [ "${fm_status:-}" = "active" ] && continue
+    reg_status=$(jq -r --arg n "$name" \
+                   '.playbooks[] | select(.name==$n) | .status // "none"' \
+                   "$REGISTRY_FILE" 2>/dev/null || echo "none")
+    if [ "$reg_status" = "active" ]; then
+      echo "FAIL: playbook '$name' has status '${fm_status:-absent}' in repo but registry records 'active'" >&2
+      failed=$((failed + 1))
+    fi
+  done
+
+  assert_eq "$failed" "0" \
+    "no committed non-active repo playbook may be recorded as active in the registry"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 run_tests

@@ -1946,7 +1946,46 @@ cmd_playbook_scan() {
     echo "  WARN  $shadowed_drift repo playbook(s) shadowed by a DIFFERING vault copy — scan used the vault version, which may be stale. Run 'ceo playbook sync' to reconcile from the repo." >&2
   fi
 
+  # Persist shadow-drift signal as a state-machine alert so it isn't only
+  # visible to whoever ran scan interactively that session. Writes to
+  # CEO/alerts/playbook-drift.md only on first detection or when the count
+  # changes (transition-gated — does not rewrite on every scan). On zero drift
+  # the alert is cleared. Guard on CEO_DIR so hosts without a vault set (CI,
+  # early setup) don't error out.
+  if [ -n "${CEO_DIR:-}" ]; then
+    local _drift_alert="$CEO_DIR/alerts/playbook-drift.md"
+    if [ "$shadowed_drift" -gt 0 ]; then
+      local _prev_count=0
+      if [ -f "$_drift_alert" ]; then
+        _prev_count=$(grep -m1 '^count:' "$_drift_alert" 2>/dev/null \
+                      | sed 's/count:[[:space:]]*//' || echo 0)
+      fi
+      if [ ! -f "$_drift_alert" ] || [ "${_prev_count:-0}" != "$shadowed_drift" ]; then
+        mkdir -p "$(dirname "$_drift_alert")"
+        {
+          echo "---"
+          echo "status: drift"
+          echo "count: $shadowed_drift"
+          echo "since: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "---"
+          echo ""
+          echo "# Playbook shadow drift"
+          echo ""
+          echo "$shadowed_drift repo playbook(s) shadowed by a DIFFERING vault copy."
+          echo "Scan used the vault version, which may be stale."
+          echo ""
+          echo "Run \`ceo playbook sync\` to reconcile from the repo, then re-scan."
+        } > "$_drift_alert"
+      fi
+    else
+      [ -f "${CEO_DIR:-/dev/null}/alerts/playbook-drift.md" ] \
+        && rm -f "$CEO_DIR/alerts/playbook-drift.md"
+    fi
+  fi
+
   if [ "$dry_run" -eq 1 ]; then
+
     echo ""
     echo "Registry: $found playbooks ($added added, $updated updated, $removed removed, $unchanged unchanged, $skipped skipped, $shadowed shadowed) — NOT written"
     if [ "$invalid_status" -gt 0 ] || [ "$invalid_scope" -gt 0 ] || [ "$missing_repo_dir" -eq 1 ]; then
