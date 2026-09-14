@@ -39,6 +39,7 @@ def _stub(monkeypatch, captured):
         # the production function always sets. A stub that omits a key the caller
         # is entitled to hides the KeyError from every test that uses it.
         return {"completed": True, "verified": None, "verify_gated": bool(verify_cmd),
+                "verify_cmd": verify_cmd,
                 "turns": 1, "run_id": run_id,
                 "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
@@ -767,6 +768,7 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
     assert row["verify_gated"] is True
+    assert row["verify_cmd"] == "false"
     assert row["verified"] is False
     assert row["ollama_input_tokens"] == 7
 
@@ -775,6 +777,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     # #386: A gated run that dies on turn 1 (e.g. transport error) before the gate
     # ever runs records (verify_gated=True, verified=None) — distinguishing "died before gate"
     # from one with no gate configured (verify_gated=False, verified=None).
+    # #433: verify_cmd records the exact command ("pytest") rather than null.
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
 
@@ -788,6 +791,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
     assert row["verify_gated"] is True
+    assert row["verify_cmd"] == "pytest"
     assert row["verified"] is None
     assert row["completed"] is False
 

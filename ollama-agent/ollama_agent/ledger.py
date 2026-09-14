@@ -78,6 +78,9 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     can be ungated in that sense and `verify_gated: true` here, and the standard
     ollama-batch invocation is exactly that.
 
+    `verify_cmd` records the exact verification command string configured for
+    the run (or null when ungated), making verified claims auditable (#433).
+
     `scripts/ceo-model-ledger.sh` appends claude-tier rows to this same file and
     emits no `verify_gated` at all. Those rows carry `writer`, which is how a
     reader tells them from pre-#386 Python rows.
@@ -97,6 +100,7 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
         "completed": rec.get("completed"),
         "verified": rec.get("verified"),
         "verify_gated": rec.get("verify_gated"),
+        "verify_cmd": rec.get("verify_cmd"),
         "reason": rec.get("reason"),
     }
     prov = provenance or {}
