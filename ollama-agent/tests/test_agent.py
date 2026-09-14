@@ -484,7 +484,7 @@ def test_transport_retries_transient_http_once_without_changing_request(
     assert errors[0].closed
 
 
-def test_transport_stops_after_bounded_502_retries(monkeypatch):
+def test_transport_stops_after_bounded_502_retries(monkeypatch, capsys):
     import io
     import ollama_agent.transport as t
 
@@ -492,21 +492,26 @@ def test_transport_stops_after_bounded_502_retries(monkeypatch):
 
     def fail(req, timeout):
         error = t.urllib.error.HTTPError(
-            "u", 502, "bad gateway", {}, io.BytesIO(b"upstream secret"))
+            "u", 502, "bad gateway", {}, io.BytesIO(b"no healthy backends"))
         errors.append(error)
         raise error
 
     monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
 
     with pytest.raises(
             RuntimeError,
-            match=r"HTTP 502 after 3 attempts for model local-coder") as exc:
+            match=r"HTTP 502 after 3 attempts for model local-coder: no healthy backends") as exc:
         t.ollama_transport("local-coder", host="router:40114")(
             [{"role": "user", "content": "hi"}], [])
 
     assert len(errors) == 3
     assert all(error.closed for error in errors)
-    assert "upstream secret" not in str(exc.value)
+    assert "no healthy backends" in str(exc.value)
+    err = capsys.readouterr().err
+    assert "warning: ollama HTTP 502 (no healthy backends) (attempt 1/3) for model local-coder; retrying in 0.2s..." in err
+    assert "warning: ollama HTTP 502 (no healthy backends) (attempt 2/3) for model local-coder; retrying in 0.4s..." in err
+    assert "attempt 3/3" not in err
 
 
 @pytest.mark.parametrize("status", [400, 500])
