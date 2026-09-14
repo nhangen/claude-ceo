@@ -73,10 +73,14 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
 
     `verify_cmd` is an optional shell command that gates completion: when the
     model stops (a turn with no tool calls), the command runs in the toolbox's
-    cwd and the stop is accepted only if it exits 0. A non-zero exit feeds the
-    failure back and the loop continues, so the run drives to a green gate rather
-    than to the model's own say-so. `verified` is None when no gate is configured,
-    else the last check's pass/fail; the turn cap still bounds the loop.
+    cwd via `toolbox.run_shell` directly (not `dispatch`), and the stop is
+    accepted only if it exits 0. Running via `run_shell` directly ensures the
+    harness's verification probes are not recorded in `calls` or `tool_errors`,
+    which are reserved for the model's own tool invocations. A non-zero exit
+    feeds the failure back and the loop continues, so the run drives to a green
+    gate rather than to the model's own say-so. `verified` is None when no gate
+    is configured, else the last check's pass/fail; the turn cap still bounds
+    the loop.
 
     `usage_tracker` is an optional caller-owned dict, mutated in place every turn
     so the caller can read what a run burned even when this function raises
