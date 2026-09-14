@@ -19,6 +19,11 @@ from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryErr
                           ollama_transport, render_catalog, run_agent)
 from ollama_agent.ledger import append_run
 
+# English prose averages ~4 chars/token, but system prompts, instructions, JSON
+# schemas, code diffs, and formatting tokenize denser. We estimate ~3 characters
+# per token across common LLM tokenizers (tiktoken, Llama, Qwen).
+CHARS_PER_TOKEN = 3
+
 DEFAULT_SYSTEM = (
     "You are a local engineering agent operating inside a single working directory. "
     "Use the provided tools to inspect and modify files and run commands. "
@@ -327,11 +332,12 @@ def main(argv=None):
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
                                  num_ctx=a.num_ctx, timeout=a.timeout, think=a.think,
                                  provenance=provenance)
-    prompt_chars = len(system) + len(a.task)
-    print(f"prompt: {prompt_chars} chars (system={len(system)}, task={len(a.task)}) | num_ctx={a.num_ctx}",
+    tools_chars = len(json.dumps(tools)) if tools else 0
+    prompt_chars = len(system) + len(a.task) + tools_chars
+    print(f"prompt (turn 1 estimate): {prompt_chars} chars (system={len(system)}, task={len(a.task)}, tools={tools_chars}) | num_ctx={a.num_ctx}",
           file=sys.stderr)
-    if prompt_chars > a.num_ctx * 3:
-        print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
+    if prompt_chars > a.num_ctx * CHARS_PER_TOKEN:
+        print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * CHARS_PER_TOKEN} chars); consider --num-ctx",
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
                      "verified": None, "verify_gated": bool(a.verify_cmd)}
@@ -340,7 +346,8 @@ def main(argv=None):
     exit_code = 0
     try:
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
-                        run_id=a.run_id, verify_cmd=a.verify_cmd, usage_tracker=usage_tracker)
+                        run_id=a.run_id, verify_cmd=a.verify_cmd, usage_tracker=usage_tracker,
+                        num_ctx=a.num_ctx)
     except KeyboardInterrupt:
         print("agent interrupted", file=sys.stderr)
         rec = _crash_record("killed", a.run_id, usage_tracker, toolbox)
