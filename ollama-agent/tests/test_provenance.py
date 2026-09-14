@@ -163,6 +163,39 @@ def test_ledger_records_served_alongside_the_requested_model(tmp_path):
     assert row["request_ids"] == ["gentle-galloping-9a2d"]
 
 
+def test_ledger_records_the_retried_statuses_from_a_real_transport_run(tmp_path, monkeypatch):
+    """The end the field exists for. Asserting the provenance dict only proves
+    transport wrote it; dropping the key from _PROVENANCE_FIELDS leaves that
+    assertion green while the row goes back to being indistinguishable from a
+    run that never flapped -- which is the blindness #385 was filed about."""
+    import io
+    import urllib.error
+
+    calls = {"n": 0}
+
+    class _Fake503(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://h:1/api/chat", 503, "Service Unavailable",
+                             {}, io.BytesIO(b"overloaded"))
+
+    def flap_twice(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise _Fake503()
+        return _Resp(_body())
+
+    monkeypatch.setattr("urllib.request.urlopen", flap_twice)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    prov = {}
+    t = ollama_transport("local-coder", host="h:1", provenance=prov)
+    t([{"role": "user", "content": "x"}], [])
+
+    p = tmp_path / "runs.jsonl"
+    append_run({"run_id": "r1", "turns": 1, "completed": True},
+               "local-coder", "t", "/w", path=p, provenance=prov)
+    assert _row(p)["retried_statuses"] == ["503@1", "503@2"]
+
+
 def test_ledger_without_provenance_writes_nulls_not_a_missing_key(tmp_path):
     """A reader must be able to tell "nothing was captured" from "not captured
     yet": an absent key reads as an old row, an explicit null as a new one."""
