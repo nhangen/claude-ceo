@@ -6,12 +6,13 @@ others. Treating "no exception" as success would record an HTTP error as a model
 turn (non-throwing-client-success-check).
 """
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
 
 DEFAULT_HOST = "127.0.0.1:11434"
-RETRYABLE_HTTP_STATUSES = frozenset({502, 503, 504})
+RETRYABLE_HTTP_STATUSES = frozenset({429, 502, 503, 504})
 MAX_HTTP_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.2
 
@@ -174,7 +175,16 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     _note_headers(provenance, getattr(resp, "headers", None))
-                    return parse_chat_response(resp.status, resp.read().decode(),
+                    text = resp.read().decode(errors="replace")
+                    if "\ufffd" in text:
+                        n = text.count("\ufffd")
+                        print(
+                            f"warning: ollama response body had {n} undecodable byte(s) replaced; "
+                            f"model output may be corrupted",
+                            file=sys.stderr,
+                        )
+                        _note(provenance, "decode_replacements", str(n))
+                    return parse_chat_response(resp.status, text,
                                                provenance=provenance)
             except urllib.error.HTTPError as e:
                 try:
@@ -182,19 +192,36 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         # Headers first: parse_chat_response raises on an error
                         # body, and a failed turn still needs to name its backend.
                         _note_headers(provenance, getattr(e, "headers", None))
-                        return parse_chat_response(e.code, e.read().decode(),
+                        return parse_chat_response(e.code, e.read().decode(errors="replace"),
                                                    provenance=provenance)
                     # The endpoint that just 503'd. Without this a flaky backend
                     # that fails twice before a healthy one answers is invisible,
                     # which is exactly the "which machine" question this records.
                     _note_headers(provenance, getattr(e, "headers", None))
+                    detail = e.read().decode(errors="replace")[:200]
                     if attempt == MAX_HTTP_ATTEMPTS:
+                        detail_msg = f": {detail}" if detail else ""
                         raise RuntimeError(
-                            f"ollama HTTP {e.code} after {attempt} attempts for model {model}"
+                            f"ollama HTTP {e.code} after {attempt} attempts for model {model}{detail_msg}"
                         ) from e
                 finally:
                     e.close()
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                warn_detail = f" ({detail})" if detail else ""
+                delay = RETRY_BACKOFF_SECONDS * attempt
+                headers = getattr(e, "headers", None)
+                if headers:
+                    ra = headers.get("Retry-After")
+                    if ra:
+                        try:
+                            delay = max(delay, float(ra))
+                        except (ValueError, TypeError):
+                            pass
+                print(
+                    f"warning: ollama HTTP {e.code}{warn_detail} (attempt {attempt}/{MAX_HTTP_ATTEMPTS}) "
+                    f"for model {model}; retrying in {delay:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
             except urllib.error.URLError as e:
                 raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e
 
