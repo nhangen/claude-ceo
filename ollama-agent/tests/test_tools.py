@@ -336,3 +336,25 @@ def test_overlapping_matches_count_as_ambiguous(tmp_path):
         "path": "ov.txt", "old_string": "aa", "new_string": "B"}))
     assert "error" in result, "overlapping matches must read as ambiguous"
     assert f.read_text() == "aaa", "and the file must be untouched"
+
+
+def test_mutating_tools_covered_by_error_capture_predicate():
+    """Safety invariant: any mutating tool must be checked by _note_tool_error.
+
+    If a new mutating tool or tool family is added to dispatch, it must be
+    included in ERROR_RELEVANT_TOOLS or dynamic MCP check so that failures
+    are captured in .tool_errors and the cron gate fails the run (#215, #271).
+    """
+    from ollama_agent.tools import ERROR_RELEVANT_TOOLS
+    mutating_builtins = {"write_file", "edit_file", "git", "run_shell"}
+    assert mutating_builtins.issubset(ERROR_RELEVANT_TOOLS)
+
+    # Verify ToolBox._note_tool_error covers both ERROR_RELEVANT_TOOLS and mcp_names
+    tb = ToolBox(mcp_names={"mcp__test": "test"})
+    tb._note_tool_error("mcp__test", json.dumps({"error": "mcp failed"}))
+    assert tb.tool_errors == [{"tool": "mcp__test", "error": "mcp failed"}]
+
+    for tool in ERROR_RELEVANT_TOOLS:
+        tb_b = ToolBox()
+        tb_b._note_tool_error(tool, json.dumps({"error": f"{tool} failed"}))
+        assert tb_b.tool_errors == [{"tool": tool, "error": f"{tool} failed"}]

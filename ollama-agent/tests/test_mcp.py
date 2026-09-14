@@ -153,6 +153,7 @@ def test_toolbox_mcp_error_recorded_not_crash(tmp_path):
     tb = ToolBox(cwd=tmp_path, mcp_client=FakeClient(raises=True), mcp_names={"mcp__echo": "echo"})
     out = json.loads(tb.dispatch("mcp__echo", {}))
     assert "error" in out and "MCPError" in out["error"]
+    assert tb.tool_errors == [{"tool": "mcp__echo", "error": out["error"]}]
 
 
 def test_toolbox_unknown_mcp_name_still_unknown(tmp_path):
