@@ -8,7 +8,53 @@ returncode are NOT operational failures and must stay out of .tool_errors.
 import json
 import subprocess
 
-from ollama_agent.tools import ToolBox
+from ollama_agent.tools import ToolBox, TOOLS, ERROR_RELEVANT_TOOLS
+from ollama_agent.skills import Skill, USE_SKILL_TOOL
+
+
+def test_schema_and_dispatch_handler_parity(tmp_path):
+    """#275: Every tool in TOOLS (+ USE_SKILL_TOOL) must have a dispatch handler in ToolBox,
+    and every static dispatch handler in ToolBox must have a matching schema.
+    """
+    schema_names = {t["function"]["name"] for t in TOOLS} | {USE_SKILL_TOOL["function"]["name"]}
+    expected_handlers = {"run_shell", "git", "read_file", "write_file", "edit_file", "list_dir", "use_skill"}
+
+    assert schema_names == expected_handlers, "Schemas and expected handler names must match exactly"
+
+    skill_file = tmp_path / "SKILL.md"
+    skill_file.write_text("body text")
+    skill = Skill("my_skill", str(skill_file), "description")
+    tb = ToolBox(skills=[skill])
+    args_map = {
+        "run_shell": {"command": "true"},
+        "git": {"args": "version"},
+        "read_file": {"path": "dummy.txt"},
+        "write_file": {"path": "dummy.txt", "content": "hi"},
+        "edit_file": {"path": "dummy.txt", "old_string": "h", "new_string": "H"},
+        "list_dir": {"path": "."},
+        "use_skill": {"name": "my_skill"},
+    }
+    for name in schema_names:
+        # None of the real tools should report "unknown tool" when dispatched
+        res = json.loads(tb.dispatch(name, args_map[name]))
+        assert res.get("error") != f"unknown tool: {name}"
+    assert tb.unknown_calls == []
+
+    # An unknown name is recorded in unknown_calls
+    res_unknown = json.loads(tb.dispatch("unknown_tool_xyz", {}))
+    assert tb.unknown_calls == ["unknown_tool_xyz"]
+    assert res_unknown.get("error") == "unknown tool: unknown_tool_xyz"
+
+
+def test_mutating_tools_covered_by_error_capture_predicate():
+    """#275: Mutating members of the dispatch table must be covered by ERROR_RELEVANT_TOOLS,
+    so mutating failures are always recorded in tool_errors for the cron gate (#215).
+    """
+    mutating_builtins = {"write_file", "edit_file", "git", "run_shell"}
+    assert mutating_builtins == ERROR_RELEVANT_TOOLS
+
+    read_only_tools = {"read_file", "list_dir", "use_skill"}
+    assert read_only_tools.isdisjoint(ERROR_RELEVANT_TOOLS)
 
 
 def test_write_file_error_recorded(tmp_path):
