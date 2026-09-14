@@ -112,11 +112,13 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
         "completed": False,
         # From the tracker, not a hardcoded None, so a gated run whose check went
         # red before it crashed records False rather than reading as ungated.
-        # None stays ambiguous on a crash row — it means either no gate was
-        # configured or the run died before the gate first ran, which is the
-        # commoner shape since the gate only runs on a turn with no tool calls.
+        # With `verify_gated`, (verify_gated=True, verified=None) distinguishes a run
+        # that died before the gate first ran from one configured with no gate at all
+        # (verify_gated=False). The name is deliberately not `gated`: in this CLI that
+        # word means the delegation gate behind --ungated, which is unrelated.
         # True is unreachable here: a green gate breaks and returns normally.
         "verified": usage_tracker.get("verified"),
+        "verify_gated": usage_tracker.get("verify_gated"),
         "reason": reason,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
@@ -199,6 +201,18 @@ def main(argv=None):
         print("REFUSED: an ad-hoc run requires --ungated (it applies no delegation "
               "gate). Use --task-name <name> --registry <path> to run a gated, "
               "registered task instead.", file=sys.stderr)
+        return 2
+
+    # An empty or whitespace-only --verify-cmd is never what the operator meant,
+    # and both failure modes write a row that lies. "" is falsy, so the gate is
+    # dropped and verify_gated=False makes the row identical to a deliberate
+    # no-gate run. "   " is truthy, so the gate "runs", exits 0 having verified
+    # nothing, and records verify_gated=True with verified=True — the strongest
+    # assurance the ledger carries. Refuse rather than warn: these runs happen
+    # under ceo-cron, which discards stderr.
+    if a.verify_cmd is not None and not a.verify_cmd.strip():
+        print("REFUSED: --verify-cmd is empty. Omit the flag to run without a "
+              "verification gate.", file=sys.stderr)
         return 2
 
     # Governance: a registered task is gated before any model call. A non-delegable
@@ -320,7 +334,7 @@ def main(argv=None):
         print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
-                     "verified": None}
+                     "verified": None, "verify_gated": bool(a.verify_cmd)}
     _install_kill_handlers()
     rec = None
     exit_code = 0
@@ -374,7 +388,11 @@ def main(argv=None):
         print(json.dumps(rec, indent=2))
     else:
         final = rec["transcript"][-1]
-        print(f"completed={rec['completed']} verified={rec['verified']} turns={rec['turns']} "
+        # verify_gated rides alongside verified for the same reason the ledger
+        # carries both: verified=None alone cannot say whether a gate was
+        # configured and never reached, or never configured at all.
+        print(f"completed={rec['completed']} verified={rec['verified']} "
+              f"verify_gated={rec['verify_gated']} turns={rec['turns']} "
               f"calls={len(rec['calls'])} unknown={rec['unknown_calls']}")
         print(f"ollama tokens: in={rec['ollama_input_tokens']} out={rec['ollama_output_tokens']}")
         print("--- final message ---")

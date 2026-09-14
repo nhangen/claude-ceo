@@ -120,3 +120,25 @@ def test_append_run_records_error_and_killed_reasons(tmp_path):
     lines = [json.loads(line) for line in p.read_text().strip().splitlines()]
     assert lines[0]["reason"] == "error"
     assert lines[1]["reason"] == "killed"
+
+
+def test_append_run_records_verify_gated_field(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(completed=False, verified=None, verify_gated=True, reason="error"),
+               "m", "t", "/c", path=str(p))
+    append_run(_rec(completed=False, verified=None, verify_gated=False, reason="error"),
+               "m", "t", "/c", path=str(p))
+    lines = [json.loads(line) for line in p.read_text().strip().splitlines()]
+    assert lines[0]["verify_gated"] is True
+    assert lines[0]["verified"] is None
+    assert lines[1]["verify_gated"] is False
+    assert lines[1]["verified"] is None
+
+
+def test_append_run_verify_gated_absent_reads_as_null(tmp_path):
+    # _rec() deliberately omits verify_gated: it models a record built by code
+    # from before the field existed. append_run must write null there, not False
+    # — an absent key says nothing about whether the run had a gate.
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(), "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["verify_gated"] is None

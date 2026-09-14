@@ -35,7 +35,11 @@ def _stub(monkeypatch, captured):
             usage_tracker["ollama_input_tokens"] = 40
             usage_tracker["ollama_output_tokens"] = 400
             usage_tracker["turns"] = 1
-        return {"completed": True, "verified": None, "turns": 1, "run_id": run_id,
+        # Mirrors run_agent's real return shape — including verify_gated, which
+        # the production function always sets. A stub that omits a key the caller
+        # is entitled to hides the KeyError from every test that uses it.
+        return {"completed": True, "verified": None, "verify_gated": bool(verify_cmd),
+                "turns": 1, "run_id": run_id,
                 "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
                 "calls": [], "unknown_calls": []}
@@ -78,7 +82,7 @@ def test_cli_human_output_prints_summary_and_final_message(tmp_path, monkeypatch
     rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "completed=True verified=None turns=1 calls=0 unknown=[]" in out
+    assert "completed=True verified=None verify_gated=False turns=1 calls=0 unknown=[]" in out
     assert "--- final message ---" in out and "done" in out
 
 
@@ -446,6 +450,78 @@ def test_cli_ungated_opt_in_runs(tmp_path, monkeypatch, capsys):
     assert "system" in captured       # run_agent reached
 
 
+def test_cli_summary_prints_verify_gated(tmp_path, monkeypatch, capsys):
+    # The ledger stopped being ambiguous at #386; the terminal line the operator
+    # actually reads still was. verified=None on its own cannot say whether a
+    # gate was configured and never reached.
+    captured = {}
+    _stub(monkeypatch, captured)
+    assert cli.main(["--task", "w", "--cwd", str(tmp_path), "--no-rules",
+                     "--no-skills", "--ungated", "--verify-cmd", "true"]) == 0
+    assert "verify_gated=True" in capsys.readouterr().out
+
+
+def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tmp_path, monkeypatch):
+    # main() seeds verify_gated into the tracker at construction, and run_agent
+    # resets it again on entry. Every other crash test crashes INSIDE run_agent,
+    # so they read the reset value and the seed is dead weight to them. This one
+    # crashes in the window between the two — run_agent raising before its reset
+    # loop, or a kill landing during _install_kill_handlers() — which is the only
+    # place the seed is what the row is built from.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: None))
+
+    def boom(*a, **k):
+        raise RuntimeError("died before reset")
+
+    monkeypatch.setattr(cli, "run_agent", boom)
+    assert cli.main(["--ungated", "--task", "w", "--cwd", str(tmp_path),
+                     "--no-rules", "--no-skills", "--verify-cmd", "pytest"]) == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["verify_gated"] is True
+    assert row["verified"] is None
+
+
+def test_cli_empty_verify_cmd_refuses(tmp_path, monkeypatch, capsys):
+    # bool("") is False, so an empty gate would be dropped in silence and the row
+    # would read verify_gated=False — byte-identical to a run launched with no
+    # gate at all. Refuse instead: the operator asked for verification and the
+    # ledger must never claim they didn't. Refusal, not a warning, because these
+    # runs happen under ceo-cron where stderr goes nowhere.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--ungated", "--verify-cmd", ""])
+    assert rc == 2
+    assert "REFUSED" in capsys.readouterr().err
+    assert "system" not in captured   # run_agent never reached
+
+
+def test_cli_whitespace_verify_cmd_refuses(tmp_path, monkeypatch, capsys):
+    # A whitespace-only gate is worse than an empty one: it is truthy, so it
+    # would record verify_gated=True and then exit 0 without running anything,
+    # forging the strongest assurance pair the ledger carries.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--ungated", "--verify-cmd", "   "])
+    assert rc == 2
+    assert "REFUSED" in capsys.readouterr().err
+    assert "system" not in captured
+
+
+def test_cli_omitted_verify_cmd_still_runs_ungated(tmp_path, monkeypatch, capsys):
+    # The refusal above must not catch the ordinary no-gate run: omitting the
+    # flag entirely is how you ask for one, and it stays a normal exit 0.
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--ungated"])
+    assert rc == 0
+    assert "system" in captured
+
+
 def _transport_kwargs(tmp_path, monkeypatch, argv):
     """Run main() offline and return the kwargs it handed ollama_transport."""
     captured = {}
@@ -631,6 +707,8 @@ def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, ca
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["completed"] is False
+    assert row["verify_gated"] is False
+    assert row["verified"] is None
     assert row["reason"] == "error"
     assert row["ollama_input_tokens"] == 0
     assert row["ollama_output_tokens"] == 0
@@ -688,8 +766,30 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["verify_gated"] is True
     assert row["verified"] is False
     assert row["ollama_input_tokens"] == 7
+
+
+def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verified_none(tmp_path, monkeypatch, capsys):
+    # #386: A gated run that dies on turn 1 (e.g. transport error) before the gate
+    # ever runs records (verify_gated=True, verified=None) — distinguishing "died before gate"
+    # from one with no gate configured (verify_gated=False, verified=None).
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def immediate_fail(messages, tools):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: immediate_fail)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--verify-cmd", "pytest", "--turn-cap", "5"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["verify_gated"] is True
+    assert row["verified"] is None
+    assert row["completed"] is False
 
 
 def test_cli_sigterm_writes_a_killed_ledger_row(tmp_path):
