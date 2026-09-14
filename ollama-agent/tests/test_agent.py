@@ -375,7 +375,7 @@ class _FakeResp:
     def __exit__(self, *a):
         return False
     def read(self):
-        return self._body.encode()
+        return self._body if isinstance(self._body, bytes) else self._body.encode()
 
 
 def test_transport_success(monkeypatch):
@@ -533,6 +533,50 @@ def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
     assert errors[0].closed
 
 
+def test_transport_replaces_invalid_utf8_in_success_response(monkeypatch):
+    import ollama_agent.transport as t
+    raw_payload = b'{"message": {"role": "assistant", "content": "hello \xff\xfe world"}}'
+    monkeypatch.setattr(t.urllib.request, "urlopen",
+                        lambda req, timeout: _FakeResp(200, raw_payload))
+    msg, usage = t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    assert "\ufffd\ufffd" in msg["content"]
+    assert "hello" in msg["content"]
+
+
+def test_transport_replaces_invalid_utf8_in_error_response(monkeypatch):
+    import io
+    import ollama_agent.transport as t
+
+    def boom(req, timeout):
+        raise t.urllib.error.HTTPError("u", 500, "err", {}, io.BytesIO(b"proxy error \xff\xfe"))
+    monkeypatch.setattr(t.urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError, match=r"HTTP 500: proxy error \ufffd\ufffd"):
+        t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+
+
+def test_transport_retries_emit_stderr_warning(monkeypatch, capsys):
+    import io
+    import ollama_agent.transport as t
+
+    call_count = 0
+    def respond(req, timeout):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise t.urllib.error.HTTPError("u", 503, "service unavailable", {}, io.BytesIO(b"busy"))
+        return _FakeResp(200, json.dumps({
+            "message": {"role": "assistant", "content": "recovered"},
+            "prompt_eval_count": 5, "eval_count": 10
+        }))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+    msg, usage = t.ollama_transport("qwen3.8:27b")([{"role": "user", "content": "hi"}], [])
+    assert msg["content"] == "recovered"
+    err = capsys.readouterr().err
+    assert "warning: ollama HTTP 503 (attempt 1/3) for model qwen3.8:27b; retrying in 0.2s..." in err
+    assert "warning: ollama HTTP 503 (attempt 2/3) for model qwen3.8:27b; retrying in 0.4s..." in err
+
+
 # --- transport success check ---
 
 def test_parse_chat_response_ok():
@@ -554,6 +598,11 @@ def test_parse_chat_response_usage_defaults_zero_when_absent():
 def test_parse_chat_response_non_200_raises():
     with pytest.raises(RuntimeError, match="HTTP 500"):
         parse_chat_response(500, "boom")
+
+
+def test_parse_chat_response_unparseable_json_raises():
+    with pytest.raises(RuntimeError, match=r"ollama HTTP 200: unparseable JSON body: <html>bad gateway</html>"):
+        parse_chat_response(200, "<html>bad gateway</html>")
 
 
 def test_parse_chat_response_error_body_raises():

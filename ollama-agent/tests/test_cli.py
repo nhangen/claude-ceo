@@ -559,6 +559,25 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
     assert "--num-ctx" in err
 
 
+def test_cli_surfaces_unparseable_json_error_and_records_crash(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def failing_transport(m, t):
+        from ollama_agent.transport import parse_chat_response
+        return parse_chat_response(200, "<html>proxy 502 error</html>")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "parse fail task", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "agent failed: RuntimeError: ollama HTTP 200: unparseable JSON body: <html>proxy 502 error</html>" in err
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["reason"] == "error"
+
+
 def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_path, monkeypatch, capsys):
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
