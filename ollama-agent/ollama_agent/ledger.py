@@ -38,7 +38,8 @@ def ledger_path():
 
 # Who served the run, from `provenance` (see transport._note). Each is a list of
 # distinct values in first-seen order, because a router re-decides per request.
-_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids")
+_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids",
+                      "retried_statuses")
 
 # Two things #667 asked for that are deliberately NOT here, recorded so a reader
 # who greps the ticket for them is not left wondering:
