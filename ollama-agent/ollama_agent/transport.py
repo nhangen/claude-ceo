@@ -116,7 +116,16 @@ def parse_chat_response(status, body, provenance=None):
     try:
         data = json.loads(body)
     except ValueError as e:
-        raise RuntimeError(f"ollama {status}: unparseable body: {body[:200]}") from e
+        raise RuntimeError(f"ollama 200 with unparseable body: {body[:200]}") from e
+    # A bare array, `null`, or a quoted string parses fine and then dies on
+    # `.get` two lines down as an AttributeError, which cli.py records without
+    # naming ollama or the body. Same class of failure as unparseable, one JSON
+    # token away, so it is gated at the same site rather than left to the
+    # caller.
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"ollama 200 with non-object body ({type(data).__name__}): {body[:200]}"
+        )
     # The model that ANSWERED, which against a router is not the one we asked
     # for. `local-coder` resolved to a 14.8b build while the docs said 27b
     # (#667), and this field was being parsed and discarded on every turn.
@@ -128,10 +137,16 @@ def parse_chat_response(status, body, provenance=None):
         raise RuntimeError(f"ollama error: {err}")
     if "message" not in data:
         raise RuntimeError(f"ollama 200 with no message: {body[:200]}")
-    usage = {
-        "input": int(data.get("prompt_eval_count") or 0),
-        "output": int(data.get("eval_count") or 0),
-    }
+    try:
+        usage = {
+            "input": int(data.get("prompt_eval_count") or 0),
+            "output": int(data.get("eval_count") or 0),
+        }
+    except (TypeError, ValueError) as e:
+        # Same invariant as the two guards above: a proxy that answers with a
+        # string where ollama sends a count must not leave the transport as a
+        # bare ValueError naming neither ollama nor the field.
+        raise RuntimeError(f"ollama 200 with non-numeric token counts: {body[:200]}") from e
     return data["message"], usage
 
 
@@ -198,10 +213,16 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         ) from e
                 finally:
                     e.close()
-                print(
-                    f"warning: ollama HTTP {e.code} on attempt {attempt}/{MAX_HTTP_ATTEMPTS}, retrying in {RETRY_BACKOFF_SECONDS * attempt:.1f}s",
-                    file=sys.stderr,
-                )
+                # Both halves are needed. The print is for whoever is watching a
+                # 600s turn; the note is for everyone else, because under
+                # ceo-cron stderr goes to a log nobody reads and a run that
+                # survived two 503s would otherwise ledger identically to a
+                # clean one -- the flapping-daemon blindness #385 named.
+                _note(provenance, "retried_statuses", f"{e.code}@{attempt}")
+                print(f"warning: ollama HTTP {e.code} on attempt "
+                      f"{attempt}/{MAX_HTTP_ATTEMPTS} for model {model}, "
+                      f"retrying in {RETRY_BACKOFF_SECONDS * attempt:.1f}s",
+                      file=sys.stderr)
                 time.sleep(RETRY_BACKOFF_SECONDS * attempt)
             except urllib.error.URLError as e:
                 raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e

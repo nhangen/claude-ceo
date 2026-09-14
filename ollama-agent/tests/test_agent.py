@@ -598,10 +598,32 @@ def test_parse_chat_response_healthy_200_quoting_the_sentinel_returns():
 
 
 def test_parse_chat_response_unparseable_json_raises_runtimeerror():
-    # #385: A 200 containing non-JSON (HTML error page, proxy glitch) must raise
-    # RuntimeError so it is caught by cli.py and recorded in the ledger.
-    with pytest.raises(RuntimeError, match="ollama 200: unparseable body: <html>"):
+    # #385: a 200 carrying non-JSON (a proxy's HTML error page) surfaced as a bare
+    # ValueError naming neither ollama nor the body. cli.py:334 is `except
+    # Exception` and already ledgered it, so what this buys is a diagnostic
+    # message -- NOT, as the ticket claimed, reaching the ledger at all. Do not
+    # read it as licence to narrow that catch back to RuntimeError.
+    with pytest.raises(RuntimeError, match="ollama 200 with unparseable body: <html>"):
         parse_chat_response(200, "<html>502 Bad Gateway</html>")
+
+
+@pytest.mark.parametrize("body,kind", [("[]", "list"), ("null", "NoneType"),
+                                       ('"s"', "str"), ("123", "int")])
+def test_parse_chat_response_non_object_body_raises_runtimeerror(body, kind):
+    # The other half of #385's class: this parses, then dies on `.get` as an
+    # AttributeError. One arm per JSON type because a guard keyed on any one of
+    # them (a truthiness test, say) passes the others through.
+    with pytest.raises(RuntimeError, match=f"non-object body \\({kind}\\)"):
+        parse_chat_response(200, body)
+
+
+def test_parse_chat_response_non_numeric_token_counts_raise_runtimeerror():
+    # int("abc") is a ValueError, and the invariant is that nothing leaves this
+    # function as anything but RuntimeError.
+    body = json.dumps({"message": {"role": "assistant", "content": "hi"},
+                       "prompt_eval_count": "abc"})
+    with pytest.raises(RuntimeError, match="non-numeric token counts"):
+        parse_chat_response(200, body)
 
 
 # --- why the run ended (reason) ---
@@ -819,7 +841,9 @@ def test_ollama_transport_handles_non_utf8_200_body(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
     t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
     msg, usage = t([{"role": "user", "content": "hi"}], [])
-    assert "hello" in msg["content"]
+    # The replacement char, not just "hello" -- a substring assert passes equally
+    # under errors="ignore", which drops the bytes instead of marking them.
+    assert msg["content"] == "hello \ufffd\ufffd"
     assert usage == {"input": 5, "output": 2}
 
 
@@ -861,5 +885,33 @@ def test_ollama_transport_logs_warning_on_retry(monkeypatch, capsys):
     msg, usage = t([{"role": "user", "content": "hi"}], [])
     assert msg["content"] == "recovered"
     err = capsys.readouterr().err
-    assert "warning: ollama HTTP 503 on attempt 1/3, retrying in 0.2s" in err
+    assert "warning: ollama HTTP 503 on attempt 1/3 for model qwen3.8:27b" in err
+    assert "retrying in 0.2s" in err
+
+
+def test_ollama_transport_records_the_retry_in_provenance(monkeypatch):
+    # stderr under ceo-cron goes to a log nobody reads. The ledger row is the
+    # record that has to distinguish a run that flapped from one that did not.
+    import urllib.error
+
+    calls = {"n": 0}
+
+    class _Fake503(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1/api/chat", 503, "Service Unavailable",
+                             {}, io.BytesIO(b"overloaded"))
+
+    def fail_then_succeed(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _Fake503()
+        return _RawBytesResp(b'{"message": {"role": "assistant", "content": "ok"},'
+                             b' "prompt_eval_count": 1, "eval_count": 1}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_then_succeed)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    prov = {}
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434", provenance=prov)
+    t([{"role": "user", "content": "hi"}], [])
+    assert prov["retried_statuses"] == ["503@1"]
 
