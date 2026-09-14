@@ -449,7 +449,7 @@ def test_transport_urlerror_raises_unreachable(monkeypatch):
         t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
 
 
-@pytest.mark.parametrize("status", [502, 503, 504])
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
 def test_transport_retries_transient_http_once_without_changing_request(
         monkeypatch, status):
     import io
@@ -473,6 +473,7 @@ def test_transport_retries_transient_http_once_without_changing_request(
         }))
 
     monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
 
     msg, usage = t.ollama_transport("local-coder")(
         [{"role": "user", "content": "hi"}], [])
@@ -484,6 +485,61 @@ def test_transport_retries_transient_http_once_without_changing_request(
     assert errors[0].closed
 
 
+def test_transport_honors_retry_after_header(monkeypatch):
+    import io
+    import ollama_agent.transport as t
+
+    sleeps = []
+    calls = {"n": 0}
+
+    def respond(req, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise t.urllib.error.HTTPError(
+                "u", 429, "rate limited", {"Retry-After": "1.5"},
+                io.BytesIO(b"rate limited"))
+        return _FakeResp(200, json.dumps({
+            "message": {"role": "assistant", "content": "ok"},
+            "prompt_eval_count": 1,
+            "eval_count": 1,
+        }))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(t.time, "sleep", lambda s: sleeps.append(s))
+
+    t.ollama_transport("local-coder")([{"role": "user", "content": "hi"}], [])
+
+    assert calls["n"] == 2
+    assert sleeps == [1.5]
+
+
+def test_transport_surfaces_decode_substitutions_and_records_provenance(monkeypatch, capsys):
+    import io
+    import ollama_agent.transport as t
+
+    class _InvalidUtf8Resp:
+        def __init__(self):
+            self.status = 200
+            self.headers = {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def read(self):
+            return b'{"message": {"role": "assistant", "content": "hello \xff\xfe world"}, "prompt_eval_count": 1, "eval_count": 1}'
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", lambda req, timeout: _InvalidUtf8Resp())
+
+    prov = {}
+    msg, usage = t.ollama_transport("local-coder", provenance=prov)(
+        [{"role": "user", "content": "hi"}], [])
+
+    assert msg["content"] == "hello \ufffd\ufffd world"
+    assert prov["decode_replacements"] == ["2"]
+    err = capsys.readouterr().err
+    assert "warning: ollama response body had 2 undecodable byte(s) replaced; model output may be corrupted" in err
+
+
 def test_transport_stops_after_bounded_502_retries(monkeypatch):
     import io
     import ollama_agent.transport as t
@@ -492,21 +548,22 @@ def test_transport_stops_after_bounded_502_retries(monkeypatch):
 
     def fail(req, timeout):
         error = t.urllib.error.HTTPError(
-            "u", 502, "bad gateway", {}, io.BytesIO(b"upstream secret"))
+            "u", 502, "bad gateway", {}, io.BytesIO(b"no healthy backends"))
         errors.append(error)
         raise error
 
     monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
 
     with pytest.raises(
             RuntimeError,
-            match=r"HTTP 502 after 3 attempts for model local-coder") as exc:
+            match=r"HTTP 502 after 3 attempts for model local-coder: no healthy backends") as exc:
         t.ollama_transport("local-coder", host="router:40114")(
             [{"role": "user", "content": "hi"}], [])
 
     assert len(errors) == 3
     assert all(error.closed for error in errors)
-    assert "upstream secret" not in str(exc.value)
+    assert "no healthy backends" in str(exc.value)
 
 
 @pytest.mark.parametrize("status", [400, 500])
