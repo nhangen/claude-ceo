@@ -384,7 +384,11 @@ def main(argv=None):
         print(json.dumps(rec, indent=2))
     else:
         final = rec["transcript"][-1]
-        print(f"completed={rec['completed']} verified={rec['verified']} turns={rec['turns']} "
+        # verify_gated rides alongside verified for the same reason the ledger
+        # carries both: verified=None alone cannot say whether a gate was
+        # configured and never reached, or never configured at all.
+        print(f"completed={rec['completed']} verified={rec['verified']} "
+              f"verify_gated={rec['verify_gated']} turns={rec['turns']} "
               f"calls={len(rec['calls'])} unknown={rec['unknown_calls']}")
         print(f"ollama tokens: in={rec['ollama_input_tokens']} out={rec['ollama_output_tokens']}")
         print("--- final message ---")

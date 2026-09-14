@@ -35,7 +35,11 @@ def _stub(monkeypatch, captured):
             usage_tracker["ollama_input_tokens"] = 40
             usage_tracker["ollama_output_tokens"] = 400
             usage_tracker["turns"] = 1
-        return {"completed": True, "verified": None, "turns": 1, "run_id": run_id,
+        # Mirrors run_agent's real return shape — including verify_gated, which
+        # the production function always sets. A stub that omits a key the caller
+        # is entitled to hides the KeyError from every test that uses it.
+        return {"completed": True, "verified": None, "verify_gated": bool(verify_cmd),
+                "turns": 1, "run_id": run_id,
                 "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
                 "calls": [], "unknown_calls": []}
@@ -78,7 +82,7 @@ def test_cli_human_output_prints_summary_and_final_message(tmp_path, monkeypatch
     rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "completed=True verified=None turns=1 calls=0 unknown=[]" in out
+    assert "completed=True verified=None verify_gated=False turns=1 calls=0 unknown=[]" in out
     assert "--- final message ---" in out and "done" in out
 
 
@@ -444,6 +448,17 @@ def test_cli_ungated_opt_in_runs(tmp_path, monkeypatch, capsys):
     rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills", "--ungated"])
     assert rc == 0
     assert "system" in captured       # run_agent reached
+
+
+def test_cli_summary_prints_verify_gated(tmp_path, monkeypatch, capsys):
+    # The ledger stopped being ambiguous at #386; the terminal line the operator
+    # actually reads still was. verified=None on its own cannot say whether a
+    # gate was configured and never reached.
+    captured = {}
+    _stub(monkeypatch, captured)
+    assert cli.main(["--task", "w", "--cwd", str(tmp_path), "--no-rules",
+                     "--no-skills", "--ungated", "--verify-cmd", "true"]) == 0
+    assert "verify_gated=True" in capsys.readouterr().out
 
 
 def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tmp_path, monkeypatch):
