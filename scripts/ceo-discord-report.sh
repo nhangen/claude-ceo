@@ -58,8 +58,12 @@ _dlog() {
 _registry_report_flag() {
   local field="$1"
   local reg; reg="$(_ceo_registry_path)"
-  [ -f "$reg" ] || { echo absent; return; }
-  local val
+  if [ ! -f "$reg" ]; then
+    _dlog "registry file not found ($reg)"
+    echo absent
+    return
+  fi
+  local val rc=0
   # Deliberately avoid jq's `//` here: `false // "absent"` returns "absent"
   # because jq treats false as empty, which would collapse an explicit
   # discord_report:false into the settings fallback. Branch on array length and
@@ -69,7 +73,12 @@ _registry_report_flag() {
      | if ($v | length) == 0 then "absent"
        elif ($v[0] == null) then "absent"
        else ($v[0] | tostring) end' \
-    "$reg" 2>/dev/null)
+    "$reg" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _dlog "registry jq query failed for $field on $TRIGGER ($reg)"
+    echo absent
+    return
+  fi
   case "$val" in
     true|false) echo "$val" ;;
     *) echo absent ;;

@@ -277,6 +277,35 @@ test_registry_path_is_not_hardcoded_in_discord_report() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_missing_registry_logs_debug_line_naming_path() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local missing_reg="$TMP/nonexistent-registry.json"
+
+  printf 'brief body' | CEO_REGISTRY_FILE="$missing_reg" "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry file not found ($missing_reg)" \
+    "missing registry file must be logged in debug log with resolved path"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_malformed_registry_logs_jq_failure_debug_line() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local bad_reg="$TMP/bad-registry.json"
+  echo "not-valid-json{{{" > "$bad_reg"
+
+  printf 'brief body' | CEO_REGISTRY_FILE="$bad_reg" "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry jq query failed for discord_report on morning-brief ($bad_reg)" \
+    "malformed registry JSON must log jq query failure in debug log"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_records_last_deliver_timestamp_on_successful_post() {
   # The signal `ceo doctor` watches: a successful delivery writes a per-trigger
   # timestamp. Its ABSENCE/staleness is how the watchdog detects a report that
