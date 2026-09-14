@@ -239,6 +239,20 @@ def test_verify_cmd_never_green_ends_unverified_at_cap(tmp_path):
     assert rec["turns"] == 3
 
 
+def test_verify_cmd_empty_string_raises_valueerror(tmp_path):
+    # #436: Empty string is not a valid gate and must not silently run ungated.
+    transport = _script({"role": "assistant", "content": "done"})
+    with pytest.raises(ValueError, match="verify_cmd is empty"):
+        run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="")
+
+
+def test_verify_cmd_whitespace_string_raises_valueerror(tmp_path):
+    # #436: Whitespace-only string must not pass as truthy gate and forge green status.
+    transport = _script({"role": "assistant", "content": "done"})
+    with pytest.raises(ValueError, match="verify_cmd is empty"):
+        run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="   \t\n  ")
+
+
 def test_run_id_echoed_in_record(tmp_path):
     transport = _script({"role": "assistant", "content": "done"})
     rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, run_id="run-abc")
