@@ -375,6 +375,8 @@ class _FakeResp:
     def __exit__(self, *a):
         return False
     def read(self):
+        if isinstance(self._body, bytes):
+            return self._body
         return self._body.encode()
 
 
@@ -473,6 +475,7 @@ def test_transport_retries_transient_http_once_without_changing_request(
         }))
 
     monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
 
     msg, usage = t.ollama_transport("local-coder")(
         [{"role": "user", "content": "hi"}], [])
@@ -484,7 +487,7 @@ def test_transport_retries_transient_http_once_without_changing_request(
     assert errors[0].closed
 
 
-def test_transport_stops_after_bounded_502_retries(monkeypatch):
+def test_transport_stops_after_bounded_502_retries(monkeypatch, capsys):
     import io
     import ollama_agent.transport as t
 
@@ -497,6 +500,7 @@ def test_transport_stops_after_bounded_502_retries(monkeypatch):
         raise error
 
     monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
 
     with pytest.raises(
             RuntimeError,
@@ -507,10 +511,14 @@ def test_transport_stops_after_bounded_502_retries(monkeypatch):
     assert len(errors) == 3
     assert all(error.closed for error in errors)
     assert "upstream secret" not in str(exc.value)
+    err = capsys.readouterr().err
+    assert "attempt 1/3" in err
+    assert "attempt 2/3" in err
+    assert "attempt 3/3" not in err
 
 
 @pytest.mark.parametrize("status", [400, 500])
-def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
+def test_transport_does_not_retry_other_http_errors(monkeypatch, capsys, status):
     import io
     import ollama_agent.transport as t
 
@@ -524,6 +532,7 @@ def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
         raise error
 
     monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
 
     with pytest.raises(RuntimeError, match=f"HTTP {status}"):
         t.ollama_transport("local-coder")(
@@ -531,6 +540,7 @@ def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
 
     assert len(errors) == 1
     assert errors[0].closed
+    assert capsys.readouterr().err == ""
 
 
 # --- transport success check ---
