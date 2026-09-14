@@ -224,6 +224,20 @@ def test_stdio_transport_recv_times_out_on_silent_server(tmp_path):
         transport.close()
 
 
+def test_stdio_transport_recv_times_out_on_partial_line_server(tmp_path):
+    # A server that writes a partial line without newline then sleeps must time out,
+    # not block indefinitely on readline.
+    server = tmp_path / "partial.py"
+    server.write_text("import sys, time; sys.stdout.write('{\"jsonrpc\": \"2.0\"'); sys.stdout.flush(); time.sleep(30)")
+    transport = StdioMCPTransport([sys.executable, str(server)], timeout=1)
+    transport.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    try:
+        with pytest.raises(MCPError, match="did not respond within"):
+            transport.recv()
+    finally:
+        transport.close()
+
+
 def test_stdio_transport_close_reaps_and_is_idempotent(tmp_path):
     server = tmp_path / "idle.py"
     server.write_text("import sys\nfor line in sys.stdin:\n    pass\n")
