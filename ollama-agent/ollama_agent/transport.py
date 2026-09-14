@@ -6,6 +6,7 @@ others. Treating "no exception" as success would record an HTTP error as a model
 turn (non-throwing-client-success-check).
 """
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -194,6 +195,11 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         ) from e
                 finally:
                     e.close()
+                print(
+                    f"warning: ollama HTTP {e.code} (attempt {attempt}/{MAX_HTTP_ATTEMPTS}) "
+                    f"for model {model}; retrying in {RETRY_BACKOFF_SECONDS * attempt:.1f}s...",
+                    file=sys.stderr,
+                )
                 time.sleep(RETRY_BACKOFF_SECONDS * attempt)
             except urllib.error.URLError as e:
                 raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e
