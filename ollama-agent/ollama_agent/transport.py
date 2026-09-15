@@ -5,6 +5,7 @@ returns a 200 body carrying an "error" key for some failures, and a non-200 for
 others. Treating "no exception" as success would record an HTTP error as a model
 turn (non-throwing-client-success-check).
 """
+import http.client
 import json
 import sys
 import time
@@ -226,5 +227,20 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                 time.sleep(RETRY_BACKOFF_SECONDS * attempt)
             except urllib.error.URLError as e:
                 raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e
+            except (OSError, http.client.HTTPException) as e:
+                # A read that times out or drops mid-body is the same transient the 5xx
+                # arm retries; only the layer it fails at differs.
+                if attempt == MAX_HTTP_ATTEMPTS:
+                    raise RuntimeError(
+                        f"ollama {type(e).__name__} reading {url} for model {model} "
+                        f"after {attempt} attempts: {e}"
+                    ) from e
+                _note(provenance, "retried_statuses", f"{type(e).__name__}@{attempt}")
+                print(
+                    f"warning: ollama {type(e).__name__} (attempt {attempt}/{MAX_HTTP_ATTEMPTS}) "
+                    f"for model {model}; retrying in {RETRY_BACKOFF_SECONDS * attempt:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
     return transport
