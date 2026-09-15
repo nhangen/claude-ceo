@@ -759,7 +759,8 @@ status: active
 ---
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local log="$CEO_DIR/log/$(date +%Y-%m-%d).md"
+  local log
+  log="$CEO_DIR/log/$(date +%Y-%m-%d).md"
   mkdir -p "$CEO_DIR/log"
   printf -- '## entry\n' > "$log"
   chmod 000 "$log"

@@ -133,9 +133,13 @@ test_preflight_treats_a_non_numeric_count_as_unknown() {
 _pending_preflight_rc() {
   ( set +eu
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    # All three are read by ceo_pending_items_preflight, which is sourced above,
+    # so the use is invisible to static analysis from here.
+    # shellcheck disable=SC2034
     PENDING_ASK_QUESTIONS="$1"
+    # shellcheck disable=SC2034
     FILE_GATHER_DEGRADED="$2"
-    # shellcheck disable=SC2034  # read by ceo_pending_items_preflight, sourced above
+    # shellcheck disable=SC2034
     FILE_GATHER_DEGRADED_REASONS="file-read-failed:/path/to/Pending.md:rc=2"
     local out rc=0
     out=$(ceo_pending_items_preflight) || rc=$?

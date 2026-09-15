@@ -872,7 +872,8 @@ status: active
 PB
   # Preflight check runs only when hour >= 16; if test runs before 4pm, the function returns 1 cleanly,
   # but if hour >= 16 and log file unreadable it returns 2. We verify the preflight function directly.
-  local log_file="$CEO_DIR/log/$(date +%Y-%m-%d).md"
+  local log_file
+  log_file="$CEO_DIR/log/$(date +%Y-%m-%d).md"
   mkdir -p "$CEO_DIR/log"
   printf -- '## 16:30 — Test entry\n' > "$log_file"
   chmod 000 "$log_file"
