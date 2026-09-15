@@ -11,7 +11,7 @@
 #   ceo_augment_path()      — prepend bun/Homebrew/.local prefixes to PATH (idempotent)
 #   ceo_resolve_real_home() — print passwd-canonical $HOME for running user; rc=0/1
 #   ceo_pin_home_or_warn()  — resolve+export $HOME from passwd; warn-and-rc=1 on fail
-#   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1
+#   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1/2
 #   ceo_assert_primary_host() — gate Syncthing-shared writes; rc=0 allowed/1 deny
 #   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
 #   ceo_write_alert_frontmatter() — emit alert frontmatter to stdout; validates enum
@@ -931,20 +931,47 @@ ceo_validate_vault() {
 # Returns:
 #   0  at least one "- [ ]" line exists in any inbox source
 #   1  no unchecked items, or no inbox sources present
+#   2  cannot tell (IO error / unreadable inbox file) — reason printed to stdout
 # ---------------------------------------------------------------------------
 ceo_inbox_has_unchecked() {
   local dir="${CEO_DIR:?CEO_DIR must be set before ceo_inbox_has_unchecked}"
-  if [ -f "$dir/inbox.md" ] && grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null; then
-    return 0
+  local degraded=0 degraded_reasons="" rc=0
+
+  if [ -f "$dir/inbox.md" ]; then
+    rc=0
+    grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    elif [ "$rc" -gt 1 ]; then
+      degraded=1
+      degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox file '$dir/inbox.md' (grep rc=$rc)"
+    fi
   fi
   if [ -d "$dir/inbox" ]; then
     local f
+    # An unsearchable directory cannot fail a grep, because the glob never
+    # expands and the loop never runs -- so without this probe the whole branch
+    # reports a clean empty queue with unread work inside it. `-d` alone does not
+    # cover it: a mode-000 directory is still a directory.
+    if ! ls "$dir/inbox" >/dev/null 2>&1; then
+      degraded=1
+      degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox directory '$dir/inbox'"
+    fi
     for f in "$dir/inbox/"*.md; do
       [ -f "$f" ] || continue
-      if grep -q "^- \[ \]" "$f" 2>/dev/null; then
+      rc=0
+      grep -q "^- \[ \]" "$f" 2>/dev/null || rc=$?
+      if [ "$rc" -eq 0 ]; then
         return 0
+      elif [ "$rc" -gt 1 ]; then
+        degraded=1
+        degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox file '$f' (grep rc=$rc)"
       fi
     done
+  fi
+  if [ "$degraded" -eq 1 ]; then
+    echo "inbox scan degraded: $degraded_reasons"
+    return 2
   fi
   return 1
 }

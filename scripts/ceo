@@ -725,12 +725,20 @@ cmd_preflight() {
     ceo_pr_review_preflight
   }
   preflight_has_pending_items() {
-    [ "${PENDING_COUNT:-0}" -gt 0 ]
+    ceo_pending_items_preflight
   }
   preflight_has_log_entries_after_4pm() {
     local hour
     hour=$(date +%H)
-    [ "$hour" -ge 16 ] && [ -f "$log_file" ] && grep -q "^## " "$log_file"
+    [ "$hour" -ge 16 ] || return 1
+    [ -f "$log_file" ] || return 1
+    local rc=0
+    grep -q "^## " "$log_file" 2>/dev/null || rc=$?
+    if [ "$rc" -gt 1 ]; then
+      echo "cannot read log file '$log_file' (grep rc=$rc)"
+      return 2
+    fi
+    return "$rc"
   }
   preflight_has_ceo_branches() {
     local repos_file="$CEO_DIR/repos.md"
