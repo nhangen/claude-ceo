@@ -142,3 +142,22 @@ def test_append_run_verify_gated_absent_reads_as_null(tmp_path):
     p = tmp_path / "runs.jsonl"
     append_run(_rec(), "m", "t", "/c", path=str(p))
     assert json.loads(p.read_text().strip())["verify_gated"] is None
+
+
+def test_append_run_records_verify_cmd(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(completed=True, verified=True, verify_gated=True, verify_cmd="pytest -q"),
+               "m", "t", "/c", path=str(p))
+    append_run(_rec(completed=True, verified=None, verify_gated=False, verify_cmd=None),
+               "m", "t", "/c", path=str(p))
+    lines = [json.loads(line) for line in p.read_text().strip().splitlines()]
+    assert lines[0]["verify_cmd"] == "pytest -q"
+    assert lines[1]["verify_cmd"] is None
+
+
+def test_append_run_verify_cmd_absent_reads_as_null(tmp_path):
+    # #433: When verify_cmd is absent in the input record (e.g. pre-#433 rows),
+    # append_run writes null.
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(), "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["verify_cmd"] is None

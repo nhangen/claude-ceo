@@ -82,9 +82,9 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     so the caller can read what a run burned even when this function raises
     instead of returning — that is the whole point of it, and cli's crash record
     is its only consumer today. It carries `ollama_input_tokens`,
-    `ollama_output_tokens`, `turns`, `verified`, and `verify_gated`. Entry resets all
-    five, so a tracker reused across two calls does not double-count and stale
-    state cannot leak into the next run.
+    `ollama_output_tokens`, `turns`, `verified`, `verify_gated`, and `verify_cmd`.
+    Entry resets all six, so a tracker reused across two calls does not double-count
+    and stale state cannot leak into the next run.
 
     `reason` says why the loop ended in one field, so a consumer needn't join
     two nullable ones: "ok" (the model stopped and the gate passed, or none
@@ -106,7 +106,8 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     ollama_output_tokens = 0
     warnings = []
     for key, value in (("ollama_input_tokens", 0), ("ollama_output_tokens", 0),
-                       ("turns", 0), ("verified", None), ("verify_gated", verify_gated)):
+                       ("turns", 0), ("verified", None), ("verify_gated", verify_gated),
+                       ("verify_cmd", verify_cmd)):
         _track(usage_tracker, key, value)
     while turns < turn_cap:
         turns += 1
@@ -191,6 +192,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
         "completed": completed,
         "verified": verified,
         "verify_gated": verify_gated,
+        "verify_cmd": verify_cmd,
         "reason": reason,
         "turns": turns,
         "run_id": run_id,

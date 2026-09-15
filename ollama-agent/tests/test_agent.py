@@ -205,6 +205,7 @@ def test_verify_cmd_none_is_prior_behavior(tmp_path):
     assert rec["completed"] is True
     assert rec["turns"] == 1
     assert rec["verified"] is None
+    assert rec["verify_cmd"] is None
 
 
 def test_verify_cmd_passing_accepts_the_stop(tmp_path):
@@ -212,6 +213,7 @@ def test_verify_cmd_passing_accepts_the_stop(tmp_path):
     rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="true")
     assert rec["completed"] is True
     assert rec["verified"] is True
+    assert rec["verify_cmd"] == "true"
     assert rec["turns"] == 1
 
 
@@ -226,6 +228,7 @@ def test_verify_cmd_keeps_going_until_green(tmp_path):
                     turn_cap=8, verify_cmd=verify)
     assert rec["completed"] is True
     assert rec["verified"] is True
+    assert rec["verify_cmd"] == verify
     assert rec["turns"] == 2
 
 
@@ -237,6 +240,7 @@ def test_verify_cmd_never_green_ends_unverified_at_cap(tmp_path):
                     turn_cap=3, verify_cmd="false")
     assert rec["verified"] is False
     assert rec["completed"] is False
+    assert rec["verify_cmd"] == "false"
     assert rec["turns"] == 3
 
 
@@ -711,7 +715,9 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
                      turn_cap=1, verify_cmd="false", usage_tracker=tracker)
     assert tracker["verified"] is False
     assert tracker["verify_gated"] is True
+    assert tracker["verify_cmd"] == "false"
     assert rec1["verify_gated"] is True
+    assert rec1["verify_cmd"] == "false"
     assert tracker["ollama_input_tokens"] == 10
 
     second = _script(({"role": "assistant", "content": "done"}, {"input": 3, "output": 4}))
@@ -719,7 +725,9 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
                      turn_cap=1, usage_tracker=tracker)
     assert tracker["verified"] is None
     assert tracker["verify_gated"] is False
+    assert tracker["verify_cmd"] is None
     assert rec2["verify_gated"] is False
+    assert rec2["verify_cmd"] is None
     assert tracker["ollama_input_tokens"] == 3
     assert tracker["turns"] == 1
 
