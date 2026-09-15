@@ -24,7 +24,10 @@ def test_schema_and_dispatch_handler_parity(tmp_path):
     skill_file = tmp_path / "SKILL.md"
     skill_file.write_text("body text")
     skill = Skill("my_skill", str(skill_file), "description")
-    tb = ToolBox(skills=[skill])
+    # cwd, not the default ".". write_file and edit_file below are dispatched for
+    # real, so without this the parity check writes dummy.txt into the repo
+    # working tree instead of the fixture (test-writes-stay-in-the-fixture).
+    tb = ToolBox(cwd=str(tmp_path), skills=[skill])
     args_map = {
         "run_shell": {"command": "true"},
         "git": {"args": "version"},
