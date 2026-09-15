@@ -123,9 +123,9 @@ to a curated always-loaded set; for broad MCP with a local model, use the bridge
 
 Load-bearing conventions followed across the harness:
 
-- **Explicit success checks** — never treat absence-of-throw as success; parse error-in-200-body (transport), JSON-RPC `error` + `isError` (MCP), and `error` keys in tool results.
-- **Reject-don't-default** — enum fields validate at parse AND gate at dispatch; missing/corrupt scores refuse, never pass.
-- **Mutation-check tests** — every regression test states (in a comment) what reversion makes it fail.
+- **Explicit success checks** (`non-throwing-client-success-check`) — never treat absence-of-throw as success; parse error-in-200-body (transport), JSON-RPC `error` + `isError` (MCP), and `error` keys in tool results.
+- **Reject-don't-default** (`enum-config-typo-fallback`) — enum fields validate at parse AND gate at dispatch; missing/corrupt scores refuse, never pass.
+- **Mutation-check tests** (`test-the-fix-not-the-investigation`) — every regression test states (in a comment) what reversion makes it fail.
 - **Governance-as-test** — policy decisions (empty registry, no delegable tiers) are encoded as CI-failing tests, not comments.
 - **Characterize accepted risks** — intentional non-features (no path jail) get an explicit characterization test so removing the property is a deliberate act (`test_resolve_absolute_path_escapes_cwd_no_jail` is the template).
 
