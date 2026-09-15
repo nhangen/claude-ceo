@@ -603,7 +603,9 @@ def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):
     assert rc == 0
     err = capsys.readouterr().err
     assert "prompt (turn 1 estimate):" in err
-    assert "tools=" in err
+    # The value, not just the key: "tools=" in err passes even when the estimate
+    # drops the tool schemas entirely, which is the whole thing #384 added.
+    assert f"tools={len(json.dumps(cli.TOOLS))}" in err
     assert "num_ctx=32768" in err
 
 
@@ -630,6 +632,17 @@ def test_cli_passes_num_ctx_to_run_agent_and_tracks_overflow_warning(tmp_path, m
     rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
                    "--no-rules", "--no-skills", "--num-ctx", "4096"])
     assert rc == 0
+
+    # Both halves the name promises, because rc == 0 alone asserts neither and
+    # stays green with the `num_ctx=a.num_ctx` this PR adds reverted. agent.py's
+    # 90% warning is the observable that only fires when the value arrived:
+    # 3800 >= 4096 * 0.9. Read off the ledger row rather than the tracker, so a
+    # future change that drops it between run_agent and the row also fails.
+    expected = ("turn 1: prompt used 3800 of 4096 context tokens (>=90%) -- "
+                "output may be truncated")
+    row = json.loads(ledger.read_text().strip().splitlines()[-1])
+    assert row["warnings"] == [expected]
+    assert f"warning: {expected}" in capsys.readouterr().err
 
 
 def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch, capsys):

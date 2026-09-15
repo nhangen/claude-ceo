@@ -99,6 +99,10 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
         "verified": rec.get("verified"),
         "verify_gated": rec.get("verify_gated"),
         "reason": rec.get("reason"),
+        # Absent on a pre-#384 row, [] on a run that had nothing to warn about --
+        # the same absent-vs-empty distinction the provenance fields keep, and for
+        # the same reason: an old row must not read as a fresh clean one.
+        "warnings": rec.get("warnings"),
     }
     prov = provenance or {}
     for key in _PROVENANCE_FIELDS:

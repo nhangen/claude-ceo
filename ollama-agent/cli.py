@@ -19,9 +19,9 @@ from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryErr
                           ollama_transport, render_catalog, run_agent)
 from ollama_agent.ledger import append_run
 
-# English prose averages ~4 chars/token, but system prompts, instructions, JSON
-# schemas, code diffs, and formatting tokenize denser. We estimate ~3 characters
-# per token across common LLM tokenizers (tiktoken, Llama, Qwen).
+# Local open-weights LLMs (Llama/Qwen/Gemma) under byte-pair encoding run
+# ~3-4 characters per token across mixed code, markdown, and JSON schemas.
+# 3 is the conservative end, which is what a pre-dispatch ceiling wants.
 CHARS_PER_TOKEN = 3
 
 DEFAULT_SYSTEM = (
@@ -395,6 +395,11 @@ def main(argv=None):
         print(json.dumps(rec, indent=2))
     else:
         final = rec["transcript"][-1]
+        # agent.py raises these and nothing else looked at them: before this the
+        # context-overflow warning was computed, returned, and dropped, so the
+        # num_ctx plumbing bought an alert no operator could see.
+        for w in rec.get("warnings") or []:
+            print(f"warning: {w}", file=sys.stderr)
         # verify_gated rides alongside verified for the same reason the ledger
         # carries both: verified=None alone cannot say whether a gate was
         # configured and never reached, or never configured at all.
