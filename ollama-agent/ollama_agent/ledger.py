@@ -80,8 +80,8 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     ollama-batch invocation is exactly that.
 
     `scripts/ceo-model-ledger.sh` appends claude-tier rows to this same file and
-    emits no `verify_gated` at all. Those rows carry `writer`, which is how a
-    reader tells them from pre-#386 Python rows.
+    emits explicit `null` for `verify_gated` and `verified` (#434). Those rows carry
+    `writer`, which is how a reader tells them from Python rows.
     """
     p = Path(path) if path is not None else ledger_path()
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")

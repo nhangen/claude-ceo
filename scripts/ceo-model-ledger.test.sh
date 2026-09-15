@@ -60,4 +60,14 @@ test_ledger_write_entry_does_not_propagate_write_failures_under_set_e() {
   assert_contains "$output" "reached_end" "line after failed ceo_ledger_write_entry must execute under set -e"
 }
 
+test_entry_emits_explicit_null_for_verified_and_verify_gated() {
+  ceo_ledger_write_entry "claude-tier" "haiku" "test-playbook" "/tmp" "0.002" "true" > /dev/null
+  local last_line verified verify_gated
+  last_line=$(tail -1 "$OLLAMA_AGENT_LEDGER")
+  verified=$(echo "$last_line" | jq '.verified')
+  verify_gated=$(echo "$last_line" | jq '.verify_gated')
+  assert_eq "$verified" "null" "verified must be explicit null on shell-written rows"
+  assert_eq "$verify_gated" "null" "verify_gated must be explicit null on shell-written rows"
+}
+
 run_tests

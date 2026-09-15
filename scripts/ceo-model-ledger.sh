@@ -41,7 +41,8 @@ ceo_ledger_write_entry() {
     --argjson cost_usd "$cost_usd" --argjson completed "$completed" \
     '{ts: $ts, run_id: $run_id, session_id: (if $session_id == "" then null else $session_id end),
       writer: $writer, model: $model, task_name: $task_name, cwd: $cwd,
-      cost_usd: $cost_usd, completed: $completed}' \
+      cost_usd: $cost_usd, completed: $completed,
+      verified: null, verify_gated: null}' \
     >> "$path" 2>/dev/null || true
 
   echo "$run_id"
