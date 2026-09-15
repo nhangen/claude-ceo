@@ -195,7 +195,7 @@ class ToolBox:
         """Record a mutating-tool failure so the dispatcher (cron) can fail a
         completed-but-errored run (#215). Inspects the result's "error" key —
         absence-of-throw is not success (non-throwing-client-success-check)."""
-        if name not in ERROR_RELEVANT_TOOLS:
+        if name not in ERROR_RELEVANT_TOOLS and name not in self.mcp_names:
             return
         try:
             parsed = json.loads(result)
