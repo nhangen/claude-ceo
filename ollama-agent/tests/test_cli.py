@@ -26,11 +26,12 @@ def _stub(monkeypatch, captured):
     monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: {"role": "assistant", "content": "ok"}))
 
     def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
-                       verify_cmd=None, usage_tracker=None):
+                       verify_cmd=None, usage_tracker=None, num_ctx=None):
         captured["system"] = system
         captured["tools"] = tools
         captured["run_id"] = run_id
         captured["verify_cmd"] = verify_cmd
+        captured["num_ctx"] = num_ctx
         if usage_tracker is not None:
             usage_tracker["ollama_input_tokens"] = 40
             usage_tracker["ollama_output_tokens"] = 400
@@ -601,7 +602,10 @@ def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):
                    "--no-rules", "--no-skills", "--num-ctx", "32768"])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "prompt:" in err
+    assert "prompt (turn 1 estimate):" in err
+    # The value, not just the key: "tools=" in err passes even when the estimate
+    # drops the tool schemas entirely, which is the whole thing #384 added.
+    assert f"tools={len(json.dumps(cli.TOOLS))}" in err
     assert "num_ctx=32768" in err
 
 
@@ -614,6 +618,31 @@ def test_cli_warns_when_prompt_may_overflow_context(tmp_path, monkeypatch, capsy
     err = capsys.readouterr().err
     assert "warning: prompt size" in err
     assert "may exceed num_ctx=100" in err
+
+
+def test_cli_passes_num_ctx_to_run_agent_and_tracks_overflow_warning(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def transport(m, t):
+        return ({"role": "assistant", "content": "done"},
+                {"input": 3800, "output": 20})
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--num-ctx", "4096"])
+    assert rc == 0
+
+    # Both halves the name promises, because rc == 0 alone asserts neither and
+    # stays green with the `num_ctx=a.num_ctx` this PR adds reverted. agent.py's
+    # 90% warning is the observable that only fires when the value arrived:
+    # 3800 >= 4096 * 0.9. Read off the ledger row rather than the tracker, so a
+    # future change that drops it between run_agent and the row also fails.
+    expected = ("turn 1: prompt used 3800 of 4096 context tokens (>=90%) -- "
+                "output may be truncated")
+    row = json.loads(ledger.read_text().strip().splitlines()[-1])
+    assert row["warnings"] == [expected]
+    assert f"warning: {expected}" in capsys.readouterr().err
 
 
 def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch, capsys):

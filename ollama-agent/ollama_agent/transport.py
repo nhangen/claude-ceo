@@ -16,11 +16,12 @@ RETRYABLE_HTTP_STATUSES = frozenset({502, 503, 504})
 MAX_HTTP_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.2
 
-# Ollama's own wording when a prompt overruns num_ctx: it trims tokens from the
-# front until the user turn is gone, then reports this. It is the daemon's
-# message, not an API contract (observed on ollama through 2026-09), so a reword
-# upstream silently reverts overflow to the generic raises below. The durable
-# signal is prompt_eval_count against num_ctx, not this string.
+# Secondary hint: ollama's own wording when a prompt overruns num_ctx before a turn
+# can complete: it trims tokens from the front until the user turn is gone, then
+# reports this. It is the daemon's message, not an API contract (observed on ollama
+# through 2026-09), so a reword upstream silently reverts overflow to the generic
+# raises below. The primary durable signal is prompt_eval_count against num_ctx in
+# agent.py, not this string.
 CONTEXT_OVERFLOW_SENTINEL = "no user query found in messages"
 CONTEXT_OVERFLOW_REMEDIATION = (
     "Increase --num-ctx (e.g. --num-ctx 65536) or reduce prompt size with "
