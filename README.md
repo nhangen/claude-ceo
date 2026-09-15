@@ -56,7 +56,7 @@ Active playbooks shipped with the plugin (live in `docs/playbooks/`; copy into `
 | `eod-summary` | `47 17 * * 1-5` | read | claude | Recap if there are log entries after 4pm |
 | `cleanup` | weekly | low-stakes-write | claude | Branch / worktree hygiene |
 | `token-intake` | `45 8 * * 1-5` | read | script | Run `ceo-token-intake.sh` — token-scope snapshot to vault |
-| `norx-bookkeeping` | hourly at :15 | high-stakes | script | Run the once-daily NoRx Mercury import and Sheets refresh when due |
+| `norx-bookkeeping` | hourly at :15 | high-stakes | script | Run the once-daily NoRx Mercury import and Sheets refresh when due; notify only after the scheduler's third failed attempt |
 
 For `runner: claude`, `tier: read` runs a single `claude --print --max-turns 5 --disallowedTools Bash,Write,Edit` call with pre-gathered context injected as `<external-data>` blocks. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline; high-stakes actions are written to `CEO/approvals/pending.md` instead of executed — unless FILTER drops them first, as an unsubstituted template token or a meta-directive, in which case they reach neither EXECUTE nor the approvals queue and the drop is recorded in `cron-skips-<host>.log`. A `runner: script` playbook executes its already-approved script directly, including when its notification posture is `high-stakes`.
 
