@@ -105,6 +105,24 @@ def test_cli_run_id_defaults_none(tmp_path, monkeypatch, capsys):
     assert captured["run_id"] is None
 
 
+def test_cli_threads_verify_cmd_to_run_agent(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--verify-cmd", "pytest tests/"])
+    assert rc == 0
+    assert captured["verify_cmd"] == "pytest tests/"
+
+
+def test_cli_verify_cmd_defaults_none(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "do work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    assert captured["verify_cmd"] is None
+
+
 def test_cli_rules_loaded_hash_none_when_rules_off(tmp_path, monkeypatch, capsys):
     _stub(monkeypatch, {})
     rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills", "--json"])
