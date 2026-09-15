@@ -123,12 +123,18 @@ ceo_scheduler_install() {
       return 0
       ;;
     daemon)
-      # No per-playbook OS install on macOS: ceo-schedulerd reads the registry
+      # No per-playbook OS install: ceo-schedulerd reads the registry
       # directly. The single keep-alive agent is installed by hand (it runs the
       # user's vault, so it can't be a scan side effect). Surface that loudly so
-      # a macOS scan doesn't look like it silently scheduled nothing.
-      echo "macOS: scheduling is handled by the ceo-schedulerd daemon — no per-playbook OS entries are installed."
-      echo "       Ensure the keep-alive agent is running: see lib/scheduler/deploy/com.ceo.schedulerd.plist (and 'ceo doctor')."
+      # a scan doesn't look like it silently scheduled nothing.
+      local _os; _os="$(ceo_detect_os)"
+      if [ "$_os" = "macos" ]; then
+        echo "macOS: scheduling is handled by the ceo-schedulerd daemon — no per-playbook OS entries are installed."
+        echo "       Ensure the keep-alive agent is running: see lib/scheduler/deploy/com.ceo.schedulerd.plist (and 'ceo doctor')."
+      else
+        echo "Linux/WSL: scheduling is handled by the ceo-schedulerd daemon — no per-playbook OS entries are installed."
+        echo "           Ensure the keep-alive agent is running: see lib/scheduler/deploy/ceo-schedulerd.service (and 'ceo doctor')."
+      fi
       return 0
       ;;
     *)

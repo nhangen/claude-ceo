@@ -589,7 +589,11 @@ cmd_doctor() {
   local _hb_file="${HOME:?HOME must be set for the schedulerd heartbeat check}/.ceo/schedulerd/heartbeat.json"
   local _hb_stale_s=600
   if [ ! -f "$_hb_file" ]; then
-    echo "  ? ceo-schedulerd not running on this host (no heartbeat) — optional Phase-1.5 daemon"
+    local _daemon_hint="lib/scheduler/deploy/com.ceo.schedulerd.plist"
+    if [ "$_platform" = "wsl" ] || [ "$_platform" = "linux" ]; then
+      _daemon_hint="lib/scheduler/deploy/ceo-schedulerd.service"
+    fi
+    echo "  ? ceo-schedulerd not running on this host (no heartbeat) — see $_daemon_hint"
   elif ! command -v jq &>/dev/null; then
     echo "  ⚠ schedulerd heartbeat check skipped: jq not on PATH"
     warn=$((warn + 1))

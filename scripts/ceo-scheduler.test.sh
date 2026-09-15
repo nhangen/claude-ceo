@@ -144,6 +144,17 @@ test_daemon_backend_install_is_noop_with_guidance() {
     "daemon backend must NOT write per-playbook plists"
 }
 
+test_daemon_backend_install_guidance_for_wsl_names_service() {
+  export CEO_SCHEDULER=daemon
+  ceo_detect_os() { echo "wsl"; }
+  local payload="0 9 * * * /tmp/ceo-cron.sh foo  # ceo:foo"
+  local out rc=0
+  out=$(ceo_scheduler_install "$payload" 2>&1) || rc=$?
+  assert_eq "$rc" "0" "daemon install on WSL must succeed (no-op)"
+  assert_contains "$out" "ceo-schedulerd" "must point the operator at the daemon"
+  assert_contains "$out" "ceo-schedulerd.service" "must name the systemd service template on WSL"
+}
+
 test_daemon_backend_list_is_empty() {
   export CEO_SCHEDULER=daemon
   local out rc=0
