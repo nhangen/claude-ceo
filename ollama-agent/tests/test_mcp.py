@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -232,8 +233,14 @@ def test_stdio_transport_recv_times_out_on_partial_line_server(tmp_path):
     transport = StdioMCPTransport([sys.executable, str(server)], timeout=1)
     transport.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     try:
+        # The elapsed bound, not just the exception. Without it this still fails on
+        # revert -- but only after the fixture's 30-second sleep ends, which is the
+        # server giving up rather than the timeout working. Asserting the wall clock
+        # is what distinguishes "bounded" from "eventually threw".
+        start = time.monotonic()
         with pytest.raises(MCPError, match="did not respond within"):
             transport.recv()
+        assert time.monotonic() - start < 5
     finally:
         transport.close()
 
