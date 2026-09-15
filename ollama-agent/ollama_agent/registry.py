@@ -10,6 +10,7 @@ never be delegated to a local model regardless of what the entry says.
 import json
 import math
 from pathlib import Path
+import warnings
 
 RUNNERS = {"ollama"}                       # who may execute a registered task
 # Ordered low→high stakes; the order is used verbatim in the "known: …" diagnostic.
@@ -105,6 +106,13 @@ def _validate(name, entry):
     tools = entry.get("tools", "*")
     if tools != "*" and not isinstance(tools, list):
         raise RegistryError(f"task {name!r}: tools must be \"*\" or a list, got {type(tools).__name__}")
+    if isinstance(tools, list) and "write_file" in tools and "edit_file" not in tools:
+        warnings.warn(
+            f"task {name!r}: 'tools' contains 'write_file' without 'edit_file' — "
+            "allow edit_file so surgical edits avoid full file rewrites",
+            UserWarning,
+            stacklevel=2,
+        )
     if "min_score" in entry and entry["min_score"] is not None:
         ms = entry["min_score"]
         if isinstance(ms, bool) or not isinstance(ms, (int, float)):

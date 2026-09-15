@@ -293,3 +293,45 @@ def test_committed_registry_enables_no_delegable_tier():
     assert not delegable, (
         f"committed registry enables delegable tier(s): {delegable} — "
         "delegable pins are gated behind #255/#254, add them there")
+
+
+def test_load_registry_warns_when_write_file_without_edit_file():
+    with pytest.warns(UserWarning, match="without 'edit_file'"):
+        specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                      "tools": ["read_file", "write_file"]}))
+    assert "t" in specs
+
+
+def test_load_registry_no_warning_when_both_write_and_edit_file():
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                      "tools": ["read_file", "write_file", "edit_file"]}))
+    assert "t" in specs
+
+
+def test_committed_playbooks_pairing_invariant():
+    import warnings
+    repo_root = Path(__file__).resolve().parents[2]
+    playbooks_dir = repo_root / "docs" / "playbooks"
+    playbook_files = list(playbooks_dir.glob("*.md"))
+    assert playbook_files, "playbook files must exist under docs/playbooks/"
+
+    checked = 0
+    for pb in playbook_files:
+        content = pb.read_text()
+        for line in content.splitlines():
+            if line.startswith("registry:"):
+                raw_json = line.split(":", 1)[1].strip()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", UserWarning)
+                    specs = load_registry(raw_json)
+                for name, spec in specs.items():
+                    if isinstance(spec.tools, list) and "write_file" in spec.tools:
+                        assert "edit_file" in spec.tools, (
+                            f"playbook {pb.name!r} task {name!r} allows 'write_file' "
+                            "but omits 'edit_file'")
+                        checked += 1
+    assert checked > 0, "at least one playbook with write_file tools list must be verified"
+
