@@ -27,6 +27,7 @@ Registered after the standalone Mac LaunchAgent exposed a shutdown gap. A once-d
 - `runner: script` makes no LLM call.
 - The NoRx runner retains its own lock, immutable import rules, preview/apply comparison, process-only production gate, exact four-tab readback, and internal failure alerts.
 - The wrapper records success only after the complete NoRx runner succeeds. A failed run remains due and is retried by a later hourly check.
+- The scheduler passes its persisted attempt number and retry limit only to this playbook. The runner keeps attempts one and two private and sends a failure email only on the terminal third attempt.
 - A wrapper lock spans the success-marker check through the atomic marker replacement. A concurrent manual or scheduled check exits successfully without invoking the runner.
 - Credentials remain in host-local secret stores. They must not be placed in this playbook, the repository, or the synced CEO vault.
 
