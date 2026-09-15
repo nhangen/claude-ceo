@@ -94,6 +94,8 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     "verify-failed" (out of turns, gate last observed red), "error" (crashed run),
     or "killed" (interrupted run).
     """
+    if verify_cmd is not None and not verify_cmd.strip():
+        raise ValueError("verify_cmd is empty; pass None to run without a gate")
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": task}]
     transcript = list(messages)
