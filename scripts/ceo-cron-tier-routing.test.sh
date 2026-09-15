@@ -84,16 +84,22 @@ _oversized_task_payload() {
     '{tool_name:"Task", tool_input:{prompt:$p, subagent_type:"general-purpose"}}'
 }
 
-# Same load-bearing-fixture guard as the classifier suite: prove the pre-fix
-# `jq … | head -c 200` form actually fails on this payload.
-_assert_head_pipe_form_breaks() {
-  local payload="$1" rc=0
-  ( set -o pipefail
-    printf '%s' "$payload" | jq -r '.tool_input.prompt' | head -c 200 >/dev/null
-  ) || rc=$?
+# PIPE_BUF_FLOOR is the de-facto pipe buffer high-water mark on macOS/Linux
+# (POSIX guarantees only 512; both platforms use 65536). The fixture must
+# exceed this value so the pre-fix `jq | head -c 200` form would cause SIGPIPE
+# on a slow scheduler. We assert on byte length (deterministic) rather than
+# racing on SIGPIPE (schedule-dependent under xargs -P 4 load, #451).
+# Note: ${#payload} measures the full JSON envelope (prompt + JSON scaffolding),
+# not just the prompt text — that is fine, both exceed PIPE_BUF_FLOOR comfortably.
+PIPE_BUF_FLOOR=65536
+
+_assert_payload_exceeds_pipe_buf() {
+  local payload="$1" byte_len
+  byte_len=${#payload}
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$rc" -eq 0 ]; then
-    printf '  FAIL [%s] fixture no longer breaks the pre-fix `jq | head -c` form (rc=0), so it proves nothing — the prompt must exceed the pipe buffer\n' "$CURRENT_TEST"
+  if [ "$byte_len" -le "$PIPE_BUF_FLOOR" ]; then
+    printf '  FAIL [%s] fixture payload is %d bytes — must exceed PIPE_BUF_FLOOR (%d) to stress the pipe path\n' \
+      "$CURRENT_TEST" "$byte_len" "$PIPE_BUF_FLOOR"
     _record_assertion_fail
   fi
 }
@@ -101,9 +107,10 @@ _assert_head_pipe_form_breaks() {
 test_hook_routes_an_oversized_prompt() {
   local payload out rc=0
   payload=$(_oversized_task_payload)
-  _assert_head_pipe_form_breaks "$payload"
+  _assert_payload_exceeds_pipe_buf "$payload"
   out=$(printf '%s' "$payload" | "$REPO_ROOT/hooks/ceo-tier-router.sh" 2>/dev/null) || rc=$?
   assert_eq "$rc" "0" "hook exits 0 on a prompt past the pipe buffer"
+
   assert_contains "$out" '"model":"haiku"' "oversized dispatch is still downgraded to the mapped tier"
 }
 
