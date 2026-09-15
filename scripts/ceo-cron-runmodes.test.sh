@@ -694,13 +694,81 @@ PB
   # Make Pending.md unreadable so gather is degraded
   printf -- '- [ ] question\n' > "$CEO_VAULT/Pending.md"
   chmod 000 "$CEO_VAULT/Pending.md"
-  bash "$CRON" pf-fail >/dev/null 2>&1 || true
+  local rc=0
+  bash "$CRON" pf-fail >/dev/null 2>&1 || rc=$?
   chmod 644 "$CEO_VAULT/Pending.md"
 
+  # 78, not 0. Exiting 0 hands cronbird a success for a run the vault recorded as
+  # a failure, so it stamps lastSuccess and resets the attempt counter -- the
+  # divergence _on_exit exists to prevent. Nothing asserted this before, and
+  # `|| true` on the invocation is how it stayed unasserted.
+  assert_eq "$rc" "78" "a recorded preflight failure must exit 78, not 0"
   local skips; skips=$(_skips_log)
   assert_contains "$skips" "ERROR — Pending items search degraded" "preflight failure must log ERROR to skips log"
   assert_not_contains "$skips" "returned no-work" "preflight failure must NOT log 'returned no-work'"
   assert_file_exists "$(_ceo_state)/.last-run-pf-fail" "real run failure records last-run stamp"
+}
+
+# The inbox preflight's state-2 wrapper had no arm of its own. Its pending sibling
+# above is covered, so the suite looked symmetric while the coverage was not:
+# reverting preflight_has_unchecked_inbox to the bare `ceo_inbox_has_unchecked`
+# passthrough left the entire suite green, and the consequence of that revert is
+# precisely the conflation #393 exists to remove.
+test_preflight_inbox_cannot_tell_records_failure_and_does_not_log_no_work() {
+  cat > "$CEO_DIR/playbooks/pf-inbox-fail.md" << 'PB'
+---
+name: pf-inbox-fail
+description: inbox preflight failure fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_unchecked_inbox
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  mkdir -p "$CEO_DIR/inbox"
+  printf -- '- [ ] hidden\n' > "$CEO_DIR/inbox/host-x.md"
+  chmod 000 "$CEO_DIR/inbox/host-x.md"
+  bash "$CRON" pf-inbox-fail >/dev/null 2>&1 || true
+  chmod 644 "$CEO_DIR/inbox/host-x.md"
+
+  local skips; skips=$(_skips_log)
+  assert_contains "$skips" "ERROR — inbox scan degraded" "unreadable inbox must log ERROR to skips log"
+  assert_not_contains "$skips" "returned no-work" "unreadable inbox must NOT log 'returned no-work'"
+}
+
+# The cron copy of preflight_has_log_entries_after_4pm was likewise unpinned:
+# reverting the whole rewrite, grep classification and all, left the suite green.
+# The hour gate makes this arm a no-op before 16:00, which is why it asserts
+# nothing in that window rather than asserting the wrong thing.
+test_preflight_log_entries_unreadable_records_failure_after_4pm() {
+  if [ "$(date +%H)" -lt 16 ]; then
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    return 0
+  fi
+  cat > "$CEO_DIR/playbooks/pf-log-fail.md" << 'PB'
+---
+name: pf-log-fail
+description: log preflight failure fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_log_entries_after_4pm
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local log="$CEO_DIR/log/$(date +%Y-%m-%d).md"
+  mkdir -p "$CEO_DIR/log"
+  printf -- '## entry\n' > "$log"
+  chmod 000 "$log"
+  bash "$CRON" pf-log-fail >/dev/null 2>&1 || true
+  chmod 644 "$log"
+
+  local skips; skips=$(_skips_log)
+  assert_contains "$skips" "ERROR — cannot read log file" "unreadable log must log ERROR to skips log"
+  assert_not_contains "$skips" "returned no-work" "unreadable log must NOT log 'returned no-work'"
 }
 
 # When preflight fails (state 2) in a dry-run, preview must record would-be failure,

@@ -1520,7 +1520,14 @@ if type "$PREFLIGHT_FN" &>/dev/null; then
       # A preflight failure was recorded (state 2). _record_failure already logged
       # the ERROR to $SKIPS_LOG, handled fail-counts, stamped .last-run (on real runs),
       # and notified. Do NOT stamp or emit a contradictory "returned no-work" line.
-      exit 0
+      #
+      # 78, not 0, and for the reason spelled out at the top of _on_exit: exiting 0
+      # tells cronbird the run succeeded, so it stamps lastSuccess and resets the
+      # attempt counter while the vault-side record says FAILURE. 78 makes the two
+      # agree, and matches the sibling preflight-failure branch below. _on_exit
+      # checks _bookkeeping_done before recording, so a non-zero exit here cannot
+      # double-record.
+      exit 78
     fi
     _v "Preflight '$PREFLIGHT' says no work to do. Skipping."
     echo "$(date): Skipping $TRIGGER — preflight '$PREFLIGHT' returned no-work" >> "$SKIPS_LOG"

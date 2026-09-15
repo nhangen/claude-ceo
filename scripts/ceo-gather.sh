@@ -155,6 +155,14 @@ $1"
 # ceo_pending_items_preflight — the one place that answers "is there pending-drip work?"
 # for both callers (ceo-cron.sh's scheduler and the inline copy in ceo).
 #
+# The two had drifted, and which one was right is the reason this lives here:
+# pending-drip surfaces [ask] markers from $VAULT/Pending.md, not the
+# CEO/approvals/pending.md queue that PENDING_COUNT measures, and ceo's copy was
+# gating on PENDING_COUNT. Gate on the gathered ask-question lines so an empty
+# Pending.md skips instead of firing an LLM call that reports failure for lack of
+# input -- and do not "simplify" this back to PENDING_COUNT, which reads a
+# different file.
+#
 # Three outcomes:
 #   0  pending questions are waiting
 #   1  no questions, and the read is trustworthy

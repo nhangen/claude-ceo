@@ -278,6 +278,30 @@ test_inbox_has_unchecked_returns_state_2_when_shadow_file_unreadable() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_inbox_has_unchecked_returns_state_2_when_shadow_dir_unreadable() {
+  # The directory case, not the file case. An unsearchable directory cannot fail
+  # a grep -- the glob never expands, so the loop body never runs and every file
+  # inside is invisible. Without an explicit probe this returns "clean empty
+  # queue" while holding unread work, which is the exact conflation #393 is about.
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [ ] hidden-by-mode\n' > "$TEST_HOME/CEO/inbox/host-d.md"
+  chmod 000 "$TEST_HOME/CEO/inbox"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 755 "$TEST_HOME/CEO/inbox"
+  assert_contains "$res" "RC=2" "unreadable inbox directory must return rc 2 (cannot tell)"
+  assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inbox_has_unchecked_readable_empty_dir_is_still_a_clean_one() {
+  # The control for the arm above: the degraded probe must not fire on a
+  # directory that is merely empty, or every clean run reports "cannot tell".
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  assert_contains "$res" "RC=1" "a readable empty inbox dir is a trustworthy no-work"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_inbox_has_unchecked_prefers_work_present_over_unreadable_file() {
   mkdir -p "$TEST_HOME/CEO/inbox"
   printf -- '- [ ] unreadable-shadow\n' > "$TEST_HOME/CEO/inbox/host-bad.md"

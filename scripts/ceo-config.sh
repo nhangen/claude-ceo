@@ -11,7 +11,7 @@
 #   ceo_augment_path()      — prepend bun/Homebrew/.local prefixes to PATH (idempotent)
 #   ceo_resolve_real_home() — print passwd-canonical $HOME for running user; rc=0/1
 #   ceo_pin_home_or_warn()  — resolve+export $HOME from passwd; warn-and-rc=1 on fail
-#   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1
+#   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1/2
 #   ceo_assert_primary_host() — gate Syncthing-shared writes; rc=0 allowed/1 deny
 #   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
 #   ceo_write_alert_frontmatter() — emit alert frontmatter to stdout; validates enum
@@ -949,6 +949,14 @@ ceo_inbox_has_unchecked() {
   fi
   if [ -d "$dir/inbox" ]; then
     local f
+    # An unsearchable directory cannot fail a grep, because the glob never
+    # expands and the loop never runs -- so without this probe the whole branch
+    # reports a clean empty queue with unread work inside it. `-d` alone does not
+    # cover it: a mode-000 directory is still a directory.
+    if ! ls "$dir/inbox" >/dev/null 2>&1; then
+      degraded=1
+      degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox directory '$dir/inbox'"
+    fi
     for f in "$dir/inbox/"*.md; do
       [ -f "$f" ] || continue
       rc=0
