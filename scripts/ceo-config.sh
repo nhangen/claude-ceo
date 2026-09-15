@@ -349,8 +349,12 @@ CEO_REGISTRY_SCHEMA_VERSION=3
 # with nothing logged on either side. A test sets it to point somewhere $HOME is
 # not, which is the only way to prove the path is not hardcoded.
 _ceo_registry_path() {
+  if [ -n "${CEO_REGISTRY_FILE:-}" ]; then
+    printf '%s\n' "$CEO_REGISTRY_FILE"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local registry path}"
-  printf '%s\n' "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
+  printf '%s\n' "$HOME/.ceo/registry.json"
 }
 
 # Per-trigger cron state — the failure counter, the cooldown stamp, the
@@ -381,8 +385,12 @@ _ceo_registry_path() {
 # The pin is correct for production — under cron and launchd HOME is unset or
 # wrong — so the fix is the override, not removing the pin.
 _ceo_state_dir() {
+  if [ -n "${CEO_STATE_DIR:-}" ]; then
+    printf '%s\n' "$CEO_STATE_DIR"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local state directory}"
-  printf '%s\n' "${CEO_STATE_DIR:-$HOME/.ceo/state}"
+  printf '%s\n' "$HOME/.ceo/state"
 }
 
 # Legacy location of the same state, inside the synced vault. Read-only, and only
@@ -442,8 +450,12 @@ _ceo_state_migrate() {
 # treats an absent file as "nothing enabled here", so a production override
 # stops each-scope dispatch silently.
 _ceo_enabled_path() {
+  if [ -n "${CEO_ENABLED_FILE:-}" ]; then
+    printf '%s\n' "$CEO_ENABLED_FILE"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local enabled path}"
-  printf '%s\n' "${CEO_ENABLED_FILE:-$HOME/.ceo/enabled.json}"
+  printf '%s\n' "$HOME/.ceo/enabled.json"
 }
 
 # Unlike registry.json (host-local), swarm.json IS synced: it describes the
