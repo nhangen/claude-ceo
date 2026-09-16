@@ -398,3 +398,14 @@ def test_mcp_tool_error_recorded_in_tool_errors(tmp_path):
     assert "error" in res
     assert [e["tool"] for e in tb.tool_errors] == ["mcp__custom_tool"]
     assert "RuntimeError" in tb.tool_errors[0]["error"]
+
+
+def test_every_mutating_builtin_stays_error_relevant():
+    """Tripwire: a mutating tool absent from the set fails silently.
+
+    A tool that writes but is not listed returns {"error": ...} and leaves
+    .tool_errors empty, so the cron gate passes a run that broke something
+    (#215). Adding a mutating tool without adding it here is invisible
+    everywhere else — no test fails, and the gate keeps reporting success.
+    """
+    assert {"write_file", "edit_file", "git", "run_shell"} <= ERROR_RELEVANT_TOOLS
