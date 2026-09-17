@@ -23,6 +23,11 @@ MAX_READ = 20000       # chars returned by read_file
 # tokenized (unbalanced quote) raises and so does set one: the model asked for a
 # mutation that never ran. unknown tools/skills are gated separately via
 # .unknown_calls.
+#
+# Every bridged MCP tool (ToolBox.mcp_names) is error-relevant too (#271). The
+# bridge carries no read/write metadata, so in a run started with --mcp a failed
+# MCP lookup counts the same as a failed MCP write: over-capture is the chosen
+# side of that trade (#457 tracks honoring readOnlyHint).
 _MISSING = object()
 
 ERROR_RELEVANT_TOOLS = {"write_file", "edit_file", "git", "run_shell"}
@@ -53,7 +58,7 @@ class ToolBox:
         self.mcp_names = dict(mcp_names) if mcp_names else {}  # prefixed_name -> real MCP tool name
         self.calls = []            # (name, args) of every dispatched call
         self.unknown_calls = []    # tool/skill names the model hallucinated
-        self.tool_errors = []      # {tool, error} for mutating-tool failures (#215)
+        self.tool_errors = []      # {tool, error} for mutating-tool and MCP failures (#215, #271)
 
     def _resolve(self, path):
         p = Path(path)
@@ -192,10 +197,15 @@ class ToolBox:
         return result
 
     def _note_tool_error(self, name, result):
-        """Record a mutating-tool failure so the dispatcher (cron) can fail a
+        """Record a mutating-tool or MCP failure so the dispatcher (cron) can fail a
         completed-but-errored run (#215). Inspects the result's "error" key —
         absence-of-throw is not success (non-throwing-client-success-check).
-        Every MCP tool dispatch is treated as error-relevant (#271)."""
+
+        MCP failures arrive here through dispatch's exception path, since
+        MCPClient.call_tool raises on isError and on RPC errors (#271). An MCP
+        server that reports success with error text in its content is not
+        caught: that text is wrapped under "result", and the server's own
+        success claim is taken at its word."""
         if name not in ERROR_RELEVANT_TOOLS and name not in self.mcp_names:
             return
         try:

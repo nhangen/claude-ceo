@@ -148,15 +148,29 @@ def test_toolbox_dispatches_mcp_tool(tmp_path):
     out = json.loads(tb.dispatch("mcp__echo", {"text": "hi"}))
     assert client.calls == [("echo", {"text": "hi"})]
     assert "result of echo" in out["result"]
+    assert tb.tool_errors == []
 
 
 def test_toolbox_mcp_error_recorded_not_crash(tmp_path):
-    # #271: MCP tool failures must land in tool_errors so the cron gate sees them
+    # #271: MCP tool failures must land in tool_errors for any --json consumer
     tb = ToolBox(cwd=tmp_path, mcp_client=FakeClient(raises=True), mcp_names={"mcp__echo": "echo"})
     out = json.loads(tb.dispatch("mcp__echo", {}))
     assert "error" in out and "MCPError" in out["error"]
     assert [e["tool"] for e in tb.tool_errors] == ["mcp__echo"]
     assert "MCPError" in tb.tool_errors[0]["error"]
+
+
+def test_toolbox_records_mcp_iserror_not_success(tmp_path):
+    # The real client, not FakeClient: the isError -> raise -> tool_errors chain
+    # is otherwise pinned only one layer at a time, and a guard that recorded
+    # every MCP dispatch would pass every other test here.
+    client = MCPClient(FakeTransport(is_error_tools={"boom"}))
+    tb = ToolBox(cwd=tmp_path, mcp_client=client,
+                 mcp_names={"mcp__echo": "echo", "mcp__boom": "boom"})
+    tb.dispatch("mcp__echo", {})
+    assert tb.tool_errors == []
+    tb.dispatch("mcp__boom", {})
+    assert [e["tool"] for e in tb.tool_errors] == ["mcp__boom"]
 
 
 def test_toolbox_unknown_mcp_name_still_unknown(tmp_path):
