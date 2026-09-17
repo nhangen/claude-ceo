@@ -49,15 +49,20 @@ def test_schema_and_dispatch_handler_parity(tmp_path):
     assert res_unknown.get("error") == "unknown tool: unknown_tool_xyz"
 
 
-def test_mutating_tools_covered_by_error_capture_predicate():
-    """#275: Mutating members of the dispatch table must be covered by ERROR_RELEVANT_TOOLS,
-    so mutating failures are always recorded in tool_errors for the cron gate (#215).
-    """
-    mutating_builtins = {"write_file", "edit_file", "git", "run_shell"}
-    assert mutating_builtins == ERROR_RELEVANT_TOOLS
+def test_every_builtin_tool_is_classified():
+    """#275: every built-in schema is either error-relevant or a read-only probe.
 
+    Driven from TOOLS rather than a copied literal: a new mutating tool added to
+    dispatch and TOOLS but not to ERROR_RELEVANT_TOOLS would otherwise return
+    {"error": ...}, leave .tool_errors empty, and pass the cron gate (#215).
+    """
     read_only_tools = {"read_file", "list_dir", "use_skill"}
+    schema_names = {t["function"]["name"] for t in TOOLS} | {USE_SKILL_TOOL["function"]["name"]}
+    unclassified = schema_names - ERROR_RELEVANT_TOOLS - read_only_tools
+    assert not unclassified, f"classify as error-relevant or read-only: {unclassified}"
     assert read_only_tools.isdisjoint(ERROR_RELEVANT_TOOLS)
+    assert ERROR_RELEVANT_TOOLS <= schema_names
+    assert read_only_tools <= schema_names
 
 
 def test_write_file_error_recorded(tmp_path):
