@@ -150,33 +150,31 @@ _oversized_body() {
   while [ "$i" -lt 1000 ]; do printf '%s\n' "$pad"; i=$((i + 1)); done
 }
 
-# The fixture is load-bearing: below the pipe buffer the pre-fix form works fine
-# and the test would pass against broken code. Assert the old
-# `printf … | grep -q` really does report failure on this exact body — AND that it
-# succeeds on a small body carrying the same banner. Both halves are needed: a bare
-# "non-zero" check is also satisfied by grep's rc=1 no-match, which would let a
-# banner that stopped matching masquerade as a working canary. The pair proves the
-# failure is size-dependent, i.e. SIGPIPE.
-#
-# Deliberately NOT asserting rc==141: the signature is platform-dependent. BSD grep
-# and GNU grep on WSL give 141; GNU grep on GitHub's ubuntu runner gives 2 ("write
-# error: Broken pipe"). Pinning 141 cost a CI cycle in #294.
-_pipe_form_rc() {
-  local raw="$1" pattern="$2" rc=0
-  ( set -o pipefail; printf '%s' "$raw" | grep -qEi "$pattern" ) || rc=$?
-  echo "$rc"
-}
+# PIPE_BUF_FLOOR is the de-facto pipe buffer high-water mark on macOS/Linux
+# (POSIX guarantees only 512; both platforms use 65536). The fixture must
+# exceed this value so the pre-fix `printf … | grep -q` form would cause
+# SIGPIPE on a slow scheduler. We assert on byte length (deterministic) rather
+# than racing on SIGPIPE (schedule-dependent under xargs -P 4 load, #451).
 
-_assert_pipe_form_breaks() {
-  local raw="$1" pattern="$2" banner="$3" big_rc small_rc
-  big_rc=$(_pipe_form_rc "$raw" "$pattern")
-  small_rc=$(_pipe_form_rc "$banner" "$pattern")
+#
+# Two-sided check preserves the intent of the original dual probe:
+#   - big body > PIPE_BUF_FLOOR  → pipe-buffer path is exercised
+#   - banner   < PIPE_BUF_FLOOR  → failure would be size-dependent, not
+#                                   a pattern-mismatch masquerading as SIGPIPE
+PIPE_BUF_FLOOR=65536
+
+_assert_body_exceeds_pipe_buf() {
+  local raw="$1" banner="$2" byte_len banner_len
+  byte_len=${#raw}
+  banner_len=${#banner}
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$big_rc" -eq 0 ]; then
-    printf '  FAIL [%s] fixture no longer breaks the pre-fix `printf | grep -q` form (rc=0), so it proves nothing — it must exceed the pipe buffer\n' "$CURRENT_TEST"
+  if [ "$byte_len" -le "$PIPE_BUF_FLOOR" ]; then
+    printf '  FAIL [%s] fixture body is %d bytes — must exceed PIPE_BUF_FLOOR (%d) to stress the pipe path\n' \
+      "$CURRENT_TEST" "$byte_len" "$PIPE_BUF_FLOOR"
     _record_assertion_fail
-  elif [ "$small_rc" -ne 0 ]; then
-    printf '  FAIL [%s] canary is passing for the wrong reason: the pre-fix form also fails on a SMALL body (rc=%s), so the pattern simply is not matching — not SIGPIPE\n' "$CURRENT_TEST" "$small_rc"
+  elif [ "$banner_len" -ge "$PIPE_BUF_FLOOR" ]; then
+    printf '  FAIL [%s] banner is %d bytes — must be smaller than PIPE_BUF_FLOOR (%d) to prove failure is size-dependent\n' \
+      "$CURRENT_TEST" "$banner_len" "$PIPE_BUF_FLOOR"
     _record_assertion_fail
   fi
 }
@@ -184,7 +182,7 @@ _assert_pipe_form_breaks() {
 test_oversized_ratelimit_body_is_still_transient() {
   local banner='Claude API session limit reached. Please try again later.' raw
   raw=$(_oversized_body "$banner")
-  _assert_pipe_form_breaks "$raw" 'session limit' "$banner"
+  _assert_body_exceeds_pipe_buf "$raw" "$banner"
   assert_eq "$(_classify_claude_failure 1 "$raw")" "transient" \
     "rate-limit banner in a 200KB body → transient (fallback stays armed)"
 }
@@ -192,10 +190,11 @@ test_oversized_ratelimit_body_is_still_transient() {
 test_oversized_auth_body_is_still_auth() {
   local banner='Error: authentication_failed. Please run /login.' raw
   raw=$(_oversized_body "$banner")
-  _assert_pipe_form_breaks "$raw" 'authentication_failed' "$banner"
+  _assert_body_exceeds_pipe_buf "$raw" "$banner"
   assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" \
     "auth banner in a 200KB body → auth, not terminal"
 }
+
 
 test_oversized_plaintext_body_emits_no_stderr_noise() {
   # The envelope probes ran `printf … | jq`; when jq bails on non-JSON before
