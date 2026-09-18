@@ -1347,13 +1347,13 @@ preflight_has_log_entries_after_4pm() {
 }
 
 preflight_has_ceo_branches() {
-  local repos_file="$CEO_DIR/repos.md"
-  [ -f "$repos_file" ] || return 1
-  while IFS= read -r repo_path; do
-    repo_path=$(echo "$repo_path" | xargs)
-    [ -d "$repo_path" ] && [ -n "$(git -C "$repo_path" branch --list "${BRANCH_PREFIX}*" 2>/dev/null)" ] && return 0
-  done < <(grep "^|" "$repos_file" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $3}')
-  return 1
+  local reason rc=0
+  reason=$(ceo_ceo_branches_preflight "$BRANCH_PREFIX") || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    _record_failure "$reason"
+    return 1
+  fi
+  return "$rc"
 }
 
 # --- Look up trigger in registry ---
