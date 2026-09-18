@@ -705,7 +705,7 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
     ),
     (
         json.dumps({"message": {"role": "assistant", "content": "hi"}, "prompt_eval_count": "abc"}),
-        "ollama 200 with non-numeric token counts:",
+        f"ollama 200 with non-numeric token counts: {json.dumps({'message': {'role': 'assistant', 'content': 'hi'}, 'prompt_eval_count': 'abc'})}",
     ),
 ])
 def test_cli_surfaces_unparseable_json_error_and_records_crash(
@@ -742,9 +742,12 @@ def test_cli_surfaces_unparseable_json_error_and_records_crash(
     row = json.loads(ledger.read_text().strip())
     assert row["completed"] is False
     assert row["reason"] == "error"
+    assert row["verified"] is None
+    assert row["verify_gated"] is False
     assert row["ollama_input_tokens"] == 45
     assert row["ollama_output_tokens"] == 12
     assert row["turns"] == 2
+
 
 
 def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_path, monkeypatch, capsys):
