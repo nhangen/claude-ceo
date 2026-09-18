@@ -305,8 +305,94 @@ PB
   assert_file_exists "$alert_file" "shadowed drift must create playbook-drift.md alert"
   local content; content=$(cat "$alert_file" 2>/dev/null || echo "")
   assert_contains "$content" "status: drift" "alert must carry status: drift frontmatter"
+  assert_contains "$content" "count: 1" "alert must carry count frontmatter"
   assert_contains "$content" "since:" "alert must carry since timestamp"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 4))
+}
+
+test_scan_drift_alert_is_change_gated() {
+  # Issue #455: Drift alert rewrite is change-gated. When drift count does not
+  # change, scan must not rewrite the alert file (preserving state per
+  # ceo-automated-writers-are-playbooks). When count changes, it updates count:
+  # and preserves since:.
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-cg1.md" << 'PB'
+---
+name: p-cg1
+description: repo original version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  cat > "$CEO_DIR/playbooks/p-cg1.md" << 'PB'
+---
+name: p-cg1
+description: differing vault copy 1
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  assert_file_exists "$alert_file" "alert must exist after first scan"
+  local content1; content1=$(cat "$alert_file")
+  assert_contains "$content1" "count: 1" "alert must carry count: 1"
+
+  # Extract since timestamp
+  local orig_since
+  orig_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file")
+
+  # Add a sentinel comment to the alert file to detect if scan rewrites it.
+  echo "# SENTINEL_CHANGE_GATE" >> "$alert_file"
+
+  # Re-scan with the same drift count (1). File must NOT be rewritten.
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local content2; content2=$(cat "$alert_file")
+  assert_contains "$content2" "SENTINEL_CHANGE_GATE" \
+    "alert must NOT be rewritten when shadowed drift count is unchanged"
+
+  # Now introduce a second differing playbook (count increases 1 -> 2).
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-cg2.md" << 'PB'
+---
+name: p-cg2
+description: repo original version 2
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  cat > "$CEO_DIR/playbooks/p-cg2.md" << 'PB'
+---
+name: p-cg2
+description: differing vault copy 2
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local content3; content3=$(cat "$alert_file")
+  assert_contains "$content3" "count: 2" "alert must update to count: 2"
+  local new_since
+  new_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file")
+  assert_eq "$new_since" "$orig_since" "alert must preserve original since timestamp across count updates"
+
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 5))
 }
 
 test_scan_clears_playbook_drift_alert_when_in_sync() {
@@ -349,4 +435,5 @@ PB
 }
 
 run_tests
+
 
