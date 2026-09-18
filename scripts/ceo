@@ -1687,7 +1687,7 @@ cmd_playbook_scan() {
     artifact=$(_fm_scalar artifact "$f")
     # Validate at parse time per enum-config-typo-fallback: an artifact
     # template must be vault-relative ("CEO/...") and reference only the
-    # supported tokens {TODAY} and {HOST}. Reject anything else with a warn,
+    # supported tokens {TODAY}, {MONTH}, and {HOST}. Reject anything else with a warn,
     # treating it as absent — better to skip the doctor cross-check than emit
     # a broken path on every check.
     if [ -n "$artifact" ]; then
@@ -1700,10 +1700,10 @@ cmd_playbook_scan() {
       esac
     fi
     if [ -n "$artifact" ]; then
-      _artifact_residual=$(printf '%s' "$artifact" | sed -e 's/{TODAY}//g' -e 's/{HOST}//g')
+      _artifact_residual=$(printf '%s' "$artifact" | sed -e 's/{TODAY}//g' -e 's/{MONTH}//g' -e 's/{HOST}//g')
       case "$_artifact_residual" in
         *\{*\}*)
-          echo "  WARN  $basename: 'artifact' contains unknown token(s) (supported: {TODAY}, {HOST}); got: $artifact — dropping" >&2
+          echo "  WARN  $basename: 'artifact' contains unknown token(s) (supported: {TODAY}, {MONTH}, {HOST}); got: $artifact — dropping" >&2
           artifact=""
           ;;
       esac

@@ -669,8 +669,8 @@ ceo_registry_validate() {
 # ---------------------------------------------------------------------------
 # ceo_artifact_expand <template> [host]
 #   Expand a playbook artifact template into a vault-relative path. Templates
-#   may reference {TODAY} (YYYY-MM-DD) and {HOST} (short hostname). Optional
-#   second arg overrides the host (used by tests).
+#   may reference {TODAY} (YYYY-MM-DD), {MONTH} (YYYY-MM), and {HOST} (short
+#   hostname). Optional second arg overrides the host (used by tests).
 #
 #   Prints the expanded path on stdout. Returns 0 on success, 1 if the
 #   template is empty or contains an unknown {...} token (per the
@@ -681,10 +681,16 @@ ceo_artifact_expand() {
   local template="${1:-}"
   local host="${2:-${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}}"
   [ -z "$template" ] && return 1
-  local today
+  local today month
   today=$(date +%Y-%m-%d)
+  month=$(date +%Y-%m)
   local expanded="$template"
   expanded="${expanded//\{TODAY\}/$today}"
+  # {MONTH} is for a playbook whose tool writes one file per month and rewrites
+  # it in place. Declaring {TODAY} for such a tool passes parse validation and
+  # then fails ceo doctor's cross-check on every run, which is a false failure
+  # that never clears -- and it leaves the file the tool does write unchecked.
+  expanded="${expanded//\{MONTH\}/$month}"
   expanded="${expanded//\{HOST\}/$host}"
   # After expanding known tokens, any remaining {...} is a typo or an
   # unsupported token — reject rather than emit a broken path.

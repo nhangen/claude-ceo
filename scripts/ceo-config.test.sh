@@ -1008,6 +1008,17 @@ test_artifact_expand_uses_env_host_default() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_artifact_expand_substitutes_month() {
+  local today month out
+  today=$(date +%Y-%m-%d)
+  month=$(date +%Y-%m)
+  out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/agent-scope/{MONTH}.md' 'testhost'")
+  assert_eq "$out" "CEO/reports/agent-scope/${month}.md" "ceo_artifact_expand must substitute {MONTH} as YYYY-MM"
+  # The distinction that matters: a tool writing one file per month declared with
+  # {TODAY} passes parse validation and then fails doctor's cross-check forever.
+  assert_not_contains "$out" "$today" "{MONTH} must not expand to the full date"
+}
+
 test_artifact_expand_rejects_unknown_token() {
   local rc=0 out
   out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/{BOGUS}/{TODAY}.md' 'testhost'") || rc=$?

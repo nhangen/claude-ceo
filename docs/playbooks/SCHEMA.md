@@ -26,7 +26,7 @@ Unknown values for enum fields are **rejected at parse time** with a `SKIP` diag
 | `requires` | no | JSON array of env-var names | Credentials the playbook needs (e.g. `["HUBSPOT_REFRESH_TOKEN"]`). `ceo creds check <name>` reports missing values. Non-array entries are warned and dropped. |
 | `scope` | no | enum: `each`, `single` | How the playbook fans out across the swarm. Absent defaults to `single` (safe: a single-scope playbook runs nowhere until an owner is assigned). `each` runs on every host where locally enabled; `single` runs on exactly one owner host. Unknown values are **rejected at parse** with a `SKIP` and a non-zero scan exit. See [Swarm selection model](#swarm-selection-model). |
 | `hosts` | no | JSON array of host names | **DEPRECATED** — no longer consulted for scheduling. Selection is now `scope` plus host-local enablement (`each`) or `swarm.json` ownership (`single`); `selectRunnable` does not read `hosts`. `ceo playbook scan` still parses and normalizes it (malformed → `["*"]` with a `WARN`) but warns-and-ignores it for scheduling. See [Swarm selection model](#swarm-selection-model) and [Host scoping (legacy)](#host-scoping-legacy). |
-| `artifact` | recommended for `runner: script` | string template | Expected output path relative to the vault. Must start with `CEO/`. Supports `{TODAY}` (YYYY-MM-DD) and `{HOST}` (short hostname). Unknown tokens reject at parse. `ceo doctor` cross-checks declared artifact vs disk for every active `script` or `ollama-agent` playbook that logged "completed" today. |
+| `artifact` | recommended for `runner: script` | string template | Expected output path relative to the vault. Must start with `CEO/`. Supports `{TODAY}` (YYYY-MM-DD), `{MONTH}` (YYYY-MM, for a tool that writes one file per month and rewrites it in place), and `{HOST}` (short hostname). Unknown tokens reject at parse. `ceo doctor` cross-checks declared artifact vs disk for every active `script` or `ollama-agent` playbook that logged "completed" today. |
 | `out_pattern` | no | string | Legacy reporting pattern (output filename hint). Kept for back-compat with older playbooks. New playbooks should use `artifact`. |
 
 ## Status semantics
@@ -152,7 +152,7 @@ Note that `ceo playbook disable <name>` is a *different* mechanism: it writes ho
 2. Duplicate `name` (vault vs repo or within either tree) → shadow / skip.
 3. `runner` (if set) is in `CEO_VALID_RUNNERS`.
 4. `status` (if set) is in `CEO_VALID_STATUSES`.
-5. `artifact` (if set) starts with `CEO/` and contains only `{TODAY}` / `{HOST}` tokens.
+5. `artifact` (if set) starts with `CEO/` and contains only `{TODAY}` / `{MONTH}` / `{HOST}` tokens.
 6. `requires`, `inputs` shapes are valid JSON arrays.
 7. For `runner: ollama` / `ollama-think`, the model must be locally available (unless `CEO_OLLAMA_SKIP_PROBE=1`).
 
