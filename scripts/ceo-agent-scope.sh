@@ -49,27 +49,19 @@ mkdir -p "$reports_dir" || {
 }
 
 started=$(date +%s)
-err=$(mktemp) || { echo "cannot create a temp file for launcher stderr" >&2; exit 1; }
-trap 'rm -f "$err"' EXIT
 "$bin" \
   --ledger-root "$CEO_DIR/agents" \
   --reports-dir "$reports_dir" \
-  --agents-dir "${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}" 2>"$err"
+  --agents-dir "${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
 
 rc=$?
-cat "$err" >&2
 
-# The launcher skips a ledger file it cannot read, warns on stderr, and still
-# exits 0, having already rewritten the month's ranked snapshot as an unranked
-# one. This cannot undo that overwrite; it stops the run being recorded as a
-# success, since nothing downstream reads a zero-exit run's stderr. Only this
-# warning is matched: the launcher's other WARNING lines (an unparseable
-# review_by, an unterminated frontmatter fence) drop one entry, not a file, and
-# would otherwise turn the playbook red every week over a single malformed
-# consult. nhangen/llm-tools#767 tracks the upstream --strict fix.
-if [ "$rc" -eq 0 ] && grep -q '^WARNING: skipping unreadable file' "$err"; then
-  echo "agent-scope skipped unreadable input; refusing to record a partial scorecard as success" >&2
-  rc=1
+# Upstream agent-scope (nhangen/llm-tools#770, closing #767) refuses partial
+# inputs by default, exiting 3 and writing nothing. Treat any non-zero exit as
+# a failed run; special-case 3 so an operator can distinguish a partial-input
+# refusal from a missing root (rc=2) or crash.
+if [ "$rc" -eq 3 ]; then
+  echo "agent-scope: partial input — the snapshot was NOT written" >&2
 fi
 
 # A launcher that exits 0 without writing is the failure doctor cannot see until

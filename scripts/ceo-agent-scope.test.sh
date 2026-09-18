@@ -154,39 +154,55 @@ test_report_lands_at_the_declared_artifact_path() {
 
 test_launcher_failure_propagates_and_writes_no_outcome() {
   local mock_repo="$TEST_HOME/mock-llm-tools"
-  _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 3
+  _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 1
   export LLM_TOOLS_REPO="$mock_repo"
   local outcome_file="$TEST_HOME/outcome.txt"
   export CEO_RUNNER_OUTCOME_FILE="$outcome_file"
 
   local rc=0
   bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "3" "the launcher's exit code must reach the dispatcher"
+  assert_eq "$rc" "1" "the launcher's exit code must reach the dispatcher"
   local outcome; outcome=$(cat "$outcome_file" 2>/dev/null || echo "")
   assert_eq "$outcome" "" "a failed run must not claim fired"
 }
 
-test_skipped_unreadable_input_is_not_a_success() {
-  # The launcher warns and exits 0, overwriting a ranked snapshot with an
-  # unranked one. Nothing downstream reads a zero-exit run's stderr.
+test_partial_input_exits_3_and_alerts() {
+  # Upstream agent-scope (nhangen/llm-tools#770, closing #767) exits 3 on partial
+  # input and writes nothing. The runner must propagate rc=3, alert on stderr
+  # naming "partial input — the snapshot was NOT written", and write no outcome.
   local mock_repo="$TEST_HOME/mock-llm-tools"
-  _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 0 "skipping unreadable file"
+  _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 3 "could not read ledger file" no
   export LLM_TOOLS_REPO="$mock_repo"
   local outcome_file="$TEST_HOME/outcome.txt"
   export CEO_RUNNER_OUTCOME_FILE="$outcome_file"
 
   local err="" rc=0
   err=$(bash "$SCRIPT" 2>&1) || rc=$?
-  assert_eq "$rc" "1" "a partial scorecard must not be recorded as success"
-  assert_contains "$err" "refusing to record a partial scorecard" "stderr must say why"
+  assert_eq "$rc" "3" "partial input must exit 3"
+  assert_contains "$err" "partial input — the snapshot was NOT written" "stderr must explain partial input refusal"
   local outcome; outcome=$(cat "$outcome_file" 2>/dev/null || echo "")
-  assert_eq "$outcome" "" "a refused run must not claim fired"
+  assert_eq "$outcome" "" "partial input must not claim fired"
+}
+
+test_missing_input_root_exits_2_without_partial_input_alert() {
+  local mock_repo="$TEST_HOME/mock-llm-tools"
+  _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 2 "ledger root does not exist" no
+  export LLM_TOOLS_REPO="$mock_repo"
+  local outcome_file="$TEST_HOME/outcome.txt"
+  export CEO_RUNNER_OUTCOME_FILE="$outcome_file"
+
+  local err="" rc=0
+  err=$(bash "$SCRIPT" 2>&1) || rc=$?
+  assert_eq "$rc" "2" "missing input root must exit 2"
+  assert_not_contains "$err" "partial input" "exit 2 must not be labeled as partial input"
+  local outcome; outcome=$(cat "$outcome_file" 2>/dev/null || echo "")
+  assert_eq "$outcome" "" "exit 2 must not claim fired"
 }
 
 test_an_entry_level_warning_does_not_fail_the_run() {
-  # The launcher also warns on an unparseable review_by or an unterminated
-  # frontmatter fence. Those drop one consult, not a ledger file, so failing on
-  # any WARNING would turn the playbook red every week over one bad entry.
+  # The launcher may warn on stderr (e.g. an unparseable review_by or unterminated
+  # frontmatter fence). When it exits 0 and writes the report, the run succeeds
+  # — we do not grep stderr.
   local mock_repo="$TEST_HOME/mock-llm-tools"
   _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 0 "unparseable review_by in socrates/2026-09.md"
   export LLM_TOOLS_REPO="$mock_repo"

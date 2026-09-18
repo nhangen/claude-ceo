@@ -26,7 +26,7 @@ Runs `agent-scope` (from `~/.claude/skills/agent-scope/` in `nhangen/llm-tools`)
 
 - **Single scope**: Runs only on the owner host (**ML-1**) because it reads the synced CEO vault and produces a shared vault report.
 - **Weekly schedule**: Runs weekly on Monday morning (`0 7 * * 1`). Consult ledgers are low-frequency, so weekly is enough to keep the scorecard current.
-- **The snapshot is monthly and rewritten in place.** Roughly 4.3 runs land on the same `<YYYY-MM>.md`, each replacing the last — there is no per-run history. On a degraded run (a ledger file it cannot read) the tool has already overwritten the good snapshot before the runner sees it; the runner reports that run as a failure rather than a success, but cannot undo the overwrite (upstream fix: nhangen/llm-tools#767).
+- **The snapshot is monthly and rewritten in place.** Roughly 4.3 runs land on the same `<YYYY-MM>.md`, each replacing the last — there is no per-run history. On a degraded run (a ledger file or directory it cannot read, an empty ledger root, or zero ranked agents), the tool exits 3 and writes nothing (nhangen/llm-tools#770, closing #767), and the runner fails the run without touching the snapshot.
 - **No inbox lines**: Output is written directly to the declared artifact under `CEO/reports/agent-scope/`.
 
 ## Install
