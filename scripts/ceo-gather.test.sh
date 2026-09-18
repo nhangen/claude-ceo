@@ -138,9 +138,9 @@ _pending_preflight_rc() {
     # shellcheck disable=SC2034
     PENDING_ASK_QUESTIONS="$1"
     # shellcheck disable=SC2034
-    FILE_GATHER_DEGRADED="$2"
+    PENDING_GATHER_DEGRADED="$2"
     # shellcheck disable=SC2034
-    FILE_GATHER_DEGRADED_REASONS="file-read-failed:/path/to/Pending.md:rc=2"
+    PENDING_GATHER_DEGRADED_REASONS="file-read-failed:/path/to/Pending.md:rc=2"
     local out rc=0
     out=$(ceo_pending_items_preflight) || rc=$?
     echo "RC=$rc|OUT=$out" )
@@ -157,6 +157,111 @@ test_pending_items_preflight_covers_all_three_states() {
 test_pending_items_preflight_prefers_work_present_over_degraded() {
   assert_contains "$(_pending_preflight_rc '- [ ] ask Slava' 1)" "RC=0" \
     "pending questions present outrank a degraded file gather — there is work either way"
+}
+
+# Sibling to test_a_merged_search_failure_does_not_degrade_the_review_queue:
+# an unreadable Profile.md degrades the file gather overall, but says nothing
+# about the pending questions queue.
+test_a_profile_failure_does_not_degrade_the_pending_queue() {
+  echo "## Active Domains" > "$CEO_VAULT/Profile.md"
+  chmod 000 "$CEO_VAULT/Profile.md"
+  local out
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    chmod 644 "$CEO_VAULT/Profile.md"
+    echo "FILE_DEGRADED=${FILE_GATHER_DEGRADED}|PENDING_DEGRADED=${PENDING_GATHER_DEGRADED}"
+  )
+  assert_contains "$out" "FILE_DEGRADED=1" "an unreadable Profile.md must degrade the file gather overall"
+  assert_contains "$out" "PENDING_DEGRADED=0" "but must not degrade the pending questions queue"
+}
+
+test_an_unreadable_pending_file_normalizes_counts_and_degrades() {
+  echo "- [ ] test" > "$CEO_VAULT/CEO/approvals/pending.md"
+  chmod 000 "$CEO_VAULT/CEO/approvals/pending.md"
+  local out
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    chmod 644 "$CEO_VAULT/CEO/approvals/pending.md"
+    echo "PENDING_COUNT=${PENDING_COUNT}|APPROVED_COUNT=${APPROVED_COUNT}|FILE_DEGRADED=${FILE_GATHER_DEGRADED}"
+  )
+  assert_contains "$out" "PENDING_COUNT=0" "an unreadable approvals/pending.md must normalize PENDING_COUNT to 0"
+  assert_contains "$out" "APPROVED_COUNT=0" "an unreadable approvals/pending.md must normalize APPROVED_COUNT to 0"
+  assert_contains "$out" "FILE_DEGRADED=1" "and mark the file gather degraded"
+}
+
+test_ceo_branches_preflight_missing_repos_md() {
+  rm -f "$CEO_VAULT/CEO/repos.md"
+  local out rc=0
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    ceo_ceo_branches_preflight ) || rc=$?
+  assert_eq "$rc" "2" "missing repos.md must return 2"
+  assert_contains "$out" "repos file missing" "stdout must name missing repos.md"
+}
+
+test_ceo_branches_preflight_unreadable_repos_md() {
+  echo "| Repo | Local Path | Description |" > "$CEO_VAULT/CEO/repos.md"
+  chmod 000 "$CEO_VAULT/CEO/repos.md"
+  local out rc=0
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    ceo_ceo_branches_preflight ) || rc=$?
+  chmod 644 "$CEO_VAULT/CEO/repos.md"
+  assert_eq "$rc" "2" "unreadable repos.md must return 2"
+  assert_contains "$out" "cannot read repos file" "stdout must state cannot read repos file"
+}
+
+test_ceo_branches_preflight_finds_branch() {
+  local repo="$TMP/repo1"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.name "t"
+  git -C "$repo" config user.email "t@t"
+  git -C "$repo" commit --allow-empty -qm "init" --no-verify
+  git -C "$repo" branch -q "ceo/my-branch"
+  cat > "$CEO_VAULT/CEO/repos.md" << MD
+| Repo | Local Path | Description |
+|---|---|---|
+| repo1 | $repo | Test repo |
+MD
+  local out rc=0
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    ceo_ceo_branches_preflight ) || rc=$?
+  assert_eq "$rc" "0" "branch present must return 0"
+}
+
+test_ceo_branches_preflight_no_branches() {
+  local repo="$TMP/repo2"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.name "t"
+  git -C "$repo" config user.email "t@t"
+  git -C "$repo" commit --allow-empty -qm "init" --no-verify
+  cat > "$CEO_VAULT/CEO/repos.md" << MD
+| Repo | Local Path | Description |
+|---|---|---|
+| repo2 | $repo | Test repo |
+MD
+  local out rc=0
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    ceo_ceo_branches_preflight ) || rc=$?
+  assert_eq "$rc" "1" "no branch present must return 1"
+}
+
+test_ceo_branches_preflight_git_error_returns_2() {
+  cat > "$CEO_VAULT/CEO/repos.md" << MD
+| Repo | Local Path | Description |
+|---|---|---|
+| badrepo | /nonexistent/repo/path/xyz | Bad repo |
+MD
+  local out rc=0
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    ceo_ceo_branches_preflight ) || rc=$?
+  assert_eq "$rc" "2" "git failure must return 2"
+  assert_contains "$out" "git failure" "stdout must report git failure"
 }
 
 # PR_GATHER_DEGRADED is a union over review, authored, merged, GitLab, and every
