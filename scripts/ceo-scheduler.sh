@@ -85,6 +85,19 @@ ceo_scheduler_backend() {
   esac
 }
 
+# ceo_scheduler_daemon_template — absolute path of this platform's ceo-schedulerd
+# keep-alive template: the launchd plist on macOS, the systemd user unit on WSL
+# and Linux. Prints nothing when the platform is undetected.
+ceo_scheduler_daemon_template() {
+  local _deploy
+  _deploy="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/scheduler/deploy"
+  case "$(ceo_detect_os)" in
+    macos)     echo "$_deploy/com.ceo.schedulerd.plist" ;;
+    wsl|linux) echo "$_deploy/ceo-schedulerd.service" ;;
+    *)         ;;
+  esac
+}
+
 ceo_scheduler_list() {
   local _backend _rc=0
   _backend="$(ceo_scheduler_backend)" || _rc=$?
@@ -126,14 +139,15 @@ ceo_scheduler_install() {
       # No per-playbook OS install: ceo-schedulerd reads the registry
       # directly. The single keep-alive agent is installed by hand (it runs the
       # user's vault, so it can't be a scan side effect). Surface that loudly so
-      # a scan doesn't look like it silently scheduled nothing.
-      local _os; _os="$(ceo_detect_os)"
-      if [ "$_os" = "macos" ]; then
-        echo "macOS: scheduling is handled by the ceo-schedulerd daemon — no per-playbook OS entries are installed."
-        echo "       Ensure the keep-alive agent is running: see lib/scheduler/deploy/com.ceo.schedulerd.plist (and 'ceo doctor')."
+      # a scan doesn't look like it silently scheduled nothing. WSL and Linux
+      # resolve to the crontab backend, so they reach this arm only through an
+      # explicit CEO_SCHEDULER=daemon.
+      local _tmpl; _tmpl="$(ceo_scheduler_daemon_template)"
+      echo "Scheduling is handled by the ceo-schedulerd daemon — no per-playbook OS entries are installed."
+      if [ -n "$_tmpl" ]; then
+        echo "  Ensure the keep-alive agent is running: see $_tmpl (and 'ceo doctor')."
       else
-        echo "Linux/WSL: scheduling is handled by the ceo-schedulerd daemon — no per-playbook OS entries are installed."
-        echo "           Ensure the keep-alive agent is running: see lib/scheduler/deploy/ceo-schedulerd.service (and 'ceo doctor')."
+        echo "  Platform not detected; pick the keep-alive template in lib/scheduler/deploy/ (and run 'ceo doctor')."
       fi
       return 0
       ;;

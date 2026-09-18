@@ -548,20 +548,45 @@ test_doctor_notes_schedulerd_absent_without_failing() {
   assert_not_contains "$output" "heartbeat stale" "absent daemon must not be reported stale"
 }
 
-test_doctor_reports_wsl_service_hint_when_schedulerd_absent_on_wsl() {
-  rm -rf "$HOME/.ceo/schedulerd"
-  local output
-  output=$(
-    PATH="$TEST_HOME/stubs:$PATH"
-    export HOME="$TEST_HOME" CEO_VAULT="$CEO_VAULT"
-    # Override ceo_detect_os in subshell to simulate WSL
-    source "$SCRIPT_DIR/ceo-config.sh"
-    ceo_detect_os() { echo "wsl"; }
-    # Run cmd_doctor directly
-    source "$SCRIPT_DIR/ceo"
+# _doctor_as <os> — cmd_doctor with ceo_detect_os pinned, since WSL cannot be
+# simulated from outside (it reads /proc/version).
+_doctor_as() {
+  (
+    CEO_LIB_ONLY=1 source "$SCRIPT_DIR/ceo"
+    eval "ceo_detect_os() { echo $1; }"
     cmd_doctor 2>&1 || true
   )
-  assert_contains "$output" "ceo-schedulerd.service" "doctor on WSL must mention ceo-schedulerd.service"
+}
+_doctor_warnings() { printf '%s\n' "$1" | sed -n 's/^Result: .*, \([0-9]*\) warnings,.*/\1/p'; }
+_fresh_heartbeat() {
+  mkdir -p "$HOME/.ceo/schedulerd"
+  printf '{"ts":%s000}\n' "$(date +%s)" > "$HOME/.ceo/schedulerd/heartbeat.json"
+}
+
+test_doctor_warns_when_schedulerd_absent_on_wsl_and_linux() {
+  local os absent present
+  for os in wsl linux; do
+    _fresh_heartbeat
+    present=$(_doctor_as "$os")
+    rm -rf "$HOME/.ceo/schedulerd"
+    absent=$(_doctor_as "$os")
+    assert_contains "$absent" "nothing dispatches playbooks here" "$os: a missing daemon means nothing is scheduled"
+    assert_contains "$absent" "/lib/scheduler/deploy/ceo-schedulerd.service" "$os: names the systemd unit"
+    assert_eq "$(_doctor_warnings "$absent")" "$(( $(_doctor_warnings "$present") + 1 ))" \
+      "$os: a missing daemon adds one warning"
+  done
+}
+
+test_doctor_does_not_count_absent_schedulerd_on_macos() {
+  local absent present
+  _fresh_heartbeat
+  present=$(_doctor_as macos)
+  rm -rf "$HOME/.ceo/schedulerd"
+  absent=$(_doctor_as macos)
+  assert_contains "$absent" "com.ceo.schedulerd.plist" "macOS names the launchd plist"
+  [ -n "$(_doctor_warnings "$absent")" ] || { echo "  FAIL [macos] Result line not parsed"; FAILS=$((FAILS + 1)); }
+  assert_eq "$(_doctor_warnings "$absent")" "$(_doctor_warnings "$present")" \
+    "macOS: an absent daemon is noted, not counted"
 }
 
 test_doctor_flags_malformed_schedulerd_heartbeat() {
