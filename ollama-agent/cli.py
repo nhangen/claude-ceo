@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ollama-agent CLI — run a local model as a tool-using agent on a bounded task.
 
-    python cli.py --task "summarize the README" --model gpt-oss:20b --cwd /repo
+    python cli.py --ungated --task "summarize the README" --model gpt-oss:20b --cwd /repo
 
 Slice 2 (#187): real shell/fs/git tools + task-relevant rule injection.
 """
