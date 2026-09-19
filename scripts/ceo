@@ -99,8 +99,8 @@ cmd_next() {
     echo "  2. Run: claude plugin add nhangen/claude-ceo"
     echo "  3. Test: cd $VAULT && claude"
     echo "     Then type: /ceo"
-    echo "  4. Test cron: ceo test"
-    echo "  5. Enable cron: ceo doctor (shows if cron is installed)"
+    echo "  4. Smoke test: ceo test"
+    echo "  5. Install the ceo-schedulerd keep-alive agent from lib/scheduler/deploy/, then: ceo doctor"
   fi
 }
 
@@ -307,8 +307,8 @@ cmd_doctor() {
     # host the healthy scheduler signal is the ceo-schedulerd heartbeat (checked
     # below); any lingering ceo-cron.sh entries are a migration leftover flagged
     # by the migration-leftover check further down. Nothing to install here.
-    echo "  ✓ Scheduling owned by ceo-schedulerd (native crontab install retired)"
-    ok=$((ok + 1))
+    # Not counted as ok: whether anything dispatches is the heartbeat's verdict.
+    echo "  · Scheduler: ceo-schedulerd (native crontab install retired; liveness below)"
   elif [ "$_backend" = "daemon" ]; then
     # macOS: scheduling is owned by ceo-schedulerd; the OS holds no per-playbook
     # entries. Liveness is the heartbeat check below (added in #142).
@@ -591,7 +591,19 @@ cmd_doctor() {
   local _hb_file="${HOME:?HOME must be set for the schedulerd heartbeat check}/.ceo/schedulerd/heartbeat.json"
   local _hb_stale_s=600
   if [ ! -f "$_hb_file" ]; then
-    echo "  ? ceo-schedulerd not running on this host (no heartbeat) — optional Phase-1.5 daemon"
+    local _daemon_tmpl
+    _daemon_tmpl="$(ceo_scheduler_daemon_template)"
+    case "$_platform" in
+      wsl|linux)
+        # The crontab install path is retired, so on these hosts the daemon is
+        # the only dispatcher: without it nothing reads ~/.ceo/registry.json.
+        echo "  ⚠ ceo-schedulerd not running on this host (no heartbeat) — nothing dispatches playbooks here. Install: $_daemon_tmpl"
+        warn=$((warn + 1))
+        ;;
+      *)
+        echo "  ? ceo-schedulerd not running on this host (no heartbeat)${_daemon_tmpl:+ — see $_daemon_tmpl}"
+        ;;
+    esac
   elif ! command -v jq &>/dev/null; then
     echo "  ⚠ schedulerd heartbeat check skipped: jq not on PATH"
     warn=$((warn + 1))
