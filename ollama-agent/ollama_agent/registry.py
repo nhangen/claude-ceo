@@ -10,7 +10,7 @@ never be delegated to a local model regardless of what the entry says.
 import json
 import math
 from pathlib import Path
-import warnings
+import sys
 
 RUNNERS = {"ollama"}                       # who may execute a registered task
 # Ordered low→high stakes; the order is used verbatim in the "known: …" diagnostic.
@@ -93,7 +93,7 @@ def score_for(scores, eval_task, model):
     return scores.get((eval_task, model))
 
 
-def _validate(name, entry):
+def _validate(name, entry, where=""):
     for field in ("runner", "model", "tier"):
         if not entry.get(field):
             raise RegistryError(f"task {name!r}: missing required field {field!r}")
@@ -107,11 +107,15 @@ def _validate(name, entry):
     if tools != "*" and not isinstance(tools, list):
         raise RegistryError(f"task {name!r}: tools must be \"*\" or a list, got {type(tools).__name__}")
     if isinstance(tools, list) and "write_file" in tools and "edit_file" not in tools:
-        warnings.warn(
-            f"task {name!r}: 'tools' contains 'write_file' without 'edit_file' — "
-            "allow edit_file so surgical edits avoid full file rewrites",
-            UserWarning,
-            stacklevel=2,
+        # Advisory, not a refusal: the task still runs correctly without edit_file,
+        # it just rewrites whole files where a surgical edit would do. Printed the
+        # way every other soft signal in the bridge is (cli.py's stale-score and
+        # unknown-tool warnings) rather than via warnings.warn, which an external
+        # PYTHONWARNINGS can silence and which fires only once per process.
+        print(
+            f"warning: {where}task {name!r}: 'tools' contains 'write_file' without "
+            "'edit_file' — allow edit_file so surgical edits avoid full file rewrites",
+            file=sys.stderr,
         )
     if "min_score" in entry and entry["min_score"] is not None:
         ms = entry["min_score"]
@@ -128,15 +132,22 @@ def load_registry(source):
     """`source` is a path, a JSON string, or a dict shaped {"tasks": {name: {...}}}.
     Every entry is validated; the first invalid entry raises RegistryError (a bad
     registry is a configuration error, surfaced, not a quietly-skipped task)."""
+    where = ""
     if isinstance(source, dict):
         data = source
     else:
-        text = Path(source).read_text() if Path(str(source)).exists() else str(source)
+        # A diagnostic that names only the task leaves the reader hunting for the
+        # file that declared it; say which registry when the source is one.
+        if Path(str(source)).exists():
+            where = f"{source}: "
+            text = Path(source).read_text()
+        else:
+            text = str(source)
         data = json.loads(text)
     tasks = data.get("tasks", {})
     specs = {}
     for name, entry in tasks.items():
-        _validate(name, entry)
+        _validate(name, entry, where)
         specs[name] = TaskSpec(
             name=name, runner=entry["runner"], model=entry["model"], tier=entry["tier"],
             tools=entry.get("tools", "*"), rules=entry.get("rules", True),
