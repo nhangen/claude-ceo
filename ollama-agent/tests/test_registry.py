@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -293,3 +294,75 @@ def test_committed_registry_enables_no_delegable_tier():
     assert not delegable, (
         f"committed registry enables delegable tier(s): {delegable} — "
         "delegable pins are gated behind #255/#254, add them there")
+
+
+def test_load_registry_warns_when_write_file_without_edit_file(capsys):
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "tools": ["read_file", "write_file"]}))
+    assert "t" in specs
+    assert "without 'edit_file'" in capsys.readouterr().err
+
+
+def test_pairing_warning_names_the_registry_file(tmp_path, capsys):
+    reg = tmp_path / "registry.json"
+    reg.write_text(json.dumps(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                      "tools": ["write_file"]})))
+    load_registry(str(reg))
+    assert str(reg) in capsys.readouterr().err
+
+
+def test_pairing_warning_repeats_across_loads(capsys):
+    # warnings.warn deduplicated per process, so a long-lived caller validating
+    # several registries would hear about the first offender only.
+    reg = _reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                  "tools": ["write_file"]})
+    load_registry(reg)
+    load_registry(reg)
+    assert capsys.readouterr().err.count("without 'edit_file'") == 2
+
+
+@pytest.mark.parametrize("tools", ["*", [], ["edit_file"], ["read_file"],
+                                   ["read_file", "write_file", "edit_file"]])
+def test_load_registry_no_pairing_warning(tools, capsys):
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "tools": tools}))
+    assert "t" in specs
+    assert "edit_file'" not in capsys.readouterr().err
+
+
+def _registry_sources():
+    """Every committed registry: the canonical one plus each playbook's inline
+    `registry:` frontmatter. Vault-synced playbooks are out of a repo test's reach."""
+    repo_root = Path(__file__).resolve().parents[2]
+    sources = [(COMMITTED_REGISTRY.name, COMMITTED_REGISTRY.read_text())]
+    playbook_files = sorted((repo_root / "docs" / "playbooks").glob("*.md"))
+    assert playbook_files, "playbook files must exist under docs/playbooks/"
+    for pb in playbook_files:
+        in_frontmatter = False
+        for i, line in enumerate(pb.read_text().splitlines()):
+            if line.strip() == "---":
+                if i == 0:
+                    in_frontmatter = True
+                    continue
+                if in_frontmatter:
+                    break
+            if in_frontmatter and line.startswith("registry:"):
+                raw = line.split(":", 1)[1].strip()
+                # SCHEMA.md sanctions a path form too; json.loads would take it for
+                # malformed JSON, so resolve it rather than failing on the wrong thing.
+                if not raw.startswith("{"):
+                    raw = str((repo_root / raw).resolve())
+                sources.append((pb.name, raw))
+    return sources
+
+
+def test_committed_playbooks_pairing_invariant():
+    sources = _registry_sources()
+    # The guard against the sweep silently emptying — not a claim that any task
+    # uses write_file today.
+    assert len(sources) > 1, "no playbook declares an inline registry any more"
+    for origin, source in sources:
+        for name, spec in load_registry(source).items():
+            if isinstance(spec.tools, list) and "write_file" in spec.tools:
+                assert "edit_file" in spec.tools, (
+                    f"{origin}: task {name!r} allows 'write_file' but omits 'edit_file'")
