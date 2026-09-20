@@ -9,7 +9,6 @@ import {
   computeStatus,
   createMatcher,
   STALE_EXIT_CODE,
-  type JobStatus,
   type StatusReport,
 } from "cronbird/core";
 import { readHeartbeatFile } from "cronbird/cli";
@@ -25,7 +24,7 @@ import {
   swarmPath,
 } from "@/runtime";
 
-export type StatusSubcommand = "status" | "next-runs" | "list";
+export type StatusSubcommand = "status" | "next-runs";
 
 export interface StatusCliDeps {
   now: () => Date;
@@ -33,6 +32,9 @@ export interface StatusCliDeps {
   err: (s: string) => void;
   env: Record<string, string | undefined>;
 }
+
+/** Absent, corrupt, and fresh are three different answers about the daemon. */
+export type HeartbeatState = "ok" | "absent" | "corrupt";
 
 export interface ParsedArgs {
   json: boolean;
@@ -58,6 +60,10 @@ export function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCl
       json = true;
     } else if (a === "--within") {
       const val = args[++i];
+      if (val === undefined) {
+        deps.err(`--within requires a duration (use e.g. 30m, 2h, 1d)\n`);
+        return 2;
+      }
       const ms = parseDuration(val);
       if (ms === null) {
         deps.err(`invalid --within duration: ${JSON.stringify(val)} (use e.g. 30m, 2h, 1d)\n`);
@@ -67,8 +73,11 @@ export function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCl
     } else if (a === "--help" || a === "-h") {
       deps.out(usage(sub));
       return 0;
-    } else if (a.startsWith("--")) {
+    } else if (a.startsWith("-")) {
       deps.err(`unknown flag: ${a}\n`);
+      return 2;
+    } else {
+      deps.err(`unexpected argument: ${a}\n`);
       return 2;
     }
   }
@@ -79,12 +88,10 @@ export function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCl
   return { json, withinMs };
 }
 
+/** Reached only by direct `bun run src/status.ts`: `_wants_help` in the ceo wrapper answers first. */
 function usage(sub: StatusSubcommand): string {
   if (sub === "next-runs") {
     return "Usage: ceo playbook next-runs [--within <dur>] [--json]\n";
-  }
-  if (sub === "list") {
-    return "Usage: ceo playbook list [--json]\n";
   }
   return "Usage: ceo status [--json]\n";
 }
@@ -106,39 +113,39 @@ export function fmtRelative(deltaMs: number): string {
   return past ? `${body} ago` : `in ${body}`;
 }
 
+/** Registry strings reach the terminal here, so control characters are neutralized first. */
+function cellText(s: string | undefined): string {
+  return (s ?? "").replace(/[\x00-\x1f\x7f]/g, "?");
+}
+
 export function table(rows: string[][]): string {
   if (rows.length === 0) return "";
-  const widths = rows[0]!.map((_, c) => Math.max(...rows.map((r) => (r[c] ?? "").length)));
-  return rows.map((r) => r.map((cell, c) => (cell ?? "").padEnd(widths[c]!)).join("  ").trimEnd()).join("\n") + "\n";
+  rows = rows.map((r) => r.map(cellText));
+  const cols = Math.max(...rows.map((r) => r.length));
+  const widths = Array.from({ length: cols }, (_, c) => Math.max(...rows.map((r) => (r[c] ?? "").length)));
+  return rows.map((r) => r.map((cell, c) => cell.padEnd(widths[c]!)).join("  ").trimEnd()).join("\n") + "\n";
 }
 
 function yesno(b: boolean): string {
   return b ? "yes" : "no";
 }
 
-function renderList(report: StatusReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
-  if (parsed.json) {
-    deps.out(JSON.stringify({ host: report.host, jobs: report.jobs.map((j) => ({
-      name: j.name, schedule: j.schedule, scope: j.scope, isActive: j.isActive, runnable: j.runnable,
-    })) }, null, 2) + "\n");
-    return;
-  }
-  const rows: string[][] = [["NAME", "SCHEDULE", "SCOPE", "ACTIVE", "RUNNABLE"]];
-  for (const j of report.jobs) {
-    rows.push([j.name, j.schedule, j.scope, yesno(j.isActive), yesno(j.runnable)]);
-  }
-  deps.out(table(rows));
-}
-
-function renderNextRuns(report: StatusReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
+function renderNextRuns(report: StatusReport, hbState: HeartbeatState, parsed: ParsedArgs, deps: StatusCliDeps): void {
   const cutoff = parsed.withinMs === null ? Infinity : report.now + parsed.withinMs;
   const upcoming = report.jobs
     .filter((j) => j.nextFire !== null && j.nextFire <= cutoff)
     .sort((a, b) => a.nextFire! - b.nextFire!);
   if (parsed.json) {
-    deps.out(JSON.stringify({ now: report.now, nextRuns: upcoming.map((j) => ({
-      name: j.name, nextFire: j.nextFire, nextFireIso: fmtTs(j.nextFire),
-    })) }, null, 2) + "\n");
+    deps.out(JSON.stringify({
+      host: report.host,
+      now: report.now,
+      daemonStale: report.daemonStale,
+      heartbeatAgeMs: report.heartbeatAgeMs,
+      heartbeatState: hbState,
+      nextRuns: upcoming.map((j) => ({
+        name: j.name, nextFire: j.nextFire, nextFireIso: fmtTs(j.nextFire),
+      })),
+    }, null, 2) + "\n");
     return;
   }
   const rows: string[][] = [["NAME", "NEXT FIRE", "IN"]];
@@ -150,14 +157,36 @@ function renderNextRuns(report: StatusReport, parsed: ParsedArgs, deps: StatusCl
   deps.out(table(rows));
 }
 
-function renderStatus(report: StatusReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
+function daemonLine(report: StatusReport, hbState: HeartbeatState): string {
+  if (hbState === "corrupt") return "heartbeat file unreadable";
+  if (report.heartbeatAgeMs === null) return "never checked in";
+  return `heartbeat ${fmtRelative(-report.heartbeatAgeMs)}`;
+}
+
+function renderStatus(report: StatusReport, hbState: HeartbeatState, parsed: ParsedArgs, deps: StatusCliDeps): void {
   if (parsed.json) {
-    deps.out(JSON.stringify(report, null, 2) + "\n");
+    // Projected field by field: `report` is cronbird's type, and the CRONBIRD_REF pin
+    // is worth nothing if a bump reshapes this command's output for its consumers.
+    deps.out(JSON.stringify({
+      host: report.host,
+      now: report.now,
+      daemonStale: report.daemonStale,
+      heartbeatAgeMs: report.heartbeatAgeMs,
+      heartbeatState: hbState,
+      jobs: report.jobs.map((j) => ({
+        name: j.name,
+        schedule: j.schedule,
+        scope: j.scope,
+        isActive: j.isActive,
+        runnable: j.runnable,
+        lastFired: j.lastFired,
+        nextFire: j.nextFire,
+        health: j.health,
+      })),
+    }, null, 2) + "\n");
     return;
   }
-  const hb = report.heartbeatAgeMs === null
-    ? "no heartbeat on disk"
-    : `heartbeat ${fmtRelative(-report.heartbeatAgeMs)}`;
+  const hb = daemonLine(report, hbState);
   const marker = report.daemonStale ? "STALE — " : "";
   deps.out(`host=${report.host}  daemon: ${marker}${hb}\n\n`);
   const rows: string[][] = [["NAME", "SCOPE", "RUNNABLE", "LAST FIRED", "NEXT FIRE", "HEALTH"]];
@@ -174,10 +203,63 @@ function renderStatus(report: StatusReport, parsed: ParsedArgs, deps: StatusCliD
   deps.out(table(rows));
 }
 
-function render(sub: StatusSubcommand, report: StatusReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
-  if (sub === "list") return renderList(report, parsed, deps);
-  if (sub === "next-runs") return renderNextRuns(report, parsed, deps);
-  return renderStatus(report, parsed, deps);
+function render(sub: StatusSubcommand, report: StatusReport, hbState: HeartbeatState, parsed: ParsedArgs, deps: StatusCliDeps): void {
+  if (sub === "next-runs") return renderNextRuns(report, hbState, parsed, deps);
+  return renderStatus(report, hbState, parsed, deps);
+}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * The daemon's parsers default silently on bad input, which is right for something
+ * that must never *run* the wrong thing and wrong for a CLI that must never *assert*
+ * the wrong thing. These wrappers keep the defaults and say so.
+ */
+function loadEnabled(enP: string, deps: StatusCliDeps): Set<string> {
+  if (!existsSync(enP)) return new Set();
+  let raw: string;
+  try {
+    raw = readFileSync(enP, "utf8");
+  } catch (e) {
+    deps.err(`warning: enabled file unreadable: ${enP} (${errText(e)})\n`);
+    return new Set();
+  }
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    deps.err(`warning: enabled file present but unparseable: ${enP} — no each-scope playbook will report runnable\n`);
+    return new Set();
+  }
+  if (!Array.isArray(doc)) {
+    deps.err(`warning: enabled file is not a JSON array: ${enP} — no each-scope playbook will report runnable\n`);
+    return new Set();
+  }
+  // parseEnabled owns the element-level filtering; the checks above exist only to
+  // tell an unreadable file apart from a genuinely empty one.
+  return parseEnabled(raw);
+}
+
+function loadOwners(swP: string, deps: StatusCliDeps): Record<string, string> {
+  if (!existsSync(swP)) {
+    deps.err(`warning: no swarm file at ${swP} — every single-scope playbook will report not-runnable\n`);
+    return {};
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(swP, "utf8");
+  } catch (e) {
+    deps.err(`warning: swarm file unreadable: ${swP} (${errText(e)})\n`);
+    return {};
+  }
+  const swarm = parseSwarm(raw);
+  if (swarm === null) {
+    deps.err(`warning: swarm file present but unparseable: ${swP} — every single-scope playbook will report not-runnable\n`);
+    return {};
+  }
+  return swarm.owners;
 }
 
 export function runCeoStatusCommand(sub: StatusSubcommand, args: string[], deps: StatusCliDeps): number {
@@ -185,6 +267,10 @@ export function runCeoStatusCommand(sub: StatusSubcommand, args: string[], deps:
   if (typeof parsed === "number") return parsed;
 
   const home = deps.env.HOME ?? "";
+  if (home === "") {
+    deps.err(`HOME is not set; cannot locate the host-local registry.\n`);
+    return 1;
+  }
   const vault = deps.env.CEO_VAULT ?? "";
   const cfg = resolveAdapterConfig(deps.env);
 
@@ -199,24 +285,27 @@ export function runCeoStatusCommand(sub: StatusSubcommand, args: string[], deps:
     const res = parseRegistry(readFileSync(regP, "utf8"));
     jobs = res.jobs;
     for (const w of res.warnings) deps.err(`warning: ${w}\n`);
+    if (jobs.length === 0) {
+      deps.err(`warning: no playbooks in registry at ${regP}. If that is unexpected, run: ceo playbook scan\n`);
+    }
   } catch (e) {
     deps.err(`registry error: ${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
   }
 
-  const enP = enabledPath(home);
-  const enabled = existsSync(enP) ? parseEnabled(readFileSync(enP, "utf8")) : new Set<string>();
+  const enabled = loadEnabled(enabledPath(home), deps);
 
   const swP = swarmPath(vault);
-  const swarm = existsSync(swP) ? parseSwarm(readFileSync(swP, "utf8")) : null;
-  if (existsSync(swP) && swarm === null) {
-    deps.err(`warning: swarm file present but unparseable: ${swP}\n`);
-  }
-  const owners = swarm?.owners ?? {};
+  const owners = loadOwners(swP, deps);
 
   const hbP = heartbeatPath(home);
   const heartbeat = readHeartbeatFile(hbP);
-  if (existsSync(hbP) && heartbeat === null) {
+  const hbState: HeartbeatState = !existsSync(hbP)
+    ? "absent"
+    : heartbeat === null
+      ? "corrupt"
+      : "ok";
+  if (hbState === "corrupt") {
     deps.err(`warning: heartbeat file present but unparseable: ${hbP}\n`);
   }
 
@@ -234,9 +323,11 @@ export function runCeoStatusCommand(sub: StatusSubcommand, args: string[], deps:
     },
   });
 
-  render(sub, report, parsed, deps);
+  render(sub, report, hbState, parsed, deps);
 
-  if (sub === "status" && report.daemonStale) {
+  // A projected fire time is a claim about a live scheduler, so next-runs owes the
+  // same alert status does — it was reading the same daemonStale and saying nothing.
+  if (report.daemonStale) {
     deps.err(`ALERT: daemon heartbeat stale (${fmtRelative(-report.heartbeatAgeMs!)}) on host=${report.host} — scheduler is not running.\n`);
     return STALE_EXIT_CODE;
   }
@@ -247,7 +338,7 @@ if (import.meta.main) {
   const rawArgs = process.argv.slice(2);
   let sub: StatusSubcommand = "status";
   let startIdx = 0;
-  if (rawArgs[0] === "status" || rawArgs[0] === "next-runs" || rawArgs[0] === "list") {
+  if (rawArgs[0] === "status" || rawArgs[0] === "next-runs") {
     sub = rawArgs[0] as StatusSubcommand;
     startIdx = 1;
   }

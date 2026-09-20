@@ -31,12 +31,14 @@ VAULT="${CEO_VAULT:-}"
 CEO_DIR="${VAULT:+$VAULT/CEO}"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
+# stderr, not stdout: `ceo status --json` is gated on this, and a diagnostic
+# printed into the JSON stream is a parse error for whatever reads it.
 _registry_schema_error() {
   local rc="$1"
   case "$rc" in
-    1) echo "No registry found. Run: ceo playbook scan" ;;
-    2) echo "Registry schema_version missing, malformed, or below $CEO_REGISTRY_SCHEMA_VERSION. Run: ceo playbook scan" ;;
-    *) echo "Registry validation failed (rc=$rc)" ;;
+    1) echo "No registry found. Run: ceo playbook scan" >&2 ;;
+    2) echo "Registry schema_version missing, malformed, or below $CEO_REGISTRY_SCHEMA_VERSION. Run: ceo playbook scan" >&2 ;;
+    *) echo "Registry validation failed (rc=$rc)" >&2 ;;
   esac
 }
 
@@ -2418,10 +2420,18 @@ cmd_playbook_list() {
   _playbook_rows
 }
 
-cmd_playbook_next_runs() {
-  _wants_help "$@" && { _playbook_sub_usage next-runs; return 0; }
+_status_usage() {
+  echo "Usage: ceo status [--json]"
+}
+
+# Both scheduler-backed commands need the same four preconditions, and a guard that
+# lives in only one of them is the one that rots.
+_run_scheduler_cli() {
+  local sub="$1"; shift
+  local label="$sub"
+  [ "$sub" = "next-runs" ] && label="playbook next-runs"
   if ! command -v bun &>/dev/null; then
-    echo "ERROR: bun is required for playbook next-runs (bun not found on PATH)" >&2
+    echo "ERROR: bun is required for $label (bun not found on PATH)" >&2
     return 1
   fi
   local sched_dir="$INSTALL_DIR/lib/scheduler"
@@ -2429,21 +2439,22 @@ cmd_playbook_next_runs() {
     echo "ERROR: scheduler lib directory not found: $sched_dir" >&2
     return 1
   fi
-  ( cd "$sched_dir" && bun run src/status.ts next-runs "$@" )
+  if [ ! -d "$sched_dir/node_modules" ]; then
+    echo "ERROR: scheduler dependencies not installed. Run: (cd $sched_dir && bun install)" >&2
+    return 1
+  fi
+  _require_registry_current "$(_ceo_registry_path)"
+  ( cd "$sched_dir" && bun run src/status.ts "$sub" "$@" )
+}
+
+cmd_playbook_next_runs() {
+  _wants_help "$@" && { _playbook_sub_usage next-runs; return 0; }
+  _run_scheduler_cli next-runs "$@"
 }
 
 cmd_status() {
-  _wants_help "$@" && { echo "Usage: ceo status [--json]"; return 0; }
-  if ! command -v bun &>/dev/null; then
-    echo "ERROR: bun is required for status (bun not found on PATH)" >&2
-    return 1
-  fi
-  local sched_dir="$INSTALL_DIR/lib/scheduler"
-  if [ ! -d "$sched_dir" ]; then
-    echo "ERROR: scheduler lib directory not found: $sched_dir" >&2
-    return 1
-  fi
-  ( cd "$sched_dir" && bun run src/status.ts status "$@" )
+  _wants_help "$@" && { _status_usage; return 0; }
+  _run_scheduler_cli status "$@"
 }
 
 cmd_playbook_enable() {
@@ -2858,7 +2869,7 @@ case "${1:-help}" in
         # creds answers help itself, and one level down `creds check --help`
         # read the flag as a playbook name and demanded a vault.
         creds)    cmd_creds help ;;
-        status)   echo "Usage: ceo status [--json]" ;;
+        status)   _status_usage ;;
         *)        cmd_help ;;
       esac
       exit 0
