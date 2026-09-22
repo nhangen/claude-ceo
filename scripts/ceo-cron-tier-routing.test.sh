@@ -89,7 +89,7 @@ _oversized_task_payload() {
 _assert_head_pipe_form_breaks() {
   local payload="$1" rc=0
   ( set -o pipefail
-    printf '%s' "$payload" | jq -r '.tool_input.prompt' | head -c 200 >/dev/null
+    printf '%s' "$payload" | jq -r '.tool_input.prompt' 2>/dev/null | head -c 200 >/dev/null
   ) || rc=$?
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   if [ "$rc" -eq 0 ]; then

@@ -163,7 +163,7 @@ _oversized_body() {
 # error: Broken pipe"). Pinning 141 cost a CI cycle in #294.
 _pipe_form_rc() {
   local raw="$1" pattern="$2" rc=0
-  ( set -o pipefail; printf '%s' "$raw" | grep -qEi "$pattern" ) || rc=$?
+  ( set -o pipefail; printf '%s' "$raw" 2>/dev/null | grep -qEi "$pattern" ) || rc=$?
   echo "$rc"
 }
 

@@ -166,7 +166,8 @@ test_missing_summary_line_is_a_harness_error() {
 
 test_timeout_is_a_harness_error() {
   if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
-    echo "  (skipped: no timeout binary)"; return 0
+    assert_eq "skipped" "skipped" "no timeout binary on this host (timeout or gtimeout)"
+    return 0
   fi
   printf '#!/bin/bash\nsleep 10\n' > "$OLLAMA_SMOKE_BIN"
   chmod +x "$OLLAMA_SMOKE_BIN"
