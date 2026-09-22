@@ -263,6 +263,8 @@ def main(argv=None):
         a.model = spec.model
         a.no_rules = a.no_rules or not spec.rules
         a.no_skills = a.no_skills or not spec.skills
+        if not a.mcp and spec.mcp:
+            a.mcp = spec.mcp
         print(f"task {a.task_name!r}: runner={spec.runner} tier={spec.tier} model={spec.model}",
               file=sys.stderr)
 
@@ -296,15 +298,20 @@ def main(argv=None):
         print(f"skills: {len(skills)} available (use_skill enabled)", file=sys.stderr)
     tools = [] if a.no_tools else TOOLS + ([USE_SKILL_TOOL] if skills else [])
 
-    mcp_transport, mcp_client, mcp_names = None, None, {}
+    mcp_transport, mcp_client, mcp_names, mcp_readonly = None, None, {}, set()
     if a.mcp:
         try:
             mcp_transport = StdioMCPTransport(a.mcp, cwd=a.cwd)
             mcp_client = MCPClient(mcp_transport)
             mcp_client.initialize()
             schemas, mcp_names = mcp_tools_to_ollama(mcp_client.list_tools())
+            mcp_readonly = {
+                s["function"]["name"]
+                for s in schemas
+                if s.get("function", {}).get("annotations", {}).get("readOnlyHint") is True
+            }
             tools = tools + schemas
-            print(f"mcp: {len(schemas)} tools from {a.mcp!r}", file=sys.stderr)
+            print(f"mcp: {len(schemas)} tools from {a.mcp!r} ({len(mcp_readonly)} read-only)", file=sys.stderr)
         except Exception as e:
             if mcp_transport:
                 mcp_transport.close()
@@ -325,7 +332,8 @@ def main(argv=None):
               file=sys.stderr)
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
-                      mcp_client=mcp_client, mcp_names=mcp_names)
+                      mcp_client=mcp_client, mcp_names=mcp_names,
+                      mcp_readonly=mcp_readonly)
     # Who actually serves the turns. The transport fills this in as it goes, so
     # it is readable after the run even when the run failed (#667).
     provenance = {}

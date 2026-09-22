@@ -366,3 +366,21 @@ def test_committed_playbooks_pairing_invariant():
             if isinstance(spec.tools, list) and "write_file" in spec.tools:
                 assert "edit_file" in spec.tools, (
                     f"{origin}: task {name!r} allows 'write_file' but omits 'edit_file'")
+
+
+def test_load_mcp_field():
+    specs = load_registry(_reg(
+        mcp_task={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": "npx -y @mcp/server"}))
+    assert specs["mcp_task"].mcp == "npx -y @mcp/server"
+
+
+def test_load_rejects_bad_mcp_type():
+    with pytest.raises(RegistryError, match="mcp must be a non-empty string"):
+        load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": 123}))
+    with pytest.raises(RegistryError, match="mcp must be a non-empty string"):
+        load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": ["server"]}))
+
+
+def test_load_rejects_empty_mcp_string():
+    with pytest.raises(RegistryError, match="mcp must be a non-empty string"):
+        load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": "   "}))
