@@ -392,7 +392,7 @@ test_runner_ollama_agent_missing_bridge_command_is_failure() {
 
 
 test_runner_ollama_agent_mcp_tool_error_fails_and_readonly_miss_succeeds() {
-  # #457: ceo-cron.sh passes --mcp from the registry task spec.
+  # #457, #477: bridge CLI resolves mcp from registry task spec directly.
   # A mutating mcp__* tool error must fail the cron run and record in cron-skips.
   # A read-only mcp__* lookup miss (tool_errors empty) must succeed cleanly.
   _register_agent_pb agent-mcp-err low-stakes-write
@@ -407,7 +407,7 @@ EOF
     printf '  FAIL [%s] a completed run with an mcp__* tool error must exit non-zero\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  assert_contains "$(cat "$HOME/agent-argv.txt" 2>/dev/null)" "--mcp node /opt/servers/db.js --flag" "cron passes --mcp from registry task spec with preserved spaces"
+  assert_not_contains "$(cat "$HOME/agent-argv.txt" 2>/dev/null)" "--mcp" "cron delegates registry mcp to bridge cli rather than passing --mcp"
   assert_contains "$(_skips_log)" "mcp__write_db" "failure log must record failing mcp tool"
 
   # Now simulate a read-only miss: tool_errors is empty because readOnlyHint skipped it
@@ -420,6 +420,16 @@ EOF
   local rc_ro=0
   bash "$CRON" agent-mcp-ro >/dev/null 2>&1 || rc_ro=$?
   assert_eq "$rc_ro" "0" "read-only mcp lookup miss with empty tool_errors must succeed"
+}
+
+test_runner_ollama_agent_no_mcp_omits_mcp_flag() {
+  _register_agent_pb agent-plain low-stakes-write
+  _make_agent_stub '{"completed": true, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-plain >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "plain agent task exits 0"
+  assert_not_contains "$(cat "$HOME/agent-argv.txt" 2>/dev/null)" "--mcp" "--mcp must be absent from cron dispatch argv for task without mcp"
 }
 
 run_tests
