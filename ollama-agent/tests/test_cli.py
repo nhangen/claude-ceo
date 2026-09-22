@@ -29,6 +29,7 @@ def _stub(monkeypatch, captured):
                        verify_cmd=None, usage_tracker=None, num_ctx=None):
         captured["system"] = system
         captured["tools"] = tools
+        captured["toolbox"] = toolbox
         captured["run_id"] = run_id
         captured["verify_cmd"] = verify_cmd
         captured["num_ctx"] = num_ctx
@@ -316,6 +317,10 @@ def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
     assert rc == 0
     err = capsys.readouterr().err
     assert "mcp: 2 tools from 'test-server' (1 read-only)" in err
+    # The stderr line alone left the hand-off untested: mcp_readonly=None at the
+    # ToolBox call site kept the whole suite green, and that is the line the
+    # feature rests on.
+    assert captured["toolbox"].mcp_readonly == {"mcp__query"}
 
 
 def _registry(tmp_path, **tasks):
@@ -1033,3 +1038,40 @@ def test_cli_warns_on_alias_routing_even_when_the_model_string_matches(tmp_path,
     err = capsys.readouterr().err
     assert "served-by:" in err, "alias routing was not reported because the strings matched"
     assert "ml1-5080" in err
+
+
+def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
+    """A server that spells the hint as a string must not be read as read-only.
+
+    The hint decides whether a tool's failures reach tool_errors, which is the
+    cron run's only failure gate — so a server could otherwise silence its own
+    error reporting with a one-character JSON type error."""
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+
+    class FT:
+        def close(self):
+            closed["v"] = True
+    monkeypatch.setattr(cli, "StdioMCPTransport", lambda *a, **kw: FT())
+
+    class FC:
+        def __init__(self, transport): pass
+        def initialize(self): pass
+        def list_tools(self):
+            return [
+                {"name": "stringy", "description": "s",
+                 "annotations": {"readOnlyHint": "false"}},
+                {"name": "toplevel_stringy", "description": "t",
+                 "readOnlyHint": "false"},
+                {"name": "explicit_false", "description": "f",
+                 "annotations": {"readOnlyHint": False}},
+                {"name": "genuine", "description": "g",
+                 "annotations": {"readOnlyHint": True}},
+            ]
+    monkeypatch.setattr(cli, "MCPClient", FC)
+
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--mcp", "test-server"])
+    assert rc == 0
+    assert captured["toolbox"].mcp_readonly == {"mcp__genuine"}
+    assert "(1 read-only)" in capsys.readouterr().err

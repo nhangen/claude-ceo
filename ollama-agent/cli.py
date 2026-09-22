@@ -308,7 +308,7 @@ def main(argv=None):
             mcp_readonly = {
                 s["function"]["name"]
                 for s in schemas
-                if s.get("function", {}).get("annotations", {}).get("readOnlyHint")
+                if s.get("function", {}).get("annotations", {}).get("readOnlyHint") is True
             }
             tools = tools + schemas
             print(f"mcp: {len(schemas)} tools from {a.mcp!r} ({len(mcp_readonly)} read-only)", file=sys.stderr)

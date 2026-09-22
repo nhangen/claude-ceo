@@ -100,8 +100,11 @@ def mcp_tools_to_ollama(tools, prefix="mcp"):
             "parameters": t.get("inputSchema") or {"type": "object", "properties": {}},
         }
         ann = dict(t["annotations"]) if isinstance(t.get("annotations"), dict) else {}
-        if t.get("readOnlyHint") is not None and "readOnlyHint" not in ann:
-            ann["readOnlyHint"] = bool(t["readOnlyHint"])
+        # `is True`, not bool(): the hint decides whether a tool's failures are
+        # reported at all, and bool("false") is True — a server that JSON-encodes
+        # the hint as a string would silence its own error reporting.
+        if t.get("readOnlyHint") is True and "readOnlyHint" not in ann:
+            ann["readOnlyHint"] = True
         if ann:
             fn["annotations"] = ann
         schemas.append({"type": "function", "function": fn})

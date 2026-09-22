@@ -1644,6 +1644,9 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   elif [[ "$AGENT_REGISTRY" =~ ^[[:space:]]*\{ ]]; then
     AGENT_MCP=$(printf '%s' "$AGENT_REGISTRY" | jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' 2>/dev/null || true)
   fi
+  # Expanded below as ${_mcp_arg[@]+"..."}: bash 3.2 treats "${empty[@]}" under
+  # `set -u` as an unbound variable, and every task without an mcp field leaves
+  # this empty. The failure surfaced as "bridge exited 1", blaming the bridge.
   _mcp_arg=()
   if [ -n "$AGENT_MCP" ]; then
     _mcp_arg=(--mcp "$AGENT_MCP")
@@ -1675,7 +1678,7 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
-    --registry "$AGENT_REGISTRY" "${_mcp_arg[@]}" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
+    --registry "$AGENT_REGISTRY" ${_mcp_arg[@]+"${_mcp_arg[@]}"} --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"

@@ -212,7 +212,12 @@ class ToolBox:
         the server's own success claim is taken at its word."""
         if name not in ERROR_RELEVANT_TOOLS and name not in self.mcp_names:
             return
-        if name in self.mcp_readonly or self.mcp_names.get(name) in self.mcp_readonly:
+        # Gated on mcp_names first: the set holds prefixed `mcp__*` names, and
+        # without this a real-name entry would suppress the *builtin* tool that
+        # shares its name — a failed builtin write_file, say.
+        if name in self.mcp_names and (
+            name in self.mcp_readonly or self.mcp_names[name] in self.mcp_readonly
+        ):
             return
         try:
             parsed = json.loads(result)

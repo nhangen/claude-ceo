@@ -325,3 +325,17 @@ def test_stdio_transport_send_on_none_stdin_raises(tmp_path):
     with pytest.raises(MCPError, match="stdin closed"):
         transport.send({"x": 1})
     transport.close()
+
+
+def test_toolbox_readonly_never_suppresses_a_builtin(tmp_path):
+    """A read-only entry must not silence the builtin tool of the same name.
+
+    mcp_readonly holds prefixed mcp__* names, so this cannot happen from cli.py
+    today — but the skip used to match on the bare name, and a failed builtin
+    write_file dropped from tool_errors is exactly what the cron gate reads."""
+    tb = ToolBox(cwd=str(tmp_path),
+                 mcp_names={"mcp__write_file": "write_file"},
+                 mcp_readonly={"write_file", "mcp__write_file"})
+    out = tb.dispatch("write_file", {"path": "/proc/nope/x.md", "content": "x"})
+    assert "error" in json.loads(out)
+    assert [e["tool"] for e in tb.tool_errors] == ["write_file"]
