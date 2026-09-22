@@ -275,6 +275,49 @@ def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, caps
     assert closed["v"] is True
 
 
+def test_cli_task_spec_mcp_bridges_when_omitted_on_cli(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "custom-server --opt",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task"])
+    assert rc == 0
+    assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["v"] is True
+
+
+def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    class FT:
+        def close(self):
+            closed["v"] = True
+    monkeypatch.setattr(cli, "StdioMCPTransport", lambda *a, **kw: FT())
+    class FC:
+        def __init__(self, transport): pass
+        def initialize(self): pass
+        def list_tools(self):
+            return [
+                {"name": "query", "description": "q", "annotations": {"readOnlyHint": True}},
+                {"name": "mutate", "description": "m"},
+            ]
+    monkeypatch.setattr(cli, "MCPClient", FC)
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--mcp", "test-server"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "mcp: 2 tools from 'test-server' (1 read-only)" in err
+
+
 def _registry(tmp_path, **tasks):
     f = tmp_path / "reg.json"
     f.write_text(json.dumps({"tasks": tasks}))
