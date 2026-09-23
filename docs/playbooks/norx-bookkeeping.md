@@ -1,6 +1,6 @@
 ---
 name: norx-bookkeeping
-description: Hourly due-check for the once-daily NoRx Mercury import and four-tab Google Sheets refresh
+description: Hourly due-check for the once-daily NoRx Mercury and EasyPost postage imports and four-tab Google Sheets refresh
 trigger: cron
 schedule: "15 * * * *"
 preflight: none
@@ -13,7 +13,7 @@ script: ceo-norx-bookkeeping.sh
 
 # NoRx Bookkeeping
 
-Shell-only playbook. CEO and Cronbird own scheduling, missed-slot catch-up, at-most-once dispatch, and host ownership. The existing NoRx Operations runner remains the sole implementation of financial imports and Google Sheets synchronization.
+Shell-only playbook. CEO and Cronbird own scheduling, missed-slot catch-up, at-most-once dispatch, and host ownership. The existing NoRx Operations runner remains the sole implementation of Mercury imports, purchased EasyPost postage imports, expense decisions, and Google Sheets synchronization.
 
 The playbook checks hourly at minute 15. Before 06:15 local time it exits without work. After 06:15 it invokes the NoRx runner only when the local success marker does not contain today's date. The marker advances only after the runner exits successfully.
 
@@ -25,7 +25,8 @@ Registered after the standalone Mac LaunchAgent exposed a shutdown gap. A once-d
 
 - `scope: single` prevents multiple hosts from owning financial writes.
 - `runner: script` makes no LLM call.
-- The NoRx runner retains its own lock, immutable import rules, preview/apply comparison, process-only production gate, exact four-tab readback, and internal failure alerts.
+- The NoRx runner retains its own lock, immutable import rules, preview/apply comparison, process-only production gate, exact four-tab readback, and internal failure alerts. EasyPost wallet loads are not postage expenses; only verified purchased labels enter automatically as shipping postage.
+- The scheduler passes its persisted attempt number and retry limit only to this playbook. The runner keeps attempts one and two private and sends a failure email only on the terminal third attempt.
 - The wrapper records success only after the complete NoRx runner succeeds. A failed run remains due and is retried by a later hourly check.
 - A wrapper lock spans the success-marker check through the atomic marker replacement. A concurrent manual or scheduled check exits successfully without invoking the runner.
 - Credentials remain in host-local secret stores. They must not be placed in this playbook, the repository, or the synced CEO vault.

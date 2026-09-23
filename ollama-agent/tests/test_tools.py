@@ -8,7 +8,61 @@ returncode are NOT operational failures and must stay out of .tool_errors.
 import json
 import subprocess
 
-from ollama_agent.tools import ToolBox
+from ollama_agent.tools import ToolBox, TOOLS, ERROR_RELEVANT_TOOLS
+from ollama_agent.skills import Skill, USE_SKILL_TOOL
+
+
+def test_schema_and_dispatch_handler_parity(tmp_path):
+    """#275: Every tool in TOOLS (+ USE_SKILL_TOOL) must have a dispatch handler in ToolBox,
+    and every static dispatch handler in ToolBox must have a matching schema.
+    """
+    schema_names = {t["function"]["name"] for t in TOOLS} | {USE_SKILL_TOOL["function"]["name"]}
+    expected_handlers = {"run_shell", "git", "read_file", "write_file", "edit_file", "list_dir", "use_skill"}
+
+    assert schema_names == expected_handlers, "Schemas and expected handler names must match exactly"
+
+    skill_file = tmp_path / "SKILL.md"
+    skill_file.write_text("body text")
+    skill = Skill("my_skill", str(skill_file), "description")
+    # cwd, not the default ".". write_file and edit_file below are dispatched for
+    # real, so without this the parity check writes dummy.txt into the repo
+    # working tree instead of the fixture (test-writes-stay-in-the-fixture).
+    tb = ToolBox(cwd=str(tmp_path), skills=[skill])
+    args_map = {
+        "run_shell": {"command": "true"},
+        "git": {"args": "version"},
+        "read_file": {"path": "dummy.txt"},
+        "write_file": {"path": "dummy.txt", "content": "hi"},
+        "edit_file": {"path": "dummy.txt", "old_string": "h", "new_string": "H"},
+        "list_dir": {"path": "."},
+        "use_skill": {"name": "my_skill"},
+    }
+    for name in schema_names:
+        # None of the real tools should report "unknown tool" when dispatched
+        res = json.loads(tb.dispatch(name, args_map[name]))
+        assert res.get("error") != f"unknown tool: {name}"
+    assert tb.unknown_calls == []
+
+    # An unknown name is recorded in unknown_calls
+    res_unknown = json.loads(tb.dispatch("unknown_tool_xyz", {}))
+    assert tb.unknown_calls == ["unknown_tool_xyz"]
+    assert res_unknown.get("error") == "unknown tool: unknown_tool_xyz"
+
+
+def test_every_builtin_tool_is_classified():
+    """#275: every built-in schema is either error-relevant or a read-only probe.
+
+    Driven from TOOLS rather than a copied literal: a new mutating tool added to
+    dispatch and TOOLS but not to ERROR_RELEVANT_TOOLS would otherwise return
+    {"error": ...}, leave .tool_errors empty, and pass the cron gate (#215).
+    """
+    read_only_tools = {"read_file", "list_dir", "use_skill"}
+    schema_names = {t["function"]["name"] for t in TOOLS} | {USE_SKILL_TOOL["function"]["name"]}
+    unclassified = schema_names - ERROR_RELEVANT_TOOLS - read_only_tools
+    assert not unclassified, f"classify as error-relevant or read-only: {unclassified}"
+    assert read_only_tools.isdisjoint(ERROR_RELEVANT_TOOLS)
+    assert ERROR_RELEVANT_TOOLS <= schema_names
+    assert read_only_tools <= schema_names
 
 
 def test_write_file_error_recorded(tmp_path):

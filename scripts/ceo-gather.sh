@@ -10,6 +10,8 @@
 #     rather than in ceo-config.sh on purpose: it reads the gather's own
 #     degradation state, and from ceo-config.sh it could be called before the
 #     gather ran, where the unset flags would default to a false all-clear.
+#   ceo_pending_items_preflight() — is there pending-drip work? 0 yes / 1 no,
+#     and the file read is trustworthy / 2 cannot tell, reason on stdout.
 #
 # Exports:
 #   VAULT, CEO_DIR, LOG_DIR, TODAY, NOW
@@ -148,6 +150,32 @@ _file_gather_mark_degraded() {
   FILE_GATHER_DEGRADED=1
   FILE_GATHER_DEGRADED_REASONS="$FILE_GATHER_DEGRADED_REASONS
 $1"
+}
+
+# ceo_pending_items_preflight — the one place that answers "is there pending-drip work?"
+# for both callers (ceo-cron.sh's scheduler and the inline copy in ceo).
+#
+# The two had drifted, and which one was right is the reason this lives here:
+# pending-drip surfaces [ask] markers from $VAULT/Pending.md, not the
+# CEO/approvals/pending.md queue that PENDING_COUNT measures, and ceo's copy was
+# gating on PENDING_COUNT. Gate on the gathered ask-question lines so an empty
+# Pending.md skips instead of firing an LLM call that reports failure for lack of
+# input -- and do not "simplify" this back to PENDING_COUNT, which reads a
+# different file.
+#
+# Three outcomes:
+#   0  pending questions are waiting
+#   1  no questions, and the read is trustworthy
+#   2  cannot tell — reason printed to stdout
+ceo_pending_items_preflight() {
+  if [ -n "${PENDING_ASK_QUESTIONS:-}" ]; then
+    return 0
+  fi
+  if [ "${FILE_GATHER_DEGRADED:-0}" -eq 1 ]; then
+    echo "Pending items search degraded, so an empty queue is not evidence of one: $(echo "${FILE_GATHER_DEGRADED_REASONS:-}" | tr '\n' ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+    return 2
+  fi
+  return 1
 }
 
 # _gather_capture_lines <dest-var> <max-lines> <file> <pattern> — matching lines,

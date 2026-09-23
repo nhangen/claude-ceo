@@ -66,6 +66,9 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   when `min_score` is set — use `eval_task: "*"` to opt into the cross-task mean; an aggregate
   default would let a model that fails the task that matters pass on unrelated tasks. A missing
   score is a refusal, not a silent pass. `eval_model` overrides which model's score is checked.
+- A `tools` allowlist carrying `write_file` without `edit_file` warns on stderr at parse time
+  (advisory, never a refusal). Pair them so the model can make surgical edits instead of
+  rewriting whole files.
 
 ## Tools
 
@@ -118,6 +121,16 @@ as text, breaking the loop. Native tool-search (deferring tools behind a
 `ToolSearch` tool) wires all tools but **no installed local model drives it** —
 gpt-oss:20b refuses, deepseek-r1:70b hallucinates calls. So `oll-code` defaults
 to a curated always-loaded set; for broad MCP with a local model, use the bridge.
+
+## Conventions
+
+Load-bearing conventions followed across the harness:
+
+- **Explicit success checks** (`non-throwing-client-success-check`) — never treat absence-of-throw as success; parse error-in-200-body (transport), JSON-RPC `error` + `isError` (MCP), and `error` keys in tool results.
+- **Reject-don't-default** (`enum-config-typo-fallback`) — enum fields validate at parse AND gate at dispatch; missing/corrupt scores refuse, never pass.
+- **Mutation-check tests** (`test-the-fix-not-the-investigation`) — every regression test states (in a comment) what reversion makes it fail.
+- **Governance-as-test** — policy decisions (empty registry, no delegable tiers) are encoded as CI-failing tests, not comments.
+- **Characterize accepted risks** — intentional non-features (no path jail) get an explicit characterization test so removing the property is a deliberate act (`test_resolve_absolute_path_escapes_cwd_no_jail` is the template).
 
 ## Tests
 

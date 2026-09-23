@@ -23,6 +23,7 @@ import {
   CATCHUP_LOOKBACK_CAP_MS,
   MAX_SLEEP_MS,
   type DaemonDeps,
+  type Heartbeat,
 } from "cronbird/core";
 import {
   readHeartbeatFile,
@@ -47,53 +48,53 @@ import {
   resolveFixedLookbackMs,
   resolveHost,
   runningDir,
+  resolveAdapterConfig,
   runningMarker,
   settingsPath,
   swarmPath,
   syncedHeartbeatPath,
 } from "@/runtime";
 
-/** The launchd service label — must never change (plist is not regenerated on update). */
-const LAUNCHD_LABEL = "com.ceo.schedulerd";
+const NORX_BOOKKEEPING = "norx-bookkeeping";
+// Mirrors cronbird MAX_ATTEMPTS; update this adapter alongside any retry-policy change.
+const MAX_ATTEMPTS = 3;
 
-export interface AdapterConfig {
-  registryPath: string;
-  heartbeatPath: string;
-  swarmPath: string;
-  syncedHeartbeatPath: string;
-  /** Returns the argv for one scheduled dispatch given the playbook name. */
-  dispatchArgv(name: string): string[];
-  host: string;
-  launchdLabel: string;
+export class SchedulerDispatchContext {
+  private persistedHeartbeat: Heartbeat | null = null;
+
+  retain(heartbeat: Heartbeat): void {
+    this.persistedHeartbeat = heartbeat;
+  }
+
+  persist(heartbeat: Heartbeat, write: () => void): void {
+    write();
+    this.retain(heartbeat);
+  }
+
+  envFor(name: string, inheritedEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv | null {
+    const env = { ...inheritedEnv };
+    delete env.CEO_SCHEDULER_ATTEMPT;
+    delete env.CEO_SCHEDULER_MAX_ATTEMPTS;
+
+    if (name !== NORX_BOOKKEEPING) return env;
+
+    const persistedAttempt = this.persistedHeartbeat?.attempts[name];
+    if (
+      typeof persistedAttempt !== "number" ||
+      !Number.isInteger(persistedAttempt) ||
+      persistedAttempt < 0 ||
+      persistedAttempt >= MAX_ATTEMPTS
+    ) {
+      return null;
+    }
+
+    env.CEO_SCHEDULER_ATTEMPT = String(persistedAttempt + 1);
+    env.CEO_SCHEDULER_MAX_ATTEMPTS = String(MAX_ATTEMPTS);
+    return env;
+  }
 }
 
-/**
- * Pure resolver for CEO's runtime paths, argv, host, and launchd label.
- * Exported for the adapter round-trip test; `main()` calls this with `process.env`.
- */
-export function resolveAdapterConfig(env: {
-  CEO_VAULT?: string;
-  HOME?: string;
-  CEO_HOSTNAME?: string;
-  CEO_CRON_BIN?: string;
-}): AdapterConfig {
-  const vault = env.CEO_VAULT ?? "";
-  const home = env.HOME ?? "";
-  const cronBin = env.CEO_CRON_BIN?.trim() || "ceo-cron.sh";
-  const host = resolveHost(
-    { CEO_HOSTNAME: env.CEO_HOSTNAME },
-    hostname().split(".")[0] ?? "unknown",
-  );
-  return {
-    registryPath: registryPath(home),
-    heartbeatPath: heartbeatPath(home),
-    swarmPath: swarmPath(vault),
-    syncedHeartbeatPath: syncedHeartbeatPath(vault, host),
-    dispatchArgv: (name: string) => dispatchArgv(cronBin, name),
-    host,
-    launchdLabel: LAUNCHD_LABEL,
-  };
-}
+export { resolveAdapterConfig, LAUNCHD_LABEL, type AdapterConfig } from "@/runtime";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -179,6 +180,7 @@ async function main(): Promise<void> {
   const fixedLookback = resolveFixedLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS);
   const resolveLookback = (schedule: string, now: Date): number =>
     fixedLookback ?? lookbackForSchedule(schedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
+  const dispatchContext = new SchedulerDispatchContext();
 
   const deps: DaemonDeps = {
     now: () => new Date(),
@@ -209,6 +211,11 @@ async function main(): Promise<void> {
         log(`refusing to dispatch unsafe job name: ${JSON.stringify(name)}`);
         return;
       }
+      const dispatchEnv = dispatchContext.envFor(name, process.env);
+      if (dispatchEnv === null) {
+        log(`refusing to dispatch ${name}: persisted retry attempt is missing or invalid`);
+        return;
+      }
       const startedTs = Date.now();
       const runMarker = `${runDir}/${name}`;
       const clearRunning = () => {
@@ -222,7 +229,7 @@ async function main(): Promise<void> {
         // Mark in-flight BEFORE spawn so a completion can never race ahead of it.
         writeFileSync(runMarker, runningMarker(startedTs));
         const proc = Bun.spawn(cfg.dispatchArgv(name), {
-          env: { ...process.env, CEO_VAULT: vault },
+          env: { ...dispatchEnv, CEO_VAULT: vault },
           stdout: "ignore",
           stderr: "ignore",
           stdin: "ignore",
@@ -255,11 +262,11 @@ async function main(): Promise<void> {
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
     writeHeartbeat: (hb) =>
-      writeHeartbeatWithSync(hb, {
+      dispatchContext.persist(hb, () => writeHeartbeatWithSync(hb, {
         writeLocal: (h) => writeHeartbeatFile(hbPath, h),
         writeSynced: () => writeSyncedHeartbeat(syncedHbPath, host),
         log,
-      }),
+      })),
     log,
     host,
     matcher,

@@ -27,9 +27,12 @@ case "$1" in
   *) exit 2 ;;
 esac
 STUB
-  cat > "$NORX_BOOKKEEPING_RUNNER" <<'STUB'
+cat > "$NORX_BOOKKEEPING_RUNNER" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${NORX_TEST_RUNS:?}"
+if [ -n "${NORX_TEST_RUNNER_ENV_FILE:-}" ]; then
+  printf '%s|%s\n' "${CEO_SCHEDULER_ATTEMPT-}" "${CEO_SCHEDULER_MAX_ATTEMPTS-}" >> "$NORX_TEST_RUNNER_ENV_FILE"
+fi
 case "$*" in
   --run-once) ;;
   *) printf 'norx-runner stub: unexpected argv: %s\n' "$*" >&2; exit 64 ;;
@@ -53,6 +56,7 @@ teardown() {
   unset TEST_ROOT HOME NORX_BOOKKEEPING_STATE_DIR NORX_BOOKKEEPING_RUNNER
   unset NORX_BOOKKEEPING_DATE_BIN NORX_TEST_CLOCK NORX_TEST_RUNS NORX_TEST_RUNNER_EXIT
   unset NORX_TEST_RUNNER_LOG_LINES NORX_TEST_RUNNER_LOG_DEST
+  unset NORX_TEST_RUNNER_ENV_FILE CEO_SCHEDULER_ATTEMPT CEO_SCHEDULER_MAX_ATTEMPTS
 }
 
 run_count() {
@@ -75,6 +79,43 @@ test_before_daily_boundary_skips() {
   printf '2026-09-05\n374\n' > "$NORX_TEST_CLOCK"
   bash "$TARGET"
   assert_eq "$(run_count)" "0" "06:14 must not run bookkeeping"
+}
+
+test_scheduler_retry_metadata_is_forwarded_to_the_runner_unchanged() {
+  export CEO_SCHEDULER_ATTEMPT=2
+  export CEO_SCHEDULER_MAX_ATTEMPTS=3
+  export NORX_TEST_RUNNER_ENV_FILE="$TEST_ROOT/runner-env"
+
+  bash "$TARGET"
+
+  assert_eq "$(cat "$NORX_TEST_RUNNER_ENV_FILE")" "2|3" \
+    "the wrapper must preserve the scheduler retry metadata for the runner"
+}
+
+test_partial_or_invalid_scheduler_retry_metadata_fails_before_runner() {
+  local err rc=0
+  export CEO_SCHEDULER_ATTEMPT=2
+  unset CEO_SCHEDULER_MAX_ATTEMPTS
+  err=$(bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "1" "partial scheduler retry metadata must fail"
+  assert_contains "$err" "scheduler retry metadata is invalid" "partial metadata must fail loudly"
+  assert_eq "$(run_count)" "0" "partial metadata must not invoke the runner"
+
+  export CEO_SCHEDULER_ATTEMPT=4
+  export CEO_SCHEDULER_MAX_ATTEMPTS=3
+  rc=0
+  err=$(bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "1" "attempts beyond the maximum must fail"
+  assert_contains "$err" "scheduler retry metadata is invalid" "out-of-range metadata must fail loudly"
+  assert_eq "$(run_count)" "0" "invalid metadata must not invoke the runner"
+
+  export CEO_SCHEDULER_ATTEMPT=0
+  export CEO_SCHEDULER_MAX_ATTEMPTS=3
+  rc=0
+  err=$(bash "$TARGET" 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "1" "zero is not a positive scheduler attempt"
+  assert_contains "$err" "scheduler retry metadata is invalid" "non-positive metadata must fail loudly"
+  assert_eq "$(run_count)" "0" "non-positive metadata must not invoke the runner"
 }
 
 test_boundary_runs_once_and_records_success() {
