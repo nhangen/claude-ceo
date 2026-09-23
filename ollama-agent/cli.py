@@ -330,6 +330,10 @@ def main(argv=None):
         tools = filter_tools(tools, spec.tools)
         print(f"tools restricted to: {', '.join(t['function']['name'] for t in tools) or '(none)'}",
               file=sys.stderr)
+        if mcp_names and not any(t["function"]["name"] in mcp_names for t in tools):
+            print(f"warning: mcp server {a.mcp!r} bridged {len(mcp_names)} tool(s) but the registry "
+                  f"tools allowlist admits none of them — the server will not be used",
+                  file=sys.stderr)
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names,

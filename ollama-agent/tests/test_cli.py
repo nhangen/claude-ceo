@@ -323,6 +323,76 @@ def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
     assert captured["toolbox"].mcp_readonly == {"mcp__query"}
 
 
+def test_cli_registry_tools_allowlist_discarding_mcp_warns(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "srv --flag",
+            "tools": ["read_file"],
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task"])
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"read_file"}
+    assert closed["v"] is True
+    err = capsys.readouterr().err
+    assert "warning: mcp server 'srv --flag' bridged 1 tool(s) but the registry tools allowlist admits none of them — the server will not be used" in err
+
+
+def test_cli_registry_tools_allowlist_admitting_mcp_does_not_warn(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "srv --flag",
+            "tools": ["read_file", "mcp__echo"],
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task"])
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"read_file", "mcp__echo"}
+    assert closed["v"] is True
+    err = capsys.readouterr().err
+    assert "admits none of them" not in err
+
+
+def test_cli_registry_tools_allowlist_raw_mcp_tool_name_warns_both(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "srv --flag",
+            "tools": ["read_file", "echo"],   # raw name without mcp__ prefix
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task"])
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"read_file"}
+    assert closed["v"] is True
+    err = capsys.readouterr().err
+    assert "warning: registry tools not available (ignored): echo" in err
+    assert "warning: mcp server 'srv --flag' bridged 1 tool(s) but the registry tools allowlist admits none of them" in err
+
+
 def _registry(tmp_path, **tasks):
     f = tmp_path / "reg.json"
     f.write_text(json.dumps({"tasks": tasks}))
