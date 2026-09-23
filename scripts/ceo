@@ -1980,6 +1980,7 @@ cmd_playbook_scan() {
       {
         echo "---"
         echo "status: drift"
+        echo "count: $shadowed_drift"
         echo "since: $_drift_since"
         echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         echo "---"
