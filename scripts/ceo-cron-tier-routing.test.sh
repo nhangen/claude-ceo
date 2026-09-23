@@ -85,15 +85,28 @@ _oversized_task_payload() {
 }
 
 # Same load-bearing-fixture guard as the classifier suite: prove the pre-fix
-# `jq … | head -c 200` form actually fails on this payload.
-_assert_head_pipe_form_breaks() {
+# `jq … | head -c 200` form actually fails on this payload, AND succeeds on a
+# small one. The pair proves the failure is size-dependent (SIGPIPE); a bare
+# non-zero check is also satisfied by a jq error, whose stderr is discarded
+# below along with GNU's "Broken pipe" noise.
+_head_pipe_form_rc() {
   local payload="$1" rc=0
   ( set -o pipefail
     printf '%s' "$payload" | jq -r '.tool_input.prompt' 2>/dev/null | head -c 200 >/dev/null
   ) || rc=$?
+  echo "$rc"
+}
+
+_assert_head_pipe_form_breaks() {
+  local payload="$1" big_rc small_rc
+  big_rc=$(_head_pipe_form_rc "$payload")
+  small_rc=$(_head_pipe_form_rc '{"tool_input":{"prompt":"find stale branches"}}')
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$rc" -eq 0 ]; then
+  if [ "$big_rc" -eq 0 ]; then
     printf '  FAIL [%s] fixture no longer breaks the pre-fix `jq | head -c` form (rc=0), so it proves nothing — the prompt must exceed the pipe buffer\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  elif [ "$small_rc" -ne 0 ]; then
+    printf '  FAIL [%s] canary is passing for the wrong reason: the pre-fix form also fails on a SMALL payload (rc=%s), so jq itself is failing — not SIGPIPE\n' "$CURRENT_TEST" "$small_rc"
     _record_assertion_fail
   fi
 }

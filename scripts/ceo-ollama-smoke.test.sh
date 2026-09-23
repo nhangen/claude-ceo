@@ -61,7 +61,6 @@ test_missing_smoke_bin_fails_loudly() {
   err=$(bash "$SCRIPT" 2>&1) || rc=$?
   assert_eq "$rc" "1" "missing smoke bin must exit 1"
   assert_contains "$err" "integration_smoke.sh not found" "stderr must describe missing smoke bin"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_full_pass_is_clear_and_silent() {
@@ -72,7 +71,6 @@ test_full_pass_is_clear_and_silent() {
   assert_eq "$(_open_tasks)" "0" "no inbox task on a healthy run"
   assert_eq "$(_outcome)" "noop" "a healthy run does not notify"
   assert_eq "$(grep -c "$(printf '\033')" "$ALERT")" "0" "ANSI escapes are stripped from the alert body"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 5))
 }
 
 test_all_skip_on_owner_host_fires_as_absent() {
@@ -83,7 +81,6 @@ test_all_skip_on_owner_host_fires_as_absent() {
   assert_eq "$(_field skip_count)" "6" "skip count recorded"
   assert_eq "$(_open_tasks)" "1" "all-skip escalates"
   assert_eq "$(_outcome)" "fired" "escalation notifies"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 5))
 }
 
 test_partial_skip_fires_as_degraded() {
@@ -92,7 +89,6 @@ test_partial_skip_fires_as_degraded() {
   assert_eq "$(_field status)" "firing" "ccr down with ollama up is not a pass"
   assert_eq "$(_field stack)" "degraded" "stack marked degraded"
   assert_eq "$(_open_tasks)" "1" "degraded escalates"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_failure_fires_and_escalates_once() {
@@ -104,7 +100,6 @@ test_failure_fires_and_escalates_once() {
   _run
   assert_eq "$(_open_tasks)" "1" "a second red run does not append a second task"
   assert_eq "$(_outcome)" "noop" "steady firing does not re-notify"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 5))
 }
 
 test_ticked_task_is_not_reappended_while_still_firing() {
@@ -114,7 +109,6 @@ test_ticked_task_is_not_reappended_while_still_firing() {
   _run
   assert_eq "$(_open_tasks)" "0" "escalation happens on the transition, not on every red run"
   assert_eq "$(grep -c 'ollama-smoke -->' "$INBOX")" "1" "no new task line appended"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_recovery_marks_task_done() {
@@ -126,7 +120,6 @@ test_recovery_marks_task_done() {
   assert_eq "$(_open_tasks)" "0" "task no longer open"
   assert_contains "$(cat "$INBOX")" "- [done] Ollama live stack smoke cleared" "task rewritten to done"
   assert_eq "$(_outcome)" "fired" "recovery notifies"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 4))
 }
 
 test_firing_then_all_skip_keeps_task_open() {
@@ -137,7 +130,6 @@ test_firing_then_all_skip_keeps_task_open() {
   assert_eq "$(_field status)" "firing" "a dead stack does not clear a firing alert"
   assert_eq "$(_open_tasks)" "1" "the open task survives"
   assert_not_contains "$(cat "$INBOX")" "[done]" "nothing marked done"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_harness_exit_2_is_a_harness_error_not_a_fake_failure() {
@@ -152,7 +144,6 @@ STUB
   assert_eq "$(_field stack)" "harness-error" "stack marked harness-error"
   assert_eq "$(_field fail_count)" "?" "no invented fail count"
   assert_contains "$(cat "$ALERT")" "harness exited 2" "reason recorded in body"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 4))
 }
 
 test_missing_summary_line_is_a_harness_error() {
@@ -161,11 +152,11 @@ test_missing_summary_line_is_a_harness_error() {
   _run
   assert_eq "$(_field stack)" "harness-error" "no summary is a harness error"
   assert_contains "$(cat "$ALERT")" "no PASS/FAIL/SKIP summary line" "reason recorded"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_timeout_is_a_harness_error() {
   if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+    echo "  (skipped: no timeout binary on this host)"
     assert_eq "skipped" "skipped" "no timeout binary on this host (timeout or gtimeout)"
     return 0
   fi
@@ -175,7 +166,31 @@ test_timeout_is_a_harness_error() {
   _run
   assert_eq "$(_field stack)" "harness-error" "a hung smoke is a harness error"
   assert_contains "$(cat "$ALERT")" "timed out after 1s" "timeout named in body"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+}
+
+test_no_timeout_binary_runs_uncapped_and_warns() {
+  # timeout lives beside everything else in /usr/bin on Linux, so it cannot be
+  # dropped by trimming PATH. Mirror PATH into one directory of symlinks that
+  # leaves out timeout and gtimeout instead.
+  local nobin="$TEST_HOME/no-timeout-bin" dir f name err
+  mkdir -p "$nobin"
+  local IFS=:
+  for dir in $PATH; do
+    [ -d "$dir" ] || continue
+    for f in "$dir"/*; do
+      name=${f##*/}
+      case "$name" in timeout|gtimeout) continue ;; esac
+      [ -x "$f" ] && [ ! -e "$nobin/$name" ] && ln -s "$f" "$nobin/$name"
+    done
+  done
+  unset IFS
+  printf '#!/bin/bash\necho "PASS=3 FAIL=0 SKIP=0"\n' > "$OLLAMA_SMOKE_BIN"
+  chmod +x "$OLLAMA_SMOKE_BIN"
+  # _CEO_PATH_AUGMENTED=1 stops ceo_augment_path from prepending Homebrew, which
+  # would put gtimeout straight back on PATH on a Mac.
+  err=$(PATH="$nobin" _CEO_PATH_AUGMENTED=1 bash "$SCRIPT" 2>&1 >/dev/null)
+  assert_contains "$err" "no timeout or gtimeout on PATH" "running uncapped is announced"
+  assert_eq "$(_field status)" "clear" "the smoke still runs and its summary is read"
 }
 
 test_since_is_kept_while_steady_and_reset_on_transition() {
@@ -187,7 +202,6 @@ test_since_is_kept_while_steady_and_reset_on_transition() {
   _mock 0 6 0 0
   _run
   assert_not_contains "$(_field since)" "2026-01-01" "a transition resets since"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_corrupt_prior_state_does_not_touch_inbox() {
@@ -198,7 +212,6 @@ test_corrupt_prior_state_does_not_touch_inbox() {
   _run
   assert_eq "$(_open_tasks)" "1" "corrupt prior state never resolves the task"
   assert_eq "$(_field status)" "clear" "current state is still written"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_corrupt_prior_state_does_not_escalate() {
@@ -208,7 +221,6 @@ test_corrupt_prior_state_does_not_escalate() {
   _run
   assert_eq "$(_open_tasks)" "0" "corrupt prior state never escalates"
   assert_eq "$(_field status)" "firing" "current state is still written"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_smoke_model_is_passed_to_the_harness() {
@@ -216,7 +228,6 @@ test_smoke_model_is_passed_to_the_harness() {
   chmod +x "$OLLAMA_SMOKE_BIN"
   OLLAMA_SMOKE_MODEL="qwen3.8:27b" bash "$SCRIPT" >/dev/null 2>&1
   assert_contains "$(cat "$ALERT")" "model=qwen3.8:27b" "OLLAMA_SMOKE_MODEL reaches the smoke as OLL_MODEL"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_playbook_scan_registers_ollama_smoke() {
@@ -234,7 +245,6 @@ test_playbook_scan_registers_ollama_smoke() {
   assert_eq "$(_pb scope)" "single" "scope is single"
   assert_eq "$(_pb schedule)" "0 8 * * 1" "weekly Monday 08:00"
   assert_eq "$(_pb artifact)" "CEO/alerts/ollama-smoke.md" "artifact is CEO/alerts/ollama-smoke.md"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 7))
 }
 
 run_tests
