@@ -1300,7 +1300,13 @@ BRANCH_PREFIX=$(_cfg '.branch_prefix' 'ceo/')
 preflight_none() { return 0; }
 
 preflight_has_unchecked_inbox() {
-  ceo_inbox_has_unchecked
+  local reason rc=0
+  reason=$(ceo_inbox_has_unchecked) || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    _record_failure "$reason"
+    return 1
+  fi
+  return "$rc"
 }
 
 preflight_has_prs_to_review() {
@@ -1317,17 +1323,27 @@ preflight_has_prs_to_review() {
 }
 
 preflight_has_pending_items() {
-  # pending-drip surfaces [ask] markers from $VAULT/Pending.md, not the
-  # CEO/approvals/pending.md queue that PENDING_COUNT measures. Gate on the
-  # gathered ask-question lines so an empty Pending.md skips instead of firing
-  # an LLM call that reports failure for lack of input.
-  [ -n "${PENDING_ASK_QUESTIONS:-}" ]
+  local reason rc=0
+  reason=$(ceo_pending_items_preflight) || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    _record_failure "$reason"
+    return 1
+  fi
+  return "$rc"
 }
 
 preflight_has_log_entries_after_4pm() {
   local hour
   hour=$(date +%H)
-  [ "$hour" -ge 16 ] && [ -f "$LOG_FILE" ] && grep -q "^## " "$LOG_FILE"
+  [ "$hour" -ge 16 ] || return 1
+  [ -f "$LOG_FILE" ] || return 1
+  local rc=0
+  grep -q "^## " "$LOG_FILE" 2>/dev/null || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    _record_failure "cannot read log file '$LOG_FILE' (grep rc=$rc)"
+    return 1
+  fi
+  return "$rc"
 }
 
 preflight_has_ceo_branches() {
@@ -1500,6 +1516,19 @@ fi
 PREFLIGHT_FN="preflight_${PREFLIGHT}"
 if type "$PREFLIGHT_FN" &>/dev/null; then
   if ! "$PREFLIGHT_FN"; then
+    if [ "${_bookkeeping_done:-0}" = "1" ]; then
+      # A preflight failure was recorded (state 2). _record_failure already logged
+      # the ERROR to $SKIPS_LOG, handled fail-counts, stamped .last-run (on real runs),
+      # and notified. Do NOT stamp or emit a contradictory "returned no-work" line.
+      #
+      # 78, not 0, and for the reason spelled out at the top of _on_exit: exiting 0
+      # tells cronbird the run succeeded, so it stamps lastSuccess and resets the
+      # attempt counter while the vault-side record says FAILURE. 78 makes the two
+      # agree, and matches the sibling preflight-failure branch below. _on_exit
+      # checks _bookkeeping_done before recording, so a non-zero exit here cannot
+      # double-record.
+      exit 78
+    fi
     _v "Preflight '$PREFLIGHT' says no work to do. Skipping."
     echo "$(date): Skipping $TRIGGER — preflight '$PREFLIGHT' returned no-work" >> "$SKIPS_LOG"
     if [ "${CEO_DRY_RUN:-}" = "1" ]; then
@@ -1603,6 +1632,26 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   fi
   [ -z "$AGENT_TASK" ] && AGENT_TASK="$TRIGGER"
 
+  # Extract any MCP server declared in the registry task spec (#457).
+  # Threaded as --mcp directly into the agent command (never via
+  # CEO_OLLAMA_AGENT_CMD, which splits on spaces and would break commands with
+  # arguments).
+  AGENT_MCP=""
+  if [ -f "$AGENT_REGISTRY" ]; then
+    AGENT_MCP=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' "$AGENT_REGISTRY" 2>/dev/null || true)
+  elif [ -f "$CEO_DIR/$AGENT_REGISTRY" ]; then
+    AGENT_MCP=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' "$CEO_DIR/$AGENT_REGISTRY" 2>/dev/null || true)
+  elif [[ "$AGENT_REGISTRY" =~ ^[[:space:]]*\{ ]]; then
+    AGENT_MCP=$(printf '%s' "$AGENT_REGISTRY" | jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' 2>/dev/null || true)
+  fi
+  # Expanded below as ${_mcp_arg[@]+"..."}: bash 3.2 treats "${empty[@]}" under
+  # `set -u` as an unbound variable, and every task without an mcp field leaves
+  # this empty. The failure surfaced as "bridge exited 1", blaming the bridge.
+  _mcp_arg=()
+  if [ -n "$AGENT_MCP" ]; then
+    _mcp_arg=(--mcp "$AGENT_MCP")
+  fi
+
   # The bridge CLI requires --task (the natural-language instruction); --task-name
   # only selects the registry entry's model/tier/tools. The playbook body (the
   # markdown after the frontmatter) is that instruction.
@@ -1629,7 +1678,7 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
-    --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
+    --registry "$AGENT_REGISTRY" ${_mcp_arg[@]+"${_mcp_arg[@]}"} --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"
@@ -1681,6 +1730,8 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # benign non-zero shell exits are excluded there), so a completed run whose
   # report write failed surfaces here at dispatch time rather than only on the
   # next `ceo doctor` artifact cross-check (#215, non-throwing-client-success-check).
+  # The bridge records MCP failures too (#271), skipping read-only MCP tools (#457),
+  # so any mutating MCP failure or unannotated MCP error surfaces here.
   _agent_tool_errors=$(printf '%s' "$AGENT_OUT" | jq -r '.tool_errors // [] | length')
   if [ "$_agent_tool_errors" -gt 0 ]; then
     _agent_tool_err_detail=$(printf '%s' "$AGENT_OUT" | jq -r '[.tool_errors[] | "\(.tool): \(.error)"] | join("; ")')

@@ -177,6 +177,16 @@ test_swarm_doctor_function_answers_help() {
   _assert_help_only "cmd_swarm_doctor --help" "Usage: ceo swarm doctor"
 }
 
+test_status_function_answers_help() {
+  _call cmd_status --help
+  _assert_help_only "cmd_status --help" "Usage: ceo status"
+}
+
+test_next_runs_function_answers_help() {
+  _call cmd_playbook_next_runs --help
+  _assert_help_only "cmd_playbook_next_runs --help" "Usage: ceo playbook next-runs"
+}
+
 test_help_answers_before_the_vault_requirement() {
   # sync and diff open with `: "${CEO_VAULT:?...}"`. The guard sits above it, so
   # a sourced caller on a host that has never run `ceo setup` still gets usage
@@ -335,8 +345,8 @@ test_cli_help_needs_no_vault_for_any_command() {
   local sandbox cmd rc out
   sandbox=$(mktemp -d)
   for cmd in "test --help" "preflight --help" "chat --help" "cron --help" \
-             "schedule --help" "playbook sync --help" "swarm doctor --help" \
-             "playbook help" "swarm help"; do
+             "status --help" "schedule --help" "playbook sync --help" "playbook next-runs --help" \
+             "swarm doctor --help" "playbook help" "swarm help"; do
     # shellcheck disable=SC2086
     out=$(env -i HOME="$sandbox" PATH="$STUB_BIN:$PATH" bash "$CEO_CLI" $cmd 2>&1); rc=$?
     assert_eq "$rc" "0" "ceo $cmd must exit 0 with no vault configured"

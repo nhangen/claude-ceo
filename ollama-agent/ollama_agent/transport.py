@@ -6,6 +6,7 @@ others. Treating "no exception" as success would record an HTTP error as a model
 turn (non-throwing-client-success-check).
 """
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -15,11 +16,12 @@ RETRYABLE_HTTP_STATUSES = frozenset({502, 503, 504})
 MAX_HTTP_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.2
 
-# Ollama's own wording when a prompt overruns num_ctx: it trims tokens from the
-# front until the user turn is gone, then reports this. It is the daemon's
-# message, not an API contract (observed on ollama through 2026-09), so a reword
-# upstream silently reverts overflow to the generic raises below. The durable
-# signal is prompt_eval_count against num_ctx, not this string.
+# Secondary hint: ollama's own wording when a prompt overruns num_ctx before a turn
+# can complete: it trims tokens from the front until the user turn is gone, then
+# reports this. It is the daemon's message, not an API contract (observed on ollama
+# through 2026-09), so a reword upstream silently reverts overflow to the generic
+# raises below. The primary durable signal is prompt_eval_count against num_ctx in
+# agent.py, not this string.
 CONTEXT_OVERFLOW_SENTINEL = "no user query found in messages"
 CONTEXT_OVERFLOW_REMEDIATION = (
     "Increase --num-ctx (e.g. --num-ctx 65536) or reduce prompt size with "
@@ -112,7 +114,19 @@ def parse_chat_response(status, body, provenance=None):
         if CONTEXT_OVERFLOW_SENTINEL in body:
             raise _context_overflow_error(status, body[:200])
         raise RuntimeError(f"ollama HTTP {status}: {body[:200]}")
-    data = json.loads(body)
+    try:
+        data = json.loads(body)
+    except ValueError as e:
+        raise RuntimeError(f"ollama 200 with unparseable body: {body[:200]}") from e
+    # A bare array, `null`, or a quoted string parses fine and then dies on
+    # `.get` two lines down as an AttributeError, which cli.py records without
+    # naming ollama or the body. Same class of failure as unparseable, one JSON
+    # token away, so it is gated at the same site rather than left to the
+    # caller.
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"ollama 200 with non-object body ({type(data).__name__}): {body[:200]}"
+        )
     # The model that ANSWERED, which against a router is not the one we asked
     # for. `local-coder` resolved to a 14.8b build while the docs said 27b
     # (#667), and this field was being parsed and discarded on every turn.
@@ -124,10 +138,16 @@ def parse_chat_response(status, body, provenance=None):
         raise RuntimeError(f"ollama error: {err}")
     if "message" not in data:
         raise RuntimeError(f"ollama 200 with no message: {body[:200]}")
-    usage = {
-        "input": int(data.get("prompt_eval_count") or 0),
-        "output": int(data.get("eval_count") or 0),
-    }
+    try:
+        usage = {
+            "input": int(data.get("prompt_eval_count") or 0),
+            "output": int(data.get("eval_count") or 0),
+        }
+    except (TypeError, ValueError) as e:
+        # Same invariant as the two guards above: a proxy that answers with a
+        # string where ollama sends a count must not leave the transport as a
+        # bare ValueError naming neither ollama nor the field.
+        raise RuntimeError(f"ollama 200 with non-numeric token counts: {body[:200]}") from e
     return data["message"], usage
 
 
@@ -174,7 +194,7 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     _note_headers(provenance, getattr(resp, "headers", None))
-                    return parse_chat_response(resp.status, resp.read().decode(),
+                    return parse_chat_response(resp.status, resp.read().decode(errors="replace"),
                                                provenance=provenance)
             except urllib.error.HTTPError as e:
                 try:
@@ -182,7 +202,7 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         # Headers first: parse_chat_response raises on an error
                         # body, and a failed turn still needs to name its backend.
                         _note_headers(provenance, getattr(e, "headers", None))
-                        return parse_chat_response(e.code, e.read().decode(),
+                        return parse_chat_response(e.code, e.read().decode(errors="replace"),
                                                    provenance=provenance)
                     # The endpoint that just 503'd. Without this a flaky backend
                     # that fails twice before a healthy one answers is invisible,
@@ -194,6 +214,16 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         ) from e
                 finally:
                     e.close()
+                # Both halves are needed. The print is for whoever is watching a
+                # 600s turn; the note is for everyone else, because under
+                # ceo-cron stderr goes to a log nobody reads and a run that
+                # survived two 503s would otherwise ledger identically to a
+                # clean one -- the flapping-daemon blindness #385 named.
+                _note(provenance, "retried_statuses", f"{e.code}@{attempt}")
+                print(f"warning: ollama HTTP {e.code} on attempt "
+                      f"{attempt}/{MAX_HTTP_ATTEMPTS} for model {model}, "
+                      f"retrying in {RETRY_BACKOFF_SECONDS * attempt:.1f}s",
+                      file=sys.stderr)
                 time.sleep(RETRY_BACKOFF_SECONDS * attempt)
             except urllib.error.URLError as e:
                 raise RuntimeError(f"ollama unreachable at {url}: {e.reason}") from e

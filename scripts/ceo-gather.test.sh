@@ -130,6 +130,35 @@ test_preflight_treats_a_non_numeric_count_as_unknown() {
     "a non-numeric review count must be state 2, not a trustworthy empty"
 }
 
+_pending_preflight_rc() {
+  ( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    # All three are read by ceo_pending_items_preflight, which is sourced above,
+    # so the use is invisible to static analysis from here.
+    # shellcheck disable=SC2034
+    PENDING_ASK_QUESTIONS="$1"
+    # shellcheck disable=SC2034
+    FILE_GATHER_DEGRADED="$2"
+    # shellcheck disable=SC2034
+    FILE_GATHER_DEGRADED_REASONS="file-read-failed:/path/to/Pending.md:rc=2"
+    local out rc=0
+    out=$(ceo_pending_items_preflight) || rc=$?
+    echo "RC=$rc|OUT=$out" )
+}
+
+test_pending_items_preflight_covers_all_three_states() {
+  assert_contains "$(_pending_preflight_rc '- [ ] ask Slava' 0)" "RC=0" "pending questions waiting is state 0"
+  assert_contains "$(_pending_preflight_rc '' 0)" "RC=1" "a trustworthy empty questions list is state 1"
+  local degraded; degraded=$(_pending_preflight_rc '' 1)
+  assert_contains "$degraded" "RC=2" "an empty questions list behind a degraded file gather is state 2"
+  assert_contains "$degraded" "file-read-failed:/path/to/Pending.md:rc=2" "and state 2 carries the reason"
+}
+
+test_pending_items_preflight_prefers_work_present_over_degraded() {
+  assert_contains "$(_pending_preflight_rc '- [ ] ask Slava' 1)" "RC=0" \
+    "pending questions present outrank a degraded file gather — there is work either way"
+}
+
 # PR_GATHER_DEGRADED is a union over review, authored, merged, GitLab, and every
 # jq transform. Consulting it wholesale records a preflight failure -- which
 # feeds the fail counter and the alert -- because an unrelated 30-day merged

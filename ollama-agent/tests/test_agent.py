@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -10,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ollama_agent import ToolBox, TOOLS, run_agent  # noqa: E402
 from ollama_agent.agent import _normalize_args, _tool_calls_from_content  # noqa: E402
 from ollama_agent.tools import _clip, MAX_OUTPUT, MAX_READ  # noqa: E402
-from ollama_agent.transport import parse_chat_response  # noqa: E402
+from ollama_agent.transport import ollama_transport, parse_chat_response  # noqa: E402
 
 
 # --- real tools ---
@@ -204,6 +205,7 @@ def test_verify_cmd_none_is_prior_behavior(tmp_path):
     assert rec["completed"] is True
     assert rec["turns"] == 1
     assert rec["verified"] is None
+    assert rec["verify_cmd"] is None
 
 
 def test_verify_cmd_passing_accepts_the_stop(tmp_path):
@@ -211,6 +213,7 @@ def test_verify_cmd_passing_accepts_the_stop(tmp_path):
     rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="true")
     assert rec["completed"] is True
     assert rec["verified"] is True
+    assert rec["verify_cmd"] == "true"
     assert rec["turns"] == 1
 
 
@@ -225,6 +228,7 @@ def test_verify_cmd_keeps_going_until_green(tmp_path):
                     turn_cap=8, verify_cmd=verify)
     assert rec["completed"] is True
     assert rec["verified"] is True
+    assert rec["verify_cmd"] == verify
     assert rec["turns"] == 2
 
 
@@ -236,7 +240,35 @@ def test_verify_cmd_never_green_ends_unverified_at_cap(tmp_path):
                     turn_cap=3, verify_cmd="false")
     assert rec["verified"] is False
     assert rec["completed"] is False
+    assert rec["verify_cmd"] == "false"
     assert rec["turns"] == 3
+
+
+def _refuses_to_run(messages, tools):
+    """A transport that fails the test if it is called at all, so an arm can assert
+    a guard fired at entry rather than merely somewhere. Without it the same guard
+    moved to the function's exit keeps these arms green, after the turn loop has
+    run and the tracker is dirty — which is the state #436 exists to prevent.
+    test_cli.py's sibling arms already pin this via `"system" not in captured`."""
+    raise AssertionError("transport called: the verify_cmd guard did not run at entry")
+
+
+def test_verify_cmd_empty_string_refused_before_any_turn(tmp_path):
+    # #436: Empty string is not a valid gate and must not silently run ungated.
+    tracker = {}
+    with pytest.raises(ValueError, match="pass None to run without a gate"):
+        run_agent("fix it", "sys", _refuses_to_run, ToolBox(cwd=tmp_path), TOOLS,
+                  verify_cmd="", usage_tracker=tracker)
+    assert tracker == {}
+
+
+def test_verify_cmd_whitespace_string_refused_before_any_turn(tmp_path):
+    # #436: Whitespace-only string must not pass as truthy gate and forge green status.
+    tracker = {}
+    with pytest.raises(ValueError, match="pass None to run without a gate"):
+        run_agent("fix it", "sys", _refuses_to_run, ToolBox(cwd=tmp_path), TOOLS,
+                  verify_cmd="   \t\n  ", usage_tracker=tracker)
+    assert tracker == {}
 
 
 def test_run_id_echoed_in_record(tmp_path):
@@ -596,6 +628,35 @@ def test_parse_chat_response_healthy_200_quoting_the_sentinel_returns():
     assert usage == {"input": 10, "output": 5}
 
 
+def test_parse_chat_response_unparseable_json_raises_runtimeerror():
+    # #385: a 200 carrying non-JSON (a proxy's HTML error page) surfaced as a bare
+    # ValueError naming neither ollama nor the body. cli.py:334 is `except
+    # Exception` and already ledgered it, so what this buys is a diagnostic
+    # message -- NOT, as the ticket claimed, reaching the ledger at all. Do not
+    # read it as licence to narrow that catch back to RuntimeError.
+    with pytest.raises(RuntimeError, match="ollama 200 with unparseable body: <html>"):
+        parse_chat_response(200, "<html>502 Bad Gateway</html>")
+
+
+@pytest.mark.parametrize("body,kind", [("[]", "list"), ("null", "NoneType"),
+                                       ('"s"', "str"), ("123", "int")])
+def test_parse_chat_response_non_object_body_raises_runtimeerror(body, kind):
+    # The other half of #385's class: this parses, then dies on `.get` as an
+    # AttributeError. One arm per JSON type because a guard keyed on any one of
+    # them (a truthiness test, say) passes the others through.
+    with pytest.raises(RuntimeError, match=f"non-object body \\({kind}\\)"):
+        parse_chat_response(200, body)
+
+
+def test_parse_chat_response_non_numeric_token_counts_raise_runtimeerror():
+    # int("abc") is a ValueError, and the invariant is that nothing leaves this
+    # function as anything but RuntimeError.
+    body = json.dumps({"message": {"role": "assistant", "content": "hi"},
+                       "prompt_eval_count": "abc"})
+    with pytest.raises(RuntimeError, match="non-numeric token counts"):
+        parse_chat_response(200, body)
+
+
 # --- why the run ended (reason) ---
 #
 # The ledger's outcome was a two-field truth table with a null in it:
@@ -681,7 +742,9 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
                      turn_cap=1, verify_cmd="false", usage_tracker=tracker)
     assert tracker["verified"] is False
     assert tracker["verify_gated"] is True
+    assert tracker["verify_cmd"] == "false"
     assert rec1["verify_gated"] is True
+    assert rec1["verify_cmd"] == "false"
     assert tracker["ollama_input_tokens"] == 10
 
     second = _script(({"role": "assistant", "content": "done"}, {"input": 3, "output": 4}))
@@ -689,7 +752,9 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
                      turn_cap=1, usage_tracker=tracker)
     assert tracker["verified"] is None
     assert tracker["verify_gated"] is False
+    assert tracker["verify_cmd"] is None
     assert rec2["verify_gated"] is False
+    assert rec2["verify_cmd"] is None
     assert tracker["ollama_input_tokens"] == 3
     assert tracker["turns"] == 1
 
@@ -788,3 +853,100 @@ def test_edit_file_through_the_loop_leaves_the_rest_byte_identical(tmp_path):
         "only the named anchor may change; every other byte must survive"
     assert b"def alpha" in src.read_bytes() and b"def gamma" in src.read_bytes(), \
         "the functions the model did not name must still exist"
+
+
+# --- #385: transport non-UTF8 decode replace and retry visibility ---
+
+class _RawBytesResp(io.BytesIO):
+    def __init__(self, raw_bytes, headers=None, status=200):
+        super().__init__(raw_bytes)
+        self.status = status
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def test_ollama_transport_handles_non_utf8_200_body(monkeypatch):
+    raw = b'{"message": {"role": "assistant", "content": "hello \xff\xfe"}, "prompt_eval_count": 5, "eval_count": 2}'
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
+    msg, usage = t([{"role": "user", "content": "hi"}], [])
+    # The replacement char, not just "hello" -- a substring assert passes equally
+    # under errors="ignore", which drops the bytes instead of marking them.
+    assert msg["content"] == "hello \ufffd\ufffd"
+    assert usage == {"input": 5, "output": 2}
+
+
+def test_ollama_transport_handles_non_utf8_error_body(monkeypatch):
+    import urllib.error
+
+    class _FakeHTTPError(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1/api/chat", 400, "Bad Request", {}, io.BytesIO(b"error \xff\xfe"))
+
+    def raise_http_error(req, timeout=None):
+        raise _FakeHTTPError()
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
+    with pytest.raises(RuntimeError, match="ollama HTTP 400: error"):
+        t([{"role": "user", "content": "hi"}], [])
+
+
+def test_ollama_transport_logs_warning_on_retry(monkeypatch, capsys):
+    import urllib.error
+
+    call_count = 0
+
+    class _Fake503(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1/api/chat", 503, "Service Unavailable", {}, io.BytesIO(b"overloaded"))
+
+    def fail_then_succeed(req, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _Fake503()
+        return _RawBytesResp(b'{"message": {"role": "assistant", "content": "recovered"}, "prompt_eval_count": 1, "eval_count": 1}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_then_succeed)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
+    msg, usage = t([{"role": "user", "content": "hi"}], [])
+    assert msg["content"] == "recovered"
+    err = capsys.readouterr().err
+    assert "warning: ollama HTTP 503 on attempt 1/3 for model qwen3.8:27b" in err
+    assert "retrying in 0.2s" in err
+
+
+def test_ollama_transport_records_the_retry_in_provenance(monkeypatch):
+    # stderr under ceo-cron goes to a log nobody reads. The ledger row is the
+    # record that has to distinguish a run that flapped from one that did not.
+    import urllib.error
+
+    calls = {"n": 0}
+
+    class _Fake503(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1/api/chat", 503, "Service Unavailable",
+                             {}, io.BytesIO(b"overloaded"))
+
+    def fail_then_succeed(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _Fake503()
+        return _RawBytesResp(b'{"message": {"role": "assistant", "content": "ok"},'
+                             b' "prompt_eval_count": 1, "eval_count": 1}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_then_succeed)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    prov = {}
+    t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434", provenance=prov)
+    t([{"role": "user", "content": "hi"}], [])
+    assert prov["retried_statuses"] == ["503@1"]
+

@@ -38,7 +38,8 @@ def ledger_path():
 
 # Who served the run, from `provenance` (see transport._note). Each is a list of
 # distinct values in first-seen order, because a router re-decides per request.
-_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids")
+_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids",
+                      "retried_statuses")
 
 # Two things #667 asked for that are deliberately NOT here, recorded so a reader
 # who greps the ticket for them is not left wondering:
@@ -78,6 +79,12 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     can be ungated in that sense and `verify_gated: true` here, and the standard
     ollama-batch invocation is exactly that.
 
+    `verify_cmd` records the exact verification command string configured for
+    the run, making verified claims auditable (#433). Null means no
+    `--verify-cmd` was configured, or the record carried none — not `--ungated`,
+    for the reason given above. It is written verbatim, so a gate must not carry
+    inline credentials.
+
     `scripts/ceo-model-ledger.sh` appends claude-tier rows to this same file and
     emits explicit `null` for `verify_gated` and `verified` (#434). Those rows carry
     `writer`, which is how a reader tells them from Python rows.
@@ -97,7 +104,12 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
         "completed": rec.get("completed"),
         "verified": rec.get("verified"),
         "verify_gated": rec.get("verify_gated"),
+        "verify_cmd": rec.get("verify_cmd"),
         "reason": rec.get("reason"),
+        # Absent on a pre-#384 row, [] on a run that had nothing to warn about --
+        # the same absent-vs-empty distinction the provenance fields keep, and for
+        # the same reason: an old row must not read as a fresh clean one.
+        "warnings": rec.get("warnings"),
     }
     prov = provenance or {}
     for key in _PROVENANCE_FIELDS:
