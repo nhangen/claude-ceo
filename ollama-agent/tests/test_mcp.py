@@ -128,6 +128,17 @@ def test_mcp_tools_to_ollama_default_schema_when_missing():
     assert schemas[0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
 
+def test_mcp_tools_to_ollama_preserves_annotations_and_readonly_hint():
+    schemas, _ = mcp_tools_to_ollama([
+        {"name": "lookup", "description": "find item", "annotations": {"readOnlyHint": True, "priority": 1}},
+        {"name": "search", "description": "search", "readOnlyHint": True},
+        {"name": "update", "description": "update row"},
+    ])
+    assert schemas[0]["function"]["annotations"] == {"readOnlyHint": True, "priority": 1}
+    assert schemas[1]["function"]["annotations"] == {"readOnlyHint": True}
+    assert "annotations" not in schemas[2]["function"]
+
+
 # --- ToolBox MCP dispatch ---
 
 class FakeClient:
@@ -171,6 +182,41 @@ def test_toolbox_records_mcp_iserror_not_success(tmp_path):
     assert tb.tool_errors == []
     tb.dispatch("mcp__boom", {})
     assert [e["tool"] for e in tb.tool_errors] == ["mcp__boom"]
+
+
+def test_toolbox_skips_mcp_readonly_iserror(tmp_path):
+    # #457: read-only MCP tools marked via readOnlyHint (in mcp_readonly) must NOT
+    # record in tool_errors when they fail/miss -- matching built-in read_file/list_dir.
+    client = MCPClient(FakeTransport(is_error_tools={"query_db", "write_db"}))
+    tb = ToolBox(
+        cwd=tmp_path,
+        mcp_client=client,
+        mcp_names={"mcp__query_db": "query_db", "mcp__write_db": "write_db"},
+        mcp_readonly={"mcp__query_db"},
+    )
+    # query_db fails with isError, but is read-only -> returns error string to model,
+    # tool_errors stays empty.
+    out = json.loads(tb.dispatch("mcp__query_db", {"q": "SELECT 1"}))
+    assert "error" in out
+    assert tb.tool_errors == []
+
+    # write_db fails with isError and is NOT read-only -> recorded in tool_errors.
+    out2 = json.loads(tb.dispatch("mcp__write_db", {"stmt": "UPDATE ..."}))
+    assert "error" in out2
+    assert [e["tool"] for e in tb.tool_errors] == ["mcp__write_db"]
+
+
+def test_toolbox_skips_mcp_readonly_exception(tmp_path):
+    # Even on transport exception (FakeClient raises), read-only MCP tool must not enter tool_errors.
+    tb = ToolBox(
+        cwd=tmp_path,
+        mcp_client=FakeClient(raises=True),
+        mcp_names={"mcp__lookup": "lookup"},
+        mcp_readonly={"mcp__lookup"},
+    )
+    out = json.loads(tb.dispatch("mcp__lookup", {}))
+    assert "error" in out and "MCPError" in out["error"]
+    assert tb.tool_errors == []
 
 
 def test_toolbox_unknown_mcp_name_still_unknown(tmp_path):
@@ -282,3 +328,17 @@ def test_stdio_transport_send_on_none_stdin_raises(tmp_path):
     with pytest.raises(MCPError, match="stdin closed"):
         transport.send({"x": 1})
     transport.close()
+
+
+def test_toolbox_readonly_never_suppresses_a_builtin(tmp_path):
+    """A read-only entry must not silence the builtin tool of the same name.
+
+    mcp_readonly holds prefixed mcp__* names, so this cannot happen from cli.py
+    today — but the skip used to match on the bare name, and a failed builtin
+    write_file dropped from tool_errors is exactly what the cron gate reads."""
+    tb = ToolBox(cwd=str(tmp_path),
+                 mcp_names={"mcp__write_file": "write_file"},
+                 mcp_readonly={"write_file", "mcp__write_file"})
+    out = tb.dispatch("write_file", {"path": "/proc/nope/x.md", "content": "x"})
+    assert "error" in json.loads(out)
+    assert [e["tool"] for e in tb.tool_errors] == ["write_file"]

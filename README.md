@@ -391,10 +391,12 @@ CEO/
 ceo setup            First-time machine setup (deps, git, ssh, scheduler daemon)
 ceo next             Redisplay post-setup steps
 ceo doctor           Check system health (deps, vault, scheduler daemon, auth)
+ceo status           Per-job runnability, last fire, next fire, and daemon liveness
 ceo test             Smoke test: trigger morning-brief, check log
 ceo cron <name>      Manually run a cron trigger
 ceo chat [name]      Interactive playbook (no cron); empty = triage conversation; defaults to --effort medium
-ceo playbook scan|list|info     Self-registering playbook management
+ceo playbook scan|list|next-runs|info     Self-registering playbook management
+ceo playbook next-runs [--within <dur>]   Upcoming fire times, optionally windowed
 ceo playbook scan --dry-run     Preview what scan would install, no writes
 ceo playbook <sub> --help       Usage for one subcommand; runs nothing
 ceo schedule [name]  List effective schedules; with name, reschedule one

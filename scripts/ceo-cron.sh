@@ -1632,6 +1632,26 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   fi
   [ -z "$AGENT_TASK" ] && AGENT_TASK="$TRIGGER"
 
+  # Extract any MCP server declared in the registry task spec (#457).
+  # Threaded as --mcp directly into the agent command (never via
+  # CEO_OLLAMA_AGENT_CMD, which splits on spaces and would break commands with
+  # arguments).
+  AGENT_MCP=""
+  if [ -f "$AGENT_REGISTRY" ]; then
+    AGENT_MCP=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' "$AGENT_REGISTRY" 2>/dev/null || true)
+  elif [ -f "$CEO_DIR/$AGENT_REGISTRY" ]; then
+    AGENT_MCP=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' "$CEO_DIR/$AGENT_REGISTRY" 2>/dev/null || true)
+  elif [[ "$AGENT_REGISTRY" =~ ^[[:space:]]*\{ ]]; then
+    AGENT_MCP=$(printf '%s' "$AGENT_REGISTRY" | jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' 2>/dev/null || true)
+  fi
+  # Expanded below as ${_mcp_arg[@]+"..."}: bash 3.2 treats "${empty[@]}" under
+  # `set -u` as an unbound variable, and every task without an mcp field leaves
+  # this empty. The failure surfaced as "bridge exited 1", blaming the bridge.
+  _mcp_arg=()
+  if [ -n "$AGENT_MCP" ]; then
+    _mcp_arg=(--mcp "$AGENT_MCP")
+  fi
+
   # The bridge CLI requires --task (the natural-language instruction); --task-name
   # only selects the registry entry's model/tier/tools. The playbook body (the
   # markdown after the frontmatter) is that instruction.
@@ -1658,7 +1678,7 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
-    --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
+    --registry "$AGENT_REGISTRY" ${_mcp_arg[@]+"${_mcp_arg[@]}"} --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"
@@ -1710,8 +1730,8 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # benign non-zero shell exits are excluded there), so a completed run whose
   # report write failed surfaces here at dispatch time rather than only on the
   # next `ceo doctor` artifact cross-check (#215, non-throwing-client-success-check).
-  # The bridge records MCP failures too (#271), but this call passes no --mcp,
-  # so none reach this gate yet (#457).
+  # The bridge records MCP failures too (#271), skipping read-only MCP tools (#457),
+  # so any mutating MCP failure or unannotated MCP error surfaces here.
   _agent_tool_errors=$(printf '%s' "$AGENT_OUT" | jq -r '.tool_errors // [] | length')
   if [ "$_agent_tool_errors" -gt 0 ]; then
     _agent_tool_err_detail=$(printf '%s' "$AGENT_OUT" | jq -r '[.tool_errors[] | "\(.tool): \(.error)"] | join("; ")')
@@ -2330,7 +2350,12 @@ END_LOG_ENTRY"
   # runs, so the `|| true` fallbacks keep the `// empty` / `// "null"` intent
   # working when the CLI's stdout isn't parseable.
   SINGLE_OUTPUT="$(printf '%s' "$SINGLE_RAW" | jq -r '.result // empty' 2>/dev/null || true)"
-  SINGLE_COST="$(printf '%s' "$SINGLE_RAW" | jq -r '.total_cost_usd // "null"' 2>/dev/null || echo "null")"
+  # `head -1`, not `|| echo null`: when the CLI prints the JSON envelope and
+  # then a banner, jq emits the cost and then fails on the banner, so the old
+  # fallback appended a second line and the two-line value was unparseable —
+  # the ledger row for exactly the failed runs was dropped (#490).
+  SINGLE_COST="$(printf '%s' "$SINGLE_RAW" | jq -r '.total_cost_usd // "null"' 2>/dev/null | head -1 || true)"
+  SINGLE_COST="${SINGLE_COST:-null}"
   if [ -n "${_TIER_MATCH:-}" ]; then
     ceo_ledger_write_entry "claude-tier" "$MODEL" "$TRIGGER" "$VAULT" "${SINGLE_COST:-null}" "$([ "$SINGLE_EXIT" -eq 0 ] && echo true || echo false)" > /dev/null
   fi

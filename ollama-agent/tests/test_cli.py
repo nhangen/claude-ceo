@@ -29,6 +29,7 @@ def _stub(monkeypatch, captured):
                        verify_cmd=None, usage_tracker=None, num_ctx=None):
         captured["system"] = system
         captured["tools"] = tools
+        captured["toolbox"] = toolbox
         captured["run_id"] = run_id
         captured["verify_cmd"] = verify_cmd
         captured["num_ctx"] = num_ctx
@@ -40,6 +41,7 @@ def _stub(monkeypatch, captured):
         # the production function always sets. A stub that omits a key the caller
         # is entitled to hides the KeyError from every test that uses it.
         return {"completed": True, "verified": None, "verify_gated": bool(verify_cmd),
+                "verify_cmd": verify_cmd,
                 "turns": 1, "run_id": run_id,
                 "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
@@ -275,6 +277,53 @@ def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, caps
     assert closed["v"] is True
 
 
+def test_cli_task_spec_mcp_bridges_when_omitted_on_cli(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "custom-server --opt",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task"])
+    assert rc == 0
+    assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["v"] is True
+
+
+def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    class FT:
+        def close(self):
+            closed["v"] = True
+    monkeypatch.setattr(cli, "StdioMCPTransport", lambda *a, **kw: FT())
+    class FC:
+        def __init__(self, transport): pass
+        def initialize(self): pass
+        def list_tools(self):
+            return [
+                {"name": "query", "description": "q", "annotations": {"readOnlyHint": True}},
+                {"name": "mutate", "description": "m"},
+            ]
+    monkeypatch.setattr(cli, "MCPClient", FC)
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--mcp", "test-server"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "mcp: 2 tools from 'test-server' (1 read-only)" in err
+    # The stderr line alone left the hand-off untested: mcp_readonly=None at the
+    # ToolBox call site kept the whole suite green, and that is the line the
+    # feature rests on.
+    assert captured["toolbox"].mcp_readonly == {"mcp__query"}
+
+
 def _registry(tmp_path, **tasks):
     f = tmp_path / "reg.json"
     f.write_text(json.dumps({"tasks": tasks}))
@@ -481,8 +530,8 @@ def test_cli_summary_prints_verify_gated(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tmp_path, monkeypatch):
-    # main() seeds verify_gated into the tracker at construction, and run_agent
-    # resets it again on entry. Every other crash test crashes INSIDE run_agent,
+    # main() seeds verify_gated and verify_cmd into the tracker at construction,
+    # and run_agent resets them again on entry. Every other crash test crashes INSIDE run_agent,
     # so they read the reset value and the seed is dead weight to them. This one
     # crashes in the window between the two — run_agent raising before its reset
     # loop, or a kill landing during _install_kill_handlers() — which is the only
@@ -500,6 +549,9 @@ def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tm
     row = json.loads(ledger.read_text().strip())
     assert row["verify_gated"] is True
     assert row["verified"] is None
+    # Without the seed this row is gated but cannot name its gate — the
+    # unauditable shape #433 exists to prevent.
+    assert row["verify_cmd"] == "pytest"
 
 
 def test_cli_empty_verify_cmd_refuses(tmp_path, monkeypatch, capsys):
@@ -814,6 +866,7 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
     assert row["verify_gated"] is True
+    assert row["verify_cmd"] == "false"
     assert row["verified"] is False
     assert row["ollama_input_tokens"] == 7
 
@@ -822,6 +875,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     # #386: A gated run that dies on turn 1 (e.g. transport error) before the gate
     # ever runs records (verify_gated=True, verified=None) — distinguishing "died before gate"
     # from one with no gate configured (verify_gated=False, verified=None).
+    # #433: verify_cmd records the exact command ("pytest") rather than null.
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
 
@@ -835,6 +889,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
     assert row["verify_gated"] is True
+    assert row["verify_cmd"] == "pytest"
     assert row["verified"] is None
     assert row["completed"] is False
 
@@ -990,3 +1045,40 @@ def test_cli_warns_on_alias_routing_even_when_the_model_string_matches(tmp_path,
     err = capsys.readouterr().err
     assert "served-by:" in err, "alias routing was not reported because the strings matched"
     assert "ml1-5080" in err
+
+
+def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
+    """A server that spells the hint as a string must not be read as read-only.
+
+    The hint decides whether a tool's failures reach tool_errors, which is the
+    cron run's only failure gate — so a server could otherwise silence its own
+    error reporting with a one-character JSON type error."""
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+
+    class FT:
+        def close(self):
+            closed["v"] = True
+    monkeypatch.setattr(cli, "StdioMCPTransport", lambda *a, **kw: FT())
+
+    class FC:
+        def __init__(self, transport): pass
+        def initialize(self): pass
+        def list_tools(self):
+            return [
+                {"name": "stringy", "description": "s",
+                 "annotations": {"readOnlyHint": "false"}},
+                {"name": "toplevel_stringy", "description": "t",
+                 "readOnlyHint": "false"},
+                {"name": "explicit_false", "description": "f",
+                 "annotations": {"readOnlyHint": False}},
+                {"name": "genuine", "description": "g",
+                 "annotations": {"readOnlyHint": True}},
+            ]
+    monkeypatch.setattr(cli, "MCPClient", FC)
+
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules",
+                   "--no-skills", "--mcp", "test-server"])
+    assert rc == 0
+    assert captured["toolbox"].mcp_readonly == {"mcp__genuine"}
+    assert "(1 read-only)" in capsys.readouterr().err

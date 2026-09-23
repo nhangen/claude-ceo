@@ -349,8 +349,12 @@ CEO_REGISTRY_SCHEMA_VERSION=3
 # with nothing logged on either side. A test sets it to point somewhere $HOME is
 # not, which is the only way to prove the path is not hardcoded.
 _ceo_registry_path() {
+  if [ -n "${CEO_REGISTRY_FILE:-}" ]; then
+    printf '%s\n' "$CEO_REGISTRY_FILE"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local registry path}"
-  printf '%s\n' "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
+  printf '%s\n' "$HOME/.ceo/registry.json"
 }
 
 # Per-trigger cron state — the failure counter, the cooldown stamp, the
@@ -381,8 +385,12 @@ _ceo_registry_path() {
 # The pin is correct for production — under cron and launchd HOME is unset or
 # wrong — so the fix is the override, not removing the pin.
 _ceo_state_dir() {
+  if [ -n "${CEO_STATE_DIR:-}" ]; then
+    printf '%s\n' "$CEO_STATE_DIR"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local state directory}"
-  printf '%s\n' "${CEO_STATE_DIR:-$HOME/.ceo/state}"
+  printf '%s\n' "$HOME/.ceo/state"
 }
 
 # Legacy location of the same state, inside the synced vault. Read-only, and only
@@ -442,8 +450,12 @@ _ceo_state_migrate() {
 # treats an absent file as "nothing enabled here", so a production override
 # stops each-scope dispatch silently.
 _ceo_enabled_path() {
+  if [ -n "${CEO_ENABLED_FILE:-}" ]; then
+    printf '%s\n' "$CEO_ENABLED_FILE"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local enabled path}"
-  printf '%s\n' "${CEO_ENABLED_FILE:-$HOME/.ceo/enabled.json}"
+  printf '%s\n' "$HOME/.ceo/enabled.json"
 }
 
 # Unlike registry.json (host-local), swarm.json IS synced: it describes the
@@ -669,8 +681,8 @@ ceo_registry_validate() {
 # ---------------------------------------------------------------------------
 # ceo_artifact_expand <template> [host]
 #   Expand a playbook artifact template into a vault-relative path. Templates
-#   may reference {TODAY} (YYYY-MM-DD) and {HOST} (short hostname). Optional
-#   second arg overrides the host (used by tests).
+#   may reference {TODAY} (YYYY-MM-DD), {MONTH} (YYYY-MM), and {HOST} (short
+#   hostname). Optional second arg overrides the host (used by tests).
 #
 #   Prints the expanded path on stdout. Returns 0 on success, 1 if the
 #   template is empty or contains an unknown {...} token (per the
@@ -681,10 +693,16 @@ ceo_artifact_expand() {
   local template="${1:-}"
   local host="${2:-${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}}"
   [ -z "$template" ] && return 1
-  local today
+  local today month
   today=$(date +%Y-%m-%d)
+  month=$(date +%Y-%m)
   local expanded="$template"
   expanded="${expanded//\{TODAY\}/$today}"
+  # {MONTH} is for a playbook whose tool writes one file per month and rewrites
+  # it in place. Declaring {TODAY} for such a tool passes parse validation and
+  # then fails ceo doctor's cross-check on every run, which is a false failure
+  # that never clears -- and it leaves the file the tool does write unchecked.
+  expanded="${expanded//\{MONTH\}/$month}"
   expanded="${expanded//\{HOST\}/$host}"
   # After expanding known tokens, any remaining {...} is a typo or an
   # unsupported token — reject rather than emit a broken path.
