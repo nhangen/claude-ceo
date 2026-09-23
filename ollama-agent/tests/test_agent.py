@@ -545,33 +545,6 @@ def test_transport_honors_retry_after_header(monkeypatch):
     assert sleeps == [1.5]
 
 
-def test_transport_surfaces_decode_substitutions_and_records_provenance(monkeypatch, capsys):
-    import io
-    import ollama_agent.transport as t
-
-    class _InvalidUtf8Resp:
-        def __init__(self):
-            self.status = 200
-            self.headers = {}
-        def __enter__(self):
-            return self
-        def __exit__(self, *a):
-            return False
-        def read(self):
-            return b'{"message": {"role": "assistant", "content": "hello \xff\xfe world"}, "prompt_eval_count": 1, "eval_count": 1}'
-
-    monkeypatch.setattr(t.urllib.request, "urlopen", lambda req, timeout: _InvalidUtf8Resp())
-
-    prov = {}
-    msg, usage = t.ollama_transport("local-coder", provenance=prov)(
-        [{"role": "user", "content": "hi"}], [])
-
-    assert msg["content"] == "hello \ufffd\ufffd world"
-    assert prov["decode_replacements"] == ["2"]
-    err = capsys.readouterr().err
-    assert "warning: ollama response body had 2 undecodable byte(s) replaced; model output may be corrupted" in err
-
-
 def test_transport_stops_after_bounded_502_retries(monkeypatch):
     import io
     import ollama_agent.transport as t
@@ -1161,7 +1134,7 @@ def test_ollama_transport_logs_warning_on_retry(monkeypatch, capsys):
     assert msg["content"] == "recovered"
     err = capsys.readouterr().err
     assert "warning: ollama HTTP 503 on attempt 1/3 for model qwen3.8:27b" in err
-    assert "retrying in 0.2s" in err
+    assert "retrying in 0.2s: overloaded" in err
 
 
 def test_ollama_transport_records_the_retry_in_provenance(monkeypatch):
@@ -1190,3 +1163,211 @@ def test_ollama_transport_records_the_retry_in_provenance(monkeypatch):
     t([{"role": "user", "content": "hi"}], [])
     assert prov["retried_statuses"] == ["503@1"]
 
+
+
+# --- #447 fix pass: Retry-After bounds, guarded 5xx read, excerpts, decode ---
+
+_OK_BODY = json.dumps({"message": {"role": "assistant", "content": "ok"},
+                       "prompt_eval_count": 1, "eval_count": 1})
+
+
+class _FailingBody(io.BytesIO):
+    """An HTTPError body whose read() raises what `make_exc` builds, fresh each call."""
+
+    def __init__(self, make_exc):
+        super().__init__(b"")
+        self._make_exc = make_exc
+
+    def read(self, *a):
+        raise self._make_exc()
+
+
+def _fail_first(monkeypatch, status, headers=None, body=b"busy", fp_factory=None, failures=1):
+    """HTTPError `status` on the first `failures` calls, then a clean 200.
+    Returns (sleeps, calls): sleeps records every delay the transport asked for."""
+    import ollama_agent.transport as t
+    calls = {"n": 0}
+
+    def respond(req, timeout):
+        calls["n"] += 1
+        if calls["n"] <= failures:
+            fp = fp_factory() if fp_factory else io.BytesIO(body)
+            raise t.urllib.error.HTTPError("u", status, "x", headers or {}, fp)
+        return _FakeResp(200, _OK_BODY)
+
+    sleeps = []
+    monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(t.time, "sleep", sleeps.append)
+    return sleeps, calls
+
+
+def test_retry_after_is_capped(monkeypatch):
+    import ollama_agent.transport as t
+    sleeps, _ = _fail_first(monkeypatch, 429, {"Retry-After": "3600"})
+    t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    assert t.RETRY_AFTER_CAP_SECONDS == 30.0
+    assert sleeps == [30.0]
+
+
+def test_retry_after_below_backoff_keeps_the_backoff_floor(monkeypatch):
+    # Retry-After raises the delay, never lowers it: `Retry-After: 0` must not
+    # turn the backoff into a hot loop.
+    import ollama_agent.transport as t
+    sleeps, _ = _fail_first(monkeypatch, 503, {"Retry-After": "0"})
+    t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    assert sleeps == [0.2]
+
+
+@pytest.mark.parametrize("value", ["Wed, 21 Oct 2015 07:28:00 GMT", "soon"])
+def test_non_numeric_retry_after_falls_back_to_backoff(monkeypatch, value):
+    import ollama_agent.transport as t
+    sleeps, _ = _fail_first(monkeypatch, 429, {"Retry-After": value})
+    t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    assert sleeps == [0.2]
+
+
+def test_5xx_body_read_failure_still_retries(monkeypatch):
+    import http.client
+    import ollama_agent.transport as t
+    sleeps, calls = _fail_first(
+        monkeypatch, 502,
+        fp_factory=lambda: _FailingBody(lambda: http.client.IncompleteRead(b"par")))
+    msg, _ = t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    assert msg["content"] == "ok"
+    assert calls["n"] == 2
+    assert sleeps == [0.2]
+
+
+@pytest.mark.parametrize("make_exc,name", [
+    (lambda: __import__("http.client").client.IncompleteRead(b"par"), "IncompleteRead"),
+    (lambda: ValueError("I/O operation on closed file"), "ValueError"),
+], ids=["IncompleteRead", "ValueError"])
+def test_5xx_body_read_failure_leaves_a_trace_on_exhaustion(monkeypatch, capsys, make_exc, name):
+    # An unreadable body must not read like a 5xx with an empty one.
+    import ollama_agent.transport as t
+    sleeps, calls = _fail_first(monkeypatch, 503,
+                                fp_factory=lambda: _FailingBody(make_exc), failures=3)
+    with pytest.raises(RuntimeError) as exc:
+        t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    assert calls["n"] == 3
+    assert sleeps == [0.2, 0.4]
+    assert str(exc.value) == (f"ollama HTTP 503 after 3 attempts for model m: "
+                              f"(error body unreadable: {name})")
+    assert f"retrying in 0.2s: (error body unreadable: {name})" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("exc_type", ["socket_timeout", "TimeoutError"])
+def test_5xx_body_read_timeout_raises_at_once(monkeypatch, exc_type):
+    # Retrying a body-read timeout brings back the ~3x wait #445 removed.
+    import socket
+    import ollama_agent.transport as t
+
+    def make():
+        return socket.timeout("timed out") if exc_type == "socket_timeout" else TimeoutError("timed out")
+
+    sleeps, calls = _fail_first(monkeypatch, 503,
+                                fp_factory=lambda: _FailingBody(make), failures=3)
+    prov = {}
+    with pytest.raises(RuntimeError, match=r"ollama timed out after 600s at .* for model m; "
+                                           r"a thinking model may need --no-think") as exc:
+        t.ollama_transport("m", provenance=prov)([{"role": "user", "content": "hi"}], [])
+    assert calls["n"] == 1
+    assert sleeps == []
+    assert "retried_statuses" not in prov
+    assert isinstance(exc.value.__cause__, OSError)
+
+
+def test_non_retryable_body_read_value_error_is_translated(monkeypatch):
+    import ollama_agent.transport as t
+
+    def fail(req, timeout):
+        raise t.urllib.error.HTTPError("u", 500, "x", {},
+                                       _FailingBody(lambda: ValueError("closed")))
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    with pytest.raises(RuntimeError, match=r"ollama HTTP 500 for model m; error body unreadable"):
+        t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+
+
+def test_retry_warning_and_exhaustion_carry_the_escaped_body(monkeypatch, capsys):
+    import ollama_agent.transport as t
+    sleeps, _ = _fail_first(monkeypatch, 503, body=b"busy\nREFUSED x\r\\y", failures=3)
+    with pytest.raises(RuntimeError) as exc:
+        t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
+    escaped = "busy\\nREFUSED x\\r\\\\y"
+    assert str(exc.value).endswith(": " + escaped)
+    assert "\n" not in str(exc.value)
+    err = capsys.readouterr().err
+    assert f"retrying in 0.2s: {escaped}" in err
+    assert f"retrying in 0.4s: {escaped}" in err
+    assert not any(line.startswith("REFUSED") for line in err.splitlines())
+
+
+_SENT = "no user query found in messages"
+
+
+@pytest.mark.parametrize("status,body", [
+    (500, _SENT + "\nREFUSED forged"),
+    (500, "boom\nREFUSED forged"),
+    (200, "not json\nREFUSED forged"),
+    (200, "[1,\nREFUSED]"),
+    (200, '{"done":\ntrue}'),
+    (200, '{"message": {}, "eval_count":\n"REFUSED"}'),
+    (200, json.dumps({"error": _SENT + "\nREFUSED forged"})),
+    (200, json.dumps({"error": "busy\nREFUSED forged"})),
+], ids=["non200-overflow", "non200", "unparseable", "non-object", "no-message",
+        "non-numeric", "err-overflow", "err"])
+def test_parse_chat_response_errors_are_single_line(status, body):
+    with pytest.raises(RuntimeError) as exc:
+        parse_chat_response(status, body)
+    assert "\n" not in str(exc.value)
+    assert "\\n" in str(exc.value)
+
+
+def test_decode_check_counts_raw_invalid_bytes_as_a_summed_int(monkeypatch, capsys):
+    raw = (b'{"message": {"role": "assistant", "content": "hello \xff\xfe world"},'
+           b' "prompt_eval_count": 1, "eval_count": 1}')
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    prov = {}
+    msg, _ = ollama_transport("m", provenance=prov)([{"role": "user", "content": "hi"}], [])
+    assert msg["content"] == "hello �� world"
+    assert prov["decode_replacements"] == 2
+    assert ("warning: ollama message had 2 U+FFFD replacement character(s); "
+            "model output may be corrupted") in capsys.readouterr().err
+
+
+def test_decode_replacements_sum_across_turns(monkeypatch):
+    # `_note` dedups, so three turns of one replacement each recorded ["1"].
+    raw = (b'{"message": {"role": "assistant", "content": "a \xff"},'
+           b' "prompt_eval_count": 1, "eval_count": 1}')
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    prov = {}
+    t = ollama_transport("m", provenance=prov)
+    for _ in range(3):
+        t([{"role": "user", "content": "hi"}], [])
+    assert prov["decode_replacements"] == 3
+
+
+@pytest.mark.parametrize("message", [
+    b'{"role": "assistant", "content": "caf\\ufffd"}',
+    b'{"role": "assistant", "content": "", "tool_calls": [{"function": '
+    b'{"name": "write_file", "arguments": {"content": "caf\\ufffd"}}}]}',
+    b'{"role": "assistant", "content": "", "thinking": "caf\\ufffd"}',
+], ids=["content", "tool-call-argument", "thinking"])
+def test_decode_check_sees_the_go_escaped_substitution(monkeypatch, capsys, message):
+    # Go's json.Marshal substitutes invalid bytes server-side and emits the
+    # escape, so the body is valid ASCII and a byte-level check never fires.
+    raw = b'{"message": ' + message + b', "prompt_eval_count": 1, "eval_count": 1}'
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    prov = {}
+    ollama_transport("m", provenance=prov)([{"role": "user", "content": "hi"}], [])
+    assert prov["decode_replacements"] == 1
+    assert "1 U+FFFD replacement character(s)" in capsys.readouterr().err
+
+
+def test_clean_body_records_no_decode_replacements(monkeypatch, capsys):
+    raw = _OK_BODY.encode()
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    prov = {}
+    ollama_transport("m", provenance=prov)([{"role": "user", "content": "hi"}], [])
+    assert "decode_replacements" not in prov
+    assert "U+FFFD" not in capsys.readouterr().err
