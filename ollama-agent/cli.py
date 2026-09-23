@@ -124,6 +124,7 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
         # True is unreachable here: a green gate breaks and returns normally.
         "verified": usage_tracker.get("verified"),
         "verify_gated": usage_tracker.get("verify_gated"),
+        "verify_cmd": usage_tracker.get("verify_cmd"),
         "reason": reason,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
@@ -351,7 +352,8 @@ def main(argv=None):
         print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * CHARS_PER_TOKEN} chars); consider --num-ctx",
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
-                     "verified": None, "verify_gated": bool(a.verify_cmd)}
+                     "verified": None, "verify_gated": bool(a.verify_cmd),
+                     "verify_cmd": a.verify_cmd}
     _install_kill_handlers()
     rec = None
     exit_code = 0
