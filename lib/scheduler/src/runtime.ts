@@ -3,6 +3,7 @@
  * without touching the filesystem. `main.ts` composes them with Bun's spawn/fs.
  */
 import type { CompletionRecord, CronMatcher } from "cronbird/core";
+import { hostname } from "node:os";
 
 /**
  * How long without a heartbeat before `ceo doctor` reports the daemon stale.
@@ -158,6 +159,48 @@ export function syncedHeartbeatPath(vault: string, host: string): string {
 export function resolveHost(env: { CEO_HOSTNAME?: string }, osHost: string): string {
   const override = env.CEO_HOSTNAME?.trim();
   return override ? override : osHost;
+}
+
+/** The launchd service label — must never change (plist is not regenerated on update). */
+export const LAUNCHD_LABEL = "com.ceo.schedulerd";
+
+export interface AdapterConfig {
+  registryPath: string;
+  heartbeatPath: string;
+  swarmPath: string;
+  syncedHeartbeatPath: string;
+  /** Returns the argv for one scheduled dispatch given the playbook name. */
+  dispatchArgv(name: string): string[];
+  host: string;
+  launchdLabel: string;
+}
+
+/**
+ * Pure resolver for CEO's runtime paths, argv, host, and launchd label.
+ * Exported for the adapter round-trip test; `main()` and `status.ts` call this with `process.env`.
+ */
+export function resolveAdapterConfig(env: {
+  CEO_VAULT?: string;
+  HOME?: string;
+  CEO_HOSTNAME?: string;
+  CEO_CRON_BIN?: string;
+}): AdapterConfig {
+  const vault = env.CEO_VAULT ?? "";
+  const home = env.HOME ?? "";
+  const cronBin = env.CEO_CRON_BIN?.trim() || "ceo-cron.sh";
+  const host = resolveHost(
+    { CEO_HOSTNAME: env.CEO_HOSTNAME },
+    hostname().split(".")[0] ?? "unknown",
+  );
+  return {
+    registryPath: registryPath(home),
+    heartbeatPath: heartbeatPath(home),
+    swarmPath: swarmPath(vault),
+    syncedHeartbeatPath: syncedHeartbeatPath(vault, host),
+    dispatchArgv: (name: string) => dispatchArgv(cronBin, name),
+    host,
+    launchdLabel: LAUNCHD_LABEL,
+  };
 }
 
 /**

@@ -124,6 +124,13 @@ BRANCH="$(require_field '.branch' 'branch')"
 valid_ref_name "$BRANCH"
 SHAPE="$(jget '.shape // "bug-fix"')"
 VERIFY_CMD="$(require_field '.verify_cmd' 'verify_cmd')"
+# require_field passes "   ", and `bash -c "   "` exits 0: a gate that checks
+# nothing, which the ledger would then record as verified:true. The Python
+# bridge refuses the same shape (#436).
+if [ -z "$(printf '%s' "$VERIFY_CMD" | tr -d '[:space:]')" ]; then
+  echo "ceo-loop: spec verify_cmd is blank — a whitespace-only gate would pass without checking anything" >&2
+  exit 2
+fi
 
 # Real git mechanics need a real repository (#329 audit: nothing was created).
 if [ "$DRY_RUN" != "1" ]; then
@@ -676,7 +683,14 @@ jq -nc \
     reviewer_disagreement: (if $high_findings > 0 then 1 else 0 end),
     rework: (if $retries_used > 0 then 1 else 0 end)}' >> "$DIR/telemetry.jsonl"
 
-ceo_ledger_write_entry "ceo-loop" "$WORKER_IDENTITY" "loop:$REPO/$BRANCH" "$PWD" null "$ACCEPTED" >/dev/null || true
+# ceo-loop is always verify-gated (verify_cmd is required), so the row records
+# the gate rather than the "no opinion" nulls of the ungated writers (#491).
+# `completed` is ACCEPTED, which also folds in HIGH findings, so it cannot stand
+# in for the gate. TEST_RC is always a real verification result here: every path
+# that skips the verify step exits before this line.
+if [ "$TEST_RC" -eq 0 ]; then VERIFIED=true; else VERIFIED=false; fi
+ceo_ledger_write_entry "ceo-loop" "$WORKER_IDENTITY" "loop:$REPO/$BRANCH" "$PWD" \
+  null "$ACCEPTED" "$VERIFIED" true "$VERIFY_CMD" >/dev/null || true
 
 echo "loop: done ($REPO/$BRANCH risk=$RISK action=$SUMMARY_ACTION attempts=$((ATTEMPT + 1)))"
 exit $FINAL_RC

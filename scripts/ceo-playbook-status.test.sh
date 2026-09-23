@@ -236,4 +236,117 @@ test_doctor_surfaces_drafts() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_invariant_non_active_repo_playbook_is_never_active_in_registry() {
+  # Invariant (#292): For any playbook whose repo definition is not active (disabled,
+  # draft), scanning must never record it as active in the registry.
+  cat > "$CEO_REPO_PLAYBOOK_DIR/repo-disabled.md" << 'PB'
+---
+name: repo-disabled
+description: repo disabled fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: disabled
+---
+# noop
+PB
+  cat > "$CEO_REPO_PLAYBOOK_DIR/repo-draft.md" << 'PB'
+---
+name: repo-draft
+description: repo draft fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: draft
+---
+# noop
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_eq "$(_registry_status repo-disabled)" "disabled" \
+    "disabled repo playbook must be recorded as disabled, never active"
+  assert_eq "$(_registry_status repo-draft)" "draft" \
+    "draft repo playbook must be recorded as draft, never active"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+}
+
+test_scan_persists_playbook_drift_alert_on_shadowed_drift() {
+  # When a vault copy shadows a differing repo copy, scan must persist a
+  # playbook-drift.md alert file with transition-gated frontmatter (#292).
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-shadow.md" << 'PB'
+---
+name: p-shadow
+description: repo original version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  cat > "$CEO_DIR/playbooks/p-shadow.md" << 'PB'
+---
+name: p-shadow
+description: differing vault copy
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  assert_file_exists "$alert_file" "shadowed drift must create playbook-drift.md alert"
+  local content; content=$(cat "$alert_file" 2>/dev/null || echo "")
+  assert_contains "$content" "status: drift" "alert must carry status: drift frontmatter"
+  assert_contains "$content" "since:" "alert must carry since timestamp"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
+test_scan_clears_playbook_drift_alert_when_in_sync() {
+  # After syncing vault copies to match repo, scan must clear the drift alert (#292).
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-insync.md" << 'PB'
+---
+name: p-insync
+description: repo version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  cat > "$CEO_DIR/playbooks/p-insync.md" << 'PB'
+---
+name: p-insync
+description: differing vault version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  assert_file_exists "$alert_file" "precondition: drift alert exists before sync"
+
+  bash "$CEO_CLI" playbook sync >/dev/null 2>&1
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local exists="present"
+  [ ! -f "$alert_file" ] && exists="missing"
+  assert_eq "$exists" "missing" "scan must remove playbook-drift.md when trees are in sync"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+}
+
 run_tests
+

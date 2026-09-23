@@ -11,7 +11,7 @@
 #   ceo_augment_path()      — prepend bun/Homebrew/.local prefixes to PATH (idempotent)
 #   ceo_resolve_real_home() — print passwd-canonical $HOME for running user; rc=0/1
 #   ceo_pin_home_or_warn()  — resolve+export $HOME from passwd; warn-and-rc=1 on fail
-#   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1
+#   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1/2
 #   ceo_assert_primary_host() — gate Syncthing-shared writes; rc=0 allowed/1 deny
 #   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
 #   ceo_write_alert_frontmatter() — emit alert frontmatter to stdout; validates enum
@@ -349,8 +349,12 @@ CEO_REGISTRY_SCHEMA_VERSION=3
 # with nothing logged on either side. A test sets it to point somewhere $HOME is
 # not, which is the only way to prove the path is not hardcoded.
 _ceo_registry_path() {
+  if [ -n "${CEO_REGISTRY_FILE:-}" ]; then
+    printf '%s\n' "$CEO_REGISTRY_FILE"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local registry path}"
-  printf '%s\n' "${CEO_REGISTRY_FILE:-$HOME/.ceo/registry.json}"
+  printf '%s\n' "$HOME/.ceo/registry.json"
 }
 
 # Per-trigger cron state — the failure counter, the cooldown stamp, the
@@ -381,8 +385,12 @@ _ceo_registry_path() {
 # The pin is correct for production — under cron and launchd HOME is unset or
 # wrong — so the fix is the override, not removing the pin.
 _ceo_state_dir() {
+  if [ -n "${CEO_STATE_DIR:-}" ]; then
+    printf '%s\n' "$CEO_STATE_DIR"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local state directory}"
-  printf '%s\n' "${CEO_STATE_DIR:-$HOME/.ceo/state}"
+  printf '%s\n' "$HOME/.ceo/state"
 }
 
 # Legacy location of the same state, inside the synced vault. Read-only, and only
@@ -442,8 +450,12 @@ _ceo_state_migrate() {
 # treats an absent file as "nothing enabled here", so a production override
 # stops each-scope dispatch silently.
 _ceo_enabled_path() {
+  if [ -n "${CEO_ENABLED_FILE:-}" ]; then
+    printf '%s\n' "$CEO_ENABLED_FILE"
+    return 0
+  fi
   : "${HOME:?HOME must be set to resolve the host-local enabled path}"
-  printf '%s\n' "${CEO_ENABLED_FILE:-$HOME/.ceo/enabled.json}"
+  printf '%s\n' "$HOME/.ceo/enabled.json"
 }
 
 # Unlike registry.json (host-local), swarm.json IS synced: it describes the
@@ -669,8 +681,8 @@ ceo_registry_validate() {
 # ---------------------------------------------------------------------------
 # ceo_artifact_expand <template> [host]
 #   Expand a playbook artifact template into a vault-relative path. Templates
-#   may reference {TODAY} (YYYY-MM-DD) and {HOST} (short hostname). Optional
-#   second arg overrides the host (used by tests).
+#   may reference {TODAY} (YYYY-MM-DD), {MONTH} (YYYY-MM), and {HOST} (short
+#   hostname). Optional second arg overrides the host (used by tests).
 #
 #   Prints the expanded path on stdout. Returns 0 on success, 1 if the
 #   template is empty or contains an unknown {...} token (per the
@@ -681,10 +693,16 @@ ceo_artifact_expand() {
   local template="${1:-}"
   local host="${2:-${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || echo unknown)}}"
   [ -z "$template" ] && return 1
-  local today
+  local today month
   today=$(date +%Y-%m-%d)
+  month=$(date +%Y-%m)
   local expanded="$template"
   expanded="${expanded//\{TODAY\}/$today}"
+  # {MONTH} is for a playbook whose tool writes one file per month and rewrites
+  # it in place. Declaring {TODAY} for such a tool passes parse validation and
+  # then fails ceo doctor's cross-check on every run, which is a false failure
+  # that never clears -- and it leaves the file the tool does write unchecked.
+  expanded="${expanded//\{MONTH\}/$month}"
   expanded="${expanded//\{HOST\}/$host}"
   # After expanding known tokens, any remaining {...} is a typo or an
   # unsupported token — reject rather than emit a broken path.
@@ -931,20 +949,47 @@ ceo_validate_vault() {
 # Returns:
 #   0  at least one "- [ ]" line exists in any inbox source
 #   1  no unchecked items, or no inbox sources present
+#   2  cannot tell (IO error / unreadable inbox file) — reason printed to stdout
 # ---------------------------------------------------------------------------
 ceo_inbox_has_unchecked() {
   local dir="${CEO_DIR:?CEO_DIR must be set before ceo_inbox_has_unchecked}"
-  if [ -f "$dir/inbox.md" ] && grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null; then
-    return 0
+  local degraded=0 degraded_reasons="" rc=0
+
+  if [ -f "$dir/inbox.md" ]; then
+    rc=0
+    grep -q "^- \[ \]" "$dir/inbox.md" 2>/dev/null || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    elif [ "$rc" -gt 1 ]; then
+      degraded=1
+      degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox file '$dir/inbox.md' (grep rc=$rc)"
+    fi
   fi
   if [ -d "$dir/inbox" ]; then
     local f
+    # An unsearchable directory cannot fail a grep, because the glob never
+    # expands and the loop never runs -- so without this probe the whole branch
+    # reports a clean empty queue with unread work inside it. `-d` alone does not
+    # cover it: a mode-000 directory is still a directory.
+    if ! ls "$dir/inbox" >/dev/null 2>&1; then
+      degraded=1
+      degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox directory '$dir/inbox'"
+    fi
     for f in "$dir/inbox/"*.md; do
       [ -f "$f" ] || continue
-      if grep -q "^- \[ \]" "$f" 2>/dev/null; then
+      rc=0
+      grep -q "^- \[ \]" "$f" 2>/dev/null || rc=$?
+      if [ "$rc" -eq 0 ]; then
         return 0
+      elif [ "$rc" -gt 1 ]; then
+        degraded=1
+        degraded_reasons="${degraded_reasons:+$degraded_reasons; }unreadable inbox file '$f' (grep rc=$rc)"
       fi
     done
+  fi
+  if [ "$degraded" -eq 1 ]; then
+    echo "inbox scan degraded: $degraded_reasons"
+    return 2
   fi
   return 1
 }
