@@ -240,18 +240,31 @@ def test_verify_cmd_never_green_ends_unverified_at_cap(tmp_path):
     assert rec["turns"] == 3
 
 
-def test_verify_cmd_empty_string_raises_valueerror(tmp_path):
+def _refuses_to_run(messages, tools):
+    """A transport that fails the test if it is called at all, so an arm can assert
+    a guard fired at entry rather than merely somewhere. Without it the same guard
+    moved to the function's exit keeps these arms green, after the turn loop has
+    run and the tracker is dirty — which is the state #436 exists to prevent.
+    test_cli.py's sibling arms already pin this via `"system" not in captured`."""
+    raise AssertionError("transport called: the verify_cmd guard did not run at entry")
+
+
+def test_verify_cmd_empty_string_refused_before_any_turn(tmp_path):
     # #436: Empty string is not a valid gate and must not silently run ungated.
-    transport = _script({"role": "assistant", "content": "done"})
-    with pytest.raises(ValueError, match="verify_cmd is empty"):
-        run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="")
+    tracker = {}
+    with pytest.raises(ValueError, match="pass None to run without a gate"):
+        run_agent("fix it", "sys", _refuses_to_run, ToolBox(cwd=tmp_path), TOOLS,
+                  verify_cmd="", usage_tracker=tracker)
+    assert tracker == {}
 
 
-def test_verify_cmd_whitespace_string_raises_valueerror(tmp_path):
+def test_verify_cmd_whitespace_string_refused_before_any_turn(tmp_path):
     # #436: Whitespace-only string must not pass as truthy gate and forge green status.
-    transport = _script({"role": "assistant", "content": "done"})
-    with pytest.raises(ValueError, match="verify_cmd is empty"):
-        run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="   \t\n  ")
+    tracker = {}
+    with pytest.raises(ValueError, match="pass None to run without a gate"):
+        run_agent("fix it", "sys", _refuses_to_run, ToolBox(cwd=tmp_path), TOOLS,
+                  verify_cmd="   \t\n  ", usage_tracker=tracker)
+    assert tracker == {}
 
 
 def test_run_id_echoed_in_record(tmp_path):
