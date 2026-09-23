@@ -24,6 +24,11 @@ class MCPError(RuntimeError):
     pass
 
 
+class MCPTransportError(MCPError):
+    """Server unreachable, dead, stalled, or desynced — never a tool's answer."""
+    pass
+
+
 def _result_text(result):
     """MCP tool results carry a content array; pull the text parts out for the
     model. Falls back to the raw result for non-text content."""
@@ -50,14 +55,14 @@ class MCPClient:
         for _ in range(100):
             resp = self.t.recv()
             if not isinstance(resp, dict):
-                raise MCPError(f"{method}: non-object response {resp!r}")
+                raise MCPTransportError(f"{method}: non-object response {resp!r}")
             if "id" not in resp:
                 continue
             if resp["id"] != self._id:
-                raise MCPError(f"{method}: response id {resp['id']} != request {self._id}")
+                raise MCPTransportError(f"{method}: response id {resp['id']} != request {self._id}")
             break
         else:
-            raise MCPError(f"{method}: no response with id {self._id} after 100 frames")
+            raise MCPTransportError(f"{method}: no response with id {self._id} after 100 frames")
         if "error" in resp:
             raise MCPError(f"{method}: {resp['error']}")
         return resp.get("result", {})
@@ -124,9 +129,12 @@ class StdioMCPTransport:
 
     def send(self, obj):
         if self.proc.stdin is None:
-            raise MCPError("server stdin closed")
-        self.proc.stdin.write(json.dumps(obj) + "\n")
-        self.proc.stdin.flush()
+            raise MCPTransportError("server stdin closed")
+        try:
+            self.proc.stdin.write(json.dumps(obj) + "\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError) as e:
+            raise MCPTransportError(f"server stdin write error: {e}") from e
 
     def recv(self):
         # Bound the read: a server that is alive but never writes a response or
@@ -135,24 +143,24 @@ class StdioMCPTransport:
         # deadline loop bounded by self.timeout surfaces a stuck server as a
         # typed error instead of a silent hang.
         if not self.proc.stdout:
-            raise MCPError("server has no stdout")
+            raise MCPTransportError("server has no stdout")
         deadline = time.monotonic() + self.timeout
         fd = self.proc.stdout.fileno()
 
         while "\n" not in self._buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise MCPError(f"server did not respond within {self.timeout}s")
+                raise MCPTransportError(f"server did not respond within {self.timeout}s")
             ready, _, _ = select.select([fd], [], [], max(0.0, remaining))
             if not ready:
-                raise MCPError(f"server did not respond within {self.timeout}s")
+                raise MCPTransportError(f"server did not respond within {self.timeout}s")
             try:
                 chunk = os.read(fd, 4096)
             except OSError as e:
-                raise MCPError(f"server stdout read error: {e}") from e
+                raise MCPTransportError(f"server stdout read error: {e}") from e
             if not chunk:
                 if not self._buffer:
-                    raise MCPError("server closed stdout (crashed or exited)")
+                    raise MCPTransportError("server closed stdout (crashed or exited)")
                 line, self._buffer = self._buffer, ""
                 break
             self._buffer += chunk.decode("utf-8", errors="replace")
@@ -162,11 +170,11 @@ class StdioMCPTransport:
 
         line = line.strip()
         if not line:
-            raise MCPError("server closed stdout (crashed or exited)")
+            raise MCPTransportError("server closed stdout (crashed or exited)")
         try:
             return json.loads(line)
         except (json.JSONDecodeError, ValueError) as e:
-            raise MCPError(f"server returned invalid JSON: {line}") from e
+            raise MCPTransportError(f"server returned invalid JSON: {line}") from e
 
     def close(self):
         # Runs in a finally; must never raise, and must reap the process even when

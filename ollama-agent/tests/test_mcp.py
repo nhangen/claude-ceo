@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ollama_agent import ToolBox  # noqa: E402
 from ollama_agent.mcp import (  # noqa: E402
-    MCPClient, MCPError, StdioMCPTransport, mcp_tools_to_ollama, _result_text,
+    MCPClient, MCPError, MCPTransportError, StdioMCPTransport, mcp_tools_to_ollama, _result_text,
 )
 
 
@@ -149,6 +149,10 @@ class FakeClient:
     def call_tool(self, name, args):
         self.calls.append((name, args))
         if self.raises:
+            if isinstance(self.raises, Exception):
+                raise self.raises
+            if isinstance(self.raises, type) and issubclass(self.raises, Exception):
+                raise self.raises("server down")
             raise MCPError("server down")
         return f"result of {name}({args})"
 
@@ -207,16 +211,31 @@ def test_toolbox_skips_mcp_readonly_iserror(tmp_path):
 
 
 def test_toolbox_skips_mcp_readonly_exception(tmp_path):
-    # Even on transport exception (FakeClient raises), read-only MCP tool must not enter tool_errors.
+    # Non-transport MCPError on a read-only tool must not enter tool_errors (#457).
     tb = ToolBox(
         cwd=tmp_path,
-        mcp_client=FakeClient(raises=True),
+        mcp_client=FakeClient(raises=MCPError),
         mcp_names={"mcp__lookup": "lookup"},
         mcp_readonly={"mcp__lookup"},
     )
     out = json.loads(tb.dispatch("mcp__lookup", {}))
     assert "error" in out and "MCPError" in out["error"]
     assert tb.tool_errors == []
+
+
+def test_toolbox_records_mcp_readonly_transport_error(tmp_path):
+    # #475: transport failure on a read-only MCP tool must record in tool_errors
+    # so a dead or crashed server cannot record a clean cron run.
+    tb = ToolBox(
+        cwd=tmp_path,
+        mcp_client=FakeClient(raises=MCPTransportError),
+        mcp_names={"mcp__lookup": "lookup"},
+        mcp_readonly={"mcp__lookup"},
+    )
+    out = json.loads(tb.dispatch("mcp__lookup", {}))
+    assert "error" in out and "MCPTransportError" in out["error"]
+    assert [e["tool"] for e in tb.tool_errors] == ["mcp__lookup"]
+    assert "MCPTransportError" in tb.tool_errors[0]["error"]
 
 
 def test_toolbox_unknown_mcp_name_still_unknown(tmp_path):
@@ -270,7 +289,7 @@ def test_stdio_transport_recv_on_dead_server_raises(tmp_path):
     server = tmp_path / "exits.py"
     server.write_text("import sys; sys.exit(0)")
     transport = StdioMCPTransport([sys.executable, str(server)])
-    with pytest.raises(MCPError, match="closed stdout"):
+    with pytest.raises(MCPTransportError, match="closed stdout"):
         transport.recv()
     transport.close()
 
@@ -282,7 +301,7 @@ def test_stdio_transport_recv_times_out_on_silent_server(tmp_path):
     transport = StdioMCPTransport([sys.executable, str(server)], timeout=1)
     transport.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     try:
-        with pytest.raises(MCPError, match="did not respond within"):
+        with pytest.raises(MCPTransportError, match="did not respond within"):
             transport.recv()
     finally:
         transport.close()
@@ -301,7 +320,7 @@ def test_stdio_transport_recv_times_out_on_partial_line_server(tmp_path):
         # server giving up rather than the timeout working. Asserting the wall clock
         # is what distinguishes "bounded" from "eventually threw".
         start = time.monotonic()
-        with pytest.raises(MCPError, match="did not respond within"):
+        with pytest.raises(MCPTransportError, match="did not respond within"):
             transport.recv()
         assert time.monotonic() - start < 5
     finally:
@@ -322,9 +341,22 @@ def test_stdio_transport_send_on_none_stdin_raises(tmp_path):
     server.write_text("import sys\nfor line in sys.stdin:\n    pass\n")
     transport = StdioMCPTransport([sys.executable, str(server)])
     transport.proc.stdin = None
-    with pytest.raises(MCPError, match="stdin closed"):
+    with pytest.raises(MCPTransportError, match="stdin closed"):
         transport.send({"x": 1})
     transport.close()
+
+
+def test_stdio_transport_send_on_broken_pipe_raises(tmp_path):
+    server = tmp_path / "quick_exit.py"
+    server.write_text("import sys; sys.exit(0)\n")
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    time.sleep(0.1)
+    try:
+        with pytest.raises(MCPTransportError, match="server stdin write error"):
+            for _ in range(500):
+                transport.send({"msg": "x" * 10000})
+    finally:
+        transport.close()
 
 
 def test_toolbox_readonly_never_suppresses_a_builtin(tmp_path):
@@ -339,3 +371,44 @@ def test_toolbox_readonly_never_suppresses_a_builtin(tmp_path):
     out = tb.dispatch("write_file", {"path": "/proc/nope/x.md", "content": "x"})
     assert "error" in json.loads(out)
     assert [e["tool"] for e in tb.tool_errors] == ["write_file"]
+
+
+def test_toolbox_records_crashed_subprocess_on_readonly_tool(tmp_path):
+    # #475: End-to-end integration test with a real subprocess MCP server.
+    # When a server crashes during a read-only tool call, the transport error
+    # must be captured in tb.tool_errors so the cron gate fails the run.
+    server = tmp_path / "crash_on_call.py"
+    server.write_text(r'''
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    if msg.get("method") == "initialize":
+        res = {"protocolVersion": "2024-11-05"}
+    elif msg.get("method") == "tools/list":
+        res = {"tools": [{"name": "lookup", "description": "lookup", "readOnlyHint": True}]}
+    elif msg.get("method") == "tools/call":
+        sys.exit(1)
+    else:
+        res = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg.get("id"), "result": res}) + "\n")
+    sys.stdout.flush()
+''')
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    try:
+        client = MCPClient(transport)
+        client.initialize()
+        tb = ToolBox(
+            cwd=tmp_path,
+            mcp_client=client,
+            mcp_names={"mcp__lookup": "lookup"},
+            mcp_readonly={"mcp__lookup"},
+        )
+        out = json.loads(tb.dispatch("mcp__lookup", {}))
+        assert "error" in out
+        assert "MCPTransportError" in out["error"]
+        assert [e["tool"] for e in tb.tool_errors] == ["mcp__lookup"]
+    finally:
+        transport.close()

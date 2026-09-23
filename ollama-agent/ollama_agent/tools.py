@@ -11,6 +11,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from .mcp import MCPTransportError
 from .skills import MAX_SKILL_BODY
 
 MAX_OUTPUT = 4000      # chars of stdout/stderr returned to the model per call
@@ -188,17 +189,19 @@ class ToolBox:
         if handler is None:
             self.unknown_calls.append(name)
             return json.dumps({"error": f"unknown tool: {name}"})
+        exc = None
         try:
             result = handler(args)
         except Exception as e:
+            exc = e
             # A tool that raises (PermissionError, ENOSPC, UnicodeError, cwd
             # deleted, …) must return a recorded error to the model, never abort
             # the run — keep the loop and transcript alive (safety-invariant-scope).
             result = json.dumps({"error": f"{name} failed: {type(e).__name__}: {e}"})
-        self._note_tool_error(name, result)
+        self._note_tool_error(name, result, exc=exc)
         return result
 
-    def _note_tool_error(self, name, result):
+    def _note_tool_error(self, name, result, exc=None):
         """Record a mutating-tool or MCP failure so the dispatcher (cron) can fail a
         completed-but-errored run (#215). Inspects the result's "error" key —
         absence-of-throw is not success (non-throwing-client-success-check).
@@ -207,9 +210,12 @@ class ToolBox:
         MCPClient.call_tool raises on isError and on RPC errors (#271). Tools
         marked read-only via readOnlyHint are skipped (#457): like built-in
         read_file/list_dir, a failed read-only lookup is a probe miss, not an
-        operational failure. An MCP server that reports success with error text
-        in its content is not caught: that text is wrapped under "result", and
-        the server's own success claim is taken at its word."""
+        operational failure. However, transport faults (dead/crashed server,
+        timeouts, protocol desync) are always recorded even on read-only tools
+        (#475) because a dead server is an operational failure, not a query miss.
+        An MCP server that reports success with error text in its content is
+        not caught: that text is wrapped under "result", and the server's own
+        success claim is taken at its word."""
         if name not in ERROR_RELEVANT_TOOLS and name not in self.mcp_names:
             return
         # Gated on mcp_names first: the set holds prefixed `mcp__*` names, and
@@ -218,7 +224,8 @@ class ToolBox:
         if name in self.mcp_names and (
             name in self.mcp_readonly or self.mcp_names[name] in self.mcp_readonly
         ):
-            return
+            if not isinstance(exc, MCPTransportError):
+                return
         try:
             parsed = json.loads(result)
         except (json.JSONDecodeError, TypeError):
