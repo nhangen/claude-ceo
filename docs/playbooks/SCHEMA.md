@@ -19,14 +19,14 @@ Unknown values for enum fields are **rejected at parse time** with a `SKIP` diag
 | `runner` | no | enum: `claude`, `script`, `ollama`, `ollama-think`, `ollama-agent`, `skill` | Dispatch shape. Default is `claude`. `script` runs `script:` directly — the cron harness makes no LLM call, though the script itself may shell out to one. `ollama-agent` shells to the tool-using local-model bridge (`ollama-agent/cli.py`) — a governed agentic loop, distinct from the single-call `ollama` / `ollama-think` runners. |
 | `script` | required when `runner: script` | string | Relative path under `scripts/` (e.g. `ceo-value-tracker.sh`). The dispatcher resolves to `$INSTALL_DIR/scripts/<script>`. |
 | `skill` | required when `runner: skill` | string | Skill name passed to the Claude Code skill invoker. |
-| `registry` | required when `runner: ollama-agent` | string | The bridge task registry, as a path to a JSON file **or** an inline single-line JSON string (`{"tasks":{"<task>":{...}}}`). Passed to the bridge's `--registry`; `load_registry` parses a non-existent path as inline JSON, so inline JSON keeps the task spec host-portable in the playbook itself. |
+| `registry` | required when `runner: ollama-agent` | string | The bridge task registry, as a path to a JSON file **or** an inline single-line JSON string (`{"tasks":{"<task>":{...}}}`). Passed to the bridge's `--registry`; `load_registry` parses a non-existent path as inline JSON, so inline JSON keeps the task spec host-portable in the playbook itself. A task whose `tools` allowlist has `write_file` but not `edit_file` warns at parse time — pair them, or the model rewrites whole files where a surgical edit would do. |
 | `task` | no (`runner: ollama-agent`) | string | The bridge task-registry entry selected via `--task-name` (applies its model/tier/tools/rules). Defaults to the playbook `name`. The playbook **body** (markdown after the frontmatter) is the natural-language `--task` instruction. Two-axis tier model: the playbook `tier` is the cron-side notification posture; the bridge task's own `tier` (in `registry`) is the delegation gate. |
 | `bin` | no | string | If set, `ceo playbook scan` installs a `~/.local/bin/<bin-without-.sh>` symlink pointing at `scripts/<bin>`. Only created for `status: active`. |
 | `inputs` | no | JSON array | Pre-gather keys the dispatcher injects into the prompt context. Empty array = no pre-gathered context. Absent = all keys (back-compat default). Unknown keys warn-and-skip at dispatch. Valid keys: `pr_data`, `pending_count`, `today_log`, `yesterday_log`, `daily_note`, `briefings_training`, `active_domains`, `pending_ask`, `scan_data`, `blessings`. |
 | `requires` | no | JSON array of env-var names | Credentials the playbook needs (e.g. `["HUBSPOT_REFRESH_TOKEN"]`). `ceo creds check <name>` reports missing values. Non-array entries are warned and dropped. |
 | `scope` | no | enum: `each`, `single` | How the playbook fans out across the swarm. Absent defaults to `single` (safe: a single-scope playbook runs nowhere until an owner is assigned). `each` runs on every host where locally enabled; `single` runs on exactly one owner host. Unknown values are **rejected at parse** with a `SKIP` and a non-zero scan exit. See [Swarm selection model](#swarm-selection-model). |
 | `hosts` | no | JSON array of host names | **DEPRECATED** — no longer consulted for scheduling. Selection is now `scope` plus host-local enablement (`each`) or `swarm.json` ownership (`single`); `selectRunnable` does not read `hosts`. `ceo playbook scan` still parses and normalizes it (malformed → `["*"]` with a `WARN`) but warns-and-ignores it for scheduling. See [Swarm selection model](#swarm-selection-model) and [Host scoping (legacy)](#host-scoping-legacy). |
-| `artifact` | recommended for `runner: script` | string template | Expected output path relative to the vault. Must start with `CEO/`. Supports `{TODAY}` (YYYY-MM-DD) and `{HOST}` (short hostname). Unknown tokens reject at parse. `ceo doctor` cross-checks declared artifact vs disk for every active `script` or `ollama-agent` playbook that logged "completed" today. |
+| `artifact` | recommended for `runner: script` | string template | Expected output path relative to the vault. Must start with `CEO/`. Supports `{TODAY}` (YYYY-MM-DD), `{MONTH}` (YYYY-MM, for a tool that writes one file per month and rewrites it in place), and `{HOST}` (short hostname). Unknown tokens reject at parse. `ceo doctor` cross-checks declared artifact vs disk for every active `script` or `ollama-agent` playbook that logged "completed" today. |
 | `out_pattern` | no | string | Legacy reporting pattern (output filename hint). Kept for back-compat with older playbooks. New playbooks should use `artifact`. |
 
 ## Status semantics
@@ -135,7 +135,15 @@ The `hosts` field formerly declared which machines a playbook may run on:
 
 ### Use disabled to durably tear down
 
-`disabled` is "I previously had this installed and want it removed everywhere." Flipping `active → disabled` and running `ceo playbook scan` removes the cron line on the next scan. Unlike a draft, `disabled` is the explicit "stop running" signal, distinct from "still working on it."
+`disabled` is "I previously had this installed and want it removed everywhere." Unlike a draft, `disabled` is the explicit "stop running" signal, distinct from "still working on it."
+
+To durably disable a playbook across the fleet:
+1. Update `status: disabled` in the repo definition (`docs/playbooks/<name>.md`).
+2. Run `ceo playbook sync` to propagate the change into the vault copies (`$CEO_VAULT/CEO/playbooks/`), or update the vault copy directly. (Note: `ceo playbook scan` scans the vault first, and vault copies shadow repo copies—editing the repo file alone will not take effect on any host if shadowed by an existing vault file).
+3. Run `ceo playbook scan` on the owner host for a `scope: single` playbook (or on all relevant hosts for `scope: each` playbooks) to update `~/.ceo/registry.json`.
+4. Verify the new status with `ceo playbook list`.
+
+Note that `ceo playbook disable <name>` is a *different* mechanism: it writes host-local `~/.ceo/enabled.json` to toggle off a `scope: each` playbook on that specific machine. It does not alter playbook frontmatter and does not disable a `scope: single` playbook fleet-wide.
 
 ## Validation
 
@@ -144,7 +152,7 @@ The `hosts` field formerly declared which machines a playbook may run on:
 2. Duplicate `name` (vault vs repo or within either tree) → shadow / skip.
 3. `runner` (if set) is in `CEO_VALID_RUNNERS`.
 4. `status` (if set) is in `CEO_VALID_STATUSES`.
-5. `artifact` (if set) starts with `CEO/` and contains only `{TODAY}` / `{HOST}` tokens.
+5. `artifact` (if set) starts with `CEO/` and contains only `{TODAY}` / `{MONTH}` / `{HOST}` tokens.
 6. `requires`, `inputs` shapes are valid JSON arrays.
 7. For `runner: ollama` / `ollama-think`, the model must be locally available (unless `CEO_OLLAMA_SKIP_PROBE=1`).
 
@@ -156,7 +164,7 @@ Any failure: the playbook is skipped with a diagnostic line. The dispatcher will
 ceo playbook scan --dry-run
 ```
 
-Walks the same parse path and prints the cron block that would be installed, without touching the crontab or rewriting the registry. Useful when iterating on a draft, or when verifying what a sibling machine would do after a `git pull`.
+Walks the same parse path and prints what would be registered, without rewriting `~/.ceo/registry.json`. Useful when iterating on a draft, or when verifying what a sibling machine would do after a `git pull`.
 
 ## Related
 

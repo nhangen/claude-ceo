@@ -246,6 +246,73 @@ test_inbox_has_unchecked_with_legacy_clean_and_shadow_dirty() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+_inbox_check_out() {
+  local ceo_dir="$1"
+  bash -c "
+    set -uo pipefail
+    source '$LIB'
+    out=\$(CEO_DIR='$ceo_dir' ceo_inbox_has_unchecked) || rc=\$?
+    echo \"RC=\${rc:-0}|OUT=\$out\"
+  "
+}
+
+test_inbox_has_unchecked_returns_state_2_when_legacy_inbox_unreadable() {
+  mkdir -p "$TEST_HOME/CEO"
+  printf -- '- [ ] unreadable\n' > "$TEST_HOME/CEO/inbox.md"
+  chmod 000 "$TEST_HOME/CEO/inbox.md"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 644 "$TEST_HOME/CEO/inbox.md"
+  assert_contains "$res" "RC=2" "unreadable legacy inbox.md must return rc 2 (cannot tell)"
+  assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inbox_has_unchecked_returns_state_2_when_shadow_file_unreadable() {
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [ ] unreadable-shadow\n' > "$TEST_HOME/CEO/inbox/host-c.md"
+  chmod 000 "$TEST_HOME/CEO/inbox/host-c.md"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 644 "$TEST_HOME/CEO/inbox/host-c.md"
+  assert_contains "$res" "RC=2" "unreadable per-host shadow file must return rc 2 (cannot tell)"
+  assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inbox_has_unchecked_returns_state_2_when_shadow_dir_unreadable() {
+  # The directory case, not the file case. An unsearchable directory cannot fail
+  # a grep -- the glob never expands, so the loop body never runs and every file
+  # inside is invisible. Without an explicit probe this returns "clean empty
+  # queue" while holding unread work, which is the exact conflation #393 is about.
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [ ] hidden-by-mode\n' > "$TEST_HOME/CEO/inbox/host-d.md"
+  chmod 000 "$TEST_HOME/CEO/inbox"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 755 "$TEST_HOME/CEO/inbox"
+  assert_contains "$res" "RC=2" "unreadable inbox directory must return rc 2 (cannot tell)"
+  assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inbox_has_unchecked_readable_empty_dir_is_still_a_clean_one() {
+  # The control for the arm above: the degraded probe must not fire on a
+  # directory that is merely empty, or every clean run reports "cannot tell".
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  assert_contains "$res" "RC=1" "a readable empty inbox dir is a trustworthy no-work"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_inbox_has_unchecked_prefers_work_present_over_unreadable_file() {
+  mkdir -p "$TEST_HOME/CEO/inbox"
+  printf -- '- [ ] unreadable-shadow\n' > "$TEST_HOME/CEO/inbox/host-bad.md"
+  printf -- '- [ ] readable-shadow\n' > "$TEST_HOME/CEO/inbox/host-good.md"
+  chmod 000 "$TEST_HOME/CEO/inbox/host-bad.md"
+  local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
+  chmod 644 "$TEST_HOME/CEO/inbox/host-bad.md"
+  assert_contains "$res" "RC=0" "readable unchecked items outrank unreadable files"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_resolve_real_home_ignores_env_HOME() {
   # Regression guard: rtk and ccusage discover state via $HOME-rooted paths.
   # When the script is invoked from env -i / sandbox / sudo without -E, $HOME
@@ -941,6 +1008,17 @@ test_artifact_expand_uses_env_host_default() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_artifact_expand_substitutes_month() {
+  local today month out
+  today=$(date +%Y-%m-%d)
+  month=$(date +%Y-%m)
+  out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/agent-scope/{MONTH}.md' 'testhost'")
+  assert_eq "$out" "CEO/reports/agent-scope/${month}.md" "ceo_artifact_expand must substitute {MONTH} as YYYY-MM"
+  # The distinction that matters: a tool writing one file per month declared with
+  # {TODAY} passes parse validation and then fails doctor's cross-check forever.
+  assert_not_contains "$out" "$today" "{MONTH} must not expand to the full date"
+}
+
 test_artifact_expand_rejects_unknown_token() {
   local rc=0 out
   out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/{BOGUS}/{TODAY}.md' 'testhost'") || rc=$?
@@ -1042,9 +1120,10 @@ test_ceo_registry_path_honors_override() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-# All three path helpers spell the fallback `${VAR:-$HOME/...}`. `:-` and `-`
-# differ only for a set-but-empty value, where `-` would resolve to a bare
-# /.ceo/... at the filesystem root. One arm per helper, because a flip at any
+# All three path helpers gate the override on `[ -n "${VAR:-}" ]`, which tests
+# the expanded value: a set-but-empty override falls through to $HOME rather
+# than returning "". Testing whether the variable is merely *set* (`${VAR+x}`)
+# would emit an empty path instead. One arm per helper, because a flip at any
 # one site is invisible to the others.
 test_ceo_registry_path_empty_override_falls_back() {
   local path
@@ -1065,6 +1144,70 @@ test_ceo_state_dir_empty_override_falls_back() {
   path=$(HOME="$TEST_HOME" CEO_STATE_DIR="" bash -c "source '$LIB'; _ceo_state_dir")
   assert_eq "$path" "$TEST_HOME/.ceo/state" "an empty CEO_STATE_DIR must fall back to \$HOME, not resolve to /.ceo/state"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_defaults_to_home() {
+  local path
+  path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "$TEST_HOME/.ceo/state" "_ceo_state_dir must default to \$HOME/.ceo/state"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_honors_override() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "/custom/state" "_ceo_state_dir must honor CEO_STATE_DIR override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# Override makes HOME irrelevant (#425): when an override is provided,
+# the path helper must succeed even if HOME is unset.
+test_ceo_registry_path_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_REGISTRY_FILE="/custom/reg.json" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "/custom/reg.json" "_ceo_registry_path must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "/custom/state" "_ceo_state_dir must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# When no override is set and HOME is unset, the path helpers must abort loudly.
+# Pinned as non-zero rather than a code: bash 3.2 reports the `${VAR:?}` abort as
+# 127 where newer bash reports 1, and the contract is that it aborts at all.
+test_ceo_registry_path_aborts_on_unset_home_when_no_override() {
+  local err rc=0
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_registry_path" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail_test "_ceo_registry_path must exit non-zero when HOME is unset and no override is given"
+  assert_contains "$err" "HOME must be set to resolve the host-local registry path" \
+    "error message must guide that HOME is required"
+}
+
+test_ceo_enabled_path_aborts_on_unset_home_when_no_override() {
+  local err rc=0
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_enabled_path" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail_test "_ceo_enabled_path must exit non-zero when HOME is unset and no override is given"
+  assert_contains "$err" "HOME must be set to resolve the host-local enabled path" \
+    "error message must guide that HOME is required"
+}
+
+test_ceo_state_dir_aborts_on_unset_home_when_no_override() {
+  local err rc=0
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_state_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail_test "_ceo_state_dir must exit non-zero when HOME is unset and no override is given"
+  assert_contains "$err" "HOME must be set to resolve the host-local state directory" \
+    "error message must guide that HOME is required"
 }
 
 test_ceo_enabled_path_defaults_to_home() {

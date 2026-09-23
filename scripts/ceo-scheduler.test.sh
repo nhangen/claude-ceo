@@ -133,6 +133,7 @@ STUB
 
 test_daemon_backend_install_is_noop_with_guidance() {
   export CEO_SCHEDULER=daemon
+  ceo_detect_os() { echo "macos"; }
   local payload="0 9 * * * /tmp/ceo-cron.sh foo  # ceo:foo"
   local out rc=0
   out=$(ceo_scheduler_install "$payload" 2>&1) || rc=$?
@@ -142,6 +143,29 @@ test_daemon_backend_install_is_noop_with_guidance() {
   # No per-playbook OS entries are written.
   assert_no_match "$(ls "$CEO_LAUNCHD_DIR" 2>/dev/null || echo)" "com.ceo.foo" \
     "daemon backend must NOT write per-playbook plists"
+}
+
+test_daemon_backend_install_guidance_names_the_systemd_unit_on_wsl_and_linux() {
+  export CEO_SCHEDULER=daemon
+  local os out rc
+  for os in wsl linux; do
+    ceo_detect_os() { echo "$os"; }
+    rc=0
+    out=$(ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh foo  # ceo:foo" 2>&1) || rc=$?
+    assert_eq "$rc" "0" "daemon install on $os must succeed (no-op)"
+    assert_contains "$out" "/lib/scheduler/deploy/ceo-schedulerd.service" "$os must name the absolute systemd unit path"
+    assert_not_contains "$out" "com.ceo.schedulerd.plist" "$os must not name the launchd plist"
+  done
+}
+
+test_daemon_backend_install_guidance_on_undetected_platform_names_no_template() {
+  export CEO_SCHEDULER=daemon
+  ceo_detect_os() { echo "unknown"; }
+  local out
+  out=$(ceo_scheduler_install "0 9 * * * /tmp/ceo-cron.sh foo  # ceo:foo" 2>&1)
+  assert_contains "$out" "Platform not detected" "an undetected platform must say so"
+  assert_not_contains "$out" "ceo-schedulerd.service" "no guessed systemd template"
+  assert_not_contains "$out" "com.ceo.schedulerd.plist" "no guessed launchd template"
 }
 
 test_daemon_backend_list_is_empty() {

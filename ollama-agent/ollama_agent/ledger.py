@@ -38,7 +38,10 @@ def ledger_path():
 
 # Who served the run, from `provenance` (see transport._note). Each is a list of
 # distinct values in first-seen order, because a router re-decides per request.
-_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids")
+# `retried_statuses` entries are `<http-status-or-exception-name>@<attempt>`, e.g.
+# "503@1" or "RemoteDisconnected@2" -- not only HTTP statuses, despite the name.
+_PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids",
+                      "retried_statuses")
 
 # Two things #667 asked for that are deliberately NOT here, recorded so a reader
 # who greps the ticket for them is not left wondering:
@@ -72,15 +75,28 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
 
     `verify_gated` follows the same rule and has three states, not two. True and
     False mean the run was recorded as having, or not having, a `--verify-cmd`.
-    Null means the record carried no opinion — a row written before #386, or a
-    crash so early nothing had decided yet — and says nothing about whether a
-    gate was configured. It is NOT the delegation gate behind `--ungated`; a run
-    can be ungated in that sense and `verify_gated: true` here, and the standard
-    ollama-batch invocation is exactly that.
+    Null means the record carried no opinion — a crash so early nothing had
+    decided yet, or an ungated shell-writer row (see below) — and says nothing
+    about whether a gate was configured. A row from before #386 has no key at
+    all, per the rule above; the key and its writer landed in the same commit.
+    It is NOT the delegation gate behind `--ungated`; a run can be ungated in
+    that sense and `verify_gated: true` here, and the standard ollama-batch
+    invocation is exactly that.
 
-    `scripts/ceo-model-ledger.sh` appends claude-tier rows to this same file and
-    emits no `verify_gated` at all. Those rows carry `writer`, which is how a
-    reader tells them from pre-#386 Python rows.
+    `verify_cmd` records the exact verification command string configured for
+    the run, making verified claims auditable (#433). Null means no
+    `--verify-cmd` was configured, or the record carried none — not `--ungated`,
+    for the reason given above. It is written verbatim, so a gate must not carry
+    inline credentials.
+
+    `scripts/ceo-model-ledger.sh` appends claude-tier, interactive-tier, and
+    ceo-loop rows to this same file. It always writes `verified`,
+    `verify_gated` (#434), and `verify_cmd` (#491): explicit `null` for the ungated
+    claude-tier and interactive-tier writers, and the real gate for ceo-loop,
+    whose runs are always verify-gated (#491). Those rows carry `writer`, which
+    is how a reader tells them from Python rows. The other Python-only keys —
+    `turns`, `reason`, `warnings`, the token counts, and the provenance keys —
+    are absent on `writer` rows, and there the absence carries no dating meaning.
     """
     p = Path(path) if path is not None else ledger_path()
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -97,7 +113,12 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
         "completed": rec.get("completed"),
         "verified": rec.get("verified"),
         "verify_gated": rec.get("verify_gated"),
+        "verify_cmd": rec.get("verify_cmd"),
         "reason": rec.get("reason"),
+        # Absent on a pre-#384 row, [] on a run that had nothing to warn about --
+        # the same absent-vs-empty distinction the provenance fields keep, and for
+        # the same reason: an old row must not read as a fresh clean one.
+        "warnings": rec.get("warnings"),
     }
     prov = provenance or {}
     for key in _PROVENANCE_FIELDS:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ollama-agent CLI — run a local model as a tool-using agent on a bounded task.
 
-    python cli.py --task "summarize the README" --model gpt-oss:20b --cwd /repo
+    python cli.py --ungated --task "summarize the README" --model gpt-oss:20b --cwd /repo
 
 Slice 2 (#187): real shell/fs/git tools + task-relevant rule injection.
 """
@@ -18,6 +18,11 @@ from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryErr
                           load_registry, load_scores, load_skill_index, mcp_tools_to_ollama,
                           ollama_transport, render_catalog, run_agent)
 from ollama_agent.ledger import append_run
+
+# Local open-weights LLMs (Llama/Qwen/Gemma) under byte-pair encoding run
+# ~3-4 characters per token across mixed code, markdown, and JSON schemas.
+# 3 is the conservative end, which is what a pre-dispatch ceiling wants.
+CHARS_PER_TOKEN = 3
 
 DEFAULT_SYSTEM = (
     "You are a local engineering agent operating inside a single working directory. "
@@ -119,6 +124,7 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
         # True is unreachable here: a green gate breaks and returns normally.
         "verified": usage_tracker.get("verified"),
         "verify_gated": usage_tracker.get("verify_gated"),
+        "verify_cmd": usage_tracker.get("verify_cmd"),
         "reason": reason,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
@@ -209,7 +215,10 @@ def main(argv=None):
     # no-gate run. "   " is truthy, so the gate "runs", exits 0 having verified
     # nothing, and records verify_gated=True with verified=True — the strongest
     # assurance the ledger carries. Refuse rather than warn: these runs happen
-    # under ceo-cron, which discards stderr.
+    # under ceo-cron, which discards stderr. run_agent carries the same predicate
+    # as a library backstop, but keep this one ahead of it: without it the raise
+    # lands in the broad except below, which writes a crash row seeded from
+    # bool(a.verify_cmd) — True for "   " — claiming the run was gated (#436).
     if a.verify_cmd is not None and not a.verify_cmd.strip():
         print("REFUSED: --verify-cmd is empty. Omit the flag to run without a "
               "verification gate.", file=sys.stderr)
@@ -258,6 +267,8 @@ def main(argv=None):
         a.model = spec.model
         a.no_rules = a.no_rules or not spec.rules
         a.no_skills = a.no_skills or not spec.skills
+        if not a.mcp and spec.mcp:
+            a.mcp = spec.mcp
         print(f"task {a.task_name!r}: runner={spec.runner} tier={spec.tier} model={spec.model}",
               file=sys.stderr)
 
@@ -291,15 +302,20 @@ def main(argv=None):
         print(f"skills: {len(skills)} available (use_skill enabled)", file=sys.stderr)
     tools = [] if a.no_tools else TOOLS + ([USE_SKILL_TOOL] if skills else [])
 
-    mcp_transport, mcp_client, mcp_names = None, None, {}
+    mcp_transport, mcp_client, mcp_names, mcp_readonly = None, None, {}, set()
     if a.mcp:
         try:
             mcp_transport = StdioMCPTransport(a.mcp, cwd=a.cwd)
             mcp_client = MCPClient(mcp_transport)
             mcp_client.initialize()
             schemas, mcp_names = mcp_tools_to_ollama(mcp_client.list_tools())
+            mcp_readonly = {
+                s["function"]["name"]
+                for s in schemas
+                if s.get("function", {}).get("annotations", {}).get("readOnlyHint") is True
+            }
             tools = tools + schemas
-            print(f"mcp: {len(schemas)} tools from {a.mcp!r}", file=sys.stderr)
+            print(f"mcp: {len(schemas)} tools from {a.mcp!r} ({len(mcp_readonly)} read-only)", file=sys.stderr)
         except Exception as e:
             if mcp_transport:
                 mcp_transport.close()
@@ -320,27 +336,31 @@ def main(argv=None):
               file=sys.stderr)
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
-                      mcp_client=mcp_client, mcp_names=mcp_names)
+                      mcp_client=mcp_client, mcp_names=mcp_names,
+                      mcp_readonly=mcp_readonly)
     # Who actually serves the turns. The transport fills this in as it goes, so
     # it is readable after the run even when the run failed (#667).
     provenance = {}
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
                                  num_ctx=a.num_ctx, timeout=a.timeout, think=a.think,
                                  provenance=provenance)
-    prompt_chars = len(system) + len(a.task)
-    print(f"prompt: {prompt_chars} chars (system={len(system)}, task={len(a.task)}) | num_ctx={a.num_ctx}",
+    tools_chars = len(json.dumps(tools)) if tools else 0
+    prompt_chars = len(system) + len(a.task) + tools_chars
+    print(f"prompt (turn 1 estimate): {prompt_chars} chars (system={len(system)}, task={len(a.task)}, tools={tools_chars}) | num_ctx={a.num_ctx}",
           file=sys.stderr)
-    if prompt_chars > a.num_ctx * 3:
-        print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * 3} chars); consider --num-ctx",
+    if prompt_chars > a.num_ctx * CHARS_PER_TOKEN:
+        print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * CHARS_PER_TOKEN} chars); consider --num-ctx",
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
-                     "verified": None, "verify_gated": bool(a.verify_cmd)}
+                     "verified": None, "verify_gated": bool(a.verify_cmd),
+                     "verify_cmd": a.verify_cmd}
     _install_kill_handlers()
     rec = None
     exit_code = 0
     try:
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
-                        run_id=a.run_id, verify_cmd=a.verify_cmd, usage_tracker=usage_tracker)
+                        run_id=a.run_id, verify_cmd=a.verify_cmd, usage_tracker=usage_tracker,
+                        num_ctx=a.num_ctx)
     except KeyboardInterrupt:
         print("agent interrupted", file=sys.stderr)
         rec = _crash_record("killed", a.run_id, usage_tracker, toolbox)
@@ -388,6 +408,11 @@ def main(argv=None):
         print(json.dumps(rec, indent=2))
     else:
         final = rec["transcript"][-1]
+        # agent.py raises these and nothing else looked at them: before this the
+        # context-overflow warning was computed, returned, and dropped, so the
+        # num_ctx plumbing bought an alert no operator could see.
+        for w in rec.get("warnings") or []:
+            print(f"warning: {w}", file=sys.stderr)
         # verify_gated rides alongside verified for the same reason the ledger
         # carries both: verified=None alone cannot say whether a gate was
         # configured and never reached, or never configured at all.
