@@ -214,7 +214,10 @@ def main(argv=None):
     # no-gate run. "   " is truthy, so the gate "runs", exits 0 having verified
     # nothing, and records verify_gated=True with verified=True — the strongest
     # assurance the ledger carries. Refuse rather than warn: these runs happen
-    # under ceo-cron, which discards stderr.
+    # under ceo-cron, which discards stderr. run_agent carries the same predicate
+    # as a library backstop, but keep this one ahead of it: without it the raise
+    # lands in the broad except below, which writes a crash row seeded from
+    # bool(a.verify_cmd) — True for "   " — claiming the run was gated (#436).
     if a.verify_cmd is not None and not a.verify_cmd.strip():
         print("REFUSED: --verify-cmd is empty. Omit the flag to run without a "
               "verification gate.", file=sys.stderr)
