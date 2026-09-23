@@ -79,7 +79,10 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     ollama-batch invocation is exactly that.
 
     `verify_cmd` records the exact verification command string configured for
-    the run (or null when ungated), making verified claims auditable (#433).
+    the run, making verified claims auditable (#433). Null means no
+    `--verify-cmd` was configured, or the record carried none — not `--ungated`,
+    for the reason given above. It is written verbatim, so a gate must not carry
+    inline credentials.
 
     `scripts/ceo-model-ledger.sh` appends claude-tier rows to this same file and
     emits no `verify_gated` at all. Those rows carry `writer`, which is how a

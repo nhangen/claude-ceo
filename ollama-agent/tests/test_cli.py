@@ -463,8 +463,8 @@ def test_cli_summary_prints_verify_gated(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tmp_path, monkeypatch):
-    # main() seeds verify_gated into the tracker at construction, and run_agent
-    # resets it again on entry. Every other crash test crashes INSIDE run_agent,
+    # main() seeds verify_gated and verify_cmd into the tracker at construction,
+    # and run_agent resets them again on entry. Every other crash test crashes INSIDE run_agent,
     # so they read the reset value and the seed is dead weight to them. This one
     # crashes in the window between the two — run_agent raising before its reset
     # loop, or a kill landing during _install_kill_handlers() — which is the only
@@ -482,6 +482,9 @@ def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tm
     row = json.loads(ledger.read_text().strip())
     assert row["verify_gated"] is True
     assert row["verified"] is None
+    # Without the seed this row is gated but cannot name its gate — the
+    # unauditable shape #433 exists to prevent.
+    assert row["verify_cmd"] == "pytest"
 
 
 def test_cli_empty_verify_cmd_refuses(tmp_path, monkeypatch, capsys):

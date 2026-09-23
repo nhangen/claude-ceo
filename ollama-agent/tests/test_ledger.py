@@ -156,8 +156,8 @@ def test_append_run_records_verify_cmd(tmp_path):
 
 
 def test_append_run_verify_cmd_absent_reads_as_null(tmp_path):
-    # #433: When verify_cmd is absent in the input record (e.g. pre-#433 rows),
-    # append_run writes null.
+    # #433: a record built without verify_cmd is written as null, not omitted.
+    # Pre-#433 rows are a different state — they sit on disk with no key at all.
     p = tmp_path / "runs.jsonl"
     append_run(_rec(), "m", "t", "/c", path=str(p))
     assert json.loads(p.read_text().strip())["verify_cmd"] is None
