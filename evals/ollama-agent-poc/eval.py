@@ -1,7 +1,5 @@
-"""PoC evaluation harness (frozen snapshot).
-
-For production transport and parser logic, see ollama_agent.transport.
-"""
+"""PoC harness for #183, kept as it was run. Production transport and parsing
+live in ollama_agent.transport."""
 import json
 import urllib.request
 import hashlib
