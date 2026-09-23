@@ -348,7 +348,7 @@ test_cli_help_needs_no_vault_for_any_command() {
              "status --help" "schedule --help" "playbook sync --help" "playbook next-runs --help" \
              "swarm doctor --help" "playbook help" "swarm help"; do
     # shellcheck disable=SC2086
-    out=$(env -i HOME="$sandbox" PATH="$STUB_BIN:$PATH" bash "$CEO_CLI" $cmd 2>&1); rc=$?
+    out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$sandbox" PATH="$STUB_BIN:$PATH" bash "$CEO_CLI" $cmd 2>&1); rc=$?
     assert_eq "$rc" "0" "ceo $cmd must exit 0 with no vault configured"
     assert_not_contains "$out" "CEO_VAULT unresolved" "ceo $cmd must not hit the vault gate"
   done

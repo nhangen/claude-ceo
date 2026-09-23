@@ -109,6 +109,35 @@ test_happy_path_creates_real_branch_and_commits_and_promotes() {
   assert_contains "$tel" '"reviewer":"opencode/kimi-test"'
 }
 
+# --- #491: ceo-loop is always verify-gated (verify_cmd is required), so its
+# ledger row records the gate itself — not the nulls that mean "no opinion" on
+# the ungated claude-tier and interactive-tier rows. The ledger is shared across
+# this suite, so each arm selects its own row by writer and branch. ---
+_loop_ledger_gate() { # <branch> — [verified, verify_gated, verify_cmd] of that run's row
+  jq -c --arg b "/$1" 'select(.writer == "ceo-loop" and (.task_name | endswith($b)))
+                       | [.verified, .verify_gated, .verify_cmd]' "$OLLAMA_AGENT_LEDGER" | tail -1
+}
+
+test_ledger_row_records_a_green_verify_gate() {
+  local repo; repo="$(mkrepo ledger-green)"
+  local wscript="${TMP}/w-ledger-green.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-ledger-green.json" "$wscript" true
+  mkspec "$TMP/ledger-green.json" "$repo" nh/loop-ledger-green "true"
+  bash "$LOOP" run --spec "$TMP/ledger-green.json" --routes "$TMP/routes-ledger-green.json" --target main >/dev/null 2>&1 || true
+  assert_eq "$(_loop_ledger_gate nh/loop-ledger-green)" '[true,true,"true"]' \
+    "a passing gate must read verified:true, verify_gated:true, and name its command"
+}
+
+test_ledger_row_records_a_red_verify_gate() {
+  local repo; repo="$(mkrepo ledger-red)"
+  local wscript="${TMP}/w-ledger-red.sh"; write_script "$wscript" "$WORKER_WRITE"
+  mkroutes "$TMP/routes-ledger-red.json" "$wscript" true
+  mkspec "$TMP/ledger-red.json" "$repo" nh/loop-ledger-red "false"
+  bash "$LOOP" run --spec "$TMP/ledger-red.json" --routes "$TMP/routes-ledger-red.json" --target main >/dev/null 2>&1 || true
+  assert_eq "$(_loop_ledger_gate nh/loop-ledger-red)" '[false,true,"false"]' \
+    "a gate that ran red must read verified:false — the gate ran, so null would be false"
+}
+
 test_failing_verification_blocks_promotion_and_files_ticket() {
   local repo; repo="$(mkrepo failing)"
   local wscript="${TMP}/w-fail.sh"; write_script "$wscript" "$WORKER_WRITE"
@@ -339,6 +368,20 @@ test_missing_verify_cmd_is_usage_error_exit_2() {
   local out rc=0
   out=$(bash "$LOOP" run --spec "$TMP/noverify.json" --routes "$TMP/routes-nv.json" --target main 2>&1) || rc=$?
   assert_contains "$out" "missing required field"
+  assert_eq "$rc" "2"
+}
+
+test_whitespace_only_verify_cmd_is_usage_error_exit_2() {
+  # `bash -c "   "` exits 0, so a spaces-only gate checks nothing and would be
+  # recorded as verified:true — now a claim the ledger carries (#491). The
+  # Python bridge already refuses this shape (#436).
+  local repo; repo="$(mkrepo blankverify)"
+  jq -n --arg repo t --arg dir "$repo" --arg branch nh/x \
+    '{repo:$repo,repo_dir:$dir,branch:$branch,shape:"bug-fix",verify_cmd:"   "}' > "$TMP/blankverify.json"
+  mkroutes "$TMP/routes-bv.json" true true
+  local out rc=0
+  out=$(bash "$LOOP" run --spec "$TMP/blankverify.json" --routes "$TMP/routes-bv.json" --target main 2>&1) || rc=$?
+  assert_contains "$out" "verify_cmd is blank"
   assert_eq "$rc" "2"
 }
 
