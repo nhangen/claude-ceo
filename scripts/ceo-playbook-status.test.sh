@@ -307,14 +307,14 @@ PB
   assert_contains "$content" "status: drift" "alert must carry status: drift frontmatter"
   assert_contains "$content" "count: 1" "alert must carry count frontmatter"
   assert_contains "$content" "since:" "alert must carry since timestamp"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 4))
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
-test_scan_drift_alert_is_change_gated() {
-  # Issue #455: Drift alert rewrite is change-gated. When drift count does not
-  # change, scan must not rewrite the alert file (preserving state per
-  # ceo-automated-writers-are-playbooks). When count changes, it updates count:
-  # and preserves since:.
+test_scan_drift_alert_refreshes_state() {
+  # An alert is current state (#455): every scan rewrites it with the current count:
+  # and a fresh last_check:, while since: keeps the moment the drift began. Both
+  # timestamps are pinned to a past value because they have one-second resolution,
+  # and back-to-back scans would otherwise match by accident.
   cat > "$CEO_REPO_PLAYBOOK_DIR/p-cg1.md" << 'PB'
 ---
 name: p-cg1
@@ -346,18 +346,20 @@ PB
   local content1; content1=$(cat "$alert_file")
   assert_contains "$content1" "count: 1" "alert must carry count: 1"
 
-  # Extract since timestamp
-  local orig_since
-  orig_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file")
+  sed -i.bak -e 's/^since:.*/since: 2020-01-01T00:00:00Z/' \
+    -e 's/^last_check:.*/last_check: 2020-01-01T00:00:00Z/' "$alert_file"
+  rm -f "$alert_file.bak"
 
-  # Add a sentinel comment to the alert file to detect if scan rewrites it.
-  echo "# SENTINEL_CHANGE_GATE" >> "$alert_file"
-
-  # Re-scan with the same drift count (1). File must NOT be rewritten.
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   local content2; content2=$(cat "$alert_file")
-  assert_contains "$content2" "SENTINEL_CHANGE_GATE" \
-    "alert must NOT be rewritten when shadowed drift count is unchanged"
+  assert_contains "$content2" "since: 2020-01-01T00:00:00Z" "a same-count scan must keep since:"
+  assert_not_contains "$content2" "last_check: 2020-01-01T00:00:00Z" "every scan must refresh last_check:"
+
+  # An alert written before #458 has no count: line; the next scan must add it.
+  sed -i.bak '/^count:/d' "$alert_file"
+  rm -f "$alert_file.bak"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_contains "$(cat "$alert_file")" "count: 1" "a scan must add count: to an alert that lacks it"
 
   # Now introduce a second differing playbook (count increases 1 -> 2).
   cat > "$CEO_REPO_PLAYBOOK_DIR/p-cg2.md" << 'PB'
@@ -390,9 +392,7 @@ PB
   assert_contains "$content3" "count: 2" "alert must update to count: 2"
   local new_since
   new_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file")
-  assert_eq "$new_since" "$orig_since" "alert must preserve original since timestamp across count updates"
-
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 5))
+  assert_eq "$new_since" "2020-01-01T00:00:00Z" "alert must preserve original since timestamp across count updates"
 }
 
 test_scan_clears_playbook_drift_alert_when_in_sync() {
@@ -435,5 +435,3 @@ PB
 }
 
 run_tests
-
-

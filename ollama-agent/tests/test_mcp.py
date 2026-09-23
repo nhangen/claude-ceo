@@ -291,7 +291,6 @@ def test_stdio_transport_recv_times_out_on_silent_server(tmp_path):
 
 
 def test_stdio_transport_recv_times_out_on_partial_line_server(tmp_path):
-
     # A server that writes a partial line without newline then sleeps must time out,
     # not block indefinitely on readline.
     server = tmp_path / "partial.py"
