@@ -73,11 +73,13 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
 
     `verify_gated` follows the same rule and has three states, not two. True and
     False mean the run was recorded as having, or not having, a `--verify-cmd`.
-    Null means the record carried no opinion — a row written before #386, or a
-    crash so early nothing had decided yet — and says nothing about whether a
-    gate was configured. It is NOT the delegation gate behind `--ungated`; a run
-    can be ungated in that sense and `verify_gated: true` here, and the standard
-    ollama-batch invocation is exactly that.
+    Null means the record carried no opinion — a crash so early nothing had
+    decided yet, or an ungated shell-writer row (see below) — and says nothing
+    about whether a gate was configured. A row from before #386 has no key at
+    all, per the rule above; the key and its writer landed in the same commit.
+    It is NOT the delegation gate behind `--ungated`; a run can be ungated in
+    that sense and `verify_gated: true` here, and the standard ollama-batch
+    invocation is exactly that.
 
     `verify_cmd` records the exact verification command string configured for
     the run, making verified claims auditable (#433). Null means no
@@ -85,9 +87,14 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     for the reason given above. It is written verbatim, so a gate must not carry
     inline credentials.
 
-    `scripts/ceo-model-ledger.sh` appends claude-tier rows to this same file and
-    emits explicit `null` for `verify_gated` and `verified` (#434). Those rows carry
-    `writer`, which is how a reader tells them from Python rows.
+    `scripts/ceo-model-ledger.sh` appends claude-tier, interactive-tier, and
+    ceo-loop rows to this same file. It always writes `verified`,
+    `verify_gated` (#434), and `verify_cmd` (#491): explicit `null` for the ungated
+    claude-tier and interactive-tier writers, and the real gate for ceo-loop,
+    whose runs are always verify-gated (#491). Those rows carry `writer`, which
+    is how a reader tells them from Python rows. The other Python-only keys —
+    `turns`, `reason`, `warnings`, the token counts, and the provenance keys —
+    are absent on `writer` rows, and there the absence carries no dating meaning.
     """
     p = Path(path) if path is not None else ledger_path()
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")

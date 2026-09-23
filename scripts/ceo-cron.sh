@@ -2350,7 +2350,12 @@ END_LOG_ENTRY"
   # runs, so the `|| true` fallbacks keep the `// empty` / `// "null"` intent
   # working when the CLI's stdout isn't parseable.
   SINGLE_OUTPUT="$(printf '%s' "$SINGLE_RAW" | jq -r '.result // empty' 2>/dev/null || true)"
-  SINGLE_COST="$(printf '%s' "$SINGLE_RAW" | jq -r '.total_cost_usd // "null"' 2>/dev/null || echo "null")"
+  # `head -1`, not `|| echo null`: when the CLI prints the JSON envelope and
+  # then a banner, jq emits the cost and then fails on the banner, so the old
+  # fallback appended a second line and the two-line value was unparseable —
+  # the ledger row for exactly the failed runs was dropped (#490).
+  SINGLE_COST="$(printf '%s' "$SINGLE_RAW" | jq -r '.total_cost_usd // "null"' 2>/dev/null | head -1 || true)"
+  SINGLE_COST="${SINGLE_COST:-null}"
   if [ -n "${_TIER_MATCH:-}" ]; then
     ceo_ledger_write_entry "claude-tier" "$MODEL" "$TRIGGER" "$VAULT" "${SINGLE_COST:-null}" "$([ "$SINGLE_EXIT" -eq 0 ] && echo true || echo false)" > /dev/null
   fi
