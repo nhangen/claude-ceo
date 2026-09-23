@@ -13,7 +13,7 @@
 #   ceo_pin_home_or_warn()  — resolve+export $HOME from passwd; warn-and-rc=1 on fail
 #   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1/2
 #   ceo_assert_primary_host() — gate Syncthing-shared writes; rc=0 allowed/1 deny
-#   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
+#   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2/3/4
 #   ceo_write_alert_frontmatter() — emit alert frontmatter to stdout; validates enum
 #   ceo_read_alert_field()  — read a single frontmatter field; handles colons in values
 #
@@ -639,9 +639,16 @@ ceo_status_valid() {
 }
 
 # ceo_registry_version <registry_file>
-#   Prints the integer schema_version, or nothing if missing/malformed.
+#   Prints the integer schema_version, or nothing if missing/malformed/unresolvable.
 ceo_registry_version() {
-  local registry_file="${1:-$(_ceo_registry_path)}"
+  local registry_file
+  if [ -n "${1:-}" ]; then
+    registry_file="$1"
+  else
+    if ! registry_file=$(_ceo_registry_path); then
+      return 1
+    fi
+  fi
   jq -r '
     if has("schema_version")
       and (.schema_version | type) == "number"
@@ -660,10 +667,18 @@ ceo_registry_version() {
 #   3 — registry exists but has no parseable integer schema_version (missing
 #       field, malformed JSON, non-integer). On a synced vault this also covers
 #       a file caught mid-replace, so callers should retry once before failing.
+#   4 — registry path could not be resolved ($HOME unset/empty and no override)
 # Codes 2 and 3 are kept distinct so a real downgrade is never retried into
 # acceptance and a transient unreadable read is never misreported as a downgrade.
 ceo_registry_validate() {
-  local registry_file="${1:-$(_ceo_registry_path)}"
+  local registry_file
+  if [ -n "${1:-}" ]; then
+    registry_file="$1"
+  else
+    if ! registry_file=$(_ceo_registry_path); then
+      return 4
+    fi
+  fi
   if [ ! -f "$registry_file" ]; then
     return 1
   fi
