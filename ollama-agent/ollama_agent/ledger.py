@@ -38,6 +38,8 @@ def ledger_path():
 
 # Who served the run, from `provenance` (see transport._note). Each is a list of
 # distinct values in first-seen order, because a router re-decides per request.
+# `retried_statuses` entries are `<http-status-or-exception-name>@<attempt>`, e.g.
+# "503@1" or "RemoteDisconnected@2" -- not only HTTP statuses, despite the name.
 _PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids",
                       "retried_statuses")
 

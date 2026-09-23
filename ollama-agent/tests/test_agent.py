@@ -565,6 +565,189 @@ def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
     assert errors[0].closed
 
 
+@pytest.mark.parametrize("make_exc", [
+    lambda: __import__("http.client").client.RemoteDisconnected("closed without response"),
+    lambda: ConnectionAbortedError("aborted"),
+    lambda: BrokenPipeError("broken pipe"),
+    lambda: __import__("http.client").client.IncompleteRead(b"partial"),
+], ids=["RemoteDisconnected", "ConnectionAbortedError", "BrokenPipeError", "IncompleteRead"])
+def test_transport_retries_a_dropped_connection_then_succeeds(monkeypatch, capsys, make_exc):
+    # Raised from urlopen, not from read(): with "stream": False the daemon sends
+    # no headers until generation ends, so a dropped connection surfaces inside
+    # getresponse(). A test that only fails read() would pass a transport that
+    # narrowed its try to the read and missed the real case. One case per member
+    # of RETRYABLE_READ_ERRORS: a member dropped from the tuple falls through to
+    # the config arm and stops retrying, silently.
+    import ollama_agent.transport as t
+
+    calls = {"n": 0}
+    first = make_exc()
+    name = type(first).__name__
+
+    def flaky(req, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise first
+        return _FakeResp(200, json.dumps({
+            "message": {"role": "assistant", "content": "ok"},
+            "prompt_eval_count": 7, "eval_count": 11}))
+
+    sleeps = []
+    monkeypatch.setattr(t.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(t.time, "sleep", sleeps.append)
+
+    prov = {}
+    msg, usage = t.ollama_transport("local-coder", host="localhost:11434", provenance=prov)(
+        [{"role": "user", "content": "hi"}], [])
+
+    assert msg["content"] == "ok"
+    assert usage == {"input": 7, "output": 11}
+    assert calls["n"] == 2
+    assert prov["retried_statuses"] == [f"{name}@1"]
+    assert sleeps == [0.2]
+    # The same wording as the HTTP retry arm (#411): one retry, one log format.
+    assert (f"warning: ollama {name} on attempt 1/3 for model local-coder, "
+            "retrying in 0.2s") in capsys.readouterr().err
+
+
+def test_transport_read_error_stops_after_bounded_retries(monkeypatch, capsys):
+    import ollama_agent.transport as t
+
+    class _ResetReadResp(_FakeResp):
+        def read(self):
+            raise ConnectionResetError("[Errno 104] Connection reset by peer")
+
+    sleeps = []
+    monkeypatch.setattr(t.urllib.request, "urlopen", lambda req, timeout: _ResetReadResp(200, ""))
+    monkeypatch.setattr(t.time, "sleep", sleeps.append)
+
+    prov = {}
+    with pytest.raises(
+        RuntimeError,
+        match=r"ollama ConnectionResetError after 3 attempts for model local-coder "
+              r"at http://router:40114/api/chat:.*reset",
+    ) as exc:
+        t.ollama_transport("local-coder", host="router:40114", provenance=prov)(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert prov["retried_statuses"] == ["ConnectionResetError@1", "ConnectionResetError@2"]
+    assert sleeps == [0.2, 0.4]
+    assert isinstance(exc.value.__cause__, ConnectionResetError)
+    err = capsys.readouterr().err
+    assert "attempt 1/3" in err and "attempt 2/3" in err
+    assert "attempt 3/3" not in err
+
+
+def test_transport_incomplete_read_retries_then_raises(monkeypatch):
+    import http.client
+    import ollama_agent.transport as t
+
+    class _IncompleteReadResp(_FakeResp):
+        def read(self):
+            raise http.client.IncompleteRead(b"partial payload")
+
+    monkeypatch.setattr(t.urllib.request, "urlopen",
+                        lambda req, timeout: _IncompleteReadResp(200, ""))
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
+
+    prov = {}
+    with pytest.raises(
+        RuntimeError,
+        match=r"ollama IncompleteRead after 3 attempts for model local-coder "
+              r"at http://router:40114/api/chat:.*IncompleteRead\(15 bytes read\)",
+    ):
+        t.ollama_transport("local-coder", host="router:40114", provenance=prov)(
+            [{"role": "user", "content": "hi"}], [])
+
+    assert prov["retried_statuses"] == ["IncompleteRead@1", "IncompleteRead@2"]
+
+
+# socket.timeout is its own OSError subclass on 3.9 and an alias of TimeoutError
+# from 3.10, so both are pinned: the host python here is 3.9, CI's may not be.
+@pytest.mark.parametrize("exc_type", ["socket_timeout", "TimeoutError"])
+def test_transport_timeout_is_not_retried(monkeypatch, exc_type):
+    # With "stream": False a timeout fires before any header arrives, and in the
+    # documented case (a thinking model on a long turn, see cli.py) it recurs on
+    # every attempt. Retrying turned one 600s failure into ~1800s and two extra
+    # full generations, then reported it as a network blip.
+    import socket
+    import ollama_agent.transport as t
+
+    calls = []
+
+    def hang(req, timeout):
+        calls.append(timeout)
+        raise socket.timeout("timed out") if exc_type == "socket_timeout" else TimeoutError("timed out")
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", hang)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: pytest.fail("a timeout must not back off"))
+
+    prov = {}
+    with pytest.raises(RuntimeError, match=r"timed out after 600s") as exc:
+        t.ollama_transport("local-coder", provenance=prov)([{"role": "user", "content": "hi"}], [])
+
+    assert len(calls) == 1
+    assert "retried_statuses" not in prov
+    assert "--no-think" in str(exc.value) and "--timeout" in str(exc.value)
+    assert isinstance(exc.value.__cause__, OSError)
+
+
+def test_transport_config_error_is_not_retried(monkeypatch):
+    # A bad port can never succeed; retrying it filed a typo in --host under
+    # retried_statuses beside real 503 flaps.
+    import http.client
+    import ollama_agent.transport as t
+
+    calls = []
+
+    def bad(req, timeout):
+        calls.append(1)
+        raise http.client.InvalidURL("nonnumeric port: 'abc'")
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", bad)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: pytest.fail("a config error must not back off"))
+
+    prov = {}
+    with pytest.raises(RuntimeError, match=r"ollama InvalidURL at .* for model local-coder") as exc:
+        t.ollama_transport("local-coder", provenance=prov)([{"role": "user", "content": "hi"}], [])
+
+    assert calls == [1]
+    assert "retried_statuses" not in prov
+    assert isinstance(exc.value.__cause__, http.client.InvalidURL)
+
+
+# Both halves of the catch: a reset is an OSError, a short body is an
+# HTTPException (IncompleteRead) -- which of the two a dropped body raises
+# depends on the Python version.
+@pytest.mark.parametrize("make_exc", [
+    lambda: ConnectionResetError("[Errno 54] Connection reset by peer"),
+    lambda: __import__("http.client").client.IncompleteRead(b"par"),
+], ids=["ConnectionResetError", "IncompleteRead"])
+def test_transport_unreadable_http_error_body_is_translated(monkeypatch, make_exc):
+    # e.read() runs inside the HTTPError handler, where the sibling except
+    # clauses cannot reach it, so a reset mid-body escaped raw with no url or
+    # model: the "read-path failures escape untranslated" gap #440 is named for.
+    import io
+    import ollama_agent.transport as t
+
+    err = make_exc()
+
+    class _DroppedBody(io.BytesIO):
+        def read(self, *a):
+            raise err
+
+    def fail(req, timeout):
+        raise t.urllib.error.HTTPError("u", 500, "server error", {}, _DroppedBody(b""))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+
+    with pytest.raises(RuntimeError, match=r"ollama HTTP 500 for model local-coder; "
+                                           r"error body unreadable") as exc:
+        t.ollama_transport("local-coder")([{"role": "user", "content": "hi"}], [])
+
+    assert exc.value.__cause__ is err
+
+
 # --- transport success check ---
 
 def test_parse_chat_response_ok():
