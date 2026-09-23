@@ -76,41 +76,20 @@ test_disable_flag_skips_tier_map() {
 # SIGPIPEd jq aborts the hook and skips routing for the largest dispatches.
 
 _oversized_task_payload() {
-  local big
-  # 100,000 bytes (~1.5x the measured 64KB pipe buffer), opening with "find" so the
-  # tier map matches within the first 200 bytes.
-  big=$(printf 'find %.0s' {1..20000})
-  jq -nc --arg p "$big" \
-    '{tool_name:"Task", tool_input:{prompt:$p, subagent_type:"general-purpose"}}'
-}
-
-# PIPE_BUF_FLOOR is the de-facto pipe buffer high-water mark on macOS/Linux
-# (POSIX guarantees only 512; both platforms use 65536). The fixture must
-# exceed this value so the pre-fix `jq | head -c 200` form would cause SIGPIPE
-# on a slow scheduler. We assert on byte length (deterministic) rather than
-# racing on SIGPIPE (schedule-dependent under xargs -P 4 load, #451).
-# Note: ${#payload} measures the full JSON envelope (prompt + JSON scaffolding),
-# not just the prompt text — that is fine, both exceed PIPE_BUF_FLOOR comfortably.
-PIPE_BUF_FLOOR=65536
-
-_assert_payload_exceeds_pipe_buf() {
-  local payload="$1" byte_len
-  byte_len=${#payload}
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$byte_len" -le "$PIPE_BUF_FLOOR" ]; then
-    printf '  FAIL [%s] fixture payload is %d bytes — must exceed PIPE_BUF_FLOOR (%d) to stress the pipe path\n' \
-      "$CURRENT_TEST" "$byte_len" "$PIPE_BUF_FLOOR"
-    _record_assertion_fail
-  fi
+  # 200,000 bytes, opening with "find" so the tier map matches within the first 200
+  # bytes. Built through stdin, not --arg: Linux caps one argv string at 128 KiB.
+  printf 'find %.0s' {1..40000} | jq -Rsc \
+    '{tool_name:"Task", tool_input:{prompt:., subagent_type:"general-purpose"}}'
 }
 
 test_hook_routes_an_oversized_prompt() {
   local payload out rc=0
   payload=$(_oversized_task_payload)
-  _assert_payload_exceeds_pipe_buf "$payload"
+  # The hook's own label expression: what the pre-fix `jq … | head -c 200` fed head.
+  assert_exceeds_sigpipe_threshold \
+    "$(jq -r '.tool_input.description // .tool_input.prompt // ""' <<< "$payload")" "the dispatch label"
   out=$(printf '%s' "$payload" | "$REPO_ROOT/hooks/ceo-tier-router.sh" 2>/dev/null) || rc=$?
   assert_eq "$rc" "0" "hook exits 0 on a prompt past the pipe buffer"
-
   assert_contains "$out" '"model":"haiku"' "oversized dispatch is still downgraded to the mapped tier"
 }
 

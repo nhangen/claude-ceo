@@ -150,39 +150,10 @@ _oversized_body() {
   while [ "$i" -lt 1000 ]; do printf '%s\n' "$pad"; i=$((i + 1)); done
 }
 
-# PIPE_BUF_FLOOR is the de-facto pipe buffer high-water mark on macOS/Linux
-# (POSIX guarantees only 512; both platforms use 65536). The fixture must
-# exceed this value so the pre-fix `printf … | grep -q` form would cause
-# SIGPIPE on a slow scheduler. We assert on byte length (deterministic) rather
-# than racing on SIGPIPE (schedule-dependent under xargs -P 4 load, #451).
-
-#
-# Two-sided check preserves the intent of the original dual probe:
-#   - big body > PIPE_BUF_FLOOR  → pipe-buffer path is exercised
-#   - banner   < PIPE_BUF_FLOOR  → failure would be size-dependent, not
-#                                   a pattern-mismatch masquerading as SIGPIPE
-PIPE_BUF_FLOOR=65536
-
-_assert_body_exceeds_pipe_buf() {
-  local raw="$1" banner="$2" byte_len banner_len
-  byte_len=${#raw}
-  banner_len=${#banner}
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$byte_len" -le "$PIPE_BUF_FLOOR" ]; then
-    printf '  FAIL [%s] fixture body is %d bytes — must exceed PIPE_BUF_FLOOR (%d) to stress the pipe path\n' \
-      "$CURRENT_TEST" "$byte_len" "$PIPE_BUF_FLOOR"
-    _record_assertion_fail
-  elif [ "$banner_len" -ge "$PIPE_BUF_FLOOR" ]; then
-    printf '  FAIL [%s] banner is %d bytes — must be smaller than PIPE_BUF_FLOOR (%d) to prove failure is size-dependent\n' \
-      "$CURRENT_TEST" "$banner_len" "$PIPE_BUF_FLOOR"
-    _record_assertion_fail
-  fi
-}
-
 test_oversized_ratelimit_body_is_still_transient() {
   local banner='Claude API session limit reached. Please try again later.' raw
   raw=$(_oversized_body "$banner")
-  _assert_body_exceeds_pipe_buf "$raw" "$banner"
+  assert_exceeds_sigpipe_threshold "$raw" "the oversized body"
   assert_eq "$(_classify_claude_failure 1 "$raw")" "transient" \
     "rate-limit banner in a 200KB body → transient (fallback stays armed)"
 }
@@ -190,11 +161,10 @@ test_oversized_ratelimit_body_is_still_transient() {
 test_oversized_auth_body_is_still_auth() {
   local banner='Error: authentication_failed. Please run /login.' raw
   raw=$(_oversized_body "$banner")
-  _assert_body_exceeds_pipe_buf "$raw" "$banner"
+  assert_exceeds_sigpipe_threshold "$raw" "the oversized body"
   assert_eq "$(_classify_claude_failure 1 "$raw")" "auth" \
     "auth banner in a 200KB body → auth, not terminal"
 }
-
 
 test_oversized_plaintext_body_emits_no_stderr_noise() {
   # The envelope probes ran `printf … | jq`; when jq bails on non-JSON before
@@ -204,9 +174,10 @@ test_oversized_plaintext_body_emits_no_stderr_noise() {
   # HONEST LIMIT: this test does NOT reliably fail when that fix is reverted. Whether
   # jq exits before printf finishes writing is a scheduling race — observed firing
   # repeatedly in one run of this suite and 0/6 times in a direct probe at the same
-  # 200KB. So there is no canary here, unlike the two tests above. What it does pin
-  # deterministically is the classification, and after the fix there is no pipe left
-  # at all, so clean stderr is structural rather than lucky.
+  # 200KB. The size guard the two tests above use cannot help here: it proves the pipe
+  # would overflow, not that jq bails early. What this pins deterministically is the
+  # classification, and after the fix there is no pipe left at all, so clean stderr
+  # is structural rather than lucky.
   local raw errfile out
   raw=$(_oversized_body 'some unexpected error we have no pattern for')
   errfile=$(mktemp)
