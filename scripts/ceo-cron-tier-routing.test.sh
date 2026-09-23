@@ -76,45 +76,18 @@ test_disable_flag_skips_tier_map() {
 # SIGPIPEd jq aborts the hook and skips routing for the largest dispatches.
 
 _oversized_task_payload() {
-  local big
-  # 100,000 bytes (~1.5x the measured 64KB pipe buffer), opening with "find" so the
-  # tier map matches within the first 200 bytes.
-  big=$(printf 'find %.0s' {1..20000})
-  jq -nc --arg p "$big" \
-    '{tool_name:"Task", tool_input:{prompt:$p, subagent_type:"general-purpose"}}'
-}
-
-# Same load-bearing-fixture guard as the classifier suite: prove the pre-fix
-# `jq … | head -c 200` form actually fails on this payload, AND succeeds on a
-# small one. The pair proves the failure is size-dependent (SIGPIPE); a bare
-# non-zero check is also satisfied by a jq error, whose stderr is discarded
-# below along with GNU's "Broken pipe" noise.
-_head_pipe_form_rc() {
-  local payload="$1" rc=0
-  ( set -o pipefail
-    printf '%s' "$payload" | jq -r '.tool_input.prompt' 2>/dev/null | head -c 200 >/dev/null
-  ) || rc=$?
-  echo "$rc"
-}
-
-_assert_head_pipe_form_breaks() {
-  local payload="$1" big_rc small_rc
-  big_rc=$(_head_pipe_form_rc "$payload")
-  small_rc=$(_head_pipe_form_rc '{"tool_input":{"prompt":"find stale branches"}}')
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$big_rc" -eq 0 ]; then
-    printf '  FAIL [%s] fixture no longer breaks the pre-fix `jq | head -c` form (rc=0), so it proves nothing — the prompt must exceed the pipe buffer\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  elif [ "$small_rc" -ne 0 ]; then
-    printf '  FAIL [%s] canary is passing for the wrong reason: the pre-fix form also fails on a SMALL payload (rc=%s), so jq itself is failing — not SIGPIPE\n' "$CURRENT_TEST" "$small_rc"
-    _record_assertion_fail
-  fi
+  # 200,000 bytes, opening with "find" so the tier map matches within the first 200
+  # bytes. Built through stdin, not --arg: Linux caps one argv string at 128 KiB.
+  printf 'find %.0s' {1..40000} | jq -Rsc \
+    '{tool_name:"Task", tool_input:{prompt:., subagent_type:"general-purpose"}}'
 }
 
 test_hook_routes_an_oversized_prompt() {
   local payload out rc=0
   payload=$(_oversized_task_payload)
-  _assert_head_pipe_form_breaks "$payload"
+  # The hook's own label expression: what the pre-fix `jq … | head -c 200` fed head.
+  assert_exceeds_sigpipe_threshold \
+    "$(jq -r '.tool_input.description // .tool_input.prompt // ""' <<< "$payload")" "the dispatch label"
   out=$(printf '%s' "$payload" | "$REPO_ROOT/hooks/ceo-tier-router.sh" 2>/dev/null) || rc=$?
   assert_eq "$rc" "0" "hook exits 0 on a prompt past the pipe buffer"
   assert_contains "$out" '"model":"haiku"' "oversized dispatch is still downgraded to the mapped tier"
