@@ -789,6 +789,28 @@ test_an_uncreatable_state_dir_refuses_to_dispatch() {
   assert_contains "$skips" "nodir-check" "and name the playbook"
 }
 
+test_cron_state_helper_refuses_when_path_is_empty() {
+  # _state in ceo-cron.sh must refuse dispatch if _ceo_state_migrate yielded
+  # an empty path, even if rc was not 2 (#471).
+  local rc=0 out skips
+  out=$(
+    SKIPS_LOG=$(_skips_log_path)
+    export LOG_DIR="$CEO_DIR/log" SKIPS_LOG TRIGGER="empty-path-check"
+    # shellcheck source=scripts/ceo-config.sh
+    source "$SCRIPT_DIR/ceo-config.sh"
+    # Mock _ceo_state_migrate to succeed with empty stdout
+    _ceo_state_migrate() { return 0; }
+    eval "$(sed -n '/^_state() {/,/^}/p' "$SCRIPT_DIR/ceo-cron.sh")"
+    _state ".test-marker" 2>&1
+  ) || rc=$?
+  assert_eq "$rc" "1" "_state must exit 1 when path is empty"
+  assert_contains "$out" "cannot create the host-local state directory" \
+    "_state must write refusal error to stderr"
+  skips=$(cat "$(_skips_log_path)" 2>/dev/null || echo "")
+  assert_contains "$skips" "NOT dispatched" \
+    "_state must log NOT dispatched to skips log when path is empty"
+}
+
 test_production_honors_CEO_STATE_DIR_not_just_HOME() {
   # CEO_STATE_DIR exists because seven playbook scripts call ceo_pin_home_or_warn,
   # which re-exports HOME from passwd — so a $HOME-derived path escapes a fixture
