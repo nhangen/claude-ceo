@@ -20,6 +20,21 @@ LOCK_ACQUIRED=0
 marker_tmp=''
 RUN_START_MARK=''
 
+if [[ "${CEO_SCHEDULER_ATTEMPT+x}" == 'x' || "${CEO_SCHEDULER_MAX_ATTEMPTS+x}" == 'x' ]]; then
+  scheduler_attempt="${CEO_SCHEDULER_ATTEMPT-}"
+  scheduler_max_attempts="${CEO_SCHEDULER_MAX_ATTEMPTS-}"
+  if [[ ! "$scheduler_attempt" =~ ^[1-9][0-9]*$ ]] ||
+     [[ ! "$scheduler_max_attempts" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'ERROR: NoRx bookkeeping scheduler retry metadata is invalid\n' >&2
+    exit 1
+  fi
+  if (( ${#scheduler_attempt} > ${#scheduler_max_attempts} )) ||
+     { (( ${#scheduler_attempt} == ${#scheduler_max_attempts} )) && [[ "$scheduler_attempt" > "$scheduler_max_attempts" ]]; }; then
+    printf 'ERROR: NoRx bookkeeping scheduler retry metadata is invalid\n' >&2
+    exit 1
+  fi
+fi
+
 if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
   printf 'noop' > "$CEO_RUNNER_OUTCOME_FILE"
 fi

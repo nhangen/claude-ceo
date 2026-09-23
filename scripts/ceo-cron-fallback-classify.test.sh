@@ -158,12 +158,14 @@ _oversized_body() {
 # banner that stopped matching masquerade as a working canary. The pair proves the
 # failure is size-dependent, i.e. SIGPIPE.
 #
-# Deliberately NOT asserting rc==141: the signature is platform-dependent. BSD grep
-# and GNU grep on WSL give 141; GNU grep on GitHub's ubuntu runner gives 2 ("write
-# error: Broken pipe"). Pinning 141 cost a CI cycle in #294.
+# Deliberately NOT asserting rc==141: the signature is platform-dependent. It is
+# 141 on macOS and WSL, and 2 on GitHub's ubuntu runner, where the writer reports
+# "write error: Broken pipe". Pinning 141 cost a CI cycle in #294. The writer's
+# stderr is discarded below: the redirect only drops that message, and the exit
+# status the canary reads is unchanged.
 _pipe_form_rc() {
   local raw="$1" pattern="$2" rc=0
-  ( set -o pipefail; printf '%s' "$raw" | grep -qEi "$pattern" ) || rc=$?
+  ( set -o pipefail; printf '%s' "$raw" 2>/dev/null | grep -qEi "$pattern" ) || rc=$?
   echo "$rc"
 }
 
