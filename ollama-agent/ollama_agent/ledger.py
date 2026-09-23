@@ -40,8 +40,11 @@ def ledger_path():
 # distinct values in first-seen order, because a router re-decides per request.
 # `retried_statuses` entries are `<http-status-or-exception-name>@<attempt>`, e.g.
 # "503@1" or "RemoteDisconnected@2" -- not only HTTP statuses, despite the name.
+# `decode_replacements` is the exception to the list shape: an int, the U+FFFD
+# count summed over every turn (#442). Transport sets it only when nonzero, so
+# the `or None` in append_run writes null for a clean run, like the lists.
 _PROVENANCE_FIELDS = ("model_served", "endpoint", "proxy", "routing", "request_ids",
-                      "retried_statuses")
+                      "retried_statuses", "decode_replacements")
 
 # Two things #667 asked for that are deliberately NOT here, recorded so a reader
 # who greps the ticket for them is not left wondering:

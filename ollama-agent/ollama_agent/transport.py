@@ -14,9 +14,13 @@ import urllib.error
 import urllib.request
 
 DEFAULT_HOST = "127.0.0.1:11434"
-RETRYABLE_HTTP_STATUSES = frozenset({502, 503, 504})
+RETRYABLE_HTTP_STATUSES = frozenset({429, 502, 503, 504})
 MAX_HTTP_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.2
+# A server's Retry-After is honoured up to this, never beyond: the header is
+# server-supplied, and an unbounded value would park a turn for as long as it
+# said -- `Retry-After: 3600` is an hour.
+RETRY_AFTER_CAP_SECONDS = 30.0
 # Read-path failures a repeat request can fix: the connection dropped, or the
 # body arrived short. RemoteDisconnected (a daemon that died mid-generation) is
 # a ConnectionResetError. Timeouts and configuration errors are deliberately
@@ -108,6 +112,16 @@ def _note(provenance, key, value, limit=None):
     seen.append(value)
 
 
+def _error_excerpt(text, limit=200):
+    """The first `limit` chars of an upstream body, safe to put on one log line.
+
+    Escaped, not raw: ollama-author.sh classifies a run by line-anchored
+    patterns in the log these messages land in (`^REFUSED`, `...Error:`), so a
+    multi-line upstream body could forge one of those lines and change how the
+    run is retried."""
+    return text[:limit].replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+
+
 def parse_chat_response(status, body, provenance=None):
     """Return (message, usage). `usage` carries ollama's own token counts —
     prompt_eval_count (input) and eval_count (output) — so a caller can attribute
@@ -120,12 +134,12 @@ def parse_chat_response(status, body, provenance=None):
     content merely quotes the phrase is a model turn, not an error."""
     if status != 200:
         if CONTEXT_OVERFLOW_SENTINEL in body:
-            raise _context_overflow_error(status, body[:200])
-        raise RuntimeError(f"ollama HTTP {status}: {body[:200]}")
+            raise _context_overflow_error(status, _error_excerpt(body))
+        raise RuntimeError(f"ollama HTTP {status}: {_error_excerpt(body)}")
     try:
         data = json.loads(body)
     except ValueError as e:
-        raise RuntimeError(f"ollama 200 with unparseable body: {body[:200]}") from e
+        raise RuntimeError(f"ollama 200 with unparseable body: {_error_excerpt(body)}") from e
     # A bare array, `null`, or a quoted string parses fine and then dies on
     # `.get` two lines down as an AttributeError, which cli.py records without
     # naming ollama or the body. Same class of failure as unparseable, one JSON
@@ -133,7 +147,7 @@ def parse_chat_response(status, body, provenance=None):
     # caller.
     if not isinstance(data, dict):
         raise RuntimeError(
-            f"ollama 200 with non-object body ({type(data).__name__}): {body[:200]}"
+            f"ollama 200 with non-object body ({type(data).__name__}): {_error_excerpt(body)}"
         )
     # The model that ANSWERED, which against a router is not the one we asked
     # for. `local-coder` resolved to a 14.8b build while the docs said 27b
@@ -142,10 +156,10 @@ def parse_chat_response(status, body, provenance=None):
     if "error" in data:
         err = data["error"]
         if isinstance(err, str) and CONTEXT_OVERFLOW_SENTINEL in err:
-            raise _context_overflow_error(status, err)
-        raise RuntimeError(f"ollama error: {err}")
+            raise _context_overflow_error(status, _error_excerpt(err))
+        raise RuntimeError(f"ollama error: {_error_excerpt(str(err))}")
     if "message" not in data:
-        raise RuntimeError(f"ollama 200 with no message: {body[:200]}")
+        raise RuntimeError(f"ollama 200 with no message: {_error_excerpt(body)}")
     try:
         usage = {
             "input": int(data.get("prompt_eval_count") or 0),
@@ -155,7 +169,7 @@ def parse_chat_response(status, body, provenance=None):
         # Same invariant as the two guards above: a proxy that answers with a
         # string where ollama sends a count must not leave the transport as a
         # bare ValueError naming neither ollama nor the field.
-        raise RuntimeError(f"ollama 200 with non-numeric token counts: {body[:200]}") from e
+        raise RuntimeError(f"ollama 200 with non-numeric token counts: {_error_excerpt(body)}") from e
     return data["message"], usage
 
 
@@ -164,8 +178,9 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
     """Return a transport(messages, tools) -> (assistant message dict, usage dict).
 
     Raises RuntimeError on any failure, naming the model and, where it helps,
-    the url. A 502/503/504, a dropped connection, and a short body are retried
-    up to MAX_HTTP_ATTEMPTS times with backoff. A timeout is not: with
+    the url. A 429/502/503/504, a dropped connection, and a short body are
+    retried up to MAX_HTTP_ATTEMPTS times with backoff, honouring a
+    seconds-valued Retry-After up to RETRY_AFTER_CAP_SECONDS. A timeout is not: with
     "stream": False it fires before any header arrives, and in the documented
     case it recurs on every attempt, so retrying only multiplies the wait. A
     configuration error (a bad port, a host that does not speak HTTP) and an
@@ -204,26 +219,48 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
         req = urllib.request.Request(url, data=payload,
                                      headers={"Content-Type": "application/json"})
 
-        def _retrying(label, attempt, shown=None):
+        def _retrying(label, attempt, shown=None, delay=None, detail=""):
             # Both halves are needed. The print is for whoever is watching a
             # 600s turn; the note is for everyone else, because under ceo-cron
             # stderr goes to a log nobody reads and a run that survived two 503s
             # would otherwise ledger identically to a clean one -- the
             # flapping-daemon blindness #385 named. One helper for every retry
             # arm, so a retry reads the same in the log whatever caused it.
+            if delay is None:
+                delay = RETRY_BACKOFF_SECONDS * attempt
             _note(provenance, "retried_statuses", f"{label}@{attempt}")
+            # The upstream detail goes last, so the fixed prefix stays greppable.
             print(f"warning: ollama {shown or label} on attempt "
                   f"{attempt}/{MAX_HTTP_ATTEMPTS} for model {model}, "
-                  f"retrying in {RETRY_BACKOFF_SECONDS * attempt:.1f}s",
+                  f"retrying in {delay:.1f}s" + (f": {detail}" if detail else ""),
                   file=sys.stderr)
-            time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            time.sleep(delay)
 
         for attempt in range(1, MAX_HTTP_ATTEMPTS + 1):
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     _note_headers(provenance, getattr(resp, "headers", None))
-                    return parse_chat_response(resp.status, resp.read().decode(errors="replace"),
-                                               provenance=provenance)
+                    message, usage = parse_chat_response(
+                        resp.status, resp.read().decode(errors="replace"),
+                        provenance=provenance)
+                    # U+FFFD in the parsed message means content was altered
+                    # before it reached us, and it can land in a write_file or
+                    # run_shell argument of a run that reports success (#442).
+                    # Counted on the message, not the raw bytes, so one check
+                    # covers both sources: ollama's own substitution, which Go's
+                    # json.Marshal emits as the escape \ufffd in an otherwise
+                    # valid body, and raw invalid bytes from a non-Go proxy,
+                    # which errors="replace" turns into U+FFFD here. A summed
+                    # int, not `_note`: that dedups, and a count must not.
+                    replaced = json.dumps(message, ensure_ascii=False).count("\ufffd")
+                    if replaced:
+                        print(f"warning: ollama message had {replaced} U+FFFD replacement "
+                              f"character(s); model output may be corrupted",
+                              file=sys.stderr)
+                        if provenance is not None:
+                            provenance["decode_replacements"] = (
+                                provenance.get("decode_replacements", 0) + replaced)
+                    return message, usage
             except urllib.error.HTTPError as e:
                 try:
                     if e.code not in RETRYABLE_HTTP_STATUSES:
@@ -235,7 +272,7 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                         # naming neither ollama nor the model.
                         try:
                             detail = e.read().decode(errors="replace")
-                        except (OSError, http.client.HTTPException) as read_err:
+                        except (OSError, http.client.HTTPException, ValueError) as read_err:
                             raise RuntimeError(
                                 f"ollama HTTP {e.code} for model {model}; "
                                 f"error body unreadable: {read_err}"
@@ -245,13 +282,39 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                     # that fails twice before a healthy one answers is invisible,
                     # which is exactly the "which machine" question this records.
                     _note_headers(provenance, getattr(e, "headers", None))
+                    # Behind olla the body is where "no healthy backends for
+                    # model X" and "all backends busy" live -- the only thing
+                    # telling a down daemon from an unloaded model from a
+                    # saturated pool (#441). A body that drops mid-read costs
+                    # the detail, not the retry -- but a timeout is not retried,
+                    # for the reason the timeout arm below gives. It is caught
+                    # first because TimeoutError is an OSError.
+                    try:
+                        detail = _error_excerpt(e.read().decode(errors="replace"))
+                    except (socket.timeout, TimeoutError) as read_err:
+                        raise RuntimeError(
+                            f"ollama timed out after {timeout}s at {url} for model {model}; "
+                            "a thinking model may need --no-think, or raise --timeout"
+                        ) from read_err
+                    except (OSError, http.client.HTTPException, ValueError) as read_err:
+                        detail = f"(error body unreadable: {type(read_err).__name__})"
                     if attempt == MAX_HTTP_ATTEMPTS:
                         raise RuntimeError(
                             f"ollama HTTP {e.code} after {attempt} attempts for model {model}"
+                            + (f": {detail}" if detail else "")
                         ) from e
+                    delay = RETRY_BACKOFF_SECONDS * attempt
+                    retry_after = (getattr(e, "headers", None) or {}).get("Retry-After")
+                    if retry_after:
+                        # Seconds only; an HTTP-date Retry-After is ignored and
+                        # the normal backoff applies.
+                        try:
+                            delay = min(max(delay, float(retry_after)), RETRY_AFTER_CAP_SECONDS)
+                        except (TypeError, ValueError):
+                            pass
                 finally:
                     e.close()
-                _retrying(e.code, attempt, shown=f"HTTP {e.code}")
+                _retrying(e.code, attempt, shown=f"HTTP {e.code}", delay=delay, detail=detail)
             # Order matters: HTTPError subclasses URLError, and both subclass
             # OSError, as does socket.timeout -- so the broad arm must come last.
             except urllib.error.URLError as e:
