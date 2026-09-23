@@ -80,7 +80,11 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     feeds the failure back and the loop continues, so the run drives to a green
     gate rather than to the model's own say-so. `verified` is None when no gate
     is configured, else the last check's pass/fail; the turn cap still bounds
-    the loop.
+    the loop. An empty or whitespace-only string raises instead of running: ""
+    is falsy so the gate would be dropped in silence and the row would read
+    verify_gated=False, byte-identical to a deliberate ungated run, while "   "
+    is truthy so the gate "runs", exits 0 having verified nothing, and records
+    verify_gated=True with verified=True. Pass None to run without a gate.
 
     `usage_tracker` is an optional caller-owned dict, mutated in place every turn
     so the caller can read what a run burned even when this function raises
@@ -98,6 +102,12 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     "verify-failed" (out of turns, gate last observed red), "error" (crashed run),
     or "killed" (interrupted run).
     """
+    # cli.py refuses this earlier with a REFUSED line and exit 2, which is the
+    # better operator message; keep that one. This is the library-caller backstop,
+    # and it must stay ahead of the tracker reset below so a refused call burns
+    # nothing (#436).
+    if verify_cmd is not None and not verify_cmd.strip():
+        raise ValueError("verify_cmd is empty; pass None to run without a gate")
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": task}]
     transcript = list(messages)
