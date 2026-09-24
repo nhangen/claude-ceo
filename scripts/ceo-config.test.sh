@@ -1211,6 +1211,28 @@ test_ceo_state_dir_aborts_on_unset_home_when_no_override() {
     "error message must guide that HOME is required"
 }
 
+test_ceo_state_migrate_returns_2_on_unset_home_when_no_override() {
+  local out rc=0
+  out=$(env -u HOME -u CEO_STATE_DIR bash -c "source '$LIB'; _ceo_state_migrate '.test-file'" 2>/dev/null) || rc=$?
+  assert_eq "$rc" "2" "_ceo_state_migrate must return 2 when state directory cannot be resolved"
+  assert_eq "$out" "" "_ceo_state_migrate must not print a path when state directory cannot be resolved"
+}
+
+test_ceo_state_migrate_returns_2_on_empty_home_when_no_override() {
+  local out rc=0
+  out=$(env -u CEO_STATE_DIR HOME="" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'" 2>/dev/null) || rc=$?
+  assert_eq "$rc" "2" "_ceo_state_migrate must return 2 when HOME is empty and no override is given"
+  assert_eq "$out" "" "_ceo_state_migrate must not print a path when HOME is empty"
+}
+
+test_ceo_state_migrate_succeeds_and_prints_path_when_state_dir_valid() {
+  local out rc=0
+  out=$(env -u CEO_STATE_DIR HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'") || rc=$?
+  assert_eq "$rc" "0" "_ceo_state_migrate must return 0 when state dir resolves and creates successfully"
+  assert_eq "$out" "$TEST_HOME/.ceo/state/.test-file" "_ceo_state_migrate must print expected host-local path"
+  [ -d "$TEST_HOME/.ceo/state" ] || fail_test "state directory was not created"
+}
+
 test_ceo_enabled_path_defaults_to_home() {
   local path
   path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_enabled_path")

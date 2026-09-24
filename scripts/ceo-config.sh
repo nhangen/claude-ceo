@@ -412,10 +412,11 @@ _ceo_legacy_state_dir() {
 #   Degradation is reported through the exit status, never through stderr. The
 #   scheduler spawns the dispatcher with `stderr: "ignore"`
 #   (lib/scheduler/src/main.ts), so a warning written here would reach nobody on
-#   the runs that matter — the same defect #398 found in the completion log. The
-#   path is printed either way, so a caller that ignores the status still works.
+#   the runs that matter — the same defect #398 found in the completion log.
+#   When resolution succeeds the path is printed even if migration fails, so a caller
+#   that ignores rc=1 still works. If the path cannot even be resolved, nothing is printed.
 #
-#   **2** — the state directory could not be created. Nothing will be readable or
+#   **2** — the state directory could not be resolved or created. Nothing will be readable or
 #   writable there; the caller should refuse to dispatch rather than let a bare
 #   redirect abort it halfway through bookkeeping.
 #   **1** — a legacy file could not be moved. The run proceeds with fresh state:
@@ -423,7 +424,7 @@ _ceo_legacy_state_dir() {
 #   over it is worse. Worth journalling, not worth aborting.
 _ceo_state_migrate() {
   local name="$1" new_dir legacy rc=0
-  new_dir=$(_ceo_state_dir) || return 1
+  new_dir=$(_ceo_state_dir) || return 2
   # Not `|| true`. A state dir that cannot be created sends every later read and
   # write at a path that does not exist, and the first of those in _record_success
   # is a bare redirect under `set -e` — which aborts it *after* _bookkeeping_done
