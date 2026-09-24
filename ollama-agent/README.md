@@ -73,7 +73,9 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
 - `mcp` (optional) is a command string to launch an MCP server via stdio transport (e.g.
   `"node /opt/servers/db.js"`). When set, it must be a non-empty string; an empty or
   whitespace-only string is rejected at parse time (exit 2). A non-empty `--mcp` on the
-  command line overrides it.
+  command line overrides it. MCP tools are named `mcp__<tool>` in a `tools` allowlist. If the
+  allowlist admits none of the server's tools, the run is refused (exit 2) and the server is shut
+  down, whether the server came from the registry or from `--mcp`.
 
 ## Tools
 
