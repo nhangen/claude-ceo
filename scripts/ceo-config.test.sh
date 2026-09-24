@@ -334,6 +334,8 @@ EOF
   mkdir -p "$expected"
   cat > "$stub_dir/dscl" << EOF
 #!/bin/bash
+[ "\$#" -eq 4 ] && [ "\$1" = . ] && [ "\$2" = -read ] && [ "\$3" = "/Users/$(id -un)" ] && [ "\$4" = NFSHomeDirectory ] \\
+  || { echo "dscl stub: unexpected argv: \$*" >&2; exit 97; }
 echo "NFSHomeDirectory: $expected"
 EOF
   chmod +x "$stub_dir/dscl"
@@ -991,9 +993,9 @@ test_discovery_skips_mnt_candidates_on_macos() {
     set -x
     ceo_load_config || true
   " 2>&1) || rc=$?
-  local has_mnt=0
-  echo "$trace" | grep -qE '/mnt/[zc]/' && has_mnt=1
-  assert_eq "$has_mnt" "0" "discovery must not probe /mnt/ candidates on macos"
+  local mnt_lines
+  mnt_lines=$(grep -E '/mnt/[zc]/' <<<"$trace" | head -2)
+  [ -z "$mnt_lines" ] || fail_test "discovery must not probe /mnt/ candidates on macos" "$mnt_lines"
   assert_contains "$trace" "$TEST_HOME/Documents/Obsidian" "discovery must probe HOME candidate"
 }
 
