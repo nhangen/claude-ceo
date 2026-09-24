@@ -182,7 +182,7 @@ test_sync_help_works_with_no_vault_configured() {
   # flag. Help must answer before any vault resolution.
   local sandbox rc=0 out
   sandbox=$(mktemp -d)
-  out=$(env -i HOME="$sandbox" PATH="$PATH" bash "$CEO_CLI" playbook sync --help 2>&1) || rc=$?
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$sandbox" PATH="$PATH" bash "$CEO_CLI" playbook sync --help 2>&1) || rc=$?
   rm -rf "$sandbox"
   assert_eq "$rc" "0" "sync --help must exit 0 with no vault configured"
   assert_contains "$out" "Usage: ceo playbook sync" "usage must print with no vault"

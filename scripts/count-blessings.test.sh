@@ -285,34 +285,11 @@ _write_many_blessings() {
   } > "$CEO_DIR/blessings.md"
 }
 
-# The fixture must exceed the pipe buffer or the pre-fix pipeline works fine and the
-# test passes against broken code. Prove it size-dependently: the pre-fix shape must
-# fail on this pool and succeed on a 3-entry one. Not asserting 141 — the signature
-# differs across platforms (2 on GitHub's ubuntu runner).
-_pool_pipe_rc() {
-  local n="$1" rc=0
-  ( set -o pipefail
-    local i
-    for ((i = 0; i < n; i++)); do printf -- '- b %04d %s\n' "$i" "$(printf 'y%.0s' {1..200})"; done \
-      | cut -f2- | head -3 >/dev/null
-  ) || rc=$?
-  echo "$rc"
-}
-
 test_repick_survives_oversized_blessings_file() {
-  local big_rc small_rc
-  big_rc=$(_pool_pipe_rc 700)
-  small_rc=$(_pool_pipe_rc 3)
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$big_rc" -eq 0 ]; then
-    printf '  FAIL [%s] fixture no longer breaks the pre-fix `cut | head -3` form (rc=0), so it proves nothing\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  elif [ "$small_rc" -ne 0 ]; then
-    printf '  FAIL [%s] canary passing for the wrong reason: pre-fix form fails on a SMALL pool too (rc=%s)\n' "$CURRENT_TEST" "$small_rc"
-    _record_assertion_fail
-  fi
-
   _write_many_blessings 700
+  # The pool the pre-fix `cut -f2- | head -3` wrote: every `- ` line. It must clear
+  # the SIGPIPE threshold or the test passes against broken code.
+  assert_exceeds_sigpipe_threshold "$(grep '^- ' "$CEO_DIR/blessings.md")" "the blessings pool"
   local out rc=0
   out=$(bash "$CLI" repick 2>/dev/null) || rc=$?
   assert_eq "$rc" "0" "repick must not abort on a large blessings file"

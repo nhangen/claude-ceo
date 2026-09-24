@@ -301,8 +301,10 @@ def test_stdio_transport_recv_times_out_on_silent_server(tmp_path):
     transport = StdioMCPTransport([sys.executable, str(server)], timeout=1)
     transport.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     try:
+        start = time.monotonic()
         with pytest.raises(MCPTransportError, match="did not respond within"):
             transport.recv()
+        assert time.monotonic() - start < 5
     finally:
         transport.close()
 
