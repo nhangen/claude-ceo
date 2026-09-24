@@ -12,6 +12,9 @@
 #     gather ran, where the unset flags would default to a false all-clear.
 #   ceo_pending_items_preflight() — is there pending-drip work? 0 yes / 1 no,
 #     and the file read is trustworthy / 2 cannot tell, reason on stdout.
+#   ceo_ceo_branches_preflight() — are there ceo/* branches? 0 yes, in any repo /
+#     1 no, and repos.md and every git query were clean / 2 cannot tell, reason on
+#     stdout. Rows for clones absent on this host are skipped.
 #
 # Exports:
 #   VAULT, CEO_DIR, LOG_DIR, TODAY, NOW
@@ -40,13 +43,50 @@ TODAY=$(date +%Y-%m-%d)
 export NOW
 NOW=$(date +%H:%M)
 
+# Local vault reads. Tolerating a truncation's exit status (#293) must not also
+# tolerate an IO error: an unreadable file yields the same empty string as an
+# empty one, and the status evaluation would call that "quiet day". These flags
+# keep the two distinguishable. FILE_GATHER_DEGRADED is the aggregate the
+# CEO_GATHER_STATUS rollup reads; PENDING_GATHER_DEGRADED is scoped to the
+# Pending.md read, set only when the caller passes scope "pending", so an
+# unreadable Profile.md does not fail the pending-drip preflight.
+export FILE_GATHER_DEGRADED=0
+export FILE_GATHER_DEGRADED_REASONS=""
+export PENDING_GATHER_DEGRADED=0
+export PENDING_GATHER_DEGRADED_REASONS=""
+_file_gather_mark_degraded() {
+  FILE_GATHER_DEGRADED=1
+  FILE_GATHER_DEGRADED_REASONS="$FILE_GATHER_DEGRADED_REASONS
+$1"
+  if [ "${2:-}" = "pending" ]; then
+    PENDING_GATHER_DEGRADED=1
+    PENDING_GATHER_DEGRADED_REASONS="$PENDING_GATHER_DEGRADED_REASONS
+$1"
+  fi
+}
+
 # --- Pending approvals ---
 PENDING_FILE="$CEO_DIR/approvals/pending.md"
 if [ -f "$PENDING_FILE" ]; then
-export PENDING_COUNT
-PENDING_COUNT=$(grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null; true)
-export APPROVED_COUNT
-APPROVED_COUNT=$(grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null; true)
+  export PENDING_COUNT
+  _pcount_rc=0
+  PENDING_COUNT=$(grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null) || _pcount_rc=$?
+  case "$PENDING_COUNT" in
+    ''|*[!0-9]*)
+      _file_gather_mark_degraded "file-read-failed:$PENDING_FILE:pending-count:rc=$_pcount_rc"
+      PENDING_COUNT=0
+      ;;
+  esac
+  export APPROVED_COUNT
+  _acount_rc=0
+  APPROVED_COUNT=$(grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null) || _acount_rc=$?
+  case "$APPROVED_COUNT" in
+    ''|*[!0-9]*)
+      _file_gather_mark_degraded "file-read-failed:$PENDING_FILE:approved-count:rc=$_acount_rc"
+      APPROVED_COUNT=0
+      ;;
+  esac
+  unset _pcount_rc _acount_rc
 else
   export PENDING_COUNT=0
   export APPROVED_COUNT=0
@@ -140,18 +180,6 @@ ceo_pr_review_preflight() {
   return 1
 }
 
-# Same idea for local vault reads. Tolerating a truncation's exit status (#293)
-# must not also tolerate an IO error: an unreadable Pending.md yields the same
-# empty string as a Pending.md with nothing in it, and the status evaluation below
-# would call that "quiet day". This flag keeps the two distinguishable.
-export FILE_GATHER_DEGRADED=0
-export FILE_GATHER_DEGRADED_REASONS=""
-_file_gather_mark_degraded() {
-  FILE_GATHER_DEGRADED=1
-  FILE_GATHER_DEGRADED_REASONS="$FILE_GATHER_DEGRADED_REASONS
-$1"
-}
-
 # ceo_pending_items_preflight — the one place that answers "is there pending-drip work?"
 # for both callers (ceo-cron.sh's scheduler and the inline copy in ceo).
 #
@@ -171,28 +199,82 @@ ceo_pending_items_preflight() {
   if [ -n "${PENDING_ASK_QUESTIONS:-}" ]; then
     return 0
   fi
-  if [ "${FILE_GATHER_DEGRADED:-0}" -eq 1 ]; then
-    echo "Pending items search degraded, so an empty queue is not evidence of one: $(echo "${FILE_GATHER_DEGRADED_REASONS:-}" | tr '\n' ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+  if [ "${PENDING_GATHER_DEGRADED:-0}" -eq 1 ]; then
+    echo "Pending items search degraded, so an empty queue is not evidence of one: $(echo "${PENDING_GATHER_DEGRADED_REASONS:-}" | tr '\n' ' ' | sed -e 's/^ *//' -e 's/ *$//')"
     return 2
   fi
   return 1
 }
 
-# _gather_capture_lines <dest-var> <max-lines> <file> <pattern> — matching lines,
+# ceo_ceo_branches_preflight — the one place that answers "are there ceo/* branches?"
+# for both callers (ceo-cron.sh's scheduler and `ceo preflight`).
+#
+# Three outcomes:
+#   0  ceo/* branches found in any listed repo, even if another repo failed
+#   1  no branches, and repos.md and every git query were clean
+#   2  cannot tell — reason printed to stdout (missing/unreadable repos.md, or
+#      git failing on a listed directory that exists)
+# A listed path that is not a directory on this host is skipped, as
+# ceo-cleanup.sh does (REPO_MISSING): repos.md is synced across hosts, and
+# counting an absent clone as a failure would fail the cleanup preflight on
+# every run until someone edited the file.
+ceo_ceo_branches_preflight() {
+  local repos_file="$CEO_DIR/repos.md"
+  if [ ! -f "$repos_file" ]; then
+    echo "repos file missing: $repos_file"
+    return 2
+  fi
+  local repos_lines rc=0 err
+  err=$(mktemp) || err=""
+  repos_lines=$(grep "^|" "$repos_file" 2>"${err:-/dev/null}") || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    local detail=""
+    [ -n "$err" ] && detail=$(head -c 200 "$err" 2>/dev/null)
+    [ -n "$err" ] && rm -f "$err"
+    echo "cannot read repos file '$repos_file' (grep rc=$rc${detail:+: $detail})"
+    return 2
+  fi
+  [ -n "$err" ] && rm -f "$err"
+
+  local branch_prefix="${1-ceo/}" failures=""
+  while IFS= read -r repo_path; do
+    repo_path=$(echo "$repo_path" | xargs)
+    [ -z "$repo_path" ] && continue
+    [ -d "$repo_path" ] || continue
+    local git_out git_rc=0 git_err
+    git_err=$(mktemp) || git_err=""
+    git_out=$(git -C "$repo_path" branch --list "${branch_prefix}*" 2>"${git_err:-/dev/null}") || git_rc=$?
+    if [ "$git_rc" -ne 0 ] && [ "$git_rc" -ne 1 ]; then
+      local err_detail=""
+      [ -n "$git_err" ] && err_detail=$(head -c 200 "$git_err" 2>/dev/null | tr '\n' ' ')
+      failures="$failures; '$repo_path' (rc=$git_rc${err_detail:+: $err_detail})"
+    fi
+    [ -n "$git_err" ] && rm -f "$git_err"
+    [ -n "$git_out" ] && return 0
+  done < <(echo "$repos_lines" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $3}')
+
+  if [ -n "$failures" ]; then
+    echo "git failure checking branches in ${failures#; }"
+    return 2
+  fi
+  return 1
+}
+
+# _gather_capture_lines <dest-var> <max-lines> <file> <pattern> [scope] — matching lines,
 # capped, without the SIGPIPE that `grep … | head -N` earns under pipefail. Caps
 # inside grep so nothing can signal, then splits grep's exit status three ways:
 # 0 matched, 1 legitimately empty (a valid state — the pending-drip preflight
 # skips on it), anything else an IO/tooling error that must not masquerade as
 # empty. Only the third case marks the gather degraded.
 _gather_capture_lines() {
-  local _dest="$1" _max="$2" _file="$3" _pattern="$4"
+  local _dest="$1" _max="$2" _file="$3" _pattern="$4" _scope="${5:-}"
   local _out _rc=0 _err _detail=""
   _err=$(mktemp) || _err=""
   _out=$(grep -n -m "$_max" "$_pattern" "$_file" 2>"${_err:-/dev/null}") || _rc=$?
   if [ "$_rc" -gt 1 ]; then
     [ -n "$_err" ] && _detail=$(head -c 200 "$_err" 2>/dev/null)
     echo "WARN: grep on $_file failed (rc=$_rc): $_detail" >&2
-    _file_gather_mark_degraded "file-read-failed:$_file:rc=$_rc"
+    _file_gather_mark_degraded "file-read-failed:$_file:rc=$_rc" "$_scope"
     _out=""
   fi
   [ -n "$_err" ] && rm -f "$_err"
@@ -505,15 +587,19 @@ fi
 
 # --- Pending.md outstanding questions (top entries only) ---
 # Pre-extract unchecked items so Claude doesn't need to read the full file.
-# Matches the same pattern PENDING_COUNT uses (line 38). Cap at 20 lines to
-# bound cost.
+# Matches the same pattern PENDING_COUNT uses. Cap at 20 lines to bound cost.
+# An absent Pending.md is treated as legitimately empty (returns 1 / quiet day) —
+# ceo_require_vault covers an unmounted vault root. If the file exists but cannot
+# be read (permissions/IO error), _gather_capture_lines marks PENDING_GATHER_DEGRADED
+# so the preflight returns 2 ("cannot tell") rather than claiming no work. An
+# unsearchable vault root also reads as absent here, since `-f` cannot see past it.
 PENDING_FILE="$VAULT/Pending.md"
 if [ -f "$PENDING_FILE" ]; then
 export PENDING_ASK_QUESTIONS
 # See _gather_capture_lines: caps inside grep so the truncation can't SIGPIPE (#293),
 # and separates "no unchecked items" from "could not read the file" — a bare `|| true`
 # would report an unreadable Pending.md as a quiet day.
-_gather_capture_lines PENDING_ASK_QUESTIONS 20 "$PENDING_FILE" '^- \[ \]'
+_gather_capture_lines PENDING_ASK_QUESTIONS 20 "$PENDING_FILE" '^- \[ \]' pending
 else
   export PENDING_ASK_QUESTIONS=""
 fi

@@ -49,27 +49,20 @@ mkdir -p "$reports_dir" || {
 }
 
 started=$(date +%s)
-err=$(mktemp) || { echo "cannot create a temp file for launcher stderr" >&2; exit 1; }
-trap 'rm -f "$err"' EXIT
 "$bin" \
   --ledger-root "$CEO_DIR/agents" \
   --reports-dir "$reports_dir" \
-  --agents-dir "${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}" 2>"$err"
+  --agents-dir "${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
 
 rc=$?
-cat "$err" >&2
 
-# The launcher skips a ledger file it cannot read, warns on stderr, and still
-# exits 0, having already rewritten the month's ranked snapshot as an unranked
-# one. This cannot undo that overwrite; it stops the run being recorded as a
-# success, since nothing downstream reads a zero-exit run's stderr. Only this
-# warning is matched: the launcher's other WARNING lines (an unparseable
-# review_by, an unterminated frontmatter fence) drop one entry, not a file, and
-# would otherwise turn the playbook red every week over a single malformed
-# consult. nhangen/llm-tools#767 tracks the upstream --strict fix.
-if [ "$rc" -eq 0 ] && grep -q '^WARNING: skipping unreadable file' "$err"; then
-  echo "agent-scope skipped unreadable input; refusing to record a partial scorecard as success" >&2
-  rc=1
+# Upstream agent-scope (nhangen/llm-tools#770) exits 3 and writes nothing on
+# partial input or when no agent reaches the ranking threshold. ceo-cron keeps
+# only the last stderr lines, cut to 120 chars, so this line has to carry the
+# diagnosis on its own and name both causes. --lenient is deliberately never
+# passed, so the launcher's advice to use it does not apply here.
+if [ "$rc" -eq 3 ]; then
+  echo "agent-scope rc=3: partial input or no agent ranked; snapshot NOT written (runner never passes --lenient)" >&2
 fi
 
 # A launcher that exits 0 without writing is the failure doctor cannot see until

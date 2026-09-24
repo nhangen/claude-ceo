@@ -258,6 +258,18 @@ test_no_registry_flag_field_falls_back_to_settings() {
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "legacy body" \
     "an entry without a discord_report field must fall back to the settings allow-list (backward compat)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+
+  # #424 asked for error lines on the two failure causes, not on the third. A
+  # legitimately absent flag is the steady state, so an error line here would
+  # fire on every cron run. Pinned on the two error needles only, which leaves
+  # room for a future informational line on the absent arm.
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_not_contains "$log" "registry file not found" \
+    "a present registry with a legitimately absent flag must not log a not-found error"
+  assert_not_contains "$log" "registry jq query failed" \
+    "a well-formed registry must not log a jq failure"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_registry_path_is_not_hardcoded_in_discord_report() {
@@ -275,6 +287,54 @@ test_registry_path_is_not_hardcoded_in_discord_report() {
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "custom brief" \
     "ceo-discord-report.sh must resolve registry via CEO_REGISTRY_FILE override"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# --- #424: registry resolution failures must be visible in the debug log, not
+# silent. Both arms also assert delivery, because the log line and the `echo
+# absent` that keeps the caller alive are the same edit: without the delivery
+# assertion, dropping `echo absent` leaves the suite green while a live run
+# dies on `enabled: unbound variable` and posts nothing. ---
+
+test_missing_registry_logs_debug_line_naming_path() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local missing_reg="$TMP/nonexistent-registry.json"
+
+  printf 'brief body' | CEO_REGISTRY_FILE="$missing_reg" "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry file not found for discord_report ($missing_reg)" \
+    "missing registry file must be logged in debug log with resolved path"
+  assert_contains "$log" "registry file not found for discord_prior_day_report ($missing_reg)" \
+    "the prior-day call site must be distinguishable from the discord_report one"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "brief body" \
+    "a missing registry must still deliver via the settings allow-list"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
+test_malformed_registry_logs_jq_failure_debug_line() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local bad_reg="$TMP/bad-registry.json"
+  echo "not-valid-json{{{" > "$bad_reg"
+
+  printf 'brief body' | CEO_REGISTRY_FILE="$bad_reg" "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry jq query failed for discord_report ($bad_reg)" \
+    "malformed registry JSON must log jq query failure in debug log"
+  assert_contains "$log" "registry jq query failed for discord_prior_day_report ($bad_reg)" \
+    "the prior-day call site must log its own failure, not share the first one's line"
+  # Couples to jq's wording on purpose: carrying the cause is the whole point of
+  # the line, and "parse error" is what separates a corrupt file from an EACCES
+  # ("Could not open file ... Permission denied"), which need different repairs.
+  assert_contains "$log" "parse error" \
+    "the failure line must carry jq's own message, not just the fact of failure"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "brief body" \
+    "a malformed registry must still deliver via the settings allow-list"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 4))
 }
 
 test_records_last_deliver_timestamp_on_successful_post() {
