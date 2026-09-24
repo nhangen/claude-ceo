@@ -1632,26 +1632,6 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   fi
   [ -z "$AGENT_TASK" ] && AGENT_TASK="$TRIGGER"
 
-  # Extract any MCP server declared in the registry task spec (#457).
-  # Threaded as --mcp directly into the agent command (never via
-  # CEO_OLLAMA_AGENT_CMD, which splits on spaces and would break commands with
-  # arguments).
-  AGENT_MCP=""
-  if [ -f "$AGENT_REGISTRY" ]; then
-    AGENT_MCP=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' "$AGENT_REGISTRY" 2>/dev/null || true)
-  elif [ -f "$CEO_DIR/$AGENT_REGISTRY" ]; then
-    AGENT_MCP=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' "$CEO_DIR/$AGENT_REGISTRY" 2>/dev/null || true)
-  elif [[ "$AGENT_REGISTRY" =~ ^[[:space:]]*\{ ]]; then
-    AGENT_MCP=$(printf '%s' "$AGENT_REGISTRY" | jq -r --arg t "$AGENT_TASK" '.tasks[$t].mcp // empty' 2>/dev/null || true)
-  fi
-  # Expanded below as ${_mcp_arg[@]+"..."}: bash 3.2 treats "${empty[@]}" under
-  # `set -u` as an unbound variable, and every task without an mcp field leaves
-  # this empty. The failure surfaced as "bridge exited 1", blaming the bridge.
-  _mcp_arg=()
-  if [ -n "$AGENT_MCP" ]; then
-    _mcp_arg=(--mcp "$AGENT_MCP")
-  fi
-
   # The bridge CLI requires --task (the natural-language instruction); --task-name
   # only selects the registry entry's model/tier/tools. The playbook body (the
   # markdown after the frontmatter) is that instruction.
@@ -1677,8 +1657,9 @@ if [ "$RUNNER" = "ollama-agent" ]; then
 
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
+  # No --mcp here: cli.py reads tasks.<name>.mcp from --registry itself.
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
-    --registry "$AGENT_REGISTRY" ${_mcp_arg[@]+"${_mcp_arg[@]}"} --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
+    --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"

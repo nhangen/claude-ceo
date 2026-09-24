@@ -235,7 +235,7 @@ def test_cli_no_skills_suppresses_catalog_and_tool(tmp_path, monkeypatch, capsys
 def _stub_mcp(monkeypatch, closed, *, init_raises=False):
     class FT:
         def __init__(self, *a, **k):
-            pass
+            closed["cmd"] = a[0] if a else k.get("command")
 
         def close(self):
             closed["v"] = True
@@ -262,6 +262,7 @@ def test_cli_mcp_bridges_tools_and_closes_transport(tmp_path, monkeypatch, capsy
                    "--mcp", "fake-server arg"])
     assert rc == 0
     assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "fake-server arg"
     assert "mcp: 1 tools" in capsys.readouterr().err
     assert closed["v"] is True   # finally teardown ran
 
@@ -274,6 +275,7 @@ def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, caps
                    "--mcp", "broken-server"])
     assert rc == 1
     assert "mcp bridge failed for 'broken-server'" in capsys.readouterr().err
+    assert closed["cmd"] == "broken-server"
     assert closed["v"] is True
 
 
@@ -294,6 +296,29 @@ def test_cli_task_spec_mcp_bridges_when_omitted_on_cli(tmp_path, monkeypatch, ca
                    "--registry", reg, "--task-name", "mcp_task"])
     assert rc == 0
     assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "custom-server --opt"
+    assert closed["v"] is True
+
+
+def test_cli_operator_explicit_mcp_overrides_registry_spec(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "registry-server --opt",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task",
+                   "--mcp", "operator-override-server"])
+    assert rc == 0
+    assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "operator-override-server"
     assert closed["v"] is True
 
 
