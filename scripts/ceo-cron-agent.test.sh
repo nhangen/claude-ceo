@@ -429,7 +429,8 @@ test_runner_ollama_agent_no_mcp_omits_mcp_flag() {
   local rc=0
   bash "$CRON" agent-plain >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "plain agent task exits 0"
-  assert_not_contains "$(cat "$HOME/agent-argv.txt" 2>/dev/null)" "--mcp" "--mcp must be absent from cron dispatch argv for task without mcp"
+  [ -f "$HOME/agent-invoked.txt" ] || { printf '  FAIL [%s] bridge must be invoked for a no-mcp task\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
+  assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--mcp" "--mcp must be absent from cron dispatch argv for task without mcp"
 }
 
 run_tests

@@ -54,7 +54,7 @@ Entry shape (`tasks.<name>`):
   "min_score": 0.9,            // optional; refuse unless the model earned this on eval_task
   "eval_task": "think-02",     // required WHEN min_score is set ("*" = cross-task mean)
   "eval_model": null,          // optional; override which model's score is checked
-  "mcp": null                  // optional; MCP stdio command string (must be a non-empty string)
+  "mcp": null                  // optional; MCP server command, launched over stdio
 }
 ```
 
@@ -71,8 +71,9 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   (advisory, never a refusal). Pair them so the model can make surgical edits instead of
   rewriting whole files.
 - `mcp` (optional) is a command string to launch an MCP server via stdio transport (e.g.
-  `"node /opt/servers/db.js"`). When set, it must be a non-empty string (empty or
-  whitespace-only strings are rejected at parse time).
+  `"node /opt/servers/db.js"`). When set, it must be a non-empty string; an empty or
+  whitespace-only string is rejected at parse time (exit 2). A non-empty `--mcp` on the
+  command line overrides it.
 
 ## Tools
 
