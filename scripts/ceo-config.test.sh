@@ -26,7 +26,6 @@ test_load_config_returns_nonzero_when_unresolved() {
     ceo_load_config
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "ceo_load_config must return 1 when no source resolves CEO_VAULT"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_load_config_honors_env_bypass() {
@@ -38,7 +37,6 @@ test_load_config_honors_env_bypass() {
     [ \"\$CEO_VAULT\" = \"$TEST_HOME/explicit\" ]
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "explicit CEO_VAULT in env must short-circuit discovery"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_load_config_finds_legacy_candidate() {
@@ -52,7 +50,6 @@ test_load_config_finds_legacy_candidate() {
   " 2>/dev/null) || rc=$?
   assert_eq "$rc" "0" "ceo_load_config must succeed when a candidate vault exists"
   assert_eq "$vault_path" "$TEST_HOME/Documents/Obsidian" "must export the discovered vault path"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_require_vault_exits_when_unresolved() {
@@ -63,7 +60,6 @@ test_require_vault_exits_when_unresolved() {
     ceo_require_vault
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "ceo_require_vault must exit 1 when no source resolves CEO_VAULT"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_require_vault_returns_zero_when_resolved() {
@@ -74,7 +70,6 @@ test_require_vault_returns_zero_when_resolved() {
     ceo_require_vault
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ceo_require_vault must return 0 when CEO_VAULT resolves"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_report_fails_loud_on_unresolved_vault() {
@@ -89,7 +84,6 @@ test_ceo_report_fails_loud_on_unresolved_vault() {
     printf '  FAIL [%s] silent provision under default path\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_callers_fail_loud_on_unresolved_vault() {
@@ -103,14 +97,12 @@ test_ceo_callers_fail_loud_on_unresolved_vault() {
       *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
     esac
   done
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_help_works_on_fresh_host() {
   local rc=0
   env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo" help >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ceo help must exit 0 on a host with no CEO_VAULT"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_registry_validate_accepts_integer_current_schema() {
@@ -124,7 +116,6 @@ test_registry_validate_accepts_integer_current_schema() {
     ceo_registry_validate '$registry'
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "integer schema_version at current version must validate"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 _validate_rc() {
@@ -142,40 +133,34 @@ test_registry_validate_non_integer_schema_is_malformed() {
   local registry="$TEST_HOME/registry.json"
   printf '{"schema_version":1.5,"playbooks":[]}\n' > "$registry"
   assert_eq "$(_validate_rc "$registry")" "3" "float schema_version has no parseable integer -> malformed (3), not downgrade"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_registry_validate_string_schema_is_malformed() {
   local registry="$TEST_HOME/registry.json"
   printf '{"schema_version":"2","playbooks":[]}\n' > "$registry"
   assert_eq "$(_validate_rc "$registry")" "3" "string schema_version must not coerce -> malformed (3)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_registry_validate_missing_field_is_malformed() {
   local registry="$TEST_HOME/registry.json"
   printf '{"playbooks":[]}\n' > "$registry"
   assert_eq "$(_validate_rc "$registry")" "3" "absent schema_version -> malformed (3), retryable"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_registry_validate_torn_json_is_malformed() {
   local registry="$TEST_HOME/registry.json"
   printf '{"schema_version":3,"playbo' > "$registry"
   assert_eq "$(_validate_rc "$registry")" "3" "truncated JSON (mid-sync read) -> malformed (3), retryable"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_registry_validate_genuine_downgrade_is_code_2() {
   local registry="$TEST_HOME/registry.json"
   printf '{"schema_version":2,"playbooks":[]}\n' > "$registry"
   assert_eq "$(_validate_rc "$registry")" "2" "parseable integer below current -> downgrade (2), fail fast"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_registry_validate_missing_file_is_code_1() {
   assert_eq "$(_validate_rc "$TEST_HOME/does-not-exist.json")" "1" "absent registry file -> not-found (1)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # ceo_inbox_has_unchecked — preflight helper that scans both the legacy
@@ -196,7 +181,6 @@ test_inbox_has_unchecked_returns_nonzero_when_no_files_exist() {
   mkdir -p "$TEST_HOME/CEO"
   _inbox_check "$TEST_HOME/CEO" || rc=$?
   assert_eq "$rc" "1" "no inbox files anywhere → nothing to do"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_finds_legacy_inbox_md() {
@@ -205,7 +189,6 @@ test_inbox_has_unchecked_finds_legacy_inbox_md() {
   printf -- '- [ ] something\n' > "$TEST_HOME/CEO/inbox.md"
   _inbox_check "$TEST_HOME/CEO" || rc=$?
   assert_eq "$rc" "0" "unchecked item in legacy inbox.md must trigger preflight"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_skips_legacy_when_all_checked() {
@@ -214,7 +197,6 @@ test_inbox_has_unchecked_skips_legacy_when_all_checked() {
   printf -- '- [x] done\n' > "$TEST_HOME/CEO/inbox.md"
   _inbox_check "$TEST_HOME/CEO" || rc=$?
   assert_eq "$rc" "1" "all-checked legacy inbox.md must not trigger preflight"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_finds_per_host_shadow_file() {
@@ -223,7 +205,6 @@ test_inbox_has_unchecked_finds_per_host_shadow_file() {
   printf -- '- [ ] from-mac\n' > "$TEST_HOME/CEO/inbox/mac-mini.md"
   _inbox_check "$TEST_HOME/CEO" || rc=$?
   assert_eq "$rc" "0" "unchecked item in per-host shadow must trigger preflight"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_skips_per_host_when_all_checked() {
@@ -233,7 +214,6 @@ test_inbox_has_unchecked_skips_per_host_when_all_checked() {
   printf -- '- [x] done-on-wsl\n' > "$TEST_HOME/CEO/inbox/wsl-host.md"
   _inbox_check "$TEST_HOME/CEO" || rc=$?
   assert_eq "$rc" "1" "all-checked per-host shadow files must not trigger preflight"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_with_legacy_clean_and_shadow_dirty() {
@@ -243,7 +223,6 @@ test_inbox_has_unchecked_with_legacy_clean_and_shadow_dirty() {
   printf -- '- [ ] shadow-pending\n' > "$TEST_HOME/CEO/inbox/host-b.md"
   _inbox_check "$TEST_HOME/CEO" || rc=$?
   assert_eq "$rc" "0" "must find unchecked items even when legacy is clean"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 _inbox_check_out() {
@@ -264,7 +243,6 @@ test_inbox_has_unchecked_returns_state_2_when_legacy_inbox_unreadable() {
   chmod 644 "$TEST_HOME/CEO/inbox.md"
   assert_contains "$res" "RC=2" "unreadable legacy inbox.md must return rc 2 (cannot tell)"
   assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_returns_state_2_when_shadow_file_unreadable() {
@@ -275,7 +253,6 @@ test_inbox_has_unchecked_returns_state_2_when_shadow_file_unreadable() {
   chmod 644 "$TEST_HOME/CEO/inbox/host-c.md"
   assert_contains "$res" "RC=2" "unreadable per-host shadow file must return rc 2 (cannot tell)"
   assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_returns_state_2_when_shadow_dir_unreadable() {
@@ -290,7 +267,6 @@ test_inbox_has_unchecked_returns_state_2_when_shadow_dir_unreadable() {
   chmod 755 "$TEST_HOME/CEO/inbox"
   assert_contains "$res" "RC=2" "unreadable inbox directory must return rc 2 (cannot tell)"
   assert_contains "$res" "inbox scan degraded" "and emit degraded reason"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_readable_empty_dir_is_still_a_clean_one() {
@@ -299,7 +275,6 @@ test_inbox_has_unchecked_readable_empty_dir_is_still_a_clean_one() {
   mkdir -p "$TEST_HOME/CEO/inbox"
   local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
   assert_contains "$res" "RC=1" "a readable empty inbox dir is a trustworthy no-work"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_has_unchecked_prefers_work_present_over_unreadable_file() {
@@ -310,7 +285,6 @@ test_inbox_has_unchecked_prefers_work_present_over_unreadable_file() {
   local res; res=$(_inbox_check_out "$TEST_HOME/CEO")
   chmod 644 "$TEST_HOME/CEO/inbox/host-bad.md"
   assert_contains "$res" "RC=0" "readable unchecked items outrank unreadable files"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_resolve_real_home_ignores_env_HOME() {
@@ -335,7 +309,6 @@ test_resolve_real_home_ignores_env_HOME() {
     ceo_resolve_real_home
   ")
   assert_eq "$got" "$expected" "ceo_resolve_real_home must use passwd, not \$HOME"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_resolve_real_home_falls_back_to_dscl_when_getent_returns_empty() {
@@ -343,11 +316,6 @@ test_resolve_real_home_falls_back_to_dscl_when_getent_returns_empty() {
   # output (Homebrew gnu-getent is host-resolution only, not passwd), the
   # resolver must fall through to dscl on Darwin. With the old elif shape
   # the dscl branch was unreachable once command -v getent succeeded.
-  if [ "$(uname)" != "Darwin" ]; then
-    printf "  SKIP [%s] non-Darwin\n" "$CURRENT_TEST"
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-    return 0
-  fi
   local stub_dir="$TEST_HOME/stubs"
   mkdir -p "$stub_dir"
   cat > "$stub_dir/getent" << 'EOF'
@@ -356,24 +324,29 @@ exit 1
 EOF
   chmod +x "$stub_dir/getent"
 
-  local got expected
-  expected=$(eval echo "~$(id -un)")
-  if [ ! -d "$expected" ]; then
-    if [ -n "${CI:-}" ]; then
-      printf '  FAIL [%s] CI environment must have a real home for the test user\n' "$CURRENT_TEST"
-      FAILS=$((FAILS + 1))
-      return 0
-    fi
-    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
-    return 0
-  fi
+  cat > "$stub_dir/uname" << 'EOF'
+#!/bin/bash
+echo "Darwin"
+EOF
+  chmod +x "$stub_dir/uname"
+
+  local expected="$TEST_HOME/real_home"
+  mkdir -p "$expected"
+  cat > "$stub_dir/dscl" << EOF
+#!/bin/bash
+[ "\$#" -eq 4 ] && [ "\$1" = . ] && [ "\$2" = -read ] && [ "\$3" = "/Users/$(id -un)" ] && [ "\$4" = NFSHomeDirectory ] \\
+  || { echo "dscl stub: unexpected argv: \$*" >&2; exit 97; }
+echo "NFSHomeDirectory: $expected"
+EOF
+  chmod +x "$stub_dir/dscl"
+
+  local got
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME=/tmp/fake PATH="$stub_dir:/usr/bin:/bin" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_resolve_real_home
   ")
   assert_eq "$got" "$expected" "must fall through to dscl when getent on PATH returns empty"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pin_home_or_warn_emits_warn_on_resolver_failure() {
@@ -395,7 +368,6 @@ test_pin_home_or_warn_emits_warn_on_resolver_failure() {
     *) printf '  FAIL [%s] expected WARN line on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
        FAILS=$((FAILS + 1)) ;;
   esac
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_resolve_plugin_cli_returns_runtime_and_abs_path() {
@@ -416,7 +388,6 @@ test_resolve_plugin_cli_returns_runtime_and_abs_path() {
   assert_eq "$line1" "bun" "default runtime should be bun"
   assert_eq "$line2" "$TEST_HOME/.claude/plugins/cache/nhangen-tools/token-scope/1.3.1/src/cli.ts" \
     "second line should be absolute entry path"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_resolve_plugin_cli_picks_latest_version() {
@@ -436,7 +407,6 @@ test_resolve_plugin_cli_picks_latest_version() {
   local picked
   picked=$(printf '%s\n' "$out" | sed -n '2p')
   assert_eq "$picked" "$base/1.3.1/src/cli.ts" "resolver must pick the highest version via sort -V"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_resolve_plugin_cli_fails_when_plugin_absent() {
@@ -447,7 +417,6 @@ test_resolve_plugin_cli_fails_when_plugin_absent() {
     ceo_resolve_plugin_cli 'nhangen-tools/token-scope' 'src/cli.ts'
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "resolver must return 1 when no cache directory exists"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_resolve_plugin_cli_fails_when_entry_missing() {
@@ -461,7 +430,6 @@ test_resolve_plugin_cli_fails_when_entry_missing() {
     ceo_resolve_plugin_cli 'nhangen-tools/token-scope' 'src/cli.ts'
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "resolver must return 1 when entry file is missing"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_resolve_plugin_cli_honors_runtime_override() {
@@ -479,7 +447,6 @@ test_resolve_plugin_cli_honors_runtime_override() {
   local runtime
   runtime=$(printf '%s\n' "$out" | sed -n '1p')
   assert_eq "$runtime" "node" "runtime arg must override the bun default"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # --- ceo_write_alert_frontmatter / ceo_read_alert_field ---
@@ -510,7 +477,6 @@ test_write_alert_frontmatter_emits_required_fields() {
     *) printf '  FAIL [%s] missing host\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
   esac
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "---" "last line must be closing delimiter"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_write_alert_frontmatter_rejects_invalid_status() {
@@ -526,7 +492,6 @@ test_write_alert_frontmatter_rejects_invalid_status() {
     *) printf '  FAIL [%s] expected error on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
        FAILS=$((FAILS + 1)) ;;
   esac
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_write_alert_frontmatter_accepts_clear_and_firing() {
@@ -539,7 +504,6 @@ test_write_alert_frontmatter_accepts_clear_and_firing() {
     " >/dev/null 2>&1 || rc=$?
     assert_eq "$rc" "0" "status=$s must be accepted"
   done
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_write_alert_frontmatter_rejects_unknown_status() {
@@ -550,7 +514,6 @@ test_write_alert_frontmatter_rejects_unknown_status() {
     ceo_write_alert_frontmatter --status=unknown --since=t --host=h --last-check=t
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "status=unknown is reserved as a consumer-side corruption sentinel and must not be writable"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_write_alert_frontmatter_requires_since_and_host() {
@@ -568,7 +531,6 @@ test_write_alert_frontmatter_requires_since_and_host() {
     ceo_write_alert_frontmatter --status=clear --since=t --last-check=t
   " >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "missing --host must return 1"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_write_alert_frontmatter_emits_extra_fields() {
@@ -582,7 +544,6 @@ test_write_alert_frontmatter_emits_extra_fields() {
   for kv in "dump_folder_gb: 20" "c_free_gb: 999" "measurement_failed: 0"; do
     assert_contains "$out" "$kv" "missing $kv in output"
   done
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_read_alert_field_parses_timestamps_with_colons() {
@@ -602,7 +563,6 @@ EOF
     ceo_read_alert_field '$f' since
   ")
   assert_eq "$got" "2026-01-01T00:00:00-0500" "since must round-trip including colons (regression: -F': *' bug)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_read_alert_field_rc1_for_missing_field() {
@@ -620,7 +580,6 @@ EOF
   ") || rc=$?
   assert_eq "$got" "" "missing field must print empty"
   assert_eq "$rc"  "1" "missing field must return rc=1 so callers distinguish corruption from absence"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_read_alert_field_rc2_for_missing_file() {
@@ -632,7 +591,6 @@ test_read_alert_field_rc2_for_missing_file() {
   ") || rc=$?
   assert_eq "$got" "" "missing file must print empty"
   assert_eq "$rc"  "2" "missing file must return rc=2 (legitimate first-run, distinct from corruption)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_read_alert_field_anchored_match() {
@@ -652,7 +610,6 @@ EOF
   ") || rc=$?
   assert_eq "$rc"  "1" "field 'host' must not match line 'hostname:' (anchored match)"
   assert_eq "$got" "" "no spurious value when only a prefix-named field is present"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_read_alert_field_rc0_for_present_empty_value() {
@@ -666,7 +623,6 @@ test_read_alert_field_rc0_for_present_empty_value() {
   ") || rc=$?
   assert_eq "$rc"  "0" "field present with empty value is rc=0 (not rc=1) — value-empty != field-absent"
   assert_eq "$got" "" "empty value prints empty"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_write_and_read_roundtrip() {
@@ -691,7 +647,6 @@ test_write_and_read_roundtrip() {
   assert_eq "$since" "2026-01-01T00:00:00-0500" "round-trip since (colons preserved)"
   assert_eq "$host" "ml1" "round-trip host"
   assert_eq "$dump" "20" "round-trip extra field"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_require_vault_rejects_empty_home() {
@@ -704,16 +659,10 @@ test_require_vault_rejects_empty_home() {
     source '$LIB'
     ceo_require_vault
   " 2>&1) || rc=$?
-  
-  # Manual assertion count for the custom rc check
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$rc" -eq 0 ]; then
-    printf '  FAIL [%s] ceo_require_vault must exit non-zero when HOME is empty (got 0)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  
+  local is_nonzero=0
+  [ "$rc" -ne 0 ] && is_nonzero=1
+  assert_eq "$is_nonzero" "1" "ceo_require_vault must exit non-zero when HOME is empty"
   assert_contains "$out" "HOME" "empty-HOME error must mention HOME"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
@@ -743,7 +692,6 @@ test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
   " >/dev/null 2>&1 || true
   fails_value=$(cat "$counter_file" 2>/dev/null || echo missing)
   assert_eq "$fails_value" "1" "corrupted counter must reset to 1 on next failure"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fatal_escalation_desktop_notify_guarded() {
@@ -793,7 +741,6 @@ test_pr_sources_path_uses_home() {
   local got
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path")
   assert_eq "$got" "$TEST_HOME/.ceo/pr-sources.json" "pr-sources path must be under \$HOME/.ceo"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_path_rejects_empty_home() {
@@ -802,7 +749,6 @@ test_pr_sources_path_rejects_empty_home() {
   env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path" >/dev/null 2>&1 || rc=$?
   [ "$rc" -ne 0 ] && rc=1
   assert_eq "$rc" "1" "ceo_pr_sources_path must reject empty HOME (mirrors sibling :?: guard)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_github_accounts_reads_config() {
@@ -811,7 +757,6 @@ test_pr_sources_github_accounts_reads_config() {
   local got
   got=$(bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "nhangenam,nhangen" "must list both configured accounts in order"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_github_accounts_empty_array_returns_empty_when_no_gh() {
@@ -821,7 +766,6 @@ test_pr_sources_github_accounts_empty_array_returns_empty_when_no_gh() {
   # PATH stripped so gh discovery fallback can't fire.
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'")
   assert_eq "$got" "" "empty accounts array with no gh available → empty stdout"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_exclude_orgs() {
@@ -830,14 +774,12 @@ test_pr_sources_exclude_orgs() {
   local got
   got=$(bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_exclude_orgs '$cfg'" | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "dependabot,copilot" "exclude_orgs must round-trip"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_dedupe_default_true() {
   local rc=0
   bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_dedupe '$TEST_HOME/missing.json'" || rc=$?
   assert_eq "$rc" "0" "missing config defaults dedupe=true (rc=0)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_dedupe_explicit_false() {
@@ -846,7 +788,6 @@ test_pr_sources_dedupe_explicit_false() {
   local rc=0
   bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_dedupe '$cfg'" || rc=$?
   assert_eq "$rc" "1" "explicit dedupe:false returns rc=1"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_malformed_json_falls_through() {
@@ -855,7 +796,6 @@ test_pr_sources_malformed_json_falls_through() {
   local got
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null)
   assert_eq "$got" "" "malformed JSON must not crash; falls through to empty when no gh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # Stub-gh tests: place a fake `gh` on PATH that emits a known `gh auth status`
@@ -907,7 +847,6 @@ test_pr_sources_github_accounts_discovers_via_gh_when_config_missing() {
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "stubuser1,stubuser2" "missing config must fall through to gh discovery"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_github_accounts_empty_array_triggers_discovery() {
@@ -919,7 +858,6 @@ test_pr_sources_github_accounts_empty_array_triggers_discovery() {
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "stubuser1,stubuser2" "empty accounts array must fall through to gh discovery"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_github_accounts_malformed_triggers_discovery() {
@@ -929,7 +867,6 @@ test_pr_sources_github_accounts_malformed_triggers_discovery() {
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "stubuser1,stubuser2" "malformed JSON must trigger gh discovery (not silently return empty)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_github_accounts_gh_auth_failure_returns_empty() {
@@ -938,7 +875,6 @@ test_pr_sources_github_accounts_gh_auth_failure_returns_empty() {
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null) || rc=$?
   assert_eq "$got" "" "gh auth status failure → empty stdout, no crash"
   assert_eq "$rc" "0" "gh auth failure must not propagate non-zero rc"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_gitlab_usernames_reads_config() {
@@ -946,7 +882,6 @@ test_pr_sources_gitlab_usernames_reads_config() {
   printf '%s\n' '{"gitlab":{"usernames":["nhangen","alt-user"]}}' > "$cfg"
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_gitlab_usernames '$cfg'" | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "nhangen,alt-user" "gitlab usernames must round-trip from config"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_exclude_orgs_rejects_garbage() {
@@ -959,7 +894,6 @@ test_pr_sources_exclude_orgs_rejects_garbage() {
   printf '%s\n' '{"github":{"exclude_orgs":["dependabot","valid-org","bad org with space","invalid!chars"]}}' > "$cfg"
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_exclude_orgs '$cfg'" | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "dependabot,valid-org" "exclude_orgs validator must drop garbage entries"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_setup_skips_non_tty() {
@@ -978,7 +912,6 @@ test_pr_sources_setup_skips_non_tty() {
     accounts=0
   fi
   assert_eq "${accounts:-0}" "0" "non-tty stdin must not silently select any accounts"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pr_sources_setup_writes_valid_json_when_no_sources() {
@@ -990,7 +923,6 @@ test_pr_sources_setup_writes_valid_json_when_no_sources() {
     jq empty "$TEST_HOME/.ceo/pr-sources.json" 2>/dev/null || rc=$?
   fi
   assert_eq "$rc" "0" "setup must either skip cleanly or write valid JSON"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_artifact_expand_substitutes_today_and_host() {
@@ -998,7 +930,6 @@ test_artifact_expand_substitutes_today_and_host() {
   today=$(date +%Y-%m-%d)
   out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/token/{TODAY}-{HOST}.md' 'testhost'")
   assert_eq "$out" "CEO/reports/token/${today}-testhost.md" "ceo_artifact_expand must substitute {TODAY} and {HOST}"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_artifact_expand_uses_env_host_default() {
@@ -1006,7 +937,6 @@ test_artifact_expand_uses_env_host_default() {
   today=$(date +%Y-%m-%d)
   out=$(CEO_HOSTNAME=envhost bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/x/{TODAY}-{HOST}.md'")
   assert_eq "$out" "CEO/reports/x/${today}-envhost.md" "ceo_artifact_expand must fall back to \$CEO_HOSTNAME"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_artifact_expand_substitutes_month() {
@@ -1024,14 +954,12 @@ test_artifact_expand_rejects_unknown_token() {
   local rc=0 out
   out=$(bash -c "source '$LIB'; ceo_artifact_expand 'CEO/reports/{BOGUS}/{TODAY}.md' 'testhost'") || rc=$?
   assert_eq "$rc" "1" "ceo_artifact_expand must reject unknown tokens per enum-config-typo-fallback"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_artifact_expand_rejects_empty_template() {
   local rc=0
   bash -c "source '$LIB'; ceo_artifact_expand ''" >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "ceo_artifact_expand must return 1 on empty template"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_valid_accepts_canonical_values() {
@@ -1040,7 +968,6 @@ test_status_valid_accepts_canonical_values() {
     bash -c "source '$LIB'; ceo_status_valid '$s'" || rc=$?
     assert_eq "$rc" "0" "ceo_status_valid must accept canonical status: $s"
   done
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_valid_rejects_typos_and_case_variants() {
@@ -1049,14 +976,12 @@ test_status_valid_rejects_typos_and_case_variants() {
     bash -c "source '$LIB'; ceo_status_valid '$s'" || rc=$?
     assert_eq "$rc" "1" "ceo_status_valid must reject non-canonical status: '$s'"
   done
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_valid_rejects_empty() {
   local rc=0
   bash -c "source '$LIB'; ceo_status_valid ''" || rc=$?
   assert_eq "$rc" "1" "ceo_status_valid must reject empty string"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_discovery_skips_mnt_candidates_on_macos() {
@@ -1068,17 +993,10 @@ test_discovery_skips_mnt_candidates_on_macos() {
     set -x
     ceo_load_config || true
   " 2>&1) || rc=$?
-  if echo "$trace" | grep -qE '/mnt/[zc]/'; then
-    printf '  FAIL [%s] discovery probed /mnt/ candidates on macos\n    trace: %q\n' \
-      "$CURRENT_TEST" "$(echo "$trace" | grep -E '/mnt/[zc]/' | head -2)"
-    FAILS=$((FAILS + 1))
-  fi
-  if ! echo "$trace" | grep -qF "$TEST_HOME/Documents/Obsidian"; then
-    printf '  FAIL [%s] discovery did not probe HOME candidate (loop may have been short-circuited)\n' \
-      "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  local mnt_lines
+  mnt_lines=$(grep -E '/mnt/[zc]/' <<<"$trace" | head -2)
+  [ -z "$mnt_lines" ] || fail_test "discovery must not probe /mnt/ candidates on macos" "$mnt_lines"
+  assert_contains "$trace" "$TEST_HOME/Documents/Obsidian" "discovery must probe HOME candidate"
 }
 
 test_discovery_probes_mnt_candidates_on_wsl() {
@@ -1090,11 +1008,9 @@ test_discovery_probes_mnt_candidates_on_wsl() {
     set -x
     ceo_load_config || true
   " 2>&1)
-  if ! echo "$trace" | grep -qE '/mnt/[zc]/.*Documents/Obsidian'; then
-    printf '  FAIL [%s] wsl discovery did not probe /mnt/ candidates\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  local probes_mnt=0
+  echo "$trace" | grep -qE '/mnt/[zc]/.*Documents/Obsidian' && probes_mnt=1
+  assert_eq "$probes_mnt" "1" "wsl discovery must probe /mnt/ candidates"
 }
 
 test_assert_primary_host_accepts_prior_day_report_triggers_key() {
@@ -1111,14 +1027,12 @@ test_ceo_registry_path_defaults_to_home() {
   local path
   path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_registry_path")
   assert_eq "$path" "$TEST_HOME/.ceo/registry.json" "_ceo_registry_path must default to \$HOME/.ceo/registry.json"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_registry_path_honors_override() {
   local path
   path=$(HOME="$TEST_HOME" CEO_REGISTRY_FILE="/custom/reg.json" bash -c "source '$LIB'; _ceo_registry_path")
   assert_eq "$path" "/custom/reg.json" "_ceo_registry_path must honor CEO_REGISTRY_FILE override"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # All three path helpers gate the override on `[ -n "${VAR:-}" ]`, which tests
@@ -1130,35 +1044,30 @@ test_ceo_registry_path_empty_override_falls_back() {
   local path
   path=$(HOME="$TEST_HOME" CEO_REGISTRY_FILE="" bash -c "source '$LIB'; _ceo_registry_path")
   assert_eq "$path" "$TEST_HOME/.ceo/registry.json" "an empty CEO_REGISTRY_FILE must fall back to \$HOME, not resolve to /.ceo/registry.json"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_enabled_path_empty_override_falls_back() {
   local path
   path=$(HOME="$TEST_HOME" CEO_ENABLED_FILE="" bash -c "source '$LIB'; _ceo_enabled_path")
   assert_eq "$path" "$TEST_HOME/.ceo/enabled.json" "an empty CEO_ENABLED_FILE must fall back to \$HOME, not resolve to /.ceo/enabled.json"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_state_dir_empty_override_falls_back() {
   local path
   path=$(HOME="$TEST_HOME" CEO_STATE_DIR="" bash -c "source '$LIB'; _ceo_state_dir")
   assert_eq "$path" "$TEST_HOME/.ceo/state" "an empty CEO_STATE_DIR must fall back to \$HOME, not resolve to /.ceo/state"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_state_dir_defaults_to_home() {
   local path
   path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_dir")
   assert_eq "$path" "$TEST_HOME/.ceo/state" "_ceo_state_dir must default to \$HOME/.ceo/state"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_state_dir_honors_override() {
   local path
   path=$(HOME="$TEST_HOME" CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
   assert_eq "$path" "/custom/state" "_ceo_state_dir must honor CEO_STATE_DIR override"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # Override makes HOME irrelevant (#425): when an override is provided,
@@ -1167,21 +1076,18 @@ test_ceo_registry_path_honors_override_without_home() {
   local path
   path=$(env -u HOME CEO_REGISTRY_FILE="/custom/reg.json" bash -c "source '$LIB'; _ceo_registry_path")
   assert_eq "$path" "/custom/reg.json" "_ceo_registry_path must honor override even when HOME is unset"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_enabled_path_honors_override_without_home() {
   local path
   path=$(env -u HOME CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
   assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor override even when HOME is unset"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_state_dir_honors_override_without_home() {
   local path
   path=$(env -u HOME CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
   assert_eq "$path" "/custom/state" "_ceo_state_dir must honor override even when HOME is unset"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # When no override is set and HOME is unset, the path helpers must abort loudly.
@@ -1215,14 +1121,12 @@ test_ceo_enabled_path_defaults_to_home() {
   local path
   path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_enabled_path")
   assert_eq "$path" "$TEST_HOME/.ceo/enabled.json" "_ceo_enabled_path must default to \$HOME/.ceo/enabled.json"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_ceo_enabled_path_honors_override() {
   local path
   path=$(HOME="$TEST_HOME" CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
   assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor CEO_ENABLED_FILE override"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_every_env_i_suppresses_the_desktop_notification() {
