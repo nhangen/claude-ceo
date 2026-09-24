@@ -1,3 +1,5 @@
+"""PoC harness for #183, kept as it was run. Production transport and parsing
+live in ollama_agent.transport."""
 import json
 import urllib.request
 import hashlib

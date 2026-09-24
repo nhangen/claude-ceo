@@ -196,6 +196,26 @@ def test_ledger_records_the_retried_statuses_from_a_real_transport_run(tmp_path,
     assert _row(p)["retried_statuses"] == ["503@1", "503@2"]
 
 
+def test_ledger_records_decode_replacements_from_a_real_transport_run(tmp_path, monkeypatch):
+    """Same end-to-end shape as the retried_statuses arm above: the provenance
+    dict alone passes with the key missing from _PROVENANCE_FIELDS, and then
+    the cron path loses the only record of a corrupted run."""
+    escaped = json.dumps({"model": "m",
+                          "message": {"role": "assistant", "content": "caf\ufffd"},
+                          "prompt_eval_count": 1, "eval_count": 1})
+    assert "\\ufffd" in escaped
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _Resp(escaped))
+    prov = {}
+    t = ollama_transport("local-coder", host="h:1", provenance=prov)
+    t([{"role": "user", "content": "x"}], [])
+    t([{"role": "user", "content": "x"}], [])
+
+    p = tmp_path / "runs.jsonl"
+    append_run({"run_id": "r1", "turns": 2, "completed": True},
+               "local-coder", "t", "/w", path=p, provenance=prov)
+    assert _row(p)["decode_replacements"] == 2
+
+
 def test_ledger_without_provenance_writes_nulls_not_a_missing_key(tmp_path):
     """A reader must be able to tell "nothing was captured" from "not captured
     yet": an absent key reads as an old row, an explicit null as a new one."""
@@ -204,6 +224,7 @@ def test_ledger_without_provenance_writes_nulls_not_a_missing_key(tmp_path):
     row = _row(p)
     assert row["model_served"] is None
     assert row["endpoint"] is None
+    assert row["decode_replacements"] is None
 
 
 # --- arms the first cut was missing (found by audit on PR #391) --------------

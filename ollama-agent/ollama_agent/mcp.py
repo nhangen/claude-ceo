@@ -87,16 +87,27 @@ class MCPClient:
 def mcp_tools_to_ollama(tools, prefix="mcp"):
     """Map MCP tool descriptors to ollama tool schemas. Names are prefixed
     (mcp__<name>) so they can't collide with the built-in tools, and the schema
-    map back to (prefixed_name -> real_name) is returned for dispatch."""
+    map back to (prefixed_name -> real_name) is returned for dispatch.
+    Tool annotations (specifically readOnlyHint) are preserved on the function
+    schema so consumers can distinguish read-only lookups from mutations (#457)."""
     schemas, name_map = [], {}
     for t in tools:
         real = t["name"]
         prefixed = f"{prefix}__{real}"
-        schemas.append({"type": "function", "function": {
+        fn = {
             "name": prefixed,
             "description": t.get("description", ""),
             "parameters": t.get("inputSchema") or {"type": "object", "properties": {}},
-        }})
+        }
+        ann = dict(t["annotations"]) if isinstance(t.get("annotations"), dict) else {}
+        # `is True`, not bool(): the hint decides whether a tool's failures are
+        # reported at all, and bool("false") is True — a server that JSON-encodes
+        # the hint as a string would silence its own error reporting.
+        if t.get("readOnlyHint") is True and "readOnlyHint" not in ann:
+            ann["readOnlyHint"] = True
+        if ann:
+            fn["annotations"] = ann
+        schemas.append({"type": "function", "function": fn})
         name_map[prefixed] = real
     return schemas, name_map
 
