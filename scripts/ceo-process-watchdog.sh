@@ -49,13 +49,9 @@ awk -v n="$CPU_PERCENT" 'BEGIN { exit (n ~ /^[0-9]+([.][0-9]+)?$/ ? 0 : 1) }' ||
 NOW=$(date +%Y-%m-%dT%H:%M:%S%z)
 AGE_SECONDS=$((AGE_MINUTES * 60))
 
-ps_input() {
-  if [ -n "${CEO_PROCESS_WATCHDOG_PS_FILE:-}" ]; then
-    cat "$CEO_PROCESS_WATCHDOG_PS_FILE"
-  else
-    ps -axo pid=,ppid=,etime=,pcpu=,command=
-  fi
-}
+# The signal primitive is the only seam: tests point it at a stub so every
+# branch of terminate_pid below still runs. `kill` alone resolves to the builtin.
+KILL_BIN="${CEO_PROCESS_WATCHDOG_KILL_BIN:-kill}"
 
 filter_candidates() {
   awk -v min_age="$AGE_SECONDS" -v min_cpu="$CPU_PERCENT" -v needle="$TARGET_MATCH" '
@@ -93,44 +89,45 @@ filter_candidates() {
   '
 }
 
-find_candidates() {
-  ps_input | filter_candidates
-}
-
+# Identity only (orphaned, same command), not age/CPU: a process winding down
+# after TERM drops below the CPU floor, and that must not read as a reused PID.
+# rc 0 = still ours, 1 = something else owns the PID, 2 = ps printed nothing.
 pid_still_matches() {
-  local pid="$1"
-  [ -z "${CEO_PROCESS_WATCHDOG_PS_FILE:-}" ] || return 0
-  local line
-  line=$(ps -p "$pid" -o pid=,ppid=,etime=,pcpu=,command= 2>/dev/null || true)
-  [ -n "$line" ] || return 1
-  printf '%s\n' "$line" | filter_candidates | awk -F '\t' -v pid="$pid" '$1 == pid { found=1 } END { exit !found }'
+  local pid="$1" line
+  line=$(ps -p "$pid" -o pid=,ppid=,command= 2>/dev/null || true)
+  [ -n "$line" ] || return 2
+  printf '%s\n' "$line" | awk -v pid="$pid" -v needle="$TARGET_MATCH" '
+    $1 == pid && $2 == 1 && index($0, needle) > 0 { found = 1 }
+    END { exit !found }'
 }
 
+# Prints the outcome: killed | gone-before-signal | survived-term | failed.
 terminate_pid() {
   local pid="$1"
-  if [ "$DRY_RUN" = "1" ]; then
-    return 0
-  fi
-  if [ -n "${CEO_PROCESS_WATCHDOG_KILL_LOG:-}" ]; then
-    printf 'TERM %s\n' "$pid" >> "$CEO_PROCESS_WATCHDOG_KILL_LOG"
-    [ "$KILL_AFTER_TERM" = "1" ] && printf 'KILL %s\n' "$pid" >> "$CEO_PROCESS_WATCHDOG_KILL_LOG"
-    return 0
-  fi
-  pid_still_matches "$pid" || return 1
-  kill -TERM "$pid" 2>/dev/null || return 1
+  if ! pid_still_matches "$pid"; then echo "gone-before-signal"; return; fi
+  if ! "$KILL_BIN" -TERM "$pid" 2>/dev/null; then echo "failed"; return; fi
   sleep "$TERM_GRACE_SECONDS"
-  if kill -0 "$pid" 2>/dev/null && [ "$KILL_AFTER_TERM" = "1" ]; then
-    pid_still_matches "$pid" || return 1
-    kill -KILL "$pid" 2>/dev/null || return 1
-  fi
-  return 0
+  if ! "$KILL_BIN" -0 "$pid" 2>/dev/null; then echo "killed"; return; fi
+  if [ "$KILL_AFTER_TERM" != "1" ]; then echo "survived-term"; return; fi
+  # Alive but no longer ours means the PID was reused after our process exited.
+  # Alive with no ps answer at all proves nothing, so it is not a kill.
+  local rc=0
+  pid_still_matches "$pid" || rc=$?
+  if [ "$rc" -eq 1 ]; then echo "killed"; return; fi
+  if [ "$rc" -eq 2 ]; then echo "failed"; return; fi
+  if ! "$KILL_BIN" -KILL "$pid" 2>/dev/null; then echo "failed"; return; fi
+  sleep 1
+  if "$KILL_BIN" -0 "$pid" 2>/dev/null; then echo "failed"; return; fi
+  echo "killed"
 }
 
 notify_kills() {
   [ "$DRY_RUN" = "0" ] || return 0
   [ "${#KILLED[@]}" -gt 0 ] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-  command -v curl >/dev/null 2>&1 || return 0
+  if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    printf 'WARN: process-watchdog: jq or curl missing; kill notification not sent\n' >&2
+    return 0
+  fi
 
   local settings_file="$CEO_DIR/settings.json"
   local events="failures"
@@ -142,7 +139,10 @@ notify_kills() {
   local secrets_file="${CEO_SECRETS_FILE:-$HOME/.config/claude-ceo/secrets.json}"
   local webhook="${CEO_DISCORD_WEBHOOK:-}"
   if [ -z "$webhook" ] && [ -f "$secrets_file" ]; then
-    webhook=$(jq -r '.discord_webhook // ""' "$secrets_file" 2>/dev/null || echo "")
+    webhook=$(jq -r '.discord_webhook // ""' "$secrets_file" 2>/dev/null) || {
+      printf 'WARN: process-watchdog: could not parse %s; kill notification not sent\n' "$secrets_file" >&2
+      return 0
+    }
   fi
   [ -n "$webhook" ] || return 0
 
@@ -180,35 +180,68 @@ notify_kills() {
 
   local debug_log="${CEO_PROCESS_WATCHDOG_NOTIFY_LOG:-/tmp/process-watchdog-notify.log}"
   printf '%s host=%s killed=%s posting=1\n' "$NOW" "$HOST" "${#KILLED[@]}" >> "$debug_log" 2>/dev/null || true
-  curl -sS -o /dev/null -X POST -H "Content-Type: application/json" --max-time 10 \
-    -d "$payload" "$webhook" >/dev/null 2>&1 || \
-    printf '%s host=%s killed=%s post_failed=1\n' "$NOW" "$HOST" "${#KILLED[@]}" >> "$debug_log" 2>/dev/null || true
+  local http_code
+  http_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Content-Type: application/json" \
+    --max-time 10 -d "$payload" "$webhook" 2>/dev/null) || http_code=000
+  if ! [[ $http_code =~ ^2[0-9]{2}$ ]]; then
+    printf '%s host=%s killed=%s post_failed=1 status=%s\n' "$NOW" "$HOST" "${#KILLED[@]}" "$http_code" >> "$debug_log" 2>/dev/null || true
+    printf 'WARN: process-watchdog: kill notification failed (HTTP %s)\n' "$http_code" >&2
+  fi
 }
 
 # macOS still ships Bash 3.2, where an empty array expanded under `set -u`
-# aborts. Keep nounset for config parsing above, then relax it only around the
-# array bookkeeping that naturally has an empty state.
+# aborts. Every config read happens above; nounset stays off for the rest of the
+# script because every array below can legitimately be empty.
 set +u
+
+# Read the table before filtering it: a failed or empty listing must not be
+# reported as "no runaways". A live host always has processes.
+PS_OUT=$(ps -axo pid=,ppid=,etime=,pcpu=,command=) || PS_OUT=""
+if [ -z "$PS_OUT" ]; then
+  printf 'ERROR: process-watchdog: ps returned no process table; alert left unchanged\n' >&2
+  exit 1
+fi
+
+CANDIDATE_LINES=$(printf '%s\n' "$PS_OUT" | filter_candidates) || {
+  printf 'ERROR: process-watchdog: candidate filter failed; alert left unchanged\n' >&2
+  exit 1
+}
 CANDIDATES=()
 while IFS=$'\t' read -r pid etime age cpu; do
   [ -n "$pid" ] || continue
   CANDIDATES+=("$pid|$etime|$age|$cpu")
-done < <(find_candidates)
+done <<< "$CANDIDATE_LINES"
 
 KILLED=()
 FAILED=()
+ROWS=()
 for row in "${CANDIDATES[@]}"; do
   IFS='|' read -r pid etime age cpu <<< "$row"
-  if terminate_pid "$pid"; then
-    KILLED+=("$pid|$etime|$age|$cpu")
+  if [ "$DRY_RUN" = "1" ]; then
+    result="would-kill"
   else
-    FAILED+=("$pid|$etime|$age|$cpu")
+    result=$(terminate_pid "$pid")
   fi
+  case "$result" in
+    killed) KILLED+=("$row") ;;
+    would-kill|gone-before-signal) ;;
+    *) FAILED+=("$row") ;;
+  esac
+  ROWS+=("$row|$result")
 done
 
+# A candidate that exited on its own before any signal leaves nothing to report.
 STATUS="clear"
-if [ "${#CANDIDATES[@]}" -gt 0 ]; then
-  STATUS="firing"
+for row in "${ROWS[@]}"; do
+  case "$row" in *"|gone-before-signal") ;; *) STATUS="firing" ;; esac
+done
+
+PRIOR_STATUS=$(ceo_read_alert_field "$STATE_FILE" status 2>/dev/null) || PRIOR_STATUS=""
+PRIOR_SINCE=$(ceo_read_alert_field "$STATE_FILE" since 2>/dev/null) || PRIOR_SINCE=""
+if [ "$STATUS" = "$PRIOR_STATUS" ] && [ -n "$PRIOR_SINCE" ]; then
+  SINCE="$PRIOR_SINCE"
+else
+  SINCE="$NOW"
 fi
 
 STATE_TMP=$(mktemp "${STATE_FILE}.XXXXXX") || {
@@ -220,11 +253,10 @@ trap 'rm -f "$STATE_TMP"' EXIT
 {
   ceo_write_alert_frontmatter \
     --status="$STATUS" \
-    --since="$NOW" \
+    --since="$SINCE" \
     --last-check="$NOW" \
     --host="$HOST" \
     --field target="$TARGET_LABEL" \
-    --field match="$TARGET_MATCH" \
     --field min_age_minutes="$AGE_MINUTES" \
     --field min_cpu_percent="$CPU_PERCENT" \
     --field candidate_count="${#CANDIDATES[@]}" \
@@ -244,14 +276,9 @@ trap 'rm -f "$STATE_TMP"' EXIT
     fi
     printf '| PID | Elapsed | Age seconds | CPU %% | Result |\n'
     printf '|---:|---:|---:|---:|---|\n'
-    for row in "${KILLED[@]}"; do
-      IFS='|' read -r pid etime age cpu <<< "$row"
-      if [ "$DRY_RUN" = "1" ]; then result="would-kill"; else result="killed"; fi
+    for row in "${ROWS[@]}"; do
+      IFS='|' read -r pid etime age cpu result <<< "$row"
       printf '| %s | %s | %s | %s | %s |\n' "$pid" "$etime" "$age" "$cpu" "$result"
-    done
-    for row in "${FAILED[@]}"; do
-      IFS='|' read -r pid etime age cpu <<< "$row"
-      printf '| %s | %s | %s | %s | failed-or-raced |\n' "$pid" "$etime" "$age" "$cpu"
     done
   fi
 } > "$STATE_TMP"
