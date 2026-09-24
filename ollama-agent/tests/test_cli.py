@@ -232,7 +232,7 @@ def test_cli_no_skills_suppresses_catalog_and_tool(tmp_path, monkeypatch, capsys
     assert "skills:" not in capsys.readouterr().err
 
 
-def _stub_mcp(monkeypatch, closed, *, init_raises=False):
+def _stub_mcp(monkeypatch, closed, *, init_raises=False, tool_names=("echo",)):
     class FT:
         def __init__(self, *a, **k):
             closed["cmd"] = a[0] if a else k.get("command")
@@ -250,7 +250,8 @@ def _stub_mcp(monkeypatch, closed, *, init_raises=False):
                 raise RuntimeError("no server there")
 
         def list_tools(self):
-            return [{"name": "echo", "description": "e", "inputSchema": {"type": "object", "properties": {}}}]
+            return [{"name": n, "description": "e", "inputSchema": {"type": "object", "properties": {}}}
+                    for n in tool_names]
     monkeypatch.setattr(cli, "MCPClient", FC)
 
 
@@ -349,74 +350,84 @@ def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
     assert captured["toolbox"].mcp_readonly == {"mcp__query"}
 
 
-def test_cli_registry_tools_allowlist_discarding_mcp_warns(tmp_path, monkeypatch, capsys):
-    captured, closed = {}, {"v": False}
-    _stub(monkeypatch, captured)
-    _stub_mcp(monkeypatch, closed)
-    reg = _registry(
+def _mcp_registry(tmp_path, tools):
+    return _registry(
         tmp_path,
         mcp_task={
             "runner": "ollama",
             "model": "reg-model:7b",
             "tier": "deterministic",
             "mcp": "srv --flag",
-            "tools": ["read_file"],
+            "tools": tools,
         },
     )
-    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
-                   "--registry", reg, "--task-name", "mcp_task"])
-    assert rc == 0
-    assert _tool_names(captured["tools"]) == {"read_file"}
-    assert closed["v"] is True
+
+
+def _run_mcp_task(reg, tmp_path, *extra):
+    return cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                     "--registry", reg, "--task-name", "mcp_task", *extra])
+
+
+def test_cli_registry_tools_allowlist_discarding_mcp_refuses(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed, tool_names=("echo", "ping"))
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file"]), tmp_path)
+    assert rc == 2
+    assert "tools" not in captured   # the model is never run
+    assert closed["v"] is True       # the server is not left running
     err = capsys.readouterr().err
-    assert "warning: mcp server 'srv --flag' bridged 1 tool(s) but the registry tools allowlist admits none of them — the server will not be used" in err
+    assert ("REFUSED: mcp server 'srv --flag' bridged 2 tool(s) but the registry tools "
+            "allowlist for 'mcp_task' admits none of them.") in err
 
 
-def test_cli_registry_tools_allowlist_admitting_mcp_does_not_warn(tmp_path, monkeypatch, capsys):
+def test_cli_registry_tools_allowlist_admitting_mcp_runs(tmp_path, monkeypatch, capsys):
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
     _stub_mcp(monkeypatch, closed)
-    reg = _registry(
-        tmp_path,
-        mcp_task={
-            "runner": "ollama",
-            "model": "reg-model:7b",
-            "tier": "deterministic",
-            "mcp": "srv --flag",
-            "tools": ["read_file", "mcp__echo"],
-        },
-    )
-    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
-                   "--registry", reg, "--task-name", "mcp_task"])
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file", "mcp__echo"]), tmp_path)
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"read_file", "mcp__echo"}
     assert closed["v"] is True
-    err = capsys.readouterr().err
-    assert "admits none of them" not in err
+    assert "REFUSED" not in capsys.readouterr().err
 
 
-def test_cli_registry_tools_allowlist_raw_mcp_tool_name_warns_both(tmp_path, monkeypatch, capsys):
+def test_cli_registry_tools_allowlist_admitting_some_mcp_tools_runs(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed, tool_names=("echo", "ping"))
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["mcp__echo"]), tmp_path)
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"mcp__echo"}
+    assert "REFUSED" not in capsys.readouterr().err
+
+
+def test_cli_registry_tools_allowlist_raw_mcp_tool_name_refuses(tmp_path, monkeypatch, capsys):
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
     _stub_mcp(monkeypatch, closed)
-    reg = _registry(
-        tmp_path,
-        mcp_task={
-            "runner": "ollama",
-            "model": "reg-model:7b",
-            "tier": "deterministic",
-            "mcp": "srv --flag",
-            "tools": ["read_file", "echo"],   # raw name without mcp__ prefix
-        },
-    )
-    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
-                   "--registry", reg, "--task-name", "mcp_task"])
-    assert rc == 0
-    assert _tool_names(captured["tools"]) == {"read_file"}
+    # raw name without the mcp__ prefix: the likeliest way to hit this
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file", "echo"]), tmp_path)
+    assert rc == 2
+    assert "tools" not in captured
     assert closed["v"] is True
     err = capsys.readouterr().err
     assert "warning: registry tools not available (ignored): echo" in err
-    assert "warning: mcp server 'srv --flag' bridged 1 tool(s) but the registry tools allowlist admits none of them" in err
+    assert "REFUSED: mcp server 'srv --flag' bridged 1 tool(s)" in err
+
+
+def test_cli_mcp_flag_forbidden_by_registry_allowlist_refuses(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(tmp_path, plain={"runner": "ollama", "model": "reg-model:7b",
+                                      "tier": "deterministic", "tools": ["read_file"]})
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "plain", "--mcp", "operator-srv"])
+    assert rc == 2
+    assert closed["cmd"] == "operator-srv"
+    assert closed["v"] is True
+    assert "REFUSED: mcp server 'operator-srv'" in capsys.readouterr().err
 
 
 def _registry(tmp_path, **tasks):
@@ -436,6 +447,7 @@ def test_cli_registered_deterministic_task_applies_model_and_runs(tmp_path, monk
     assert _tool_names(captured["tools"]) == {"run_shell", "git"}   # restricted to allowlist
     err = capsys.readouterr().err
     assert "model=registry-model:7b" in err and "tools restricted to:" in err
+    assert "REFUSED" not in err
 
 
 def test_cli_high_stakes_task_is_rejected_before_any_run(tmp_path, monkeypatch, capsys):

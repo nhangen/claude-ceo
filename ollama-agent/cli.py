@@ -334,10 +334,17 @@ def main(argv=None):
         tools = filter_tools(tools, spec.tools)
         print(f"tools restricted to: {', '.join(t['function']['name'] for t in tools) or '(none)'}",
               file=sys.stderr)
+        # Declaring a server and then forbidding every tool it bridges is a
+        # config error. Refuse rather than warn, for the reason given at the
+        # --verify-cmd check above: ceo-cron discards stderr and reads rc 0 as
+        # success, so a warning would let the task run daily without its server.
         if mcp_names and not any(t["function"]["name"] in mcp_names for t in tools):
-            print(f"warning: mcp server {a.mcp!r} bridged {len(mcp_names)} tool(s) but the registry "
-                  f"tools allowlist admits none of them — the server will not be used",
+            mcp_transport.close()
+            print(f"REFUSED: mcp server {a.mcp!r} bridged {len(mcp_names)} tool(s) but the "
+                  f"registry tools allowlist for {a.task_name!r} admits none of them. Add "
+                  f"the bridged 'mcp__<name>' form to the allowlist, or drop the server.",
                   file=sys.stderr)
+            return 2
 
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names,
