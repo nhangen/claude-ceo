@@ -169,10 +169,11 @@ test_a_profile_failure_does_not_degrade_the_pending_queue() {
   out=$( set +eu
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
     chmod 644 "$CEO_VAULT/Profile.md"
-    echo "FILE_DEGRADED=${FILE_GATHER_DEGRADED}|PENDING_DEGRADED=${PENDING_GATHER_DEGRADED}"
+    ceo_pending_items_preflight >/dev/null; rc=$?
+    echo "FILE_DEGRADED=${FILE_GATHER_DEGRADED}|RC=$rc"
   )
   assert_contains "$out" "FILE_DEGRADED=1" "an unreadable Profile.md must degrade the file gather overall"
-  assert_contains "$out" "PENDING_DEGRADED=0" "but must not degrade the pending questions queue"
+  assert_contains "$out" "RC=1" "but the pending preflight must still answer a trustworthy empty, not cannot-tell"
 }
 
 test_an_unreadable_pending_file_normalizes_counts_and_degrades() {
@@ -187,6 +188,19 @@ test_an_unreadable_pending_file_normalizes_counts_and_degrades() {
   assert_contains "$out" "PENDING_COUNT=0" "an unreadable approvals/pending.md must normalize PENDING_COUNT to 0"
   assert_contains "$out" "APPROVED_COUNT=0" "an unreadable approvals/pending.md must normalize APPROVED_COUNT to 0"
   assert_contains "$out" "FILE_DEGRADED=1" "and mark the file gather degraded"
+}
+
+# grep -c prints 0 and exits 1 on a file with no matches; that is a quiet day,
+# not a read failure.
+test_a_count_with_no_matches_is_zero_not_degraded() {
+  printf -- '- [x] done one\n- [x] done two\n' > "$CEO_VAULT/CEO/approvals/pending.md"
+  local out
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "PENDING_COUNT=${PENDING_COUNT}|APPROVED_COUNT=${APPROVED_COUNT}|FILE_DEGRADED=${FILE_GATHER_DEGRADED}"
+  )
+  assert_contains "$out" "PENDING_COUNT=0|APPROVED_COUNT=2|FILE_DEGRADED=0" \
+    "no unchecked items must count 0 without degrading the gather"
 }
 
 test_ceo_branches_preflight_missing_repos_md() {
@@ -250,18 +264,57 @@ MD
   assert_eq "$rc" "1" "no branch present must return 1"
 }
 
+_branches_preflight() {
+  ( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    out=$(ceo_ceo_branches_preflight); echo "RC=$?|$out" )
+}
+
+_repo_with_ceo_branch() {
+  local repo="$1"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.name "t"
+  git -C "$repo" config user.email "t@t"
+  git -C "$repo" commit --allow-empty -qm "init" --no-verify
+  git -C "$repo" branch -q "ceo/my-branch"
+}
+
+# #453 names "a corrupt repo or a permissions failure": a directory git cannot
+# read as a repository, not a path that is absent on this host.
 test_ceo_branches_preflight_git_error_returns_2() {
+  mkdir -p "$TMP/not-a-repo"
   cat > "$CEO_VAULT/CEO/repos.md" << MD
 | Repo | Local Path | Description |
 |---|---|---|
-| badrepo | /nonexistent/repo/path/xyz | Bad repo |
+| badrepo | $TMP/not-a-repo | Not a repo |
 MD
-  local out rc=0
-  out=$( set +eu
-    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
-    ceo_ceo_branches_preflight ) || rc=$?
-  assert_eq "$rc" "2" "git failure must return 2"
-  assert_contains "$out" "git failure" "stdout must report git failure"
+  local out; out=$(_branches_preflight)
+  assert_contains "$out" "RC=2" "git failing on an existing directory must return 2"
+  assert_contains "$out" "git failure checking branches in '$TMP/not-a-repo'" "stdout must name the failing repo"
+}
+
+test_ceo_branches_preflight_skips_a_clone_absent_on_this_host() {
+  cat > "$CEO_VAULT/CEO/repos.md" << MD
+| Repo | Local Path | Description |
+|---|---|---|
+| gone | /nonexistent/repo/path/xyz | Not cloned here |
+MD
+  assert_contains "$(_branches_preflight)" "RC=1" \
+    "a listed path absent on this host is skipped, as ceo-cleanup.sh does, not a failure"
+}
+
+test_ceo_branches_preflight_prefers_work_over_a_failing_repo() {
+  mkdir -p "$TMP/not-a-repo"
+  _repo_with_ceo_branch "$TMP/repo3"
+  cat > "$CEO_VAULT/CEO/repos.md" << MD
+| Repo | Local Path | Description |
+|---|---|---|
+| badrepo | $TMP/not-a-repo | Not a repo |
+| repo3 | $TMP/repo3 | Has work |
+MD
+  assert_contains "$(_branches_preflight)" "RC=0" \
+    "a ceo/* branch in a later repo must not be hidden by an earlier repo's failure"
 }
 
 # PR_GATHER_DEGRADED is a union over review, authored, merged, GitLab, and every

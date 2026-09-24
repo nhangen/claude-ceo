@@ -12,8 +12,9 @@
 #     gather ran, where the unset flags would default to a false all-clear.
 #   ceo_pending_items_preflight() — is there pending-drip work? 0 yes / 1 no,
 #     and the file read is trustworthy / 2 cannot tell, reason on stdout.
-#   ceo_ceo_branches_preflight() — are there ceo/* branches? 0 yes / 1 no,
-#     and repos.md / git queries are trustworthy / 2 cannot tell, reason on stdout.
+#   ceo_ceo_branches_preflight() — are there ceo/* branches? 0 yes, in any repo /
+#     1 no, and repos.md and every git query were clean / 2 cannot tell, reason on
+#     stdout. Rows for clones absent on this host are skipped.
 #
 # Exports:
 #   VAULT, CEO_DIR, LOG_DIR, TODAY, NOW
@@ -42,10 +43,13 @@ TODAY=$(date +%Y-%m-%d)
 export NOW
 NOW=$(date +%H:%M)
 
-# Track local vault read degradations.
-# FILE_GATHER_DEGRADED is the aggregate across all file gathers.
-# PENDING_GATHER_DEGRADED is scoped to Pending.md reads so that unrelated
-# read failures (e.g. Profile.md) do not falsely fail the pending-drip preflight.
+# Local vault reads. Tolerating a truncation's exit status (#293) must not also
+# tolerate an IO error: an unreadable file yields the same empty string as an
+# empty one, and the status evaluation would call that "quiet day". These flags
+# keep the two distinguishable. FILE_GATHER_DEGRADED is the aggregate the
+# CEO_GATHER_STATUS rollup reads; PENDING_GATHER_DEGRADED is scoped to the
+# Pending.md read, set only when the caller passes scope "pending", so an
+# unreadable Profile.md does not fail the pending-drip preflight.
 export FILE_GATHER_DEGRADED=0
 export FILE_GATHER_DEGRADED_REASONS=""
 export PENDING_GATHER_DEGRADED=0
@@ -203,12 +207,17 @@ ceo_pending_items_preflight() {
 }
 
 # ceo_ceo_branches_preflight — the one place that answers "are there ceo/* branches?"
-# for both callers (ceo-cron.sh's scheduler and the inline copy in ceo).
+# for both callers (ceo-cron.sh's scheduler and `ceo preflight`).
 #
 # Three outcomes:
-#   0  ceo/* branches found
-#   1  no branches, and repos.md / git queries were clean
-#   2  cannot tell — reason printed to stdout (missing/unreadable repos.md, or git failure)
+#   0  ceo/* branches found in any listed repo, even if another repo failed
+#   1  no branches, and repos.md and every git query were clean
+#   2  cannot tell — reason printed to stdout (missing/unreadable repos.md, or
+#      git failing on a listed directory that exists)
+# A listed path that is not a directory on this host is skipped, as
+# ceo-cleanup.sh does (REPO_MISSING): repos.md is synced across hosts, and
+# counting an absent clone as a failure would fail the cleanup preflight on
+# every run until someone edited the file.
 ceo_ceo_branches_preflight() {
   local repos_file="$CEO_DIR/repos.md"
   if [ ! -f "$repos_file" ]; then
@@ -227,37 +236,27 @@ ceo_ceo_branches_preflight() {
   fi
   [ -n "$err" ] && rm -f "$err"
 
-  local branch_prefix="${1:-${BRANCH_PREFIX:-}}"
-  if [ -z "$branch_prefix" ]; then
-    local settings_file="$CEO_DIR/settings.json"
-    if command -v jq >/dev/null 2>&1 && [ -f "$settings_file" ]; then
-      branch_prefix=$(jq -r '.branch_prefix // "ceo/"' "$settings_file" 2>/dev/null || echo "ceo/")
-    else
-      branch_prefix="ceo/"
-    fi
-  fi
-
+  local branch_prefix="${1-ceo/}" failures=""
   while IFS= read -r repo_path; do
     repo_path=$(echo "$repo_path" | xargs)
     [ -z "$repo_path" ] && continue
-    [ "$repo_path" = "Local Path" ] && continue
-    repo_path="${repo_path/#\~/$HOME}"
+    [ -d "$repo_path" ] || continue
     local git_out git_rc=0 git_err
     git_err=$(mktemp) || git_err=""
     git_out=$(git -C "$repo_path" branch --list "${branch_prefix}*" 2>"${git_err:-/dev/null}") || git_rc=$?
     if [ "$git_rc" -ne 0 ] && [ "$git_rc" -ne 1 ]; then
       local err_detail=""
-      [ -n "$git_err" ] && err_detail=$(head -c 200 "$git_err" 2>/dev/null)
-      [ -n "$git_err" ] && rm -f "$git_err"
-      echo "git failure checking branches in '$repo_path' (rc=$git_rc${err_detail:+: $err_detail})"
-      return 2
+      [ -n "$git_err" ] && err_detail=$(head -c 200 "$git_err" 2>/dev/null | tr '\n' ' ')
+      failures="$failures; '$repo_path' (rc=$git_rc${err_detail:+: $err_detail})"
     fi
     [ -n "$git_err" ] && rm -f "$git_err"
-    if [ -n "$git_out" ]; then
-      return 0
-    fi
+    [ -n "$git_out" ] && return 0
   done < <(echo "$repos_lines" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $3}')
 
+  if [ -n "$failures" ]; then
+    echo "git failure checking branches in ${failures#; }"
+    return 2
+  fi
   return 1
 }
 
@@ -588,12 +587,12 @@ fi
 
 # --- Pending.md outstanding questions (top entries only) ---
 # Pre-extract unchecked items so Claude doesn't need to read the full file.
-# Matches the same pattern PENDING_COUNT uses (line 38). Cap at 20 lines to
-# bound cost.
+# Matches the same pattern PENDING_COUNT uses. Cap at 20 lines to bound cost.
 # An absent Pending.md is treated as legitimately empty (returns 1 / quiet day) —
 # ceo_require_vault covers an unmounted vault root. If the file exists but cannot
 # be read (permissions/IO error), _gather_capture_lines marks PENDING_GATHER_DEGRADED
-# so the preflight returns 2 ("cannot tell") rather than claiming no work.
+# so the preflight returns 2 ("cannot tell") rather than claiming no work. An
+# unsearchable vault root also reads as absent here, since `-f` cannot see past it.
 PENDING_FILE="$VAULT/Pending.md"
 if [ -f "$PENDING_FILE" ]; then
 export PENDING_ASK_QUESTIONS
