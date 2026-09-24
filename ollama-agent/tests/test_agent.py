@@ -407,6 +407,8 @@ class _FakeResp:
     def __exit__(self, *a):
         return False
     def read(self):
+        if isinstance(self._body, bytes):
+            return self._body
         return self._body.encode()
 
 
@@ -545,7 +547,7 @@ def test_transport_honors_retry_after_header(monkeypatch):
     assert sleeps == [1.5]
 
 
-def test_transport_stops_after_bounded_502_retries(monkeypatch):
+def test_transport_stops_after_bounded_502_retries(monkeypatch, capsys):
     import io
     import ollama_agent.transport as t
 
@@ -569,10 +571,15 @@ def test_transport_stops_after_bounded_502_retries(monkeypatch):
     assert len(errors) == 3
     assert all(error.closed for error in errors)
     assert "no healthy backends" in str(exc.value)
+    err = capsys.readouterr().err
+    assert err.count("warning: ollama HTTP 502") == 2
+    assert "attempt 1/3" in err
+    assert "attempt 2/3" in err
+    assert "attempt 3/3" not in err
 
 
 @pytest.mark.parametrize("status", [400, 500])
-def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
+def test_transport_does_not_retry_other_http_errors(monkeypatch, capsys, status):
     import io
     import ollama_agent.transport as t
 
@@ -586,6 +593,7 @@ def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
         raise error
 
     monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: pytest.fail("a non-retryable status backed off"))
 
     with pytest.raises(RuntimeError, match=f"HTTP {status}"):
         t.ollama_transport("local-coder")(
@@ -593,6 +601,7 @@ def test_transport_does_not_retry_other_http_errors(monkeypatch, status):
 
     assert len(errors) == 1
     assert errors[0].closed
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("make_exc", [
@@ -1070,23 +1079,9 @@ def test_edit_file_through_the_loop_leaves_the_rest_byte_identical(tmp_path):
 
 # --- #385: transport non-UTF8 decode replace and retry visibility ---
 
-class _RawBytesResp(io.BytesIO):
-    def __init__(self, raw_bytes, headers=None, status=200):
-        super().__init__(raw_bytes)
-        self.status = status
-        self.headers = headers or {}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
-
-
 def test_ollama_transport_handles_non_utf8_200_body(monkeypatch):
     raw = b'{"message": {"role": "assistant", "content": "hello \xff\xfe"}, "prompt_eval_count": 5, "eval_count": 2}'
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _FakeResp(200, raw))
     t = ollama_transport("qwen3.8:27b", host="127.0.0.1:11434")
     msg, usage = t([{"role": "user", "content": "hi"}], [])
     # The replacement char, not just "hello" -- a substring assert passes equally
@@ -1125,7 +1120,7 @@ def test_ollama_transport_logs_warning_on_retry(monkeypatch, capsys):
         call_count += 1
         if call_count == 1:
             raise _Fake503()
-        return _RawBytesResp(b'{"message": {"role": "assistant", "content": "recovered"}, "prompt_eval_count": 1, "eval_count": 1}')
+        return _FakeResp(200, b'{"message": {"role": "assistant", "content": "recovered"}, "prompt_eval_count": 1, "eval_count": 1}')
 
     monkeypatch.setattr("urllib.request.urlopen", fail_then_succeed)
     monkeypatch.setattr("time.sleep", lambda s: None)
@@ -1153,8 +1148,8 @@ def test_ollama_transport_records_the_retry_in_provenance(monkeypatch):
         calls["n"] += 1
         if calls["n"] == 1:
             raise _Fake503()
-        return _RawBytesResp(b'{"message": {"role": "assistant", "content": "ok"},'
-                             b' "prompt_eval_count": 1, "eval_count": 1}')
+        return _FakeResp(200, b'{"message": {"role": "assistant", "content": "ok"},'
+                              b' "prompt_eval_count": 1, "eval_count": 1}')
 
     monkeypatch.setattr("urllib.request.urlopen", fail_then_succeed)
     monkeypatch.setattr("time.sleep", lambda s: None)
@@ -1326,7 +1321,7 @@ def test_parse_chat_response_errors_are_single_line(status, body):
 def test_decode_check_counts_raw_invalid_bytes_as_a_summed_int(monkeypatch, capsys):
     raw = (b'{"message": {"role": "assistant", "content": "hello \xff\xfe world"},'
            b' "prompt_eval_count": 1, "eval_count": 1}')
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _FakeResp(200, raw))
     prov = {}
     msg, _ = ollama_transport("m", provenance=prov)([{"role": "user", "content": "hi"}], [])
     assert msg["content"] == "hello �� world"
@@ -1339,7 +1334,7 @@ def test_decode_replacements_sum_across_turns(monkeypatch):
     # `_note` dedups, so three turns of one replacement each recorded ["1"].
     raw = (b'{"message": {"role": "assistant", "content": "a \xff"},'
            b' "prompt_eval_count": 1, "eval_count": 1}')
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _FakeResp(200, raw))
     prov = {}
     t = ollama_transport("m", provenance=prov)
     for _ in range(3):
@@ -1357,7 +1352,7 @@ def test_decode_check_sees_the_go_escaped_substitution(monkeypatch, capsys, mess
     # Go's json.Marshal substitutes invalid bytes server-side and emits the
     # escape, so the body is valid ASCII and a byte-level check never fires.
     raw = b'{"message": ' + message + b', "prompt_eval_count": 1, "eval_count": 1}'
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _FakeResp(200, raw))
     prov = {}
     ollama_transport("m", provenance=prov)([{"role": "user", "content": "hi"}], [])
     assert prov["decode_replacements"] == 1
@@ -1366,7 +1361,7 @@ def test_decode_check_sees_the_go_escaped_substitution(monkeypatch, capsys, mess
 
 def test_clean_body_records_no_decode_replacements(monkeypatch, capsys):
     raw = _OK_BODY.encode()
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _RawBytesResp(raw))
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _FakeResp(200, raw))
     prov = {}
     ollama_transport("m", provenance=prov)([{"role": "user", "content": "hi"}], [])
     assert "decode_replacements" not in prov

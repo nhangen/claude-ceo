@@ -11,6 +11,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from .mcp import MCPToolError
 from .skills import MAX_SKILL_BODY
 
 MAX_OUTPUT = 4000      # chars of stdout/stderr returned to the model per call
@@ -24,10 +25,10 @@ MAX_READ = 20000       # chars returned by read_file
 # mutation that never ran. unknown tools/skills are gated separately via
 # .unknown_calls.
 #
-# Every bridged MCP tool (ToolBox.mcp_names) is error-relevant too (#271),
-# unless marked read-only via readOnlyHint (#457). For mutating MCP tools,
-# failure counts the same as a failed builtin write: absence of throw is not
-# success.
+# Every bridged MCP tool (ToolBox.mcp_names) is error-relevant too (#271). On
+# one marked read-only via readOnlyHint, only the tool's own miss (MCPToolError)
+# is skipped (#457, #475). For mutating MCP tools, failure counts the same as a
+# failed builtin write: absence of throw is not success.
 _MISSING = object()
 
 ERROR_RELEVANT_TOOLS = {"write_file", "edit_file", "git", "run_shell"}
@@ -188,28 +189,34 @@ class ToolBox:
         if handler is None:
             self.unknown_calls.append(name)
             return json.dumps({"error": f"unknown tool: {name}"})
+        exc = None
         try:
             result = handler(args)
         except Exception as e:
+            exc = e
             # A tool that raises (PermissionError, ENOSPC, UnicodeError, cwd
             # deleted, …) must return a recorded error to the model, never abort
             # the run — keep the loop and transcript alive (safety-invariant-scope).
             result = json.dumps({"error": f"{name} failed: {type(e).__name__}: {e}"})
-        self._note_tool_error(name, result)
+        self._note_tool_error(name, result, exc=exc)
         return result
 
-    def _note_tool_error(self, name, result):
+    def _note_tool_error(self, name, result, exc=None):
         """Record a mutating-tool or MCP failure so the dispatcher (cron) can fail a
         completed-but-errored run (#215). Inspects the result's "error" key —
         absence-of-throw is not success (non-throwing-client-success-check).
 
         MCP failures arrive here through dispatch's exception path, since
-        MCPClient.call_tool raises on isError and on RPC errors (#271). Tools
-        marked read-only via readOnlyHint are skipped (#457): like built-in
-        read_file/list_dir, a failed read-only lookup is a probe miss, not an
-        operational failure. An MCP server that reports success with error text
-        in its content is not caught: that text is wrapped under "result", and
-        the server's own success claim is taken at its word."""
+        MCPClient.call_tool raises on isError and on RPC errors (#271). On a tool
+        marked read-only via readOnlyHint (#457), only the tool's own answer
+        (MCPToolError: isError or invalid params) is skipped: like built-in
+        read_file/list_dir, a failed lookup is a probe miss. Everything else is
+        recorded even there (#475) — a dead, stalled, or desynced server, any
+        other JSON-RPC error, or an exception from our own client — because none
+        of those is the query's answer.
+        An MCP server that reports success with error text in its content is
+        not caught: that text is wrapped under "result", and the server's own
+        success claim is taken at its word."""
         if name not in ERROR_RELEVANT_TOOLS and name not in self.mcp_names:
             return
         # Gated on mcp_names first: the set holds prefixed `mcp__*` names, and
@@ -218,7 +225,8 @@ class ToolBox:
         if name in self.mcp_names and (
             name in self.mcp_readonly or self.mcp_names[name] in self.mcp_readonly
         ):
-            return
+            if isinstance(exc, MCPToolError):
+                return
         try:
             parsed = json.loads(result)
         except (json.JSONDecodeError, TypeError):

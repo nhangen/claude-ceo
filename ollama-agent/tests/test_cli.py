@@ -232,10 +232,10 @@ def test_cli_no_skills_suppresses_catalog_and_tool(tmp_path, monkeypatch, capsys
     assert "skills:" not in capsys.readouterr().err
 
 
-def _stub_mcp(monkeypatch, closed, *, init_raises=False):
+def _stub_mcp(monkeypatch, closed, *, init_raises=False, tool_names=("echo",)):
     class FT:
         def __init__(self, *a, **k):
-            pass
+            closed["cmd"] = a[0] if a else k.get("command")
 
         def close(self):
             closed["v"] = True
@@ -250,7 +250,8 @@ def _stub_mcp(monkeypatch, closed, *, init_raises=False):
                 raise RuntimeError("no server there")
 
         def list_tools(self):
-            return [{"name": "echo", "description": "e", "inputSchema": {"type": "object", "properties": {}}}]
+            return [{"name": n, "description": "e", "inputSchema": {"type": "object", "properties": {}}}
+                    for n in tool_names]
     monkeypatch.setattr(cli, "MCPClient", FC)
 
 
@@ -262,6 +263,7 @@ def test_cli_mcp_bridges_tools_and_closes_transport(tmp_path, monkeypatch, capsy
                    "--mcp", "fake-server arg"])
     assert rc == 0
     assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "fake-server arg"
     assert "mcp: 1 tools" in capsys.readouterr().err
     assert closed["v"] is True   # finally teardown ran
 
@@ -274,6 +276,7 @@ def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, caps
                    "--mcp", "broken-server"])
     assert rc == 1
     assert "mcp bridge failed for 'broken-server'" in capsys.readouterr().err
+    assert closed["cmd"] == "broken-server"
     assert closed["v"] is True
 
 
@@ -294,6 +297,29 @@ def test_cli_task_spec_mcp_bridges_when_omitted_on_cli(tmp_path, monkeypatch, ca
                    "--registry", reg, "--task-name", "mcp_task"])
     assert rc == 0
     assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "custom-server --opt"
+    assert closed["v"] is True
+
+
+def test_cli_operator_explicit_mcp_overrides_registry_spec(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "registry-server --opt",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task",
+                   "--mcp", "operator-override-server"])
+    assert rc == 0
+    assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "operator-override-server"
     assert closed["v"] is True
 
 
@@ -324,6 +350,86 @@ def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
     assert captured["toolbox"].mcp_readonly == {"mcp__query"}
 
 
+def _mcp_registry(tmp_path, tools):
+    return _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "srv --flag",
+            "tools": tools,
+        },
+    )
+
+
+def _run_mcp_task(reg, tmp_path, *extra):
+    return cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                     "--registry", reg, "--task-name", "mcp_task", *extra])
+
+
+def test_cli_registry_tools_allowlist_discarding_mcp_refuses(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed, tool_names=("echo", "ping"))
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file"]), tmp_path)
+    assert rc == 2
+    assert "tools" not in captured   # the model is never run
+    assert closed["v"] is True       # the server is not left running
+    err = capsys.readouterr().err
+    assert ("REFUSED: mcp server 'srv --flag' bridged 2 tool(s) but the registry tools "
+            "allowlist for 'mcp_task' admits none of them.") in err
+
+
+def test_cli_registry_tools_allowlist_admitting_mcp_runs(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file", "mcp__echo"]), tmp_path)
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"read_file", "mcp__echo"}
+    assert closed["v"] is True
+    assert "REFUSED" not in capsys.readouterr().err
+
+
+def test_cli_registry_tools_allowlist_admitting_some_mcp_tools_runs(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed, tool_names=("echo", "ping"))
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["mcp__echo"]), tmp_path)
+    assert rc == 0
+    assert _tool_names(captured["tools"]) == {"mcp__echo"}
+    assert "REFUSED" not in capsys.readouterr().err
+
+
+def test_cli_registry_tools_allowlist_raw_mcp_tool_name_refuses(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    # raw name without the mcp__ prefix: the likeliest way to hit this
+    rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file", "echo"]), tmp_path)
+    assert rc == 2
+    assert "tools" not in captured
+    assert closed["v"] is True
+    err = capsys.readouterr().err
+    assert "warning: registry tools not available (ignored): echo" in err
+    assert "REFUSED: mcp server 'srv --flag' bridged 1 tool(s)" in err
+
+
+def test_cli_mcp_flag_forbidden_by_registry_allowlist_refuses(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(tmp_path, plain={"runner": "ollama", "model": "reg-model:7b",
+                                      "tier": "deterministic", "tools": ["read_file"]})
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "plain", "--mcp", "operator-srv"])
+    assert rc == 2
+    assert closed["cmd"] == "operator-srv"
+    assert closed["v"] is True
+    assert "REFUSED: mcp server 'operator-srv'" in capsys.readouterr().err
+
+
 def _registry(tmp_path, **tasks):
     f = tmp_path / "reg.json"
     f.write_text(json.dumps({"tasks": tasks}))
@@ -341,6 +447,7 @@ def test_cli_registered_deterministic_task_applies_model_and_runs(tmp_path, monk
     assert _tool_names(captured["tools"]) == {"run_shell", "git"}   # restricted to allowlist
     err = capsys.readouterr().err
     assert "model=registry-model:7b" in err and "tools restricted to:" in err
+    assert "REFUSED" not in err
 
 
 def test_cli_high_stakes_task_is_rejected_before_any_run(tmp_path, monkeypatch, capsys):
@@ -732,6 +839,63 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
     # exception type; the diagnostic itself is #376's.
     assert "agent failed: RuntimeError: ollama HTTP 500: prompt exceeded context window" in err
     assert "--num-ctx" in err
+
+
+_NON_NUMERIC_BODY = json.dumps(
+    {"message": {"role": "assistant", "content": "hi"}, "prompt_eval_count": "abc"})
+
+
+class _Resp:
+    def __init__(self, body):
+        self.status, self._body, self.headers = 200, body.encode(), {}
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def read(self):
+        return self._body
+
+
+@pytest.mark.parametrize("body,expected_err", [
+    ("<html>proxy 502 error</html>",
+     "ollama 200 with unparseable body: <html>proxy 502 error</html>"),
+    ("[]", "ollama 200 with non-object body (list): []"),
+    ("null", "ollama 200 with non-object body (NoneType): null"),
+    ('"s"', 'ollama 200 with non-object body (str): "s"'),
+    ("123", "ollama 200 with non-object body (int): 123"),
+    (_NON_NUMERIC_BODY, f"ollama 200 with non-numeric token counts: {_NON_NUMERIC_BODY}"),
+], ids=["html", "list", "null", "str", "int", "non-numeric"])
+def test_cli_surfaces_unparseable_json_error_and_records_crash(
+    tmp_path, monkeypatch, capsys, body, expected_err
+):
+    # #452. Stubbed at urlopen rather than at cli.ollama_transport so the real
+    # 200 path runs: a transport that swallowed the parse error into an empty
+    # turn would pass a transport-level stub and every other test in the suite.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+    responses = [
+        _Resp(json.dumps({
+            "message": {"role": "assistant", "content": "",
+                        "tool_calls": [{"function": {"name": "list_dir",
+                                                     "arguments": {"path": "."}}}]},
+            "prompt_eval_count": 45, "eval_count": 12})),
+        _Resp(body),
+    ]
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, timeout=None: responses.pop(0))
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 1
+    assert responses == []
+    assert f"agent failed: RuntimeError: {expected_err}" in capsys.readouterr().err
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["reason"] == "error"
+    assert row["verified"] is None
+    assert row["verify_gated"] is False
+    assert row["ollama_input_tokens"] == 45
+    assert row["ollama_output_tokens"] == 12
+    assert row["turns"] == 2
 
 
 def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_path, monkeypatch, capsys):
