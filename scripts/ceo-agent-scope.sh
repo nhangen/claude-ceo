@@ -56,12 +56,13 @@ started=$(date +%s)
 
 rc=$?
 
-# Upstream agent-scope (nhangen/llm-tools#770, closing #767) refuses partial
-# inputs by default, exiting 3 and writing nothing. Treat any non-zero exit as
-# a failed run; special-case 3 so an operator can distinguish a partial-input
-# refusal from a missing root (rc=2) or crash.
+# Upstream agent-scope (nhangen/llm-tools#770) exits 3 and writes nothing on
+# partial input or when no agent reaches the ranking threshold. ceo-cron keeps
+# only the last stderr lines, cut to 120 chars, so this line has to carry the
+# diagnosis on its own and name both causes. --lenient is deliberately never
+# passed, so the launcher's advice to use it does not apply here.
 if [ "$rc" -eq 3 ]; then
-  echo "agent-scope: partial input — the snapshot was NOT written" >&2
+  echo "agent-scope rc=3: partial input or no agent ranked; snapshot NOT written (runner never passes --lenient)" >&2
 fi
 
 # A launcher that exits 0 without writing is the failure doctor cannot see until

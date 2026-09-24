@@ -167,19 +167,25 @@ test_launcher_failure_propagates_and_writes_no_outcome() {
 }
 
 test_partial_input_exits_3_and_alerts() {
-  # Upstream agent-scope (nhangen/llm-tools#770, closing #767) exits 3 on partial
-  # input and writes nothing. The runner must propagate rc=3, alert on stderr
-  # naming "partial input — the snapshot was NOT written", and write no outcome.
   local mock_repo="$TEST_HOME/mock-llm-tools"
   _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 3 "could not read ledger file" no
   export LLM_TOOLS_REPO="$mock_repo"
   local outcome_file="$TEST_HOME/outcome.txt"
   export CEO_RUNNER_OUTCOME_FILE="$outcome_file"
+  local report; report=$(_declared_report)
+  mkdir -p "$(dirname "$report")"
+  echo "# last good snapshot" > "$report"
 
   local err="" rc=0
   err=$(bash "$SCRIPT" 2>&1) || rc=$?
   assert_eq "$rc" "3" "partial input must exit 3"
-  assert_contains "$err" "partial input — the snapshot was NOT written" "stderr must explain partial input refusal"
+  assert_contains "$err" "partial input or no agent ranked; snapshot NOT written" "stderr must name both rc=3 causes"
+  # The launcher's own lines name the unreadable path; they are the only
+  # diagnostic that says which input was bad.
+  assert_contains "$err" "could not read ledger file" "the launcher's stderr must reach the operator"
+  local line; line=$(printf '%s\n' "$err" | grep 'agent-scope rc=3')
+  [ "${#line}" -le 120 ] || fail_test "rc=3 alert is ${#line} chars; ceo-cron cuts tail lines at 120"
+  assert_eq "$(cat "$report")" "# last good snapshot" "a refused run must leave the prior snapshot alone"
   local outcome; outcome=$(cat "$outcome_file" 2>/dev/null || echo "")
   assert_eq "$outcome" "" "partial input must not claim fired"
 }
@@ -200,15 +206,29 @@ test_missing_input_root_exits_2_without_partial_input_alert() {
 }
 
 test_an_entry_level_warning_does_not_fail_the_run() {
-  # The launcher may warn on stderr (e.g. an unparseable review_by or unterminated
-  # frontmatter fence). When it exits 0 and writes the report, the run succeeds
-  # — we do not grep stderr.
+  # Failing on any stderr WARNING would turn the playbook red every week over
+  # one malformed consult entry; the exit code alone decides.
   local mock_repo="$TEST_HOME/mock-llm-tools"
   _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 0 "unparseable review_by in socrates/2026-09.md"
   export LLM_TOOLS_REPO="$mock_repo"
   local rc=0
   bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "a warning about one entry must not fail the run"
+}
+
+test_exit_zero_is_success_whatever_stderr_says() {
+  # #460 removed a grep that failed rc=0 runs on this exact warning text. The
+  # launcher now exits 3 for that case, so the grep would only duplicate the
+  # exit code and break when the wording changes.
+  local mock_repo="$TEST_HOME/mock-llm-tools"
+  _install_stub "$mock_repo/home/.claude/skills/agent-scope/scripts/agent-scope" 0 "skipping unreadable file socrates/2026-09.md"
+  export LLM_TOOLS_REPO="$mock_repo"
+  local outcome_file="$TEST_HOME/outcome.txt"
+  export CEO_RUNNER_OUTCOME_FILE="$outcome_file"
+  local rc=0
+  bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "rc=0 with a written report must succeed"
+  assert_eq "$(cat "$outcome_file" 2>/dev/null)" "fired" "rc=0 with a written report must claim fired"
 }
 
 test_exit_zero_without_a_report_is_a_failure() {
