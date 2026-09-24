@@ -738,6 +738,33 @@ PB
   assert_not_contains "$skips" "returned no-work" "unreadable inbox must NOT log 'returned no-work'"
 }
 
+# Same gap for the ceo/* branches preflight: flattening its state 2 into 1
+# without _record_failure left the suite green.
+test_preflight_ceo_branches_cannot_tell_records_failure_and_does_not_log_no_work() {
+  cat > "$CEO_DIR/playbooks/pf-branches-fail.md" << 'PB'
+---
+name: pf-branches-fail
+description: branches preflight failure fixture
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_ceo_branches
+tier: read
+status: active
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local not_repo="$TEST_HOME/not-a-repo"
+  mkdir -p "$not_repo"
+  printf '| Repo | Local Path | Description |\n|---|---|---|\n| bad | %s | not a repo |\n' "$not_repo" > "$CEO_DIR/repos.md"
+  local rc=0
+  bash "$CRON" pf-branches-fail >/dev/null 2>&1 || rc=$?
+
+  assert_eq "$rc" "78" "a recorded branches preflight failure must exit 78"
+  local skips; skips=$(_skips_log)
+  assert_contains "$skips" "git failure checking branches" "the failure must name the git error"
+  assert_not_contains "$skips" "returned no-work" "a failed branches check must NOT log 'returned no-work'"
+}
+
 # The cron copy of preflight_has_log_entries_after_4pm was likewise unpinned:
 # reverting the whole rewrite, grep classification and all, left the suite green.
 # The hour gate makes this arm a no-op before 16:00, which is why it asserts

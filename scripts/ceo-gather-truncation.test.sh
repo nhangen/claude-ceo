@@ -81,8 +81,8 @@ _run_gather_strict() {
 # Write a Pending.md whose matched output is large enough to still be streaming
 # when a truncating consumer closes the pipe. SIGPIPE only fires if the producer
 # is mid-write, so the payload must exceed the ~64KB pipe buffer — 500 short
-# lines fit inside it and the bug hides. Guarded by _assert_fixture_reproduces
-# below rather than trusted.
+# lines fit inside it and the bug hides. Guarded by the size assertion in the test
+# rather than trusted.
 _write_oversized_pending() {
   local pad; pad=$(printf 'x%.0s' $(seq 1 300))
   local i
@@ -92,41 +92,12 @@ _write_oversized_pending() {
   done
 }
 
-# The fixture is only meaningful if it actually reproduces the original bug, and
-# the threshold depends on the platform's pipe buffer plus head's read-ahead —
-# neither visible here. So assert the pre-fix form still fails on this exact file.
-# Without it, shrinking the fixture silently returns the suite to
-# green-against-broken, which is how the first draft of this test passed.
-#
-# Separate process for the same reason as _run_gather_strict — `( … ) || rc=$?`
-# suppresses errexit and reports a misleading 0.
-#
-# Asserts non-zero rather than a specific code: the failure signature is
-# platform-dependent. macOS/BSD grep and WSL's GNU grep 3.11 die from the signal
-# (141), while the GNU grep on GitHub's ubuntu runner handles it and exits 2 on
-# "write error: Broken pipe". Pinning 141 passed locally and failed CI. Either
-# way the pre-fix form exits non-zero, which is the only thing that matters —
-# that is what errexit turns into an aborted run.
-_assert_fixture_reproduces() {
-  local file="$1" rc=0
-  bash -c '
-    set -euo pipefail
-    _naive=$(grep -n "^- \[ \]" "$1" 2>/dev/null | head -20)
-    printf "%s" "$_naive" >/dev/null
-  ' _ "$file" >/dev/null 2>&1 || rc=$?
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$rc" -eq 0 ]; then
-    printf '  FAIL [%s] fixture no longer breaks the pre-fix `grep | head` form (rc=0), so it proves nothing — it must exceed the pipe buffer\n' \
-      "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-}
-
 # An oversized Pending.md must truncate, not abort. Reverting to
 # `grep … | head -20` makes this fail with a non-zero RC (141 or 2, per platform).
 test_oversized_pending_does_not_abort() {
   _write_oversized_pending
-  _assert_fixture_reproduces "$CEO_VAULT/Pending.md"
+  # What the pre-fix `grep -n … | head -20` fed head.
+  assert_exceeds_sigpipe_threshold "$(grep -n '^- \[ \]' "$CEO_VAULT/Pending.md")" "the matched Pending.md lines"
 
   local out; out=$(_run_gather_strict PENDING_ASK_QUESTIONS)
   assert_contains "$out" "RC=0|LINES=20" \

@@ -70,6 +70,7 @@ SMOKE_RC=0
 if [ -n "$CEO_TIMEOUT_BIN" ]; then
   OUTPUT=$("$CEO_TIMEOUT_BIN" "$SMOKE_TIMEOUT" bash "$SMOKE_BIN" 2>&1) || SMOKE_RC=$?
 else
+  echo "warning: no timeout or gtimeout on PATH; running the smoke with no ${SMOKE_TIMEOUT}s cap" >&2
   OUTPUT=$(bash "$SMOKE_BIN" 2>&1) || SMOKE_RC=$?
 fi
 OUTPUT=$(printf '%s' "$OUTPUT" | sed $'s/\033\\[[0-9;]*m//g')

@@ -896,6 +896,34 @@ PB
   assert_contains "$out" "cannot read log file" "and emit error message"
 }
 
+test_cmd_preflight_reports_an_unreadable_repos_md_as_fail_not_skip() {
+  cat > "$CEO_DIR/playbooks/degraded-branches.md" << 'PB'
+---
+name: degraded-branches
+description: gates on ceo branches
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_ceo_branches
+tier: read
+status: active
+---
+# noop
+PB
+  mkdir -p "$CEO_DIR"
+  echo "| Repo | Local Path | Description |" > "$CEO_DIR/repos.md"
+  chmod 000 "$CEO_DIR/repos.md"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local out
+  out=$(bash "$CEO_CLI" preflight 2>&1)
+  chmod 644 "$CEO_DIR/repos.md"
+  local row
+  row=$(printf '%s\n' "$out" | grep 'degraded-branches' | head -1)
+  assert_contains "$row" "FAIL" "an unreadable repos.md must make preflight preview FAIL"
+  assert_contains "$row" "cannot read repos file" "and preview row must indicate cannot read repos file"
+  assert_not_contains "$row" "SKIP" "an unreadable repos.md must not preview as SKIP"
+  assert_contains "$out" "would FAIL" "and the summary must count it"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---
@@ -1283,16 +1311,18 @@ test_pending_drip_oversized_no_questions_leaves_inbox_alone() {
   # is still writing, pipefail reports 141, the `if` reads no-match, and a drip that
   # explicitly found nothing gets appended anyway. Inbox noise, not data loss.
   _write_pending_drip_registry
-  # ~100KB: above the 64KB pipe buffer (so the pre-fix grep really SIGPIPEs) but
-  # below Linux's 128KB per-argument execve limit. At 200KB this test also tripped
-  # that unrelated ceiling and failed on CI while passing on macOS. That ceiling is
-  # fixed now (#297 — _report routes content over stdin), and the size stays at
-  # ~100KB deliberately so this test keeps pinning one limit, not two.
+  # ~140KB: past the SIGPIPE threshold (twice the pipe capacity, see test-harness.sh),
+  # so the pre-fix grep really SIGPIPEs even with a descheduled reader. Content now
+  # reaches ceo-report.sh over stdin (#297), so this no longer trips Linux's 128KB
+  # per-argument execve limit; test_report_survives_a_log_entry_past_the_linux_argv_ceiling
+  # pins that one separately.
   local pad line filler=""
   pad=$(printf 'x%.0s' {1..200})
-  for ((line = 0; line < 500; line++)); do filler+="$pad"$'\n'; done
+  for ((line = 0; line < 700; line++)); do filler+="$pad"$'\n'; done
   _stub_claude_log_entry "completed" "No relevant questions for this trigger.
 $filler"
+  assert_exceeds_sigpipe_threshold "No relevant questions for this trigger.
+$filler" "the log entry the pre-fix grep read"
 
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
 
@@ -1314,16 +1344,18 @@ test_pending_drip_oversized_failed_entry_uses_report_not_inbox() {
   # appended to Nathan's inbox. The small-body test above passes against that
   # revert, so it is not coverage for this.
   _write_pending_drip_registry
-  # ~100KB: above the 64KB pipe buffer (so the pre-fix grep really SIGPIPEs) but
-  # below Linux's 128KB per-argument execve limit. At 200KB this test also tripped
-  # that unrelated ceiling and failed on CI while passing on macOS. That ceiling is
-  # fixed now (#297 — _report routes content over stdin), and the size stays at
-  # ~100KB deliberately so this test keeps pinning one limit, not two.
+  # ~140KB: past the SIGPIPE threshold (twice the pipe capacity, see test-harness.sh),
+  # so the pre-fix grep really SIGPIPEs even with a descheduled reader. Content now
+  # reaches ceo-report.sh over stdin (#297), so this no longer trips Linux's 128KB
+  # per-argument execve limit; test_report_survives_a_log_entry_past_the_linux_argv_ceiling
+  # pins that one separately.
   local pad line filler=""
   pad=$(printf 'x%.0s' {1..200})
-  for ((line = 0; line < 500; line++)); do filler+="$pad"$'\n'; done
+  for ((line = 0; line < 700; line++)); do filler+="$pad"$'\n'; done
   _stub_claude_log_entry "failed" "Something failed
 $filler"
+  assert_exceeds_sigpipe_threshold "Something failed
+$filler" "the log entry the pre-fix grep read"
 
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
 

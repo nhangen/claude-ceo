@@ -124,6 +124,7 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
         # True is unreachable here: a green gate breaks and returns normally.
         "verified": usage_tracker.get("verified"),
         "verify_gated": usage_tracker.get("verify_gated"),
+        "verify_cmd": usage_tracker.get("verify_cmd"),
         "reason": reason,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
@@ -214,7 +215,10 @@ def main(argv=None):
     # no-gate run. "   " is truthy, so the gate "runs", exits 0 having verified
     # nothing, and records verify_gated=True with verified=True — the strongest
     # assurance the ledger carries. Refuse rather than warn: these runs happen
-    # under ceo-cron, which discards stderr.
+    # under ceo-cron, which discards stderr. run_agent carries the same predicate
+    # as a library backstop, but keep this one ahead of it: without it the raise
+    # lands in the broad except below, which writes a crash row seeded from
+    # bool(a.verify_cmd) — True for "   " — claiming the run was gated (#436).
     if a.verify_cmd is not None and not a.verify_cmd.strip():
         print("REFUSED: --verify-cmd is empty. Omit the flag to run without a "
               "verification gate.", file=sys.stderr)
@@ -352,7 +356,8 @@ def main(argv=None):
         print(f"warning: prompt size ({prompt_chars} chars) may exceed num_ctx={a.num_ctx} (~{a.num_ctx * CHARS_PER_TOKEN} chars); consider --num-ctx",
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
-                     "verified": None, "verify_gated": bool(a.verify_cmd)}
+                     "verified": None, "verify_gated": bool(a.verify_cmd),
+                     "verify_cmd": a.verify_cmd}
     _install_kill_handlers()
     rec = None
     exit_code = 0

@@ -41,6 +41,7 @@ def _stub(monkeypatch, captured):
         # the production function always sets. A stub that omits a key the caller
         # is entitled to hides the KeyError from every test that uses it.
         return {"completed": True, "verified": None, "verify_gated": bool(verify_cmd),
+                "verify_cmd": verify_cmd,
                 "turns": 1, "run_id": run_id,
                 "ollama_input_tokens": 40, "ollama_output_tokens": 400,
                 "transcript": [{"role": "assistant", "content": "done"}],
@@ -234,7 +235,7 @@ def test_cli_no_skills_suppresses_catalog_and_tool(tmp_path, monkeypatch, capsys
 def _stub_mcp(monkeypatch, closed, *, init_raises=False):
     class FT:
         def __init__(self, *a, **k):
-            pass
+            closed["cmd"] = a[0] if a else k.get("command")
 
         def close(self):
             closed["v"] = True
@@ -261,6 +262,7 @@ def test_cli_mcp_bridges_tools_and_closes_transport(tmp_path, monkeypatch, capsy
                    "--mcp", "fake-server arg"])
     assert rc == 0
     assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "fake-server arg"
     assert "mcp: 1 tools" in capsys.readouterr().err
     assert closed["v"] is True   # finally teardown ran
 
@@ -273,6 +275,7 @@ def test_cli_mcp_bridge_failure_returns_1_and_closes(tmp_path, monkeypatch, caps
                    "--mcp", "broken-server"])
     assert rc == 1
     assert "mcp bridge failed for 'broken-server'" in capsys.readouterr().err
+    assert closed["cmd"] == "broken-server"
     assert closed["v"] is True
 
 
@@ -293,6 +296,29 @@ def test_cli_task_spec_mcp_bridges_when_omitted_on_cli(tmp_path, monkeypatch, ca
                    "--registry", reg, "--task-name", "mcp_task"])
     assert rc == 0
     assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "custom-server --opt"
+    assert closed["v"] is True
+
+
+def test_cli_operator_explicit_mcp_overrides_registry_spec(tmp_path, monkeypatch, capsys):
+    captured, closed = {}, {"v": False}
+    _stub(monkeypatch, captured)
+    _stub_mcp(monkeypatch, closed)
+    reg = _registry(
+        tmp_path,
+        mcp_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+            "mcp": "registry-server --opt",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "mcp_task",
+                   "--mcp", "operator-override-server"])
+    assert rc == 0
+    assert "mcp__echo" in _tool_names(captured["tools"])
+    assert closed["cmd"] == "operator-override-server"
     assert closed["v"] is True
 
 
@@ -599,8 +625,8 @@ def test_cli_summary_prints_verify_gated(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tmp_path, monkeypatch):
-    # main() seeds verify_gated into the tracker at construction, and run_agent
-    # resets it again on entry. Every other crash test crashes INSIDE run_agent,
+    # main() seeds verify_gated and verify_cmd into the tracker at construction,
+    # and run_agent resets them again on entry. Every other crash test crashes INSIDE run_agent,
     # so they read the reset value and the seed is dead weight to them. This one
     # crashes in the window between the two — run_agent raising before its reset
     # loop, or a kill landing during _install_kill_handlers() — which is the only
@@ -618,6 +644,9 @@ def test_cli_crash_before_run_agent_resets_tracker_still_records_verify_gated(tm
     row = json.loads(ledger.read_text().strip())
     assert row["verify_gated"] is True
     assert row["verified"] is None
+    # Without the seed this row is gated but cannot name its gate — the
+    # unauditable shape #433 exists to prevent.
+    assert row["verify_cmd"] == "pytest"
 
 
 def test_cli_empty_verify_cmd_refuses(tmp_path, monkeypatch, capsys):
@@ -800,6 +829,63 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
     assert "--num-ctx" in err
 
 
+_NON_NUMERIC_BODY = json.dumps(
+    {"message": {"role": "assistant", "content": "hi"}, "prompt_eval_count": "abc"})
+
+
+class _Resp:
+    def __init__(self, body):
+        self.status, self._body, self.headers = 200, body.encode(), {}
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def read(self):
+        return self._body
+
+
+@pytest.mark.parametrize("body,expected_err", [
+    ("<html>proxy 502 error</html>",
+     "ollama 200 with unparseable body: <html>proxy 502 error</html>"),
+    ("[]", "ollama 200 with non-object body (list): []"),
+    ("null", "ollama 200 with non-object body (NoneType): null"),
+    ('"s"', 'ollama 200 with non-object body (str): "s"'),
+    ("123", "ollama 200 with non-object body (int): 123"),
+    (_NON_NUMERIC_BODY, f"ollama 200 with non-numeric token counts: {_NON_NUMERIC_BODY}"),
+], ids=["html", "list", "null", "str", "int", "non-numeric"])
+def test_cli_surfaces_unparseable_json_error_and_records_crash(
+    tmp_path, monkeypatch, capsys, body, expected_err
+):
+    # #452. Stubbed at urlopen rather than at cli.ollama_transport so the real
+    # 200 path runs: a transport that swallowed the parse error into an empty
+    # turn would pass a transport-level stub and every other test in the suite.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+    responses = [
+        _Resp(json.dumps({
+            "message": {"role": "assistant", "content": "",
+                        "tool_calls": [{"function": {"name": "list_dir",
+                                                     "arguments": {"path": "."}}}]},
+            "prompt_eval_count": 45, "eval_count": 12})),
+        _Resp(body),
+    ]
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, timeout=None: responses.pop(0))
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--turn-cap", "5"])
+    assert rc == 1
+    assert responses == []
+    assert f"agent failed: RuntimeError: {expected_err}" in capsys.readouterr().err
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["reason"] == "error"
+    assert row["verified"] is None
+    assert row["verify_gated"] is False
+    assert row["ollama_input_tokens"] == 45
+    assert row["ollama_output_tokens"] == 12
+    assert row["turns"] == 2
+
+
 def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_path, monkeypatch, capsys):
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
@@ -932,6 +1018,7 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
     assert row["verify_gated"] is True
+    assert row["verify_cmd"] == "false"
     assert row["verified"] is False
     assert row["ollama_input_tokens"] == 7
 
@@ -940,6 +1027,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     # #386: A gated run that dies on turn 1 (e.g. transport error) before the gate
     # ever runs records (verify_gated=True, verified=None) — distinguishing "died before gate"
     # from one with no gate configured (verify_gated=False, verified=None).
+    # #433: verify_cmd records the exact command ("pytest") rather than null.
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
 
@@ -953,6 +1041,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
     assert row["verify_gated"] is True
+    assert row["verify_cmd"] == "pytest"
     assert row["verified"] is None
     assert row["completed"] is False
 
