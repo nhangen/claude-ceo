@@ -66,6 +66,9 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   when `min_score` is set — use `eval_task: "*"` to opt into the cross-task mean; an aggregate
   default would let a model that fails the task that matters pass on unrelated tasks. A missing
   score is a refusal, not a silent pass. `eval_model` overrides which model's score is checked.
+- A `tools` allowlist carrying `write_file` without `edit_file` warns on stderr at parse time
+  (advisory, never a refusal). Pair them so the model can make surgical edits instead of
+  rewriting whole files.
 
 ## Tools
 

@@ -24,10 +24,10 @@ MAX_READ = 20000       # chars returned by read_file
 # mutation that never ran. unknown tools/skills are gated separately via
 # .unknown_calls.
 #
-# Every bridged MCP tool (ToolBox.mcp_names) is error-relevant too (#271). The
-# bridge carries no read/write metadata, so in a run started with --mcp a failed
-# MCP lookup counts the same as a failed MCP write: over-capture is the chosen
-# side of that trade (#457 tracks honoring readOnlyHint).
+# Every bridged MCP tool (ToolBox.mcp_names) is error-relevant too (#271),
+# unless marked read-only via readOnlyHint (#457). For mutating MCP tools,
+# failure counts the same as a failed builtin write: absence of throw is not
+# success.
 _MISSING = object()
 
 ERROR_RELEVANT_TOOLS = {"write_file", "edit_file", "git", "run_shell"}
@@ -50,15 +50,17 @@ def _clip(s, n):
 
 
 class ToolBox:
-    def __init__(self, cwd=".", timeout=30, skills=None, mcp_client=None, mcp_names=None):
+    def __init__(self, cwd=".", timeout=30, skills=None, mcp_client=None, mcp_names=None,
+                 mcp_readonly=None):
         self.cwd = Path(cwd).resolve()
         self.timeout = timeout
         self.skills = list(skills) if skills else []   # [Skill] for use_skill, if any
         self.mcp_client = mcp_client                   # MCPClient, if an MCP server is bridged
         self.mcp_names = dict(mcp_names) if mcp_names else {}  # prefixed_name -> real MCP tool name
+        self.mcp_readonly = set(mcp_readonly) if mcp_readonly else set()  # read-only tool names (#457)
         self.calls = []            # (name, args) of every dispatched call
         self.unknown_calls = []    # tool/skill names the model hallucinated
-        self.tool_errors = []      # {tool, error} for mutating-tool and MCP failures (#215, #271)
+        self.tool_errors = []      # {tool, error} for mutating-tool and MCP failures (#215, #271, #457)
 
     def _resolve(self, path):
         p = Path(path)
@@ -202,11 +204,20 @@ class ToolBox:
         absence-of-throw is not success (non-throwing-client-success-check).
 
         MCP failures arrive here through dispatch's exception path, since
-        MCPClient.call_tool raises on isError and on RPC errors (#271). An MCP
-        server that reports success with error text in its content is not
-        caught: that text is wrapped under "result", and the server's own
-        success claim is taken at its word."""
+        MCPClient.call_tool raises on isError and on RPC errors (#271). Tools
+        marked read-only via readOnlyHint are skipped (#457): like built-in
+        read_file/list_dir, a failed read-only lookup is a probe miss, not an
+        operational failure. An MCP server that reports success with error text
+        in its content is not caught: that text is wrapped under "result", and
+        the server's own success claim is taken at its word."""
         if name not in ERROR_RELEVANT_TOOLS and name not in self.mcp_names:
+            return
+        # Gated on mcp_names first: the set holds prefixed `mcp__*` names, and
+        # without this a real-name entry would suppress the *builtin* tool that
+        # shares its name — a failed builtin write_file, say.
+        if name in self.mcp_names and (
+            name in self.mcp_readonly or self.mcp_names[name] in self.mcp_readonly
+        ):
             return
         try:
             parsed = json.loads(result)

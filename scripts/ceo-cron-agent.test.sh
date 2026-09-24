@@ -390,4 +390,37 @@ test_runner_ollama_agent_missing_bridge_command_is_failure() {
   assert_contains "$(_skips_log)" "bridge exited" "missing bridge command must be recorded as a failure"
 }
 
+
+test_runner_ollama_agent_mcp_tool_error_fails_and_readonly_miss_succeeds() {
+  # #457: ceo-cron.sh passes --mcp from the registry task spec.
+  # A mutating mcp__* tool error must fail the cron run and record in cron-skips.
+  # A read-only mcp__* lookup miss (tool_errors empty) must succeed cleanly.
+  _register_agent_pb agent-mcp-err low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-mcp-err": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "mcp": "node /opt/servers/db.js --flag"}}}
+EOF
+  _make_agent_stub '{"completed": true, "turns": 2, "calls": [["mcp__write_db", {"id": "1"}]], "unknown_calls": [], "tool_errors": [{"tool": "mcp__write_db", "error": "mcp__write_db failed: database locked"}]}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc_err=0
+  bash "$CRON" agent-mcp-err >/dev/null 2>&1 || rc_err=$?
+  if [ "$rc_err" = "0" ]; then
+    printf '  FAIL [%s] a completed run with an mcp__* tool error must exit non-zero\n' "$CURRENT_TEST"
+    FAILS=$((FAILS + 1))
+  fi
+  assert_contains "$(cat "$HOME/agent-argv.txt" 2>/dev/null)" "--mcp node /opt/servers/db.js --flag" "cron passes --mcp from registry task spec with preserved spaces"
+  assert_contains "$(_skips_log)" "mcp__write_db" "failure log must record failing mcp tool"
+
+  # Now simulate a read-only miss: tool_errors is empty because readOnlyHint skipped it
+  _register_agent_pb agent-mcp-ro low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-mcp-ro": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "mcp": "node /opt/servers/db.js --flag"}}}
+EOF
+  _make_agent_stub '{"completed": true, "turns": 2, "calls": [["mcp__lookup_db", {"id": "404"}]], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc_ro=0
+  bash "$CRON" agent-mcp-ro >/dev/null 2>&1 || rc_ro=$?
+  assert_eq "$rc_ro" "0" "read-only mcp lookup miss with empty tool_errors must succeed"
+}
+
 run_tests
+

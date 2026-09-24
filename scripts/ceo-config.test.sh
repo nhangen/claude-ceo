@@ -20,7 +20,7 @@ teardown() {
 
 test_load_config_returns_nonzero_when_unresolved() {
   local rc=0
-  env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_load_config
@@ -31,7 +31,7 @@ test_load_config_returns_nonzero_when_unresolved() {
 
 test_load_config_honors_env_bypass() {
   local rc=0
-  env -i HOME="$TEST_HOME/empty" CEO_VAULT="$TEST_HOME/explicit" PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" CEO_VAULT="$TEST_HOME/explicit" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_load_config
@@ -44,7 +44,7 @@ test_load_config_honors_env_bypass() {
 test_load_config_finds_legacy_candidate() {
   local rc=0 vault_path
   mkdir -p "$TEST_HOME/Documents/Obsidian/CEO"
-  vault_path=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "
+  vault_path=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_load_config
@@ -57,7 +57,7 @@ test_load_config_finds_legacy_candidate() {
 
 test_require_vault_exits_when_unresolved() {
   local rc=0
-  env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_require_vault
@@ -68,7 +68,7 @@ test_require_vault_exits_when_unresolved() {
 
 test_require_vault_returns_zero_when_resolved() {
   local rc=0
-  env -i HOME="$TEST_HOME/empty" CEO_VAULT="$TEST_HOME/explicit" PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" CEO_VAULT="$TEST_HOME/explicit" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_require_vault
@@ -79,7 +79,7 @@ test_require_vault_returns_zero_when_resolved() {
 
 test_ceo_report_fails_loud_on_unresolved_vault() {
   local rc=0 out
-  out=$(env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo-report.sh" intake test-trigger "content" 2>&1) || rc=$?
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo-report.sh" intake test-trigger "content" 2>&1) || rc=$?
   assert_eq "$rc" "1" "ceo-report.sh must exit 1 when no vault resolves"
   case "$out" in
     *FATAL*) ;;
@@ -96,7 +96,7 @@ test_ceo_callers_fail_loud_on_unresolved_vault() {
   local rc=0 out _outer_test="$CURRENT_TEST"
   for script in "ceo-log.sh" "ceo-cleanup.sh" "ceo-scan.sh" "ceo-gather.sh" "count-blessings.sh"; do
     rc=0
-    out=$(env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/$script" 2>&1) || rc=$?
+    out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/$script" 2>&1) || rc=$?
     assert_eq "$rc" "1" "$script must exit 1 when no vault resolves"
     case "$out" in
       *FATAL*) ;;
@@ -108,7 +108,7 @@ test_ceo_callers_fail_loud_on_unresolved_vault() {
 
 test_ceo_help_works_on_fresh_host() {
   local rc=0
-  env -i HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo" help >/dev/null 2>&1 || rc=$?
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo" help >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ceo help must exit 0 on a host with no CEO_VAULT"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -118,7 +118,7 @@ test_registry_validate_accepts_integer_current_schema() {
   printf '{"schema_version":3,"playbooks":[]}\n' > "$registry"
 
   local rc=0
-  env -i PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_registry_validate '$registry'
@@ -130,7 +130,7 @@ test_registry_validate_accepts_integer_current_schema() {
 _validate_rc() {
   local registry="$1"
   local rc=0
-  env -i PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_registry_validate '$registry'
@@ -329,7 +329,7 @@ test_resolve_real_home_ignores_env_HOME() {
     printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
     return 0
   fi
-  got=$(env -i HOME=/tmp/this-is-not-the-real-home PATH="$PATH" bash -c "
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME=/tmp/this-is-not-the-real-home PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_resolve_real_home
@@ -367,7 +367,7 @@ EOF
     printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
     return 0
   fi
-  got=$(env -i HOME=/tmp/fake PATH="$stub_dir:/usr/bin:/bin" bash -c "
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME=/tmp/fake PATH="$stub_dir:/usr/bin:/bin" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_resolve_real_home
@@ -384,7 +384,7 @@ test_pin_home_or_warn_emits_warn_on_resolver_failure() {
   local empty_dir="$TEST_HOME/empty"
   mkdir -p "$empty_dir"
   local stderr rc=0
-  stderr=$(env -i HOME=/tmp/fake PATH="$empty_dir" /bin/bash -c "
+  stderr=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME=/tmp/fake PATH="$empty_dir" /bin/bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_pin_home_or_warn
@@ -699,7 +699,7 @@ test_require_vault_rejects_empty_home() {
   # ceo_require_vault lets the fail-counter write fall through to /.claude/...
   # under empty HOME. set -u alone does not catch set-but-empty.
   local rc=0 out
-  out=$(env -i HOME="" CEO_VAULT="" PATH="$PATH" bash -c "
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="" CEO_VAULT="" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_require_vault
@@ -736,7 +736,7 @@ test_require_vault_increments_fail_counter_atomically_with_mkdir_fallback() {
   assert_eq "$fails_value" "3" "fail counter must reach 3 after three calls under mkdir-fallback"
   # Pre-corrupt the counter and verify the numeric validator resets to 0+1=1.
   echo "garbage" > "$counter_file"
-  env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_require_vault
@@ -781,6 +781,7 @@ STUB
   # reverting the guard makes Phase 1 fail).
   rm -f "$counter" "$marker" 2>/dev/null || true
   for _i in 1 2 3; do
+    # notify-unguarded: deliberate, a stub osascript is first on PATH
     env -i HOME="$TEST_HOME" CEO_VAULT="" CEO_TEST_FORCE_MKDIR_LOCK=1 \
       OSA_MARKER="$marker" PATH="$bindir:$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_require_vault" >/dev/null 2>&1 || true
   done
@@ -790,7 +791,7 @@ STUB
 
 test_pr_sources_path_uses_home() {
   local got
-  got=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path")
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path")
   assert_eq "$got" "$TEST_HOME/.ceo/pr-sources.json" "pr-sources path must be under \$HOME/.ceo"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -798,7 +799,7 @@ test_pr_sources_path_uses_home() {
 test_pr_sources_path_rejects_empty_home() {
   # Sibling helpers all guard `: "${HOME:?...}"`; verify pr_sources_path mirrors that.
   local rc=0
-  env -i HOME="" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path" >/dev/null 2>&1 || rc=$?
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_path" >/dev/null 2>&1 || rc=$?
   [ "$rc" -ne 0 ] && rc=1
   assert_eq "$rc" "1" "ceo_pr_sources_path must reject empty HOME (mirrors sibling :?: guard)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -818,7 +819,7 @@ test_pr_sources_github_accounts_empty_array_returns_empty_when_no_gh() {
   printf '%s\n' '{"github":{"accounts":[]}}' > "$cfg"
   local got
   # PATH stripped so gh discovery fallback can't fire.
-  got=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'")
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'")
   assert_eq "$got" "" "empty accounts array with no gh available → empty stdout"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -852,7 +853,7 @@ test_pr_sources_malformed_json_falls_through() {
   local cfg="$TEST_HOME/pr-sources.json"
   printf '%s\n' '{not valid json' > "$cfg"
   local got
-  got=$(env -i PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null)
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="/usr/bin:/bin" HOME="$TEST_HOME" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null)
   assert_eq "$got" "" "malformed JSON must not crash; falls through to empty when no gh"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -904,7 +905,7 @@ EOSCRIPT
 test_pr_sources_github_accounts_discovers_via_gh_when_config_missing() {
   local stub_dir got
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
-  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "stubuser1,stubuser2" "missing config must fall through to gh discovery"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -916,7 +917,7 @@ test_pr_sources_github_accounts_empty_array_triggers_discovery() {
   local cfg="$TEST_HOME/pr-sources.json" stub_dir got
   printf '%s\n' '{"github":{"accounts":[]}}' > "$cfg"
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
-  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "stubuser1,stubuser2" "empty accounts array must fall through to gh discovery"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -926,7 +927,7 @@ test_pr_sources_github_accounts_malformed_triggers_discovery() {
   local cfg="$TEST_HOME/pr-sources.json" stub_dir got
   printf '%s\n' '{not valid json' > "$cfg"
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
-  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$cfg'" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "stubuser1,stubuser2" "malformed JSON must trigger gh discovery (not silently return empty)"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -934,7 +935,7 @@ test_pr_sources_github_accounts_malformed_triggers_discovery() {
 test_pr_sources_github_accounts_gh_auth_failure_returns_empty() {
   local stub_dir got rc=0
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-fail)
-  got=$(env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null) || rc=$?
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_accounts '$TEST_HOME/missing.json'" 2>/dev/null) || rc=$?
   assert_eq "$got" "" "gh auth status failure → empty stdout, no crash"
   assert_eq "$rc" "0" "gh auth failure must not propagate non-zero rc"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -943,7 +944,7 @@ test_pr_sources_github_accounts_gh_auth_failure_returns_empty() {
 test_pr_sources_gitlab_usernames_reads_config() {
   local cfg="$TEST_HOME/pr-sources.json" got
   printf '%s\n' '{"gitlab":{"usernames":["nhangen","alt-user"]}}' > "$cfg"
-  got=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_gitlab_usernames '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_gitlab_usernames '$cfg'" | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "nhangen,alt-user" "gitlab usernames must round-trip from config"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -956,7 +957,7 @@ test_pr_sources_exclude_orgs_rejects_garbage() {
   # downstream and either crashes or misfires).
   local cfg="$TEST_HOME/pr-sources.json" got
   printf '%s\n' '{"github":{"exclude_orgs":["dependabot","valid-org","bad org with space","invalid!chars"]}}' > "$cfg"
-  got=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_exclude_orgs '$cfg'" | tr '\n' ',' | sed 's/,$//')
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_github_exclude_orgs '$cfg'" | tr '\n' ',' | sed 's/,$//')
   assert_eq "$got" "dependabot,valid-org" "exclude_orgs validator must drop garbage entries"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
@@ -968,7 +969,7 @@ test_pr_sources_setup_skips_non_tty() {
   local stub_dir
   stub_dir=$(_setup_stub_gh "$TEST_HOME" auth-multi)
   # Pipe empty stdin to force non-tty.
-  env -i HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_setup </dev/null" >/dev/null 2>&1
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_setup </dev/null" >/dev/null 2>&1
   # Either the file wasn't written, or it was written with empty accounts.
   local accounts
   if [ -f "$TEST_HOME/.ceo/pr-sources.json" ]; then
@@ -983,7 +984,7 @@ test_pr_sources_setup_skips_non_tty() {
 test_pr_sources_setup_writes_valid_json_when_no_sources() {
   # Even with neither gh nor glab on PATH, the function should emit a
   # structurally valid (empty) config — not crash, not leave a partial write.
-  env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_setup </dev/null" >/dev/null 2>&1
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "set -uo pipefail; source '$LIB'; ceo_pr_sources_setup </dev/null" >/dev/null 2>&1
   local rc=0
   if [ -f "$TEST_HOME/.ceo/pr-sources.json" ]; then
     jq empty "$TEST_HOME/.ceo/pr-sources.json" 2>/dev/null || rc=$?
@@ -1060,7 +1061,7 @@ test_status_valid_rejects_empty() {
 
 test_discovery_skips_mnt_candidates_on_macos() {
   local trace rc=0
-  trace=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "
+  trace=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_detect_os() { echo macos; }
@@ -1082,7 +1083,7 @@ test_discovery_skips_mnt_candidates_on_macos() {
 
 test_discovery_probes_mnt_candidates_on_wsl() {
   local trace
-  trace=$(env -i HOME="$TEST_HOME" PATH="$PATH" bash -c "
+  trace=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_detect_os() { echo wsl; }
@@ -1120,9 +1121,10 @@ test_ceo_registry_path_honors_override() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
-# All three path helpers spell the fallback `${VAR:-$HOME/...}`. `:-` and `-`
-# differ only for a set-but-empty value, where `-` would resolve to a bare
-# /.ceo/... at the filesystem root. One arm per helper, because a flip at any
+# All three path helpers gate the override on `[ -n "${VAR:-}" ]`, which tests
+# the expanded value: a set-but-empty override falls through to $HOME rather
+# than returning "". Testing whether the variable is merely *set* (`${VAR+x}`)
+# would emit an empty path instead. One arm per helper, because a flip at any
 # one site is invisible to the others.
 test_ceo_registry_path_empty_override_falls_back() {
   local path
@@ -1145,6 +1147,70 @@ test_ceo_state_dir_empty_override_falls_back() {
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_ceo_state_dir_defaults_to_home() {
+  local path
+  path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "$TEST_HOME/.ceo/state" "_ceo_state_dir must default to \$HOME/.ceo/state"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_honors_override() {
+  local path
+  path=$(HOME="$TEST_HOME" CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "/custom/state" "_ceo_state_dir must honor CEO_STATE_DIR override"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# Override makes HOME irrelevant (#425): when an override is provided,
+# the path helper must succeed even if HOME is unset.
+test_ceo_registry_path_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_REGISTRY_FILE="/custom/reg.json" bash -c "source '$LIB'; _ceo_registry_path")
+  assert_eq "$path" "/custom/reg.json" "_ceo_registry_path must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_enabled_path_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
+  assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_ceo_state_dir_honors_override_without_home() {
+  local path
+  path=$(env -u HOME CEO_STATE_DIR="/custom/state" bash -c "source '$LIB'; _ceo_state_dir")
+  assert_eq "$path" "/custom/state" "_ceo_state_dir must honor override even when HOME is unset"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+# When no override is set and HOME is unset, the path helpers must abort loudly.
+# Pinned as non-zero rather than a code: bash 3.2 reports the `${VAR:?}` abort as
+# 127 where newer bash reports 1, and the contract is that it aborts at all.
+test_ceo_registry_path_aborts_on_unset_home_when_no_override() {
+  local err rc=0
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_registry_path" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail_test "_ceo_registry_path must exit non-zero when HOME is unset and no override is given"
+  assert_contains "$err" "HOME must be set to resolve the host-local registry path" \
+    "error message must guide that HOME is required"
+}
+
+test_ceo_enabled_path_aborts_on_unset_home_when_no_override() {
+  local err rc=0
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_enabled_path" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail_test "_ceo_enabled_path must exit non-zero when HOME is unset and no override is given"
+  assert_contains "$err" "HOME must be set to resolve the host-local enabled path" \
+    "error message must guide that HOME is required"
+}
+
+test_ceo_state_dir_aborts_on_unset_home_when_no_override() {
+  local err rc=0
+  err=$(env -u HOME bash -c "source '$LIB'; _ceo_state_dir" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail_test "_ceo_state_dir must exit non-zero when HOME is unset and no override is given"
+  assert_contains "$err" "HOME must be set to resolve the host-local state directory" \
+    "error message must guide that HOME is required"
+}
+
 test_ceo_enabled_path_defaults_to_home() {
   local path
   path=$(HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_enabled_path")
@@ -1157,6 +1223,21 @@ test_ceo_enabled_path_honors_override() {
   path=$(HOME="$TEST_HOME" CEO_ENABLED_FILE="/custom/enabled.json" bash -c "source '$LIB'; _ceo_enabled_path")
   assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor CEO_ENABLED_FILE override"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_every_env_i_suppresses_the_desktop_notification() {
+  # env -i strips CEO_NO_DESKTOP_NOTIFY, so a call site that drops it and
+  # reaches ceo_require_vault three times pops a real "Claude CEO FATAL"
+  # notification on the developer's Mac. test_ceo_callers_fail_loud_on_unresolved_vault
+  # did exactly that on every suite run. Only a site marked on the line above
+  # as deliberately unguarded (with a stub osascript) may omit it.
+  local offenders
+  offenders=$(awk '
+    /^[[:space:]]*#/ { marked = ($0 ~ /notify-unguarded:/); next }
+    /env -i / && !/CEO_NO_DESKTOP_NOTIFY=1/ && !marked { print FILENAME ":" NR }
+    { marked = 0 }
+  ' "$SCRIPT_DIR/ceo-config.test.sh")
+  assert_eq "$offenders" "" "every env -i in this suite must pass CEO_NO_DESKTOP_NOTIFY=1"
 }
 
 run_tests
