@@ -12,9 +12,10 @@ use the **`ceo` CLI** (the front door), not `cronbird` directly:
 - **Inspect / list:** `ceo playbook list` (registered jobs), `ceo doctor` (daemon
   health + artifact checks), `ceo playbook info <name>`.
 - **Create / change:** edit the playbook `.md` (`docs/playbooks/<name>.md`, or the
-  synced `$CEO_VAULT/CEO/playbooks/<name>.md`), then `ceo playbook scan`
-  **on ML-1 only** — scan installs schedulers and rewrites the host-local
-  `~/.ceo/registry.json` (see the `ceo-scan-only-on-ml1` rule).
+  synced `$CEO_VAULT/CEO/playbooks/<name>.md`), then `ceo playbook scan`. Scan is
+  host-local and safe on any host: it writes only `~/.ceo/registry.json` and installs
+  nothing. A non-owner host enables only each-scope telemetry playbooks (see the
+  `ceo-swarm-host-scoping` rule in `.claude/rules/`).
 - **Enable / disable per host:** `ceo playbook enable|disable <name>`.
 
 Do **not** hand-roll crontab lines, launchd plists, or systemd units for recurring
