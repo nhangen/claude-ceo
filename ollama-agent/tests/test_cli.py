@@ -734,63 +734,53 @@ def test_cli_surfaces_overflow_diagnostic_raised_by_parse(tmp_path, monkeypatch,
     assert "--num-ctx" in err
 
 
+_NON_NUMERIC_BODY = json.dumps(
+    {"message": {"role": "assistant", "content": "hi"}, "prompt_eval_count": "abc"})
+
+
+class _Resp:
+    def __init__(self, body):
+        self.status, self._body, self.headers = 200, body.encode(), {}
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def read(self):
+        return self._body
+
+
 @pytest.mark.parametrize("body,expected_err", [
-    (
-        "<html>proxy 502 error</html>",
-        "ollama 200 with unparseable body: <html>proxy 502 error</html>",
-    ),
-    (
-        "[]",
-        "ollama 200 with non-object body (list): []",
-    ),
-    (
-        "null",
-        "ollama 200 with non-object body (NoneType): null",
-    ),
-    (
-        '"s"',
-        'ollama 200 with non-object body (str): "s"',
-    ),
-    (
-        "123",
-        "ollama 200 with non-object body (int): 123",
-    ),
-    (
-        json.dumps({"message": {"role": "assistant", "content": "hi"}, "prompt_eval_count": "abc"}),
-        f"ollama 200 with non-numeric token counts: {json.dumps({'message': {'role': 'assistant', 'content': 'hi'}, 'prompt_eval_count': 'abc'})}",
-    ),
-])
+    ("<html>proxy 502 error</html>",
+     "ollama 200 with unparseable body: <html>proxy 502 error</html>"),
+    ("[]", "ollama 200 with non-object body (list): []"),
+    ("null", "ollama 200 with non-object body (NoneType): null"),
+    ('"s"', 'ollama 200 with non-object body (str): "s"'),
+    ("123", "ollama 200 with non-object body (int): 123"),
+    (_NON_NUMERIC_BODY, f"ollama 200 with non-numeric token counts: {_NON_NUMERIC_BODY}"),
+], ids=["html", "list", "null", "str", "int", "non-numeric"])
 def test_cli_surfaces_unparseable_json_error_and_records_crash(
     tmp_path, monkeypatch, capsys, body, expected_err
 ):
-    # #452: pin the end-to-end outcome when transport returns an unparseable
-    # body, non-object body, or non-numeric token counts. Asserts both halves:
-    # 1. Stderr diagnostic names ollama and the body snippet.
-    # 2. Crash ledger row records completed=False, reason="error", and the
-    #    accumulated ollama_input_tokens from prior turns.
+    # #452. Stubbed at urlopen rather than at cli.ollama_transport so the real
+    # 200 path runs: a transport that swallowed the parse error into an empty
+    # turn would pass a transport-level stub and every other test in the suite.
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
-
-    call_count = 0
-
-    def transport(messages, tools):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return (
-                {"role": "assistant", "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
-                {"input": 45, "output": 12},
-            )
-        from ollama_agent.transport import parse_chat_response
-        return parse_chat_response(200, body)
-
-    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: transport)
+    responses = [
+        _Resp(json.dumps({
+            "message": {"role": "assistant", "content": "",
+                        "tool_calls": [{"function": {"name": "list_dir",
+                                                     "arguments": {"path": "."}}}]},
+            "prompt_eval_count": 45, "eval_count": 12})),
+        _Resp(body),
+    ]
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, timeout=None: responses.pop(0))
     rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
                    "--no-rules", "--no-skills", "--turn-cap", "5"])
     assert rc == 1
-    err = capsys.readouterr().err
-    assert f"agent failed: RuntimeError: {expected_err}" in err
-    assert "ollama" in err
+    assert responses == []
+    assert f"agent failed: RuntimeError: {expected_err}" in capsys.readouterr().err
     row = json.loads(ledger.read_text().strip())
     assert row["completed"] is False
     assert row["reason"] == "error"
@@ -801,10 +791,8 @@ def test_cli_surfaces_unparseable_json_error_and_records_crash(
     assert row["turns"] == 2
 
 
-
 def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_path, monkeypatch, capsys):
     ledger = tmp_path / "runs.jsonl"
-
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
 
     call_count = 0
