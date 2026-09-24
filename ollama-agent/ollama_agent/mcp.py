@@ -6,9 +6,12 @@ common one). This module is transport-injectable: MCPClient takes any object wit
 fake and the real subprocess transport (StdioMCPTransport) is a thin wrapper.
 
 Success is checked explicitly on every call: a JSON-RPC `error` member and an
-MCP `isError` result both raise MCPError, so a server-side failure routes to the
-agent's failure path rather than reading as a successful tool turn
-(non-throwing-client-success-check).
+MCP `isError` result both raise, so a server-side failure routes to the agent's
+failure path rather than reading as a successful tool turn
+(non-throwing-client-success-check). The raise is typed by what failed:
+MCPToolError for the tool's own answer (`isError`, or JSON-RPC invalid params),
+MCPTransportError for a dead, stalled, or desynced server, and plain MCPError for
+any other JSON-RPC error. Only MCPToolError may be treated as a probe miss.
 """
 import json
 import os
@@ -22,6 +25,21 @@ PROTOCOL_VERSION = "2024-11-05"
 
 class MCPError(RuntimeError):
     pass
+
+
+class MCPTransportError(MCPError):
+    """Server unreachable, dead, stalled, or desynced — never a tool's answer."""
+    pass
+
+
+class MCPToolError(MCPError):
+    """The tool's own answer: an `isError` result, or JSON-RPC invalid params
+    (how protocol 2024-11-05 reports bad tool arguments)."""
+    pass
+
+
+INVALID_PARAMS = -32602
+_PAYLOAD_CLIP = 200
 
 
 def _result_text(result):
@@ -50,16 +68,19 @@ class MCPClient:
         for _ in range(100):
             resp = self.t.recv()
             if not isinstance(resp, dict):
-                raise MCPError(f"{method}: non-object response {resp!r}")
+                raise MCPTransportError(f"{method}: non-object response {repr(resp)[:_PAYLOAD_CLIP]}")
             if "id" not in resp:
                 continue
             if resp["id"] != self._id:
-                raise MCPError(f"{method}: response id {resp['id']} != request {self._id}")
+                raise MCPTransportError(f"{method}: response id {resp['id']} != request {self._id}")
             break
         else:
-            raise MCPError(f"{method}: no response with id {self._id} after 100 frames")
+            raise MCPTransportError(f"{method}: no response with id {self._id} after 100 frames")
         if "error" in resp:
-            raise MCPError(f"{method}: {resp['error']}")
+            err = resp["error"]
+            cls = (MCPToolError if isinstance(err, dict) and err.get("code") == INVALID_PARAMS
+                   else MCPError)
+            raise cls(f"{method}: {str(err)[:_PAYLOAD_CLIP]}")
         return resp.get("result", {})
 
     def _notify(self, method, params=None):
@@ -80,7 +101,7 @@ class MCPClient:
     def call_tool(self, name, arguments):
         result = self._rpc("tools/call", {"name": name, "arguments": arguments or {}})
         if isinstance(result, dict) and result.get("isError"):
-            raise MCPError(f"tool {name} returned isError: {_result_text(result)}")
+            raise MCPToolError(f"tool {name} returned isError: {_result_text(result)}")
         return _result_text(result)
 
 
@@ -124,9 +145,12 @@ class StdioMCPTransport:
 
     def send(self, obj):
         if self.proc.stdin is None:
-            raise MCPError("server stdin closed")
-        self.proc.stdin.write(json.dumps(obj) + "\n")
-        self.proc.stdin.flush()
+            raise MCPTransportError("server stdin closed")
+        try:
+            self.proc.stdin.write(json.dumps(obj) + "\n")
+            self.proc.stdin.flush()
+        except OSError as e:
+            raise MCPTransportError(f"server stdin write error: {e}") from e
 
     def recv(self):
         # Bound the read: a server that is alive but never writes a response or
@@ -135,24 +159,24 @@ class StdioMCPTransport:
         # deadline loop bounded by self.timeout surfaces a stuck server as a
         # typed error instead of a silent hang.
         if not self.proc.stdout:
-            raise MCPError("server has no stdout")
+            raise MCPTransportError("server has no stdout")
         deadline = time.monotonic() + self.timeout
         fd = self.proc.stdout.fileno()
 
         while "\n" not in self._buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise MCPError(f"server did not respond within {self.timeout}s")
+                raise MCPTransportError(f"server did not respond within {self.timeout}s")
             ready, _, _ = select.select([fd], [], [], max(0.0, remaining))
             if not ready:
-                raise MCPError(f"server did not respond within {self.timeout}s")
+                raise MCPTransportError(f"server did not respond within {self.timeout}s")
             try:
                 chunk = os.read(fd, 4096)
             except OSError as e:
-                raise MCPError(f"server stdout read error: {e}") from e
+                raise MCPTransportError(f"server stdout read error: {e}") from e
             if not chunk:
                 if not self._buffer:
-                    raise MCPError("server closed stdout (crashed or exited)")
+                    raise MCPTransportError("server closed stdout (crashed or exited)")
                 line, self._buffer = self._buffer, ""
                 break
             self._buffer += chunk.decode("utf-8", errors="replace")
@@ -162,11 +186,11 @@ class StdioMCPTransport:
 
         line = line.strip()
         if not line:
-            raise MCPError("server closed stdout (crashed or exited)")
+            raise MCPTransportError("server closed stdout (crashed or exited)")
         try:
             return json.loads(line)
         except (json.JSONDecodeError, ValueError) as e:
-            raise MCPError(f"server returned invalid JSON: {line}") from e
+            raise MCPTransportError(f"server returned invalid JSON: {line[:_PAYLOAD_CLIP]}") from e
 
     def close(self):
         # Runs in a finally; must never raise, and must reap the process even when

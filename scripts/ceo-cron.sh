@@ -1711,8 +1711,9 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # benign non-zero shell exits are excluded there), so a completed run whose
   # report write failed surfaces here at dispatch time rather than only on the
   # next `ceo doctor` artifact cross-check (#215, non-throwing-client-success-check).
-  # The bridge records MCP failures too (#271), skipping read-only MCP tools (#457),
-  # so any mutating MCP failure or unannotated MCP error surfaces here.
+  # The bridge records MCP failures too (#271). On a read-only MCP tool it skips only the
+  # tool's own miss (isError or invalid params, #457); a dead or desynced server and any
+  # other RPC error are recorded there too (#475), so they surface here.
   _agent_tool_errors=$(printf '%s' "$AGENT_OUT" | jq -r '.tool_errors // [] | length')
   if [ "$_agent_tool_errors" -gt 0 ]; then
     _agent_tool_err_detail=$(printf '%s' "$AGENT_OUT" | jq -r '[.tool_errors[] | "\(.tool): \(.error)"] | join("; ")')
