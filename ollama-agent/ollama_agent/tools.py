@@ -11,7 +11,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .mcp import MCPTransportError
+from .mcp import MCPToolError
 from .skills import MAX_SKILL_BODY
 
 MAX_OUTPUT = 4000      # chars of stdout/stderr returned to the model per call
@@ -25,10 +25,10 @@ MAX_READ = 20000       # chars returned by read_file
 # mutation that never ran. unknown tools/skills are gated separately via
 # .unknown_calls.
 #
-# Every bridged MCP tool (ToolBox.mcp_names) is error-relevant too (#271),
-# unless marked read-only via readOnlyHint (#457). For mutating MCP tools,
-# failure counts the same as a failed builtin write: absence of throw is not
-# success.
+# Every bridged MCP tool (ToolBox.mcp_names) is error-relevant too (#271). On
+# one marked read-only via readOnlyHint, only the tool's own miss (MCPToolError)
+# is skipped (#457, #475). For mutating MCP tools, failure counts the same as a
+# failed builtin write: absence of throw is not success.
 _MISSING = object()
 
 ERROR_RELEVANT_TOOLS = {"write_file", "edit_file", "git", "run_shell"}
@@ -207,12 +207,13 @@ class ToolBox:
         absence-of-throw is not success (non-throwing-client-success-check).
 
         MCP failures arrive here through dispatch's exception path, since
-        MCPClient.call_tool raises on isError and on RPC errors (#271). Tools
-        marked read-only via readOnlyHint are skipped (#457): like built-in
-        read_file/list_dir, a failed read-only lookup is a probe miss, not an
-        operational failure. However, transport faults (dead/crashed server,
-        timeouts, protocol desync) are always recorded even on read-only tools
-        (#475) because a dead server is an operational failure, not a query miss.
+        MCPClient.call_tool raises on isError and on RPC errors (#271). On a tool
+        marked read-only via readOnlyHint (#457), only the tool's own answer
+        (MCPToolError: isError or invalid params) is skipped: like built-in
+        read_file/list_dir, a failed lookup is a probe miss. Everything else is
+        recorded even there (#475) — a dead, stalled, or desynced server, any
+        other JSON-RPC error, or an exception from our own client — because none
+        of those is the query's answer.
         An MCP server that reports success with error text in its content is
         not caught: that text is wrapped under "result", and the server's own
         success claim is taken at its word."""
@@ -224,7 +225,7 @@ class ToolBox:
         if name in self.mcp_names and (
             name in self.mcp_readonly or self.mcp_names[name] in self.mcp_readonly
         ):
-            if not isinstance(exc, MCPTransportError):
+            if isinstance(exc, MCPToolError):
                 return
         try:
             parsed = json.loads(result)

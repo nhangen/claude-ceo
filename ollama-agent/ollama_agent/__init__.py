@@ -5,8 +5,8 @@ slices add rule loading (#187), skills (#188), an MCP adapter (#189), and a
 governed task registry (#190).
 """
 from .agent import run_agent
-from .mcp import (MCPClient, MCPError, MCPTransportError, StdioMCPTransport,
-                  mcp_tools_to_ollama)
+from .mcp import (MCPClient, MCPError, MCPToolError, MCPTransportError,
+                  StdioMCPTransport, mcp_tools_to_ollama)
 from .registry import (RegistryError, filter_tools, gate, load_registry,
                        load_scores, normalize_model, score_for)
 from .rules import compose_system, load_rule_index, select_rules
@@ -17,7 +17,7 @@ from .transport import ollama_transport, parse_chat_response
 __all__ = ["run_agent", "ToolBox", "TOOLS", "ollama_transport", "parse_chat_response",
            "compose_system", "load_rule_index", "select_rules",
            "USE_SKILL_TOOL", "get_skill", "load_skill_index", "render_catalog",
-           "MCPClient", "MCPError", "MCPTransportError", "StdioMCPTransport",
+           "MCPClient", "MCPError", "MCPToolError", "MCPTransportError", "StdioMCPTransport",
            "mcp_tools_to_ollama",
            "RegistryError", "filter_tools", "gate", "load_registry",
            "load_scores", "normalize_model", "score_for"]

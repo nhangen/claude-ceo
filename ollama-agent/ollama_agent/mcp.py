@@ -6,9 +6,12 @@ common one). This module is transport-injectable: MCPClient takes any object wit
 fake and the real subprocess transport (StdioMCPTransport) is a thin wrapper.
 
 Success is checked explicitly on every call: a JSON-RPC `error` member and an
-MCP `isError` result both raise MCPError, so a server-side failure routes to the
-agent's failure path rather than reading as a successful tool turn
-(non-throwing-client-success-check).
+MCP `isError` result both raise, so a server-side failure routes to the agent's
+failure path rather than reading as a successful tool turn
+(non-throwing-client-success-check). The raise is typed by what failed:
+MCPToolError for the tool's own answer (`isError`, or JSON-RPC invalid params),
+MCPTransportError for a dead, stalled, or desynced server, and plain MCPError for
+any other JSON-RPC error. Only MCPToolError may be treated as a probe miss.
 """
 import json
 import os
@@ -27,6 +30,16 @@ class MCPError(RuntimeError):
 class MCPTransportError(MCPError):
     """Server unreachable, dead, stalled, or desynced — never a tool's answer."""
     pass
+
+
+class MCPToolError(MCPError):
+    """The tool's own answer: an `isError` result, or JSON-RPC invalid params
+    (how protocol 2024-11-05 reports bad tool arguments)."""
+    pass
+
+
+INVALID_PARAMS = -32602
+_PAYLOAD_CLIP = 200
 
 
 def _result_text(result):
@@ -55,7 +68,7 @@ class MCPClient:
         for _ in range(100):
             resp = self.t.recv()
             if not isinstance(resp, dict):
-                raise MCPTransportError(f"{method}: non-object response {resp!r}")
+                raise MCPTransportError(f"{method}: non-object response {repr(resp)[:_PAYLOAD_CLIP]}")
             if "id" not in resp:
                 continue
             if resp["id"] != self._id:
@@ -64,7 +77,10 @@ class MCPClient:
         else:
             raise MCPTransportError(f"{method}: no response with id {self._id} after 100 frames")
         if "error" in resp:
-            raise MCPError(f"{method}: {resp['error']}")
+            err = resp["error"]
+            cls = (MCPToolError if isinstance(err, dict) and err.get("code") == INVALID_PARAMS
+                   else MCPError)
+            raise cls(f"{method}: {str(err)[:_PAYLOAD_CLIP]}")
         return resp.get("result", {})
 
     def _notify(self, method, params=None):
@@ -85,7 +101,7 @@ class MCPClient:
     def call_tool(self, name, arguments):
         result = self._rpc("tools/call", {"name": name, "arguments": arguments or {}})
         if isinstance(result, dict) and result.get("isError"):
-            raise MCPError(f"tool {name} returned isError: {_result_text(result)}")
+            raise MCPToolError(f"tool {name} returned isError: {_result_text(result)}")
         return _result_text(result)
 
 
@@ -133,7 +149,7 @@ class StdioMCPTransport:
         try:
             self.proc.stdin.write(json.dumps(obj) + "\n")
             self.proc.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
+        except OSError as e:
             raise MCPTransportError(f"server stdin write error: {e}") from e
 
     def recv(self):
@@ -174,7 +190,7 @@ class StdioMCPTransport:
         try:
             return json.loads(line)
         except (json.JSONDecodeError, ValueError) as e:
-            raise MCPTransportError(f"server returned invalid JSON: {line}") from e
+            raise MCPTransportError(f"server returned invalid JSON: {line[:_PAYLOAD_CLIP]}") from e
 
     def close(self):
         # Runs in a finally; must never raise, and must reap the process even when
