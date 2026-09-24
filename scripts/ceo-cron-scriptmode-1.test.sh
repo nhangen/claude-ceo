@@ -855,6 +855,52 @@ PB
 }
 
 
+# #490: the rate-limited shape — the CLI prints its JSON envelope, then a banner
+# line, then exits non-zero. jq emits the cost and fails on the banner, and the
+# old `|| echo null` fallback appended a second line, so SINGLE_COST reached the
+# ledger writer as "0.004\nnull" and the row for this failed run was dropped.
+# This pins the producer: with it reverted, the row reads cost null. The writer's
+# own degrade-don't-drop is pinned in ceo-model-ledger.test.sh — with the
+# producer fixed, this path never hands the writer a bad value to degrade.
+test_read_tier_cost_survives_a_trailing_banner_on_a_failed_run() {
+  local json
+  json=$(jq -nc '{result: "partial", total_cost_usd: 0.004, session_id: "test"}')
+  cat > "$TEST_HOME/.bun/bin/claude" << STUB
+#!/bin/bash
+cat >/dev/null
+cat <<'OUT'
+$json
+Claude usage limit reached. Your limit will reset at 5pm.
+OUT
+exit 1
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  cat > "$CEO_DIR/playbooks/find-cost-banner.md" << 'PB'
+---
+name: find-cost-banner
+description: Read-tier playbook matching the read-only-lookup shape, exercising a banner after the JSON envelope
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: read
+status: active
+---
+# Body
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  bash "$CRON" find-cost-banner >/dev/null 2>&1 || true
+
+  local ledger_file row
+  ledger_file="$HOME/.local/state/ollama-agent/runs.jsonl"
+  row=$(jq -c --arg tn "find-cost-banner" 'select(.writer == "claude-tier" and .task_name == $tn) | [.cost_usd, .completed]' "$ledger_file" 2>/dev/null | tail -1)
+  assert_eq "$row" '[0.004,false]' \
+    "a failed run whose CLI printed a banner after the envelope must still log its row, with the envelope's cost"
+}
+
+
 test_phase3_failure_does_not_log_completed() {
   # Stateful stub: succeeds on Phase-1 (with ACTION line low-stakes-write),
   # fails on Phase-3.

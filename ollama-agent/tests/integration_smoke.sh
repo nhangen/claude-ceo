@@ -71,7 +71,7 @@ elif [ ! -x "$PY" ]; then
   skip "bridge edit" "python not at $PY (set OLL_PY)"
 else
   printf 'alpha\nbeta\ngamma\n' > "$WORK/b.txt"
-  BOUT=$("$PY" "$BRIDGE" --model "$MODEL" --cwd "$WORK" --no-rules --no-skills --turn-cap 6 \
+  BOUT=$(OLLAMA_AGENT_LEDGER="$WORK/ledger.jsonl" "$PY" "$BRIDGE" --ungated --model "$MODEL" --cwd "$WORK" --no-rules --no-skills --turn-cap 6 \
     --task "Edit b.txt: change 'beta' to 'BETA-OK'. Read it then write it back." 2>&1)
   if grep -q "BETA-OK" "$WORK/b.txt"; then pass "bridge edited a file via native tools"; else
     fail "bridge edit did not land ($(printf '%s' "$BOUT" | tail -c 140))"; fi

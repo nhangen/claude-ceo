@@ -305,8 +305,94 @@ PB
   assert_file_exists "$alert_file" "shadowed drift must create playbook-drift.md alert"
   local content; content=$(cat "$alert_file" 2>/dev/null || echo "")
   assert_contains "$content" "status: drift" "alert must carry status: drift frontmatter"
+  assert_contains "$content" "count: 1" "alert must carry count frontmatter"
   assert_contains "$content" "since:" "alert must carry since timestamp"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+}
+
+test_scan_drift_alert_refreshes_state() {
+  # An alert is current state (#455): every scan rewrites it with the current count:
+  # and a fresh last_check:, while since: keeps the moment the drift began. Both
+  # timestamps are pinned to a past value because they have one-second resolution,
+  # and back-to-back scans would otherwise match by accident.
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-cg1.md" << 'PB'
+---
+name: p-cg1
+description: repo original version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  cat > "$CEO_DIR/playbooks/p-cg1.md" << 'PB'
+---
+name: p-cg1
+description: differing vault copy 1
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  assert_file_exists "$alert_file" "alert must exist after first scan"
+  local content1; content1=$(cat "$alert_file")
+  assert_contains "$content1" "count: 1" "alert must carry count: 1"
+
+  sed -i.bak -e 's/^since:.*/since: 2020-01-01T00:00:00Z/' \
+    -e 's/^last_check:.*/last_check: 2020-01-01T00:00:00Z/' "$alert_file"
+  rm -f "$alert_file.bak"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local content2; content2=$(cat "$alert_file")
+  assert_contains "$content2" "since: 2020-01-01T00:00:00Z" "a same-count scan must keep since:"
+  assert_not_contains "$content2" "last_check: 2020-01-01T00:00:00Z" "every scan must refresh last_check:"
+
+  # An alert written before #458 has no count: line; the next scan must add it.
+  sed -i.bak '/^count:/d' "$alert_file"
+  rm -f "$alert_file.bak"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_contains "$(cat "$alert_file")" "count: 1" "a scan must add count: to an alert that lacks it"
+
+  # Now introduce a second differing playbook (count increases 1 -> 2).
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-cg2.md" << 'PB'
+---
+name: p-cg2
+description: repo original version 2
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  cat > "$CEO_DIR/playbooks/p-cg2.md" << 'PB'
+---
+name: p-cg2
+description: differing vault copy 2
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local content3; content3=$(cat "$alert_file")
+  assert_contains "$content3" "count: 2" "alert must update to count: 2"
+  local new_since
+  new_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file")
+  assert_eq "$new_since" "2020-01-01T00:00:00Z" "alert must preserve original since timestamp across count updates"
 }
 
 test_scan_clears_playbook_drift_alert_when_in_sync() {
@@ -349,4 +435,3 @@ PB
 }
 
 run_tests
-

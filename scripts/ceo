@@ -31,12 +31,14 @@ VAULT="${CEO_VAULT:-}"
 CEO_DIR="${VAULT:+$VAULT/CEO}"
 CEO_CRON="$SCRIPT_DIR/ceo-cron.sh"
 
+# stderr, not stdout: `ceo status --json` is gated on this, and a diagnostic
+# printed into the JSON stream is a parse error for whatever reads it.
 _registry_schema_error() {
   local rc="$1"
   case "$rc" in
-    1) echo "No registry found. Run: ceo playbook scan" ;;
-    2) echo "Registry schema_version missing, malformed, or below $CEO_REGISTRY_SCHEMA_VERSION. Run: ceo playbook scan" ;;
-    *) echo "Registry validation failed (rc=$rc)" ;;
+    1) echo "No registry found. Run: ceo playbook scan" >&2 ;;
+    2) echo "Registry schema_version missing, malformed, or below $CEO_REGISTRY_SCHEMA_VERSION. Run: ceo playbook scan" >&2 ;;
+    *) echo "Registry validation failed (rc=$rc)" >&2 ;;
   esac
 }
 
@@ -60,6 +62,7 @@ Commands:
   next        Show post-setup instructions (survives terminal clear)
   test        Run a quick smoke test of the CEO system
   doctor      Check system health (deps, vault, cron, auth)
+  status      Show scheduler status and playbook health (next-fire times, heartbeat)
   preflight   Show which triggers would run vs skip (zero API calls)
   chat        Interactive CEO conversation for a playbook (e.g. ceo chat inbox)
   cron        Run a cron trigger autonomously (e.g. ceo cron pr-triage)
@@ -99,8 +102,8 @@ cmd_next() {
     echo "  2. Run: claude plugin add nhangen/claude-ceo"
     echo "  3. Test: cd $VAULT && claude"
     echo "     Then type: /ceo"
-    echo "  4. Test cron: ceo test"
-    echo "  5. Enable cron: ceo doctor (shows if cron is installed)"
+    echo "  4. Smoke test: ceo test"
+    echo "  5. Install the ceo-schedulerd keep-alive agent from lib/scheduler/deploy/, then: ceo doctor"
   fi
 }
 
@@ -307,8 +310,8 @@ cmd_doctor() {
     # host the healthy scheduler signal is the ceo-schedulerd heartbeat (checked
     # below); any lingering ceo-cron.sh entries are a migration leftover flagged
     # by the migration-leftover check further down. Nothing to install here.
-    echo "  ✓ Scheduling owned by ceo-schedulerd (native crontab install retired)"
-    ok=$((ok + 1))
+    # Not counted as ok: whether anything dispatches is the heartbeat's verdict.
+    echo "  · Scheduler: ceo-schedulerd (native crontab install retired; liveness below)"
   elif [ "$_backend" = "daemon" ]; then
     # macOS: scheduling is owned by ceo-schedulerd; the OS holds no per-playbook
     # entries. Liveness is the heartbeat check below (added in #142).
@@ -591,7 +594,19 @@ cmd_doctor() {
   local _hb_file="${HOME:?HOME must be set for the schedulerd heartbeat check}/.ceo/schedulerd/heartbeat.json"
   local _hb_stale_s=600
   if [ ! -f "$_hb_file" ]; then
-    echo "  ? ceo-schedulerd not running on this host (no heartbeat) — optional Phase-1.5 daemon"
+    local _daemon_tmpl
+    _daemon_tmpl="$(ceo_scheduler_daemon_template)"
+    case "$_platform" in
+      wsl|linux)
+        # The crontab install path is retired, so on these hosts the daemon is
+        # the only dispatcher: without it nothing reads ~/.ceo/registry.json.
+        echo "  ⚠ ceo-schedulerd not running on this host (no heartbeat) — nothing dispatches playbooks here. Install: $_daemon_tmpl"
+        warn=$((warn + 1))
+        ;;
+      *)
+        echo "  ? ceo-schedulerd not running on this host (no heartbeat)${_daemon_tmpl:+ — see $_daemon_tmpl}"
+        ;;
+    esac
   elif ! command -v jq &>/dev/null; then
     echo "  ⚠ schedulerd heartbeat check skipped: jq not on PATH"
     warn=$((warn + 1))
@@ -743,13 +758,7 @@ cmd_preflight() {
     return "$rc"
   }
   preflight_has_ceo_branches() {
-    local repos_file="$CEO_DIR/repos.md"
-    [ -f "$repos_file" ] || return 1
-    while IFS= read -r repo_path; do
-      repo_path=$(echo "$repo_path" | xargs)
-      [ -d "$repo_path" ] && git -C "$repo_path" branch --list "${branch_prefix}*" 2>/dev/null | grep -q . && return 0
-    done < <(grep "^|" "$repos_file" | grep -v "^| Repo\|^|---" | awk -F'|' '{print $3}')
-    return 1
+    ceo_ceo_branches_preflight "$branch_prefix"
   }
 
   local registry_file; registry_file=$(_ceo_registry_path)
@@ -811,6 +820,7 @@ cmd_playbook() {
   case "$subcmd" in
     scan) cmd_playbook_scan "$@" ;;
     list) cmd_playbook_list "$@" ;;
+    next-runs) cmd_playbook_next_runs "$@" ;;
     info) cmd_playbook_info "$@" ;;
     diff) cmd_playbook_diff "$@" ;;
     sync) cmd_playbook_sync "$@" ;;
@@ -1206,20 +1216,22 @@ _playbook_sub_usage() {
       echo "  --check     Report what would change and exit 1 on drift; write nothing."
       echo "              (--dry-run is an accepted alias.)"
       ;;
-    list)     echo "Usage: ceo playbook list" ;;
-    info)     echo "Usage: ceo playbook info <name>" ;;
-    enable)   echo "Usage: ceo playbook enable <name>" ;;
-    disable)  echo "Usage: ceo playbook disable <name>" ;;
-    assign)   echo "Usage: ceo playbook assign <name> <host>" ;;
-    *)        _playbook_overview ;;
+    list)      echo "Usage: ceo playbook list" ;;
+    next-runs) echo "Usage: ceo playbook next-runs [--within <dur>] [--json]" ;;
+    info)      echo "Usage: ceo playbook info <name>" ;;
+    enable)    echo "Usage: ceo playbook enable <name>" ;;
+    disable)   echo "Usage: ceo playbook disable <name>" ;;
+    assign)    echo "Usage: ceo playbook assign <name> <host>" ;;
+    *)         _playbook_overview ;;
   esac
 }
 
 _playbook_overview() {
-  echo "Usage: ceo playbook <scan|list|info|diff|sync|enable|disable|assign>"
+  echo "Usage: ceo playbook <scan|list|next-runs|info|diff|sync|enable|disable|assign>"
   echo ""
   echo "  scan [--dry-run]      Discover playbooks, update host-local registry"
   echo "  list                  Show all registered playbooks with scope + state"
+  echo "  next-runs             Show upcoming playbook fire times"
   echo "  info <name>           Show details for one playbook"
   echo "  diff [--quiet]        Detect drift between vault and repo playbooks"
   echo "  sync [--check]        Reconcile vault playbooks from the repo"
@@ -1962,6 +1974,7 @@ cmd_playbook_scan() {
       {
         echo "---"
         echo "status: drift"
+        echo "count: $shadowed_drift"
         echo "since: $_drift_since"
         echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         echo "---"
@@ -2402,6 +2415,43 @@ cmd_playbook_list() {
   _playbook_rows
 }
 
+_status_usage() {
+  echo "Usage: ceo status [--json]"
+}
+
+# Both scheduler-backed commands need the same four preconditions, and a guard that
+# lives in only one of them is the one that rots.
+_run_scheduler_cli() {
+  local sub="$1"; shift
+  local label="$sub"
+  [ "$sub" = "next-runs" ] && label="playbook next-runs"
+  if ! command -v bun &>/dev/null; then
+    echo "ERROR: bun is required for $label (bun not found on PATH)" >&2
+    return 1
+  fi
+  local sched_dir="$INSTALL_DIR/lib/scheduler"
+  if [ ! -d "$sched_dir" ]; then
+    echo "ERROR: scheduler lib directory not found: $sched_dir" >&2
+    return 1
+  fi
+  if [ ! -d "$sched_dir/node_modules" ]; then
+    echo "ERROR: scheduler dependencies not installed. Run: (cd $sched_dir && bun install)" >&2
+    return 1
+  fi
+  _require_registry_current "$(_ceo_registry_path)"
+  ( cd "$sched_dir" && bun run src/status.ts "$sub" "$@" )
+}
+
+cmd_playbook_next_runs() {
+  _wants_help "$@" && { _playbook_sub_usage next-runs; return 0; }
+  _run_scheduler_cli next-runs "$@"
+}
+
+cmd_status() {
+  _wants_help "$@" && { _status_usage; return 0; }
+  _run_scheduler_cli status "$@"
+}
+
 cmd_playbook_enable() {
   _wants_help "$@" && { _playbook_sub_usage enable; return 0; }
   local name="${1:-}"
@@ -2806,7 +2856,7 @@ fi
 # ungated in exactly the silent way this whole change is about.
 case "${1:-help}" in
   help|-h|--help) ;;
-  setup|pr-sources|next|doctor|preflight|test|chat|cron|playbook|schedule|swarm|creds)
+  setup|pr-sources|next|doctor|status|preflight|test|chat|cron|playbook|schedule|swarm|creds)
     if _wants_help "${@:2}"; then
       case "$1" in
         playbook) _playbook_sub_usage "${2:-}" ;;
@@ -2814,6 +2864,7 @@ case "${1:-help}" in
         # creds answers help itself, and one level down `creds check --help`
         # read the flag as a playbook name and demanded a vault.
         creds)    cmd_creds help ;;
+        status)   _status_usage ;;
         *)        cmd_help ;;
       esac
       exit 0
@@ -2832,6 +2883,7 @@ case "${1:-help}" in
   pr-sources) cmd_pr_sources ;;
   next)     cmd_next ;;
   doctor)   cmd_doctor ;;
+  status)   ceo_require_vault; _bind_vault; shift; cmd_status "$@" ;;
   preflight) ceo_require_vault; _bind_vault; cmd_preflight ;;
   test)     ceo_require_vault; _bind_vault; cmd_test ;;
   chat)     ceo_require_vault; _bind_vault; shift; cmd_chat "$@" ;;

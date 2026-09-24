@@ -80,6 +80,28 @@ assert_not_contains() {
   fi
 }
 
+# Default pipe capacity on macOS and Linux with 4 KiB pages (a 64 KiB-page kernel
+# has a far larger pipe). A writer escapes SIGPIPE whenever its whole output fits in
+# the pipe plus one full read by the consumer plus what the consumer needs before it
+# exits, so a fixture meant to break a truncating pipe (`… | head`) has to exceed
+# twice the capacity with room to spare. Probing for the SIGPIPE itself races on a
+# loaded runner (#451); checking the size does not.
+PIPE_CAPACITY=65536
+SIGPIPE_SAFE_MIN=$((2 * PIPE_CAPACITY))
+
+# assert_exceeds_sigpipe_threshold <data> <what> — <data> is exactly what the pre-fix
+# pipeline's writer would have sent into the truncating reader. Measured with wc -c,
+# which counts bytes, where ${#var} would count characters in a UTF-8 locale.
+assert_exceeds_sigpipe_threshold() {
+  local data="$1" what="$2" bytes
+  bytes=$(printf '%s' "$data" | wc -c | tr -d ' ')
+  if [ "$bytes" -le "$SIGPIPE_SAFE_MIN" ]; then
+    fail_test "$what is $bytes bytes; it must exceed $SIGPIPE_SAFE_MIN (twice the pipe capacity) or the pre-fix pipe form escapes SIGPIPE and the test passes against broken code"
+  else
+    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  fi
+}
+
 # Alias for backwards compatibility
 assert_no_match() {
   assert_not_contains "$@"

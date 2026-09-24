@@ -58,8 +58,16 @@ _dlog() {
 _registry_report_flag() {
   local field="$1"
   local reg; reg="$(_ceo_registry_path)"
-  [ -f "$reg" ] || { echo absent; return; }
-  local val
+  if [ ! -f "$reg" ]; then
+    # Field-qualified because both call sites reach here in one run; without it
+    # the log holds two identical lines and reads as a retry loop.
+    _dlog "registry file not found for $field ($reg)"
+    echo absent
+    return
+  fi
+  local val rc=0 errf
+  errf=$(mktemp)
+  trap 'rm -f "$errf"' RETURN
   # Deliberately avoid jq's `//` here: `false // "absent"` returns "absent"
   # because jq treats false as empty, which would collapse an explicit
   # discord_report:false into the settings fallback. Branch on array length and
@@ -69,7 +77,17 @@ _registry_report_flag() {
      | if ($v | length) == 0 then "absent"
        elif ($v[0] == null) then "absent"
        else ($v[0] | tostring) end' \
-    "$reg" 2>/dev/null)
+    "$reg" 2>"$errf") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # jq's own message, or a parse error and an EACCES look identical here and
+    # have different repairs. Same reasoning as _registry_diag in ceo-cron.sh.
+    # Returning absent fails open: an unparseable registry cannot be trusted to
+    # mean suppression, so an explicit false collapses into the settings
+    # fallback and this line is what makes that collapse auditable.
+    _dlog "registry jq query failed for $field ($reg): $(head -1 "$errf")"
+    echo absent
+    return
+  fi
   case "$val" in
     true|false) echo "$val" ;;
     *) echo absent ;;
