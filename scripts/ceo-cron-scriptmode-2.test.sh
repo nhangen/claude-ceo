@@ -896,6 +896,34 @@ PB
   assert_contains "$out" "cannot read log file" "and emit error message"
 }
 
+test_cmd_preflight_reports_an_unreadable_repos_md_as_fail_not_skip() {
+  cat > "$CEO_DIR/playbooks/degraded-branches.md" << 'PB'
+---
+name: degraded-branches
+description: gates on ceo branches
+trigger: cron
+schedule: "0 9 * * *"
+preflight: has_ceo_branches
+tier: read
+status: active
+---
+# noop
+PB
+  mkdir -p "$CEO_DIR"
+  echo "| Repo | Local Path | Description |" > "$CEO_DIR/repos.md"
+  chmod 000 "$CEO_DIR/repos.md"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local out
+  out=$(bash "$CEO_CLI" preflight 2>&1)
+  chmod 644 "$CEO_DIR/repos.md"
+  local row
+  row=$(printf '%s\n' "$out" | grep 'degraded-branches' | head -1)
+  assert_contains "$row" "FAIL" "an unreadable repos.md must make preflight preview FAIL"
+  assert_contains "$row" "cannot read repos file" "and preview row must indicate cannot read repos file"
+  assert_not_contains "$row" "SKIP" "an unreadable repos.md must not preview as SKIP"
+  assert_contains "$out" "would FAIL" "and the summary must count it"
+}
+
 test_runner_script_missing_script_field_fails() {
   cat > "$CEO_DIR/playbooks/bad-intake.md" << 'PB'
 ---
