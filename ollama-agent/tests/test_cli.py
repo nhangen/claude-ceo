@@ -488,16 +488,29 @@ def test_cli_task_name_without_registry_returns_2(tmp_path, monkeypatch, capsys)
     assert "requires --registry" in capsys.readouterr().err
 
 
-def test_cli_registry_tool_typo_is_warned_not_silent(tmp_path, monkeypatch, capsys):
+def test_cli_registry_tool_typo_refuses_at_parse_time(tmp_path, monkeypatch, capsys):
     reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
                                  "tools": ["read-file", "git"]})  # 'read-file' is a typo
-    captured = {}
-    _stub(monkeypatch, captured)
+    _stub(monkeypatch, {})
     rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "registry error: task 't': unknown tool 'read-file'" in err
+
+
+def test_cli_registry_tool_unavailable_at_dispatch_is_warned(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                 "tools": ["git"]})
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-tools",
+                   "--registry", reg, "--task-name", "t"])
     assert rc == 0
-    assert _tool_names(captured["tools"]) == {"git"}   # only the valid name survives
-    assert "not available (ignored): read-file" in capsys.readouterr().err
+    assert _tool_names(captured["tools"]) == set()
+    err = capsys.readouterr().err
+    assert "warning: registry tools not available (ignored): git" in err
+    assert "tools restricted to: (none)" in err
 
 
 def test_cli_registry_rules_skills_propagation(tmp_path, monkeypatch, capsys):
