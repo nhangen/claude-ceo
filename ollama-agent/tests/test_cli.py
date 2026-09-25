@@ -1246,3 +1246,27 @@ def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert captured["toolbox"].mcp_readonly == {"mcp__genuine"}
     assert "(1 read-only)" in capsys.readouterr().err
+
+
+def test_cli_relative_registry_path_resolves_against_cwd(tmp_path, monkeypatch):
+    """#510: A relative --registry argument resolves against --cwd."""
+    reg = tmp_path / "custom.json"
+    reg.write_text(json.dumps({"tasks": {"work": {"runner": "ollama", "model": "m", "tier": "deterministic"}}}))
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--registry", "custom.json", "--task-name", "work",
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    assert captured["system"] is not None
+
+
+def test_cli_missing_relative_registry_path_surfaces_path_not_found_not_json_error(tmp_path, capsys):
+    """#510: A missing relative --registry path prints registry path not found, not Expecting value."""
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--registry", "missing.json", "--task-name", "work"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert f"registry error: registry path not found: missing.json (resolved against cwd {tmp_path.resolve()})" in err
+    assert "Expecting value" not in err
+
