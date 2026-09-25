@@ -384,3 +384,38 @@ def test_load_rejects_bad_mcp_type():
 def test_load_rejects_empty_mcp_string():
     with pytest.raises(RegistryError, match="mcp must be a non-empty string"):
         load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": "   "}))
+
+
+def test_load_registry_resolves_relative_path_against_cwd(tmp_path):
+    """#510: A relative registry path resolves against the supplied cwd."""
+    reg = tmp_path / "custom_reg.json"
+    reg.write_text(json.dumps({"tasks": {"t": {"runner": "ollama", "model": "m", "tier": "deterministic"}}}))
+    specs = load_registry("custom_reg.json", cwd=tmp_path)
+    assert "t" in specs
+    assert specs["t"].tier == "deterministic"
+
+
+def test_load_registry_missing_path_raises_registry_error(tmp_path):
+    """#510: An argument that looks like a path and does not exist raises RegistryError, not JSONDecodeError."""
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("missing.json", cwd=tmp_path)
+    err = str(exc_info.value)
+    assert f"registry path not found: missing.json (resolved against cwd {tmp_path.resolve()})" == err
+
+
+def test_load_registry_missing_path_defaults_to_process_cwd():
+    """#510: When cwd=None, missing path error names the process cwd."""
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("definitely_nonexistent_registry_file_12345.json")
+    err = str(exc_info.value)
+    assert f"registry path not found: definitely_nonexistent_registry_file_12345.json (resolved against cwd {Path.cwd()})" == err
+
+
+def test_load_registry_directory_path_raises_registry_error(tmp_path):
+    """#510: Passing a directory path raises RegistryError rather than crashing with IsADirectoryError."""
+    sub = tmp_path / "somedir"
+    sub.mkdir()
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("somedir", cwd=tmp_path)
+    assert f"registry path not found: somedir (resolved against cwd {tmp_path.resolve()})" in str(exc_info.value)
+

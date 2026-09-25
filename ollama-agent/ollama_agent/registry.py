@@ -133,22 +133,29 @@ def _validate(name, entry, where=""):
             raise RegistryError(f"task {name!r}: mcp must be a non-empty string, got {mcp!r}")
 
 
-def load_registry(source):
+def load_registry(source, cwd=None):
     """`source` is a path, a JSON string, or a dict shaped {"tasks": {name: {...}}}.
     Every entry is validated; the first invalid entry raises RegistryError (a bad
-    registry is a configuration error, surfaced, not a quietly-skipped task)."""
+    registry is a configuration error, surfaced, not a quietly-skipped task).
+
+    Relative paths are resolved against `cwd` (defaulting to the process cwd).
+    """
     where = ""
     if isinstance(source, dict):
         data = source
     else:
-        # A diagnostic that names only the task leaves the reader hunting for the
-        # file that declared it; say which registry when the source is one.
-        if Path(str(source)).exists():
-            where = f"{source}: "
-            text = Path(source).read_text()
+        src_str = str(source).strip()
+        if src_str.startswith("{"):
+            data = json.loads(str(source))
         else:
-            text = str(source)
-        data = json.loads(text)
+            resolved_cwd = Path(cwd).resolve() if cwd is not None else Path.cwd()
+            p = Path(source)
+            candidate = p if p.is_absolute() else (resolved_cwd / p)
+            if candidate.is_file():
+                where = f"{source}: "
+                data = json.loads(candidate.read_text())
+            else:
+                raise RegistryError(f"registry path not found: {source} (resolved against cwd {resolved_cwd})")
     tasks = data.get("tasks", {})
     specs = {}
     for name, entry in tasks.items():

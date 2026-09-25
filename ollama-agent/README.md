@@ -75,7 +75,10 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   whitespace-only string is rejected at parse time (exit 2). A non-empty `--mcp` on the
   command line overrides it. MCP tools are named `mcp__<tool>` in a `tools` allowlist. If the
   allowlist admits none of the server's tools, the run is refused (exit 2) and the server is shut
-  down, whether the server came from the registry or from `--mcp`.
+- Relative `--registry` paths resolve against `--cwd` (defaulting to the process working directory).
+  If the argument looks like a path (does not begin with `{`) and the file does not exist,
+  loading raises `RegistryError` naming the missing path and resolved directory rather than
+  attempting to parse the path string as inline JSON.
 
 ## Tools
 

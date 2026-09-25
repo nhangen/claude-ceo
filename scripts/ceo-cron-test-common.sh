@@ -521,7 +521,7 @@ preflight: none
 tier: $tier
 status: active
 runner: ollama-agent
-registry: $CEO_DIR/bridge-registry.json
+registry: bridge-registry.json
 ---
 # body
 PB

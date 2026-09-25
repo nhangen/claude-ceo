@@ -433,5 +433,66 @@ test_runner_ollama_agent_no_mcp_omits_mcp_flag() {
   assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--mcp" "--mcp must be absent from cron dispatch argv for task without mcp"
 }
 
+
+test_runner_ollama_agent_relative_registry_resolved_by_real_cli() {
+  # #510: Dispatches with a relative registry path to real cli.py (CEO_OLLAMA_AGENT_CMD unset).
+  # 1. Missing relative registry: cli.py reports "registry path not found: ... (resolved against cwd ...)"
+  #    and not JSONDecodeError ("Expecting value").
+  cat > "$CEO_DIR/playbooks/agent-rel-miss.md" << 'PB'
+---
+name: agent-rel-miss
+description: relative registry missing test
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes-write
+status: active
+runner: ollama-agent
+registry: non-existent-relative-reg.json
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local old_cmd="${CEO_OLLAMA_AGENT_CMD:-}"
+  unset CEO_OLLAMA_AGENT_CMD
+  local rc_miss=0
+  bash "$CRON" agent-rel-miss >/dev/null 2>&1 || rc_miss=$?
+  assert_eq "$rc_miss" "1" "missing relative registry causes cron failure"
+  local stderr_content="$(_stderr_log)"
+  assert_contains "$stderr_content" "registry path not found: non-existent-relative-reg.json" "stderr names missing relative registry path"
+  assert_contains "$stderr_content" "$CEO_DIR" "stderr includes resolved cwd directory"
+  assert_not_contains "$stderr_content" "Expecting value" "stderr must not report cryptic JSON decode error"
+
+  # 2. Present relative registry: cli.py resolves bridge-registry.json against $CEO_DIR.
+  # Task 'agent-rel-pres' is not in the registry's tasks, so cli.py prints "no registered task".
+  # This proves cli.py found and parsed the file from $CEO_DIR rather than failing on path resolution.
+  cat > "$CEO_DIR/playbooks/agent-rel-pres.md" << 'PB'
+---
+name: agent-rel-pres
+description: relative registry present test
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes-write
+status: active
+runner: ollama-agent
+registry: bridge-registry.json
+---
+PB
+  printf '{"tasks":{}}' > "$CEO_DIR/bridge-registry.json"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc_pres=0
+  bash "$CRON" agent-rel-pres >/dev/null 2>&1 || rc_pres=$?
+  assert_eq "$rc_pres" "1" "unregistered task causes cron failure"
+  assert_contains "$(_stderr_log)" "no registered task 'agent-rel-pres'" "cli.py successfully loaded relative registry from CEO_DIR"
+
+  if [ -n "$old_cmd" ]; then
+    export CEO_OLLAMA_AGENT_CMD="$old_cmd"
+  else
+    unset CEO_OLLAMA_AGENT_CMD
+  fi
+  return 0
+}
+
 run_tests
+
 
