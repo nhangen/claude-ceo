@@ -772,6 +772,27 @@ def test_cli_writes_the_reason_to_a_real_ledger(tmp_path, monkeypatch, capsys):
     assert row["reason"] == "verify-failed"
 
 
+def test_cli_verify_gate_timeout_records_verify_error(tmp_path, monkeypatch):
+    # #487: A verify command timeout records reason="verify-error" and verified=None.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+    monkeypatch.setattr(cli, "ollama_transport",
+                        lambda *a, **k: (lambda m, t: ({"role": "assistant", "content": "ok"},
+                                                       {"input": 10, "output": 20})))
+    from ollama_agent.tools import ToolBox
+    monkeypatch.setattr(ToolBox, "run_shell",
+                        lambda self, cmd: json.dumps({"returncode": None, "error": "timeout>30s"}))
+    rc = cli.main(["--ungated", "--task", "fix it", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--verify-cmd", "pytest", "--turn-cap", "2"])
+    assert rc == 0
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["verified"] is None
+    assert row["verify_gated"] is True
+    assert row["reason"] == "verify-error"
+    assert row["verify_cmd"] == "pytest"
+
+
 def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):
     captured = {}
     _stub(monkeypatch, captured)
