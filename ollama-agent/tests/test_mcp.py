@@ -465,3 +465,18 @@ for line in sys.stdin:
         assert [e["tool"] for e in tb.tool_errors] == ["mcp__lookup"]
     finally:
         transport.close()
+
+
+def test_stdio_transport_server_stderr_inherited(tmp_path, capfd):
+    """#511: StdioMCPTransport inherits stderr so child error messages are not swallowed."""
+    server = tmp_path / "err_server.py"
+    server.write_text("import sys; sys.stderr.write('crash reason: db unavailable\\n'); sys.exit(1)\n")
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    try:
+        with pytest.raises(MCPTransportError, match="closed stdout"):
+            transport.recv()
+        err = capfd.readouterr().err
+        assert "crash reason: db unavailable" in err
+    finally:
+        transport.close()
+

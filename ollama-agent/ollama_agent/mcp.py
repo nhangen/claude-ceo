@@ -136,11 +136,11 @@ def mcp_tools_to_ollama(tools, prefix="mcp"):
 class StdioMCPTransport:
     """Spawn an MCP server subprocess and exchange newline-delimited JSON-RPC."""
 
-    def __init__(self, command, cwd=None, timeout=30):
+    def __init__(self, command, cwd=None, timeout=30, stderr=None):
         argv = command if isinstance(command, list) else shlex.split(command)
         self.timeout = timeout
         self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, cwd=cwd, bufsize=1)
+                                     stderr=stderr, text=True, cwd=cwd, bufsize=1)
         self._buffer = ""
 
     def send(self, obj):
