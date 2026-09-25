@@ -117,9 +117,12 @@ def test_append_run_records_error_and_killed_reasons(tmp_path):
                "m", "t", "/c", path=str(p))
     append_run(_rec(completed=False, verified=None, reason="killed"),
                "m", "t", "/c", path=str(p))
+    append_run(_rec(completed=False, verified=None, reason="verify-error"),
+               "m", "t", "/c", path=str(p))
     lines = [json.loads(line) for line in p.read_text().strip().splitlines()]
     assert lines[0]["reason"] == "error"
     assert lines[1]["reason"] == "killed"
+    assert lines[2]["reason"] == "verify-error"
 
 
 def test_append_run_records_verify_gated_field(tmp_path):

@@ -923,6 +923,51 @@ def test_reason_verify_failed_when_the_gate_is_still_red_at_the_cap(tmp_path):
     assert rec["reason"] == "verify-failed"
 
 
+def test_reason_verify_error_when_the_gate_times_out(tmp_path):
+    # #487: A verify command that times out (or returns returncode=None) is an
+    # infrastructure/harness error, not a test failure. reason must be verify-error
+    # and verified must be None.
+    tb = ToolBox(cwd=tmp_path)
+    tb.run_shell = lambda cmd: json.dumps({"returncode": None, "error": "timeout>30s"})
+    transport = _script({"role": "assistant", "content": "done"})
+    tracker = {}
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=1, verify_cmd="pytest", usage_tracker=tracker)
+    assert rec["completed"] is False
+    assert rec["verified"] is None
+    assert rec["verify_gated"] is True
+    assert rec["reason"] == "verify-error"
+    assert tracker["verified"] is None
+    # Feedback message must surface the timeout error string to the model
+    user_msgs = [m for m in rec["transcript"] if m.get("role") == "user" and "Verification command" in m.get("content", "")]
+    assert len(user_msgs) == 1
+    assert "error:\ntimeout>30s" in user_msgs[0]["content"]
+    assert "returncode=None" in user_msgs[0]["content"]
+
+
+def test_reason_verify_error_supersedes_earlier_verify_failed_when_gate_later_times_out(tmp_path):
+    # #487: If gate was red on turn 1 and timed out on turn 2, the terminal state is verify-error.
+    tb = ToolBox(cwd=tmp_path)
+    call_count = 0
+    def mock_run_shell(cmd):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps({"returncode": 1, "stdout": "", "stderr": "failed"})
+        return json.dumps({"returncode": None, "error": "timeout>30s"})
+
+    tb.run_shell = mock_run_shell
+    transport = _script(
+        {"role": "assistant", "content": "done 1"},
+        {"role": "assistant", "content": "done 2"},
+    )
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=2, verify_cmd="pytest")
+    assert rec["completed"] is False
+    assert rec["verified"] is None
+    assert rec["reason"] == "verify-error"
+
+
 def test_run_agent_updates_usage_tracker_across_turns(tmp_path):
     tracker = {}
     transport = _script(
