@@ -666,4 +666,49 @@ test_doctor_stignore_clean_when_live_file_matches_repo() {
   fi
 }
 
+test_doctor_reports_drift_on_stdout_without_writing_or_deleting_alert_file() {
+  # Issue #504: doctor reports drift on stdout only; it must not create or delete
+  # CEO/alerts/playbook-drift.md (scan is the sole alert writer).
+  mkdir -p "$CEO_DIR/playbooks" "$TEST_HOME/repo-playbooks"
+  export CEO_REPO_PLAYBOOK_DIR="$TEST_HOME/repo-playbooks"
+  cat > "$CEO_DIR/playbooks/pb.md" << 'EOF'
+---
+name: pb
+status: active
+---
+vault copy
+EOF
+  cat > "$TEST_HOME/repo-playbooks/pb.md" << 'EOF'
+---
+name: pb
+status: active
+---
+differing repo copy
+EOF
+
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  rm -f "$alert_file"
+
+  # Case 1: drift detected — doctor reports failure on stdout, but does NOT write the alert file
+  local out1
+  out1=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$out1" "Playbook drift detected — run: ceo playbook diff" \
+    "doctor must report drift on stdout"
+  local exists1="missing"
+  [ -f "$alert_file" ] && exists1="present"
+  assert_eq "$exists1" "missing" "doctor must not write playbook-drift.md alert file"
+
+  # Case 2: in sync — doctor reports ok on stdout, and does NOT remove a preexisting alert file
+  mkdir -p "$(dirname "$alert_file")"
+  echo "preexisting" > "$alert_file"
+  cp "$TEST_HOME/repo-playbooks/pb.md" "$CEO_DIR/playbooks/pb.md"
+
+  local out2
+  out2=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$out2" "Playbooks in sync (no vault/repo drift)" \
+    "doctor must report playbooks in sync on stdout"
+  assert_file_exists "$alert_file" \
+    "doctor must not remove preexisting playbook-drift.md alert file"
+}
+
 run_tests
