@@ -544,6 +544,51 @@ test_x() { assert_eq a a "ok"; FAILS=$((FAILS + 1)); }'
   assert_not_contains "$CHILD_OUT" "NO ASSERTIONS RAN" "and the assertion was seen"
 }
 
+# --- #502: skip_test helper and skipped tests accounting in summary ---
+
+test_502_skip_test_counts_as_assertion_and_prints_skip_marker() {
+  _run_child '
+test_x() { skip_test "no tool available on this host"; }'
+  assert_eq "$CHILD_RC" "0" "a skipped test exits 0"
+  assert_contains "$CHILD_OUT" "  SKIP [test_x] no tool available on this host" \
+    "prints SKIP with test name and reason"
+  assert_not_contains "$CHILD_OUT" "NO ASSERTIONS RAN" \
+    "skip_test counts as an assertion so the no-assertions guard stays quiet"
+  assert_contains "$CHILD_OUT" "All tests passed. (1 tests, 1 skipped)" \
+    "tallied into summary line"
+}
+
+test_502_skip_test_tallies_across_passing_and_skipped_tests() {
+  _run_child '
+test_a() { assert_eq a a "ok"; }
+test_b() { skip_test "skip b"; return 0; }
+test_c() { assert_eq c c "ok"; }
+test_d() { skip_test "skip d"; return 0; }'
+  assert_eq "$CHILD_RC" "0" "mixed passes and skips exit 0"
+  assert_contains "$CHILD_OUT" "All tests passed. (4 tests, 2 skipped)" \
+    "summary line reports test count and skip count"
+}
+
+test_502_suite_with_zero_skips_summary_line_has_no_skipped_clause() {
+  _run_child '
+test_a() { assert_eq a a "ok"; }'
+  assert_eq "$CHILD_RC" "0" "clean pass exits 0"
+  assert_contains "$CHILD_OUT" "All tests passed. (1 tests)" \
+    "summary line does not mention skipped when skips == 0"
+  assert_not_contains "$CHILD_OUT" "skipped" \
+    "the word skipped does not appear when zero tests skipped"
+}
+
+test_502_failing_suite_with_skips_reports_failed() {
+  _run_child '
+test_a() { skip_test "skip a"; }
+test_b() { assert_eq a b "mismatch"; }'
+  assert_eq "$CHILD_RC" "1" "suite with failure exits 1"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "reports failure count"
+  assert_not_contains "$CHILD_OUT" "All tests passed" \
+    "failed run must not claim all tests passed"
+}
+
 # --- #285: zero discovered tests must not report success ---
 
 test_285_zero_discovered_tests_is_a_failure() {

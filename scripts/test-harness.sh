@@ -44,6 +44,18 @@ fail_test() {
   _record_assertion_fail
 }
 
+# skip_test <reason> — mark a test as skipped for an environmental or platform
+# reason (e.g. missing dependency, unsupported OS/version).
+# Counts as an assertion so NO ASSERTIONS RAN does not trip, prints
+# "  SKIP [<test>] <reason>", and records the skip so run_tests can include
+# it in the summary line ("All tests passed. (N tests, M skipped)").
+skip_test() {
+  local reason="${1:-}"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  printf '  SKIP [%s] %s\n' "$CURRENT_TEST" "$reason"
+  [ -n "${TEST_SKIPS_TMP:-}" ] && echo 1 >> "$TEST_SKIPS_TMP"
+}
+
 assert_eq() {
   local got="$1" want="$2" msg="${3:-}"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
@@ -195,11 +207,12 @@ _record_test_abort() {
 }
 
 run_tests() {
-  local count=0
-  local body_fails_tmp assertions_tmp parent_fails_tmp
+  local count=0 skips=0
+  local body_fails_tmp assertions_tmp parent_fails_tmp skips_tmp
   body_fails_tmp=$(mktemp)
   parent_fails_tmp=$(mktemp)
   assertions_tmp="${body_fails_tmp}.assertions"
+  skips_tmp="${body_fails_tmp}.skips"
 
   # An interrupt otherwise skips teardown entirely, so whatever a suite cleans
   # up there stays behind — for the ceo-cron suites that is an executable in the
@@ -271,8 +284,10 @@ run_tests() {
     # inside a nested subshell or a command substitution is measured nowhere and is
     # still lost (#317). fail_test survives there; no current site is in that shape.
     TEST_FAILS_TMP="$body_fails_tmp"
-    export TEST_FAILS_TMP
+    TEST_SKIPS_TMP="$skips_tmp"
+    export TEST_FAILS_TMP TEST_SKIPS_TMP
     true > "$TEST_FAILS_TMP"
+    true > "$TEST_SKIPS_TMP"
 
     # Backgrounded, then reaped with an explicit `wait … || true`, rather than
     # `( … ) || true` directly: bash suppresses errexit for the *left operand of
@@ -348,6 +363,13 @@ run_tests() {
 
     unset TEST_FAILS_TMP
 
+    if [ -s "$TEST_SKIPS_TMP" ]; then
+      skips=$((skips + 1))
+      true > "$TEST_SKIPS_TMP"
+    fi
+
+    unset TEST_SKIPS_TMP
+
     if [ -f "$assertions_tmp" ]; then
       ASSERTION_COUNT=$(cat "$assertions_tmp")
       rm -f "$assertions_tmp"
@@ -371,7 +393,7 @@ run_tests() {
     fi
     count=$((count + 1))
   done
-  rm -f "$body_fails_tmp" "$assertions_tmp" "$parent_fails_tmp"
+  rm -f "$body_fails_tmp" "$assertions_tmp" "$parent_fails_tmp" "$skips_tmp"
 
   if [ "$count" -eq 0 ]; then
     echo "FAILED: no tests discovered"
@@ -380,7 +402,11 @@ run_tests() {
 
   echo ""
   if [ "$FAILS" -eq 0 ]; then
-    echo "All tests passed. ($count tests)"
+    if [ "$skips" -gt 0 ]; then
+      echo "All tests passed. ($count tests, $skips skipped)"
+    else
+      echo "All tests passed. ($count tests)"
+    fi
   else
     echo "FAILED: $FAILS"
     exit 1

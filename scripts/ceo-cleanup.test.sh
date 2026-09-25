@@ -761,7 +761,7 @@ test_the_reaper_survives_an_empty_reap_set_on_bash_3_2() {
   local legacy=/bin/bash
   case "$("$legacy" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo 9)" in
     3) ;;
-    *) assert_eq "skipped" "skipped" "no bash 3.2 at $legacy — guard unverifiable on this host"; return 0 ;;
+    *) skip_test "no bash 3.2 at $legacy — guard unverifiable on this host"; return 0 ;;
   esac
 
   local sdir; sdir="$(mktemp -d)"
@@ -881,7 +881,7 @@ test_an_unreadable_pid_is_kept_not_reaped_as_dead() {
 # after the lock is taken, which is the only shape the trap governs.
 test_an_abort_after_the_lock_is_taken_is_reported_not_swallowed() {
   if [ "$(id -u)" = "0" ]; then
-    assert_eq "skipped" "skipped" "running as root — chmod cannot make a file unreadable"
+    skip_test "running as root — chmod cannot make a file unreadable"
     return 0
   fi
   local sdir; sdir="$(mktemp -d)"
@@ -909,11 +909,11 @@ test_an_abort_after_the_lock_is_taken_is_reported_not_swallowed() {
 # where that shell is not installed rather than passing vacuously (#372).
 test_a_failed_read_is_refused_under_bash_3_2() {
   if [ "$(id -u)" = "0" ]; then
-    assert_eq "skipped" "skipped" "running as root — chmod cannot make a file unreadable"
+    skip_test "running as root — chmod cannot make a file unreadable"
     return 0
   fi
   if [ ! -x /bin/bash ] || ! /bin/bash --version | head -1 | grep -q "version 3"; then
-    assert_eq "skipped" "skipped" "no bash 3.2 at /bin/bash — guard unverifiable here"
+    skip_test "no bash 3.2 at /bin/bash — guard unverifiable here"
     return 0
   fi
   local sdir; sdir="$(mktemp -d)"
