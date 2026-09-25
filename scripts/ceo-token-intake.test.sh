@@ -120,17 +120,12 @@ test_creates_host_suffixed_report_and_appends_per_host_inbox_line() {
   local count
   count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
   assert_eq "$count" "1" "per-host inbox must contain wikilink to host-suffixed report"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_does_not_write_to_shared_inbox_md() {
   bash "$INTAKE" >/dev/null 2>&1
-  if [ -f "$CEO_DIR/inbox.md" ] && [ -s "$CEO_DIR/inbox.md" ]; then
-    printf '  FAIL [%s] writer must not touch shared CEO/inbox.md\n    contents: %q\n' \
-      "$CURRENT_TEST" "$(cat "$CEO_DIR/inbox.md")"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$CEO_DIR/inbox.md" ] && [ -s "$CEO_DIR/inbox.md" ] && echo 1 || echo 0)" "0" \
+    "writer must not touch shared CEO/inbox.md"
 }
 
 test_idempotent_same_day() {
@@ -141,7 +136,6 @@ test_idempotent_same_day() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
   assert_eq "$count" "1" "two runs must leave exactly one inbox line"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_does_not_re_append_after_inbox_checkoff() {
@@ -156,7 +150,6 @@ test_does_not_re_append_after_inbox_checkoff() {
   local count
   count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
   assert_eq "$count" "1" "checked-off line must not trigger re-append"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_two_hosts_write_disjoint_files() {
@@ -168,11 +161,7 @@ test_two_hosts_write_disjoint_files() {
   assert_file_exists "$CEO_DIR/reports/token/$today-beta.md"  "beta report"
   assert_file_exists "$CEO_DIR/inbox/alpha.md" "alpha inbox shadow"
   assert_file_exists "$CEO_DIR/inbox/beta.md"  "beta inbox shadow"
-  if [ -f "$CEO_DIR/inbox/beta.md" ] && grep -qF "alpha" "$CEO_DIR/inbox/beta.md"; then
-    printf '  FAIL [%s] beta inbox shadow must not reference alpha\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$(cat "$CEO_DIR/inbox/beta.md" 2>/dev/null)" "alpha" "beta inbox shadow must not reference alpha"
 }
 
 test_invokes_ceo_augment_path() {
@@ -187,7 +176,6 @@ test_invokes_ceo_augment_path() {
   assert_file_exists "$report" "report file must exist"
   body=$(cat "$report")
   assert_contains "$body" "rtk-stub:" "report must contain stub rtk output (proves ceo_augment_path resolved \$HOME/.bun/bin)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pins_home_to_resolved_user_home_before_capture() {
@@ -228,7 +216,6 @@ EOF
   body=$(cat "$report")
   assert_contains "$body" "rtk-saw-HOME=$pinned" \
     "rtk must see HOME=$pinned (resolver target), not the sandbox HOME the caller passed"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_exits_nonzero_when_capture_command_missing() {
@@ -239,22 +226,12 @@ test_exits_nonzero_when_capture_command_missing() {
   # missing-binary scenario this test exists to exercise.
   PATH="$TEST_HOME/stubs:$TEST_HOME/.bun/bin:/usr/bin:/bin" \
     bash "$INTAKE" >/dev/null 2>&1 || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] script must exit non-zero when a capture binary is missing\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md"; then
-    printf '  FAIL [%s] inbox must NOT have a line when capture failed\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "script must exit non-zero when a capture binary is missing"
+  assert_eq "$([ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md" && echo 1 || echo 0)" "0" "inbox must NOT have a line when capture failed"
   local today report
   today=$(date +%Y-%m-%d)
   report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
-  if [ -f "$report" ] && ! grep -qF "unavailable on PATH=" "$report"; then
-    printf '  FAIL [%s] report must record the missing-binary sentinel for forensics\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$report" ] && ! grep -qF "unavailable on PATH=" "$report" && echo 1 || echo 0)" "0" "report must record the missing-binary sentinel for forensics"
 }
 
 test_exits_nonzero_when_capture_command_fails() {
@@ -266,15 +243,8 @@ STUB
   chmod +x "$TEST_HOME/.bun/bin/rtk"
   local rc=0
   bash "$INTAKE" >/dev/null 2>&1 || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] script must exit non-zero when a capture command exits non-zero\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md"; then
-    printf '  FAIL [%s] inbox must NOT have a line when capture failed\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "script must exit non-zero when a capture command exits non-zero"
+  assert_eq "$([ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md" && echo 1 || echo 0)" "0" "inbox must NOT have a line when capture failed"
 }
 
 test_augment_path_branches_per_os() {
@@ -302,7 +272,6 @@ test_augment_path_branches_per_os() {
   assert_contains "$got" "$HOME/.bun/bin" "macos branch must include \$HOME/.bun/bin"
   unset _CEO_PATH_AUGMENTED
   unset -f ceo_detect_os
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_aborts_on_unwritable_report_dir() {
@@ -313,15 +282,8 @@ test_aborts_on_unwritable_report_dir() {
   local rc=0
   bash "$INTAKE" >/dev/null 2>&1 || rc=$?
   chmod 0700 "$CEO_DIR/reports/token"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] script must exit non-zero on unwritable report dir (got rc=0)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md"; then
-    printf '  FAIL [%s] per-host inbox must NOT have an inbox line when the report write failed\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "script must exit non-zero on unwritable report dir"
+  assert_eq "$([ -f "$CEO_DIR/inbox/$CEO_HOSTNAME.md" ] && grep -qF "[[CEO/reports/token/" "$CEO_DIR/inbox/$CEO_HOSTNAME.md" && echo 1 || echo 0)" "0" "per-host inbox must NOT have an inbox line when the report write failed"
 }
 
 test_prefers_plugin_cache_over_path_for_token_scope() {
@@ -367,15 +329,8 @@ STUB
   body=$(cat "$report")
   assert_contains "$body" "token-scope-from-cache:" \
     "intake must invoke the cache-resolved token-scope, not the PATH stub"
-  if [[ "$body" == *"token-scope-from-PATH-WRONG"* ]]; then
-    printf '  FAIL [%s] cache resolver was bypassed; PATH stub ran instead\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [[ "$body" == *"bun-stub-WRONG-ARG"* ]]; then
-    printf '  FAIL [%s] bun stub received wrong entry path (runtime+path pair mismatched)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$body" "token-scope-from-PATH-WRONG" "cache resolver was bypassed; PATH stub ran instead"
+  assert_not_contains "$body" "bun-stub-WRONG-ARG" "bun stub received wrong entry path"
 }
 
 test_omits_rtk_current_project_section() {
@@ -387,7 +342,6 @@ test_omits_rtk_current_project_section() {
   assert_not_contains "$body" "RTK — current project" \
     "daemon-cwd 'current project' section must be dropped (it logged the scheduler's own dir)"
   assert_contains "$body" "RTK — global savings" "global RTK section must remain"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_auth_health_ok_when_a_successful_turn_exists() {
@@ -410,7 +364,6 @@ test_auth_health_ok_when_a_successful_turn_exists() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   inbox_body=$([ -f "$inbox" ] && cat "$inbox" || echo "")
   assert_not_contains "$inbox_body" "No successful Claude runs" "a healthy host must not raise an alert"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_auth_alert_when_no_successful_turns_dedupes_and_reappears() {
@@ -442,7 +395,6 @@ test_auth_alert_when_no_successful_turns_dedupes_and_reappears() {
   bash "$INTAKE" >/dev/null 2>&1
   count=$(grep -c -F "No successful Claude runs on $CEO_HOSTNAME" "$inbox")
   assert_eq "$count" "2" "outage after a prior check-off must re-alert"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # ─── credit cap escalation ────────────────────────────────────────────────────
@@ -453,7 +405,6 @@ test_report_captures_credits_when_supported() {
   report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
   assert_contains "$(cat "$report")" "credits vs weekly cap" "report must capture the credits section"
   assert_contains "$(cat "$report")" "worst full week in window" "cap check must state the baseline it compared against"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_over_cap_but_not_worse_than_baseline_does_not_escalate() {
@@ -466,7 +417,6 @@ test_over_cap_but_not_worse_than_baseline_does_not_escalate() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   count=$(grep -c -F "Credit cap" "$inbox" || true)
   assert_eq "$count" "0" "a week over cap but within recent behaviour must not escalate"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_worse_than_baseline_escalates_once_per_week() {
@@ -478,7 +428,6 @@ test_worse_than_baseline_escalates_once_per_week() {
   assert_eq "$count" "1" "a worse-than-baseline week must escalate exactly once, not once per run"
   assert_contains "$(cat "$inbox")" "3.1x" "the alert must carry the projected ratio"
   assert_contains "$(cat "$inbox")" "2.4x" "the alert must name the baseline it beat"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_cap_line_does_not_carry_the_report_wikilink() {
@@ -492,7 +441,6 @@ test_cap_line_does_not_carry_the_report_wikilink() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   count=$(grep -c -F "[[CEO/reports/token/$today-$CEO_HOSTNAME]]" "$inbox")
   assert_eq "$count" "1" "only the review line may carry the report wikilink"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_checked_off_cap_alert_does_not_re_append_same_week() {
@@ -507,7 +455,6 @@ test_checked_off_cap_alert_does_not_re_append_same_week() {
   bash "$INTAKE" >/dev/null 2>&1
   count=$(grep -c -F "Credit cap (2026-08-10) on $CEO_HOSTNAME" "$inbox")
   assert_eq "$count" "1" "a checked-off cap alert must not re-append for the same week"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_new_worse_week_re_alerts() {
@@ -524,7 +471,6 @@ test_new_worse_week_re_alerts() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   count=$(grep -c -F "Credit cap (" "$inbox")
   assert_eq "$count" "2" "a new week beating the baseline must re-alert"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_future_dated_week_is_not_judged_and_cannot_mask_a_real_one() {
@@ -540,7 +486,6 @@ test_future_dated_week_is_not_judged_and_cannot_mask_a_real_one() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   assert_contains "$(cat "$report")" "week 2026-08-10" "must judge the started week, not the future-dated one"
   assert_contains "$(cat "$inbox")" "Credit cap (2026-08-10)" "the phantom week must not mask a real alert"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_projection_absent_falls_back_to_spend_so_far() {
@@ -560,7 +505,6 @@ test_projection_absent_falls_back_to_spend_so_far() {
   fi
   count=$(grep -c -F "Credit cap" "$inbox" || true)
   assert_eq "$count" "0" "an early-week run under cap must not escalate"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_malformed_credits_json_is_reported_as_a_contract_error() {
@@ -571,7 +515,6 @@ test_malformed_credits_json_is_reported_as_a_contract_error() {
   local report
   report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
   assert_contains "$(cat "$report")" "not the expected shape" "a contract change must be named, not swallowed"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_zero_weekly_cap_is_refused() {
@@ -581,11 +524,7 @@ test_zero_weekly_cap_is_refused() {
   report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   assert_contains "$(cat "$report")" "nothing to compare against" "a zero cap must be refused, not printed as 0M"
-  if grep -q -F "0M credit cap" "$inbox"; then
-    printf '  FAIL [%s] must not escalate against a zero cap\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+  assert_not_contains "$(cat "$inbox" 2>/dev/null)" "0M credit cap" "must not escalate against a zero cap"
 }
 
 test_stale_plugin_escalates_but_does_not_fail_the_run() {
@@ -597,7 +536,6 @@ test_stale_plugin_escalates_but_does_not_fail_the_run() {
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
   assert_contains "$(cat "$inbox")" "Credit cap (stale-plugin)" "stale plugin must escalate as its own item"
   assert_contains "$(cat "$inbox")" "/plugin update" "the alert must name the fix"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_stale_plugin_skips_the_credits_capture() {
@@ -605,11 +543,7 @@ test_stale_plugin_skips_the_credits_capture() {
   bash "$INTAKE" >/dev/null 2>&1
   local report
   report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
-  if grep -qF "credits vs weekly cap" "$report"; then
-    printf '  FAIL [%s] credits capture must be skipped when unsupported\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$(cat "$report" 2>/dev/null)" "credits vs weekly cap" "credits capture must be skipped when unsupported"
 }
 
 test_missing_binary_is_not_misdiagnosed_as_a_stale_plugin() {
@@ -619,11 +553,7 @@ test_missing_binary_is_not_misdiagnosed_as_a_stale_plugin() {
   bash "$INTAKE" >/dev/null 2>&1
   local inbox
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
-  if [ -f "$inbox" ] && grep -q -F "Credit cap (stale-plugin)" "$inbox"; then
-    printf '  FAIL [%s] a missing binary must not be reported as a stale plugin\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$(cat "$inbox" 2>/dev/null)" "Credit cap (stale-plugin)" "a missing binary must not be reported as a stale plugin"
 }
 
 run_tests

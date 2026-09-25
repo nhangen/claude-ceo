@@ -34,7 +34,6 @@ SH
   fi
 
   rm -f "$SCRIPT_DIR/fake-intake.sh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -240,7 +239,6 @@ SH
     printf '  FAIL [%s] a skill runner whose vault write fails must not exit 0\n' "$CURRENT_TEST"
     _record_assertion_fail
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 
   assert_eq "$(cat "$(_ceo_state)/.fail-count-skill-abort" 2>/dev/null || echo 0)" "1" \
     "a skill-runner abort must be recorded, not swallowed by its cleanup trap"
@@ -252,7 +250,6 @@ SH
     printf '  FAIL [%s] the mkdir lock leaked — the cleanup trap replaced the release handler\n' "$CURRENT_TEST"
     _record_assertion_fail
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -364,7 +361,6 @@ PB
   local got_source
   got_source=$(cat "$HOME/claude-model-source.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$got_source" "invoked" "claude runner must export CEO_MODEL_SOURCE=invoked (harness drove the model)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -388,7 +384,6 @@ PB
   local got_source
   got_source=$(cat "$HOME/claude-model-source.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$got_source" "invoked" "three-phase pipeline (low-stakes-write) claude runner must export CEO_MODEL_SOURCE=invoked"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -451,7 +446,6 @@ STUB
     "Discord payload must include the parsed LOG_ENTRY body"
 
   unset CURL_CAPTURE_DIR
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -483,7 +477,6 @@ SH
     "script must run end-to-end with CEO_VERBOSE unset (regression guard for a528fde)"
 
   rm -f "$SCRIPT_DIR/v-test.sh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -517,7 +510,6 @@ SH
     "script stderr must be appended to cron-stderr.log"
 
   rm -f "$SCRIPT_DIR/stderr-intake.sh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -549,7 +541,6 @@ SH
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after one script failure"
 
   rm -f "$SCRIPT_DIR/fail-intake.sh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -582,7 +573,6 @@ SH
   assert_eq "$fails" "0" "FAIL_COUNT_FILE must be 0 after a successful script run"
 
   rm -f "$SCRIPT_DIR/ok-intake.sh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -614,7 +604,6 @@ SH
   assert_contains "$runs_log" "log-intake completed" "cron-runs.log must record successful script run"
 
   rm -f "$SCRIPT_DIR/log-intake.sh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -806,11 +795,7 @@ test_production_honors_CEO_STATE_DIR_not_just_HOME() {
 
   assert_file_exists "$elsewhere/.fail-count-override-check" \
     "production must resolve the state dir through CEO_STATE_DIR, not \$HOME"
-  if [ -e "$HOME/.ceo/state/.fail-count-override-check" ]; then
-    fail_test "the override was ignored and \$HOME won"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$([ -e "$HOME/.ceo/state/.fail-count-override-check" ] && echo 1 || echo 0)" "0" "the override was ignored and \$HOME won"
 }
 
 test_the_two_last_scan_writers_agree_on_the_path() {
@@ -845,11 +830,7 @@ test_cron_state_is_written_outside_the_synced_vault() {
 
   assert_file_exists "$(_ceo_state)/.fail-count-state-check" \
     "the failure counter must land in the host-local state dir"
-  if [ -e "$CEO_DIR/log/.fail-count-state-check" ]; then
-    fail_test "the failure counter was written into the synced vault"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$([ -e "$CEO_DIR/log/.fail-count-state-check" ] && echo 1 || echo 0)" "0" "the failure counter was written into the synced vault"
 }
 
 test_legacy_cron_state_is_migrated_on_first_run() {
@@ -865,11 +846,7 @@ test_legacy_cron_state_is_migrated_on_first_run() {
 
   assert_eq "$(cat "$(_ceo_state)/.fail-count-migr-check" 2>/dev/null)" "3" \
     "the legacy counter must carry across and increment, not restart at 1"
-  if [ -e "$CEO_DIR/log/.fail-count-migr-check" ]; then
-    fail_test "the legacy file must be moved, not copied — a leftover resyncs"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$([ -e "$CEO_DIR/log/.fail-count-migr-check" ] && echo 1 || echo 0)" "0" "the legacy file must be moved, not copied — a leftover resyncs"
 }
 
 test_migration_does_not_clobber_existing_host_local_state() {
@@ -925,24 +902,14 @@ test_the_host_slug_is_safe_as_a_filename() {
   # file from every glob that reads the family.
   local slug
   slug=$(CEO_HOSTNAME='a/b/c' _host_slug)
-  case "$slug" in
-    */*) fail_test "a path separator survived the flattening: $slug" ;;
-    *)   ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
-  esac
+  assert_not_contains "$slug" "/" "a path separator survived the flattening"
 
   slug=$(CEO_HOSTNAME='.hidden' _host_slug)
-  case "$slug" in
-    .*) fail_test "a leading dot survived: $slug would hide the file from the family glob" ;;
-    *)  ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
-  esac
+  assert_eq "$([[ "$slug" == .* ]] && echo 1 || echo 0)" "0" "a leading dot survived: $slug would hide the file from the family glob"
 
   # Never empty: cron-skips-.log would collide across every host that produced it.
   slug=$(CEO_HOSTNAME='///' _host_slug)
-  if [ -z "$slug" ]; then
-    fail_test "an all-separator host name flattened to empty"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$([ -z "$slug" ] && echo 1 || echo 0)" "0" "an all-separator host name flattened to empty"
 }
 
 test_no_source_line_writes_a_shared_journal_name() {
@@ -957,11 +924,7 @@ test_no_source_line_writes_a_shared_journal_name() {
   local offenders
   offenders=$(sed 's/#.*//' "$SCRIPT_DIR/ceo-cron.sh" \
     | grep -nE '(LOG_DIR|CEO_DIR/log)"?/cron-(skips|stdout|stderr|raw)\.log' || true)
-  if [ -n "$offenders" ]; then
-    fail_test "ceo-cron.sh writes a shared journal name #399 keyed by host" "$offenders"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$offenders" "" "ceo-cron.sh writes a shared journal name #399 keyed by host"
 }
 
 test_the_dispatcher_journals_are_keyed_by_host() {
@@ -983,11 +946,7 @@ test_the_dispatcher_journals_are_keyed_by_host() {
 
   local shared
   for shared in cron-skips cron-stdout cron-stderr; do
-    if [ -e "$CEO_DIR/log/$shared.log" ]; then
-      fail_test "the shared $shared.log must not be written any more — that is the file that forks"
-    else
-      ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-    fi
+    assert_eq "$([ -e "$CEO_DIR/log/$shared.log" ] && echo 1 || echo 0)" "0" "the shared $shared.log must not be written any more — that is the file that forks"
   done
 }
 
@@ -1063,11 +1022,7 @@ test_the_completion_log_is_keyed_by_host() {
 
   # The shared file is the one Syncthing forks. Writing it alongside the
   # per-host log would keep the conflict and make the fix invisible.
-  if [ -f "$CEO_DIR/log/cron-runs.log" ]; then
-    fail_test "the shared cron-runs.log must not be written any more"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$([ -f "$CEO_DIR/log/cron-runs.log" ] && echo 1 || echo 0)" "0" "the shared cron-runs.log must not be written any more"
 }
 
 test_two_hosts_write_two_logs() {
@@ -1109,11 +1064,7 @@ test_a_host_name_that_is_a_path_is_flattened_into_one_log_file() {
   # The file has to live in the log directory, not somewhere a path component
   # took it. `find` above is already scoped there, so this pins the other half:
   # nothing landed outside it.
-  if find "$CEO_VAULT" -name '*escaped*' -not -path "$CEO_DIR/log/*" 2>/dev/null | grep -q .; then
-    fail_test "a host name component escaped out of the log directory as a path"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$(find "$CEO_VAULT" -name '*escaped*' -not -path "$CEO_DIR/log/*" 2>/dev/null | grep -c . || true)" "0" "a host name component escaped out of the log directory as a path"
 }
 
 test_an_unresolvable_host_lands_in_the_unknown_log() {
@@ -1160,13 +1111,9 @@ SH
 
   local notify_log
   notify_log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
-  if [[ "$notify_log" == *"[success/disk-monitor]"* ]]; then
-    printf '  FAIL [%s] disk-monitor success must not invoke success notification\n    log: %q\n' "$CURRENT_TEST" "$notify_log"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_not_contains "$notify_log" "[success/disk-monitor]" "disk-monitor success must not invoke success notification"
 
   rm -f "$SCRIPT_DIR/disk-monitor-test.sh"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 

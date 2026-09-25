@@ -120,11 +120,7 @@ test_doctor_flags_completed_but_missing_artifact() {
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "value-tracker" "doctor output must name the offending playbook"
   assert_contains "$output" "artifact missing or empty" "doctor must surface the missing-artifact reason"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero when an artifact is missing (got rc=0)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero when an artifact is missing"
 }
 
 test_doctor_flags_completed_but_missing_artifact_for_ollama_agent() {
@@ -142,11 +138,7 @@ test_doctor_flags_completed_but_missing_artifact_for_ollama_agent() {
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "cron-failure-digest" "doctor must name the offending ollama-agent playbook"
   assert_contains "$output" "artifact missing or empty" "doctor must flag the missing ollama-agent artifact"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero for a missing ollama-agent artifact (got rc=0)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero for a missing ollama-agent artifact"
 }
 
 test_doctor_passes_when_artifact_present() {
@@ -157,11 +149,7 @@ test_doctor_passes_when_artifact_present() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "Playbook artifacts present" "doctor must report the artifact check passing"
-  if echo "$output" | grep -qF "artifact missing"; then
-    printf '  FAIL [%s] doctor must NOT flag when artifact is present\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$output" "artifact missing" "doctor must NOT flag when artifact is present"
 }
 
 test_doctor_skips_when_playbook_not_completed_today() {
@@ -170,11 +158,7 @@ test_doctor_skips_when_playbook_not_completed_today() {
   : > "$CEO_DIR/log/cron-runs-${CEO_HOSTNAME}.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "artifact missing"; then
-    printf '  FAIL [%s] doctor must NOT flag a playbook that did not run today\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$output" "artifact missing" "doctor must NOT flag a playbook that did not run today"
 }
 
 test_doctor_flags_malformed_artifact_template() {
@@ -202,11 +186,7 @@ EOF
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "malformed artifact template" "doctor must name the malformed-template failure"
   assert_contains "$output" "bogus-token" "doctor must name the offending playbook"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on malformed artifact template\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on malformed artifact template"
 }
 
 test_doctor_warns_when_cron_log_missing() {
@@ -219,7 +199,6 @@ test_doctor_warns_when_cron_log_missing() {
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "doctor artifact cross-check skipped" "doctor must surface skip-reason when log absent"
   assert_contains "$output" "no cron-runs*.log found" "skip message must name what it looked for"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_reads_cooldown_stamps_from_the_host_local_state_dir() {
@@ -253,11 +232,7 @@ test_doctor_ignores_a_peer_hosts_runs_log() {
   _log_completed_today value-tracker "cron-runs-otherhost.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "artifact missing"; then
-    fail_test "doctor must not cross-check a peer host's completion line"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_not_contains "$output" "artifact missing" "doctor must not cross-check a peer host's completion line"
 }
 
 test_doctor_says_when_the_cross_check_matched_nothing() {
@@ -272,11 +247,7 @@ test_doctor_says_when_the_cross_check_matched_nothing() {
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "artifact cross-check matched no completions" \
     "a cross-check that checked nothing must say so, not look like a pass"
-  if echo "$output" | grep -qF "artifacts present for today"; then
-    fail_test "doctor must not claim artifacts are present when it matched none"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_not_contains "$output" "artifacts present for today" "doctor must not claim artifacts are present when it matched none"
 }
 
 test_doctor_flags_a_completion_log_it_is_not_reading() {
@@ -307,11 +278,7 @@ SWARM
   _log_completed_today value-tracker "cron-runs-peer-ml1.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "not being cross-checked"; then
-    fail_test "a registered swarm peer's log must not be reported as drift"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_not_contains "$output" "not being cross-checked" "a registered swarm peer's log must not be reported as drift"
 
   # And the unregistered case still warns, so the skip above is a discriminator
   # rather than a blanket mute.
@@ -359,22 +326,14 @@ EOF
   _log_completed_today no-artifact
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "artifact missing"; then
-    printf '  FAIL [%s] doctor must not check playbooks without an artifact template\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$output" "artifact missing" "doctor must not check playbooks without an artifact template"
 }
 
 test_doctor_reports_platform() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "Platform:" "doctor must report the detected platform"
-  if ! echo "$output" | grep -qE "Platform: (wsl|linux|macos|unknown)"; then
-    printf '  FAIL [%s] doctor platform line must name wsl/linux/macos/unknown\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$(echo "$output" | grep -cE "Platform: (wsl|linux|macos|unknown)")" -gt 0 ] && echo 1 || echo 0)" "1" "doctor platform line must name wsl/linux/macos/unknown"
 }
 
 # #144: on the daemon backend (macOS) doctor reports scheduling-via-daemon and
@@ -402,11 +361,7 @@ test_doctor_flags_legacy_per_playbook_launchd_agents() {
   assert_contains "$output" "legacy per-playbook launchd agent" \
     "doctor must warn about retired per-playbook agents"
   assert_contains "$output" "double-fire" "warning must explain the risk"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero when legacy agents are present\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero when legacy agents are present"
 }
 
 test_doctor_no_legacy_warning_when_only_daemon_agent() {
@@ -478,11 +433,7 @@ test_doctor_flags_crontab_block_as_migration_leftover() {
     "the warning must name the crontab block as the thing to remove"
   assert_contains "$output" "Remove" \
     "the warning must recommend removing the leftover crontab block"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on a lingering crontab block (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on a lingering crontab block"
 }
 
 test_doctor_flags_crontab_leftover_even_when_daemon_inactive() {
@@ -495,11 +446,7 @@ test_doctor_flags_crontab_leftover_even_when_daemon_inactive() {
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "Migration leftover" \
     "a lingering CEO crontab block is a migration leftover regardless of daemon state (blind-spot fix)"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on a lingering crontab block even with the daemon inactive (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on a lingering crontab block even with the daemon inactive"
 }
 
 test_doctor_no_leftover_warning_when_no_crontab_block() {
@@ -533,11 +480,7 @@ test_doctor_flags_stale_schedulerd_heartbeat() {
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "heartbeat stale" "doctor must flag a stale heartbeat"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on stale heartbeat (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on stale heartbeat"
 }
 
 test_doctor_notes_schedulerd_absent_without_failing() {
@@ -595,11 +538,7 @@ test_doctor_flags_malformed_schedulerd_heartbeat() {
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "heartbeat malformed" "doctor must flag a heartbeat with no ts"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on malformed heartbeat (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on malformed heartbeat"
 }
 
 test_doctor_flags_nonnumeric_schedulerd_ts() {
@@ -608,11 +547,7 @@ test_doctor_flags_nonnumeric_schedulerd_ts() {
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "heartbeat malformed" "doctor must flag a non-numeric ts as malformed, not error on arithmetic"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on non-numeric ts (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on non-numeric ts"
 }
 
 test_doctor_clamps_future_schedulerd_heartbeat_to_alive() {

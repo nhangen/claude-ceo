@@ -10,7 +10,6 @@ test_morning_active_legacy_disabled() {
   for legacy in morning-scan morning-brief pending-drip pr-triage; do
     assert_contains "$(cat "$PB/$legacy.md")" "status: disabled" "$legacy disabled"
   done
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

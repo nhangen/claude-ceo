@@ -76,14 +76,8 @@ test_ceo_report_fails_loud_on_unresolved_vault() {
   local rc=0 out
   out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo-report.sh" intake test-trigger "content" 2>&1) || rc=$?
   assert_eq "$rc" "1" "ceo-report.sh must exit 1 when no vault resolves"
-  case "$out" in
-    *FATAL*) ;;
-    *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
-  esac
-  if [ -d "$TEST_HOME/empty/Documents/Obsidian/CEO" ]; then
-    printf '  FAIL [%s] silent provision under default path\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_contains "$out" "FATAL" "stderr missing FATAL"
+  assert_eq "$([ -d "$TEST_HOME/empty/Documents/Obsidian/CEO" ] && echo 1 || echo 0)" "0" "silent provision under default path"
 }
 
 test_ceo_callers_fail_loud_on_unresolved_vault() {
@@ -92,10 +86,7 @@ test_ceo_callers_fail_loud_on_unresolved_vault() {
     rc=0
     out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/$script" 2>&1) || rc=$?
     assert_eq "$rc" "1" "$script must exit 1 when no vault resolves"
-    case "$out" in
-      *FATAL*) ;;
-      *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
-    esac
+    assert_contains "$out" "FATAL" "$script stderr missing FATAL"
   done
 }
 
@@ -296,8 +287,7 @@ test_resolve_real_home_ignores_env_HOME() {
   expected=$(eval echo "~$(id -un)")
   if [ ! -d "$expected" ]; then
     if [ -n "${CI:-}" ]; then
-      printf '  FAIL [%s] CI environment must have a real home for the test user\n' "$CURRENT_TEST"
-      FAILS=$((FAILS + 1))
+      fail_test "CI environment must have a real home for the test user"
       return 0
     fi
     printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
@@ -363,11 +353,8 @@ test_pin_home_or_warn_emits_warn_on_resolver_failure() {
     ceo_pin_home_or_warn
   " 2>&1 >/dev/null) || rc=$?
   assert_eq "$rc" "1" "ceo_pin_home_or_warn must return 1 when resolver fails"
-  case "$stderr" in
-    *"WARN: ceo_pin_home_or_warn"*"passwd resolution failed"*) ;;
-    *) printf '  FAIL [%s] expected WARN line on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
-       FAILS=$((FAILS + 1)) ;;
-  esac
+  assert_contains "$stderr" "WARN: ceo_pin_home_or_warn" "expected WARN line on stderr"
+  assert_contains "$stderr" "passwd resolution failed" "expected passwd resolution failed on stderr"
 }
 
 test_resolve_plugin_cli_returns_runtime_and_abs_path() {
@@ -460,22 +447,10 @@ test_write_alert_frontmatter_emits_required_fields() {
       --host=ml1 --last-check=2026-05-13T19:00:00-0400
   ")
   assert_eq "$(printf '%s\n' "$out" | sed -n '1p')" "---" "first line must be frontmatter delimiter"
-  case "$out" in
-    *"status: firing"*) ;;
-    *) printf '  FAIL [%s] missing status\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
-  case "$out" in
-    *"since: 2026-05-13T18:00:00-0400"*) ;;
-    *) printf '  FAIL [%s] missing since\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
-  case "$out" in
-    *"last_check: 2026-05-13T19:00:00-0400"*) ;;
-    *) printf '  FAIL [%s] missing last_check\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
-  case "$out" in
-    *"host: ml1"*) ;;
-    *) printf '  FAIL [%s] missing host\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
+  assert_contains "$out" "status: firing" "missing status"
+  assert_contains "$out" "since: 2026-05-13T18:00:00-0400" "missing since"
+  assert_contains "$out" "last_check: 2026-05-13T19:00:00-0400" "missing last_check"
+  assert_contains "$out" "host: ml1" "missing host"
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "---" "last line must be closing delimiter"
 }
 
@@ -487,11 +462,8 @@ test_write_alert_frontmatter_rejects_invalid_status() {
     ceo_write_alert_frontmatter --status=frring --since=t --host=h --last-check=t
   " 2>&1 >/dev/null) || rc=$?
   assert_eq "$rc" "1" "invalid status must return 1"
-  case "$stderr" in
-    *"invalid"*"status"*) ;;
-    *) printf '  FAIL [%s] expected error on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
-       FAILS=$((FAILS + 1)) ;;
-  esac
+  assert_contains "$stderr" "invalid" "expected error on stderr"
+  assert_contains "$stderr" "status" "expected error on stderr"
 }
 
 test_write_alert_frontmatter_accepts_clear_and_firing() {

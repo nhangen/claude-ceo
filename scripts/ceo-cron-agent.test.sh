@@ -75,7 +75,6 @@ test_runner_ollama_agent_tool_error_records_failure() {
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "tool error" "cron-skips.log must record the tool-error failure reason"
   assert_contains "$skips_log" "write_file" "the failure reason must name the failing tool"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -90,7 +89,6 @@ test_runner_ollama_agent_clean_completed_run_succeeds() {
   local rc=0
   bash "$CRON" agent-clean >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "a completed run with no tool errors must succeed (no false-positive on the no-op path)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 

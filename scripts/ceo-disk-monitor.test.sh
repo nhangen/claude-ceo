@@ -88,11 +88,7 @@ test_first_run_clear_creates_state_file() {
   DUMP_GB_STUB="0" C_FREE_GB_STUB="999" run_monitor
   assert_file_exists "$CEO_DIR/alerts/disk-$CEO_HOSTNAME.md" "state file should exist"
   assert_eq "$(state_field status)" "clear" "first run with low usage should be clear"
-  if [ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ]; then
-    printf '  FAIL [%s] clear first run must not write inbox\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ] && echo 1 || echo 0)" "0" "clear first run must not write inbox"
 }
 
 test_first_run_firing_appends_one_inbox_task() {
@@ -101,7 +97,6 @@ test_first_run_firing_appends_one_inbox_task() {
   local count
   count=$(grep -c -F "Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "first firing run must append exactly one task"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_steady_state_firing_does_not_re_append() {
@@ -112,7 +107,6 @@ test_steady_state_firing_does_not_re_append() {
   local count
   count=$(grep -c -F "Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "steady-state firing must not re-append"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_firing_to_clear_flips_task_and_appends_resolution() {
@@ -123,11 +117,7 @@ test_firing_to_clear_flips_task_and_appends_resolution() {
   body=$(cat "$CEO_DIR/inbox/testhost.md")
   assert_contains "$body" "- [done] Cleaned wsl-crashes on testhost" "task line must be flipped to [done]"
   assert_contains "$body" "disk monitor cleared" "resolution note must be appended"
-  if grep -qF -- "- [ ] Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md"; then
-    printf '  FAIL [%s] original unchecked task must no longer be present\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$body" "- [ ] Clean wsl-crashes on testhost" "original unchecked task must no longer be present"
 }
 
 test_measurement_failure_preserves_prior_firing() {
@@ -140,18 +130,13 @@ test_measurement_failure_preserves_prior_firing() {
   local inbox_after
   inbox_after=$(cat "$CEO_DIR/inbox/testhost.md")
   assert_eq "$inbox_after" "$inbox_before" "measurement failure must not mutate inbox"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_measurement_failure_on_clear_does_not_flip_to_firing() {
   DUMP_GB_STUB="0" run_monitor    # clear
   DUMP_GB_STUB_FAIL=1 run_monitor # measurement fails
   assert_eq "$(state_field status)" "clear" "measurement failure on clear stays clear"
-  if [ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ]; then
-    printf '  FAIL [%s] measurement-failed run after clear must not write inbox\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ] && echo 1 || echo 0)" "0" "measurement-failed run after clear must not write inbox"
 }
 
 test_missing_wsl_crashes_path_is_measurement_failure() {
@@ -159,11 +144,7 @@ test_missing_wsl_crashes_path_is_measurement_failure() {
   DUMP_GB_STUB="20" run_monitor  # would fire if measurement succeeded
   DUMP_GB_STUB="20" run_monitor  # second run to ensure no transition triggered
   # Path missing on a firing measurement should not flip clear→firing.
-  if [ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ]; then
-    printf '  FAIL [%s] missing measurement path must not escalate inbox\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ] && echo 1 || echo 0)" "0" "missing measurement path must not escalate inbox"
 }
 
 test_corrupted_prior_status_does_not_mutate_inbox() {
@@ -178,11 +159,7 @@ host: testhost
 ---
 EOF
   DUMP_GB_STUB="0" run_monitor  # would clear, but prior is unknown → refuse to mutate inbox
-  if [ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ]; then
-    printf '  FAIL [%s] unknown prior status must not trigger inbox flip\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$CEO_DIR/inbox/testhost.md" ] && [ -s "$CEO_DIR/inbox/testhost.md" ] && echo 1 || echo 0)" "0" "unknown prior status must not trigger inbox flip"
 }
 
 test_corrupted_prior_status_emits_warning() {
@@ -198,7 +175,6 @@ EOF
   local stderr
   stderr=$(bash "$MONITOR" 2>&1 >/dev/null) || true
   assert_contains "$stderr" "unrecognized prior status" "unrecognized enum value must log to stderr"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_sustained_firing_re_pokes_after_user_checkoff() {
@@ -214,7 +190,6 @@ test_sustained_firing_re_pokes_after_user_checkoff() {
   local count
   count=$(grep -c -F -- "- [ ] Clean wsl-crashes on testhost" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "sustained firing past 24h after checkoff must re-append one task"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_two_hosts_write_disjoint_state_files() {
@@ -227,7 +202,6 @@ test_two_hosts_write_disjoint_state_files() {
   beta_status=$(awk '/^status:/ { sub(/^status:[[:space:]]*/, ""); print; exit }' "$CEO_DIR/alerts/disk-beta.md" | tr -d '[:space:]')
   assert_eq "$alpha_status" "firing" "alpha must be firing"
   assert_eq "$beta_status" "clear" "beta must be clear (no overwrite from alpha)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_user_reformat_does_not_duplicate_task() {
@@ -242,11 +216,7 @@ test_user_reformat_does_not_duplicate_task() {
   local count
   count=$(grep -c -F -- "$marker" "$CEO_DIR/inbox/testhost.md")
   assert_eq "$count" "1" "reformatted line with marker must not be duplicated"
-  if grep -qF -- "Clean wsl-crashes on testhost — see" "$CEO_DIR/inbox/testhost.md"; then
-    printf '  FAIL [%s] reformat was overwritten — original wording reappeared\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$(cat "$CEO_DIR/inbox/testhost.md")" "Clean wsl-crashes on testhost — see" "reformat was overwritten — original wording reappeared"
 }
 
 test_log_append_failure_emits_warning() {
@@ -261,7 +231,6 @@ test_log_append_failure_emits_warning() {
   stderr=$(DUMP_GB_STUB="0" bash "$MONITOR" 2>&1 >/dev/null) || true
   chmod 0600 "$log_file"
   assert_contains "$stderr" "failed to append log line" "read-only log file must surface a warning to stderr"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_inbox_rewrite_handles_host_with_regex_chars() {
@@ -274,7 +243,6 @@ test_inbox_rewrite_handles_host_with_regex_chars() {
   local body
   body=$(cat "$CEO_DIR/inbox/odd.host[1].md")
   assert_contains "$body" "[done] Cleaned wsl-crashes on odd.host[1]" "host with regex chars must flip cleanly"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests
