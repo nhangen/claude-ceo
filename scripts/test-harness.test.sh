@@ -553,4 +553,13 @@ test_285_zero_discovered_tests_is_a_failure() {
   assert_not_contains "$CHILD_OUT" "All tests passed" "never reported as success"
 }
 
+# --- #513: sibling test suites must not carry manual ASSERTION_COUNT bumps ---
+
+test_513_no_test_suite_carries_manual_assertion_count_bumps() {
+  local matches
+  matches=$(grep -n -E 'ASSERTION_COUNT=\$\(\(ASSERTION_COUNT \+ [0-9]+\)\)' "$SCRIPT_DIR"/*.test.sh \
+    | grep -v 'test-harness.test.sh' || true)
+  assert_eq "$matches" "" "no sibling test suite may carry manual ASSERTION_COUNT bumps"
+}
+
 run_tests

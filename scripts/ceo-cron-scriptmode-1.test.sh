@@ -762,7 +762,6 @@ PB
       "$CURRENT_TEST" "$runs_log"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -945,7 +944,6 @@ PB
       "$CURRENT_TEST" "$runs_log"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -971,7 +969,6 @@ PB
   local entry
   entry=$(jq -r '.playbooks[] | select(.name=="typo-runner")' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$entry" "" "skipped playbook must not appear in registry.json"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1002,7 +999,6 @@ PB
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "Unknown runner 'scrpt'" "skips log must record unknown-runner rejection"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1031,7 +1027,6 @@ PB
   local entry
   entry=$(jq -r '.playbooks[] | select(.name=="ollama-ok") | .runner' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$entry" "ollama" "ollama playbook must be registered with runner:ollama"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1071,7 +1066,6 @@ PB
   # ollama's ~4K CLI default. Fails if options.num_ctx is dropped or shrunk.
   numctx=$(cat "$HOME/ollama-invoked-numctx.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$numctx" "32768" "request must set options.num_ctx to the model's real window (default 32768)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1129,7 +1123,6 @@ PB
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "gpt-oss:20b" "runner:ollama-think default must be gpt-oss:20b"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1157,7 +1150,6 @@ PB
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "qwen3:14b" "explicit model: tag must override runner default"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1207,7 +1199,6 @@ STUB
   local stderr_log
   stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "ollama-error-sentinel" "ollama stderr must be appended to cron-stderr.log"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1248,7 +1239,6 @@ PB
       "$CURRENT_TEST" "$runs_log"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1278,7 +1268,6 @@ PB
   local stderr_log
   stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "CEO_OLLAMA_TIMEOUT='abc'" "a rejected timeout value must be warned about"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1307,7 +1296,6 @@ PB
   local entry
   entry=$(jq -r '.playbooks[] | select(.name=="ollama-think-ok") | .runner' "$REGISTRY_FILE" 2>/dev/null || echo "")
   assert_eq "$entry" "ollama-think" "ollama-think playbook must be registered with runner:ollama-think"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1333,7 +1321,6 @@ PB
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "sonnet" "explicit model:sonnet on runner:ollama must pass literally (not silently coerce to glm4 default)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1369,7 +1356,6 @@ STUB
     printf '  FAIL [%s] ollama must NOT be invoked when daemon probe fails\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1411,7 +1397,6 @@ STUB
       "$CURRENT_TEST" "$runs_log"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1458,7 +1443,6 @@ STUB
     printf '  FAIL [%s] a .error response must NOT log completed\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1497,7 +1481,6 @@ STUB
   local stderr_log
   stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "non-JSON or empty body" "a non-JSON body must log a diagnostic, not fail silently"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1528,7 +1511,6 @@ PB
   local stderr_log
   stderr_log=$(_stderr_log)
   assert_contains "$stderr_log" "CEO_OLLAMA_NUM_CTX='abc'" "a rejected num_ctx value must be warned about"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1620,7 +1602,6 @@ PB
     printf '  FAIL [%s] the scan prompt must NOT hit the budget-exceeded path at the default (90000)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1645,7 +1626,6 @@ PB
   PATH=/usr/bin:/bin bash "$CRON" ollama-strip >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ollama branch must resolve ollama via ceo_augment_path under stripped PATH"
   assert_file_exists "$HOME/ollama-invoked-model.txt" "ollama stub must fire under stripped PATH"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1687,7 +1667,6 @@ PB
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$prompt" "my-playbook-body" "ollama prompt must contain the playbook body"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1729,7 +1708,6 @@ PB
   # of the SINGLE_PROMPT_BODY split (so ollama got only the playbook file)
   # would not surface PENDING_COUNT — the literal "3 pending" disappears.
   assert_contains "$prompt" "3 pending" "pre-gathered PENDING_COUNT (sentinel: 3) must reach ollama prompt"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1770,7 +1748,6 @@ PB
   local raw_log
   raw_log=$(_raw_log)
   assert_contains "$raw_log" "Prompt exceeds budget" "cron-raw.log must capture budget-exceeded events"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

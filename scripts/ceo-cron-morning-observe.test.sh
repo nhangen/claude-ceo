@@ -21,7 +21,6 @@ test_morning_hook_writes_ledger_entry() {
   assert_file_exists "$CEO_VAULT/CEO/model/2026-06.md" "ledger month file created"
   assert_contains "$(cat "$CEO_VAULT/CEO/model/2026-06.md")" "2026-06-20" "dated entry written"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_non_morning_trigger_is_noop() {
@@ -29,7 +28,6 @@ test_non_morning_trigger_is_noop() {
   ceo_morning_observe_hook "morning-brief" "$ENTRY_OUT"
   assert_fails "no ledger write for non-morning trigger" test -f "$CEO_VAULT/CEO/model/2026-06.md"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # Round-trip test: predicted block placed AFTER END_LOG_ENTRY (realistic model output).
@@ -44,7 +42,6 @@ test_post_fence_predicted_block_captured() {
   ledger_content=$(cat "$CEO_VAULT/CEO/model/2026-06.md" 2>/dev/null || true)
   assert_contains "$ledger_content" "o/r#7" "post-fence predicted item captured in ledger"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # Mutation check: passing only the fenced log_entry (block stripped) yields no predicted bullet.
@@ -58,7 +55,6 @@ test_stripped_input_yields_no_predicted_bullet() {
   ledger_content=$(cat "$CEO_VAULT/CEO/model/2026-06.md" 2>/dev/null || true)
   assert_not_contains "$ledger_content" "o/r#7" "stripped input produces no predicted bullet"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # Call-site assertion: ceo_morning_observe_hook in ceo-cron.sh must pass the raw output var.
@@ -67,7 +63,6 @@ test_call_site_passes_raw_output() {
   call_line=$(grep 'ceo_morning_observe_hook' "$SCRIPT_DIR/ceo-cron.sh" | grep -v '^#')
   assert_not_contains "$call_line" '"$log_entry"' "call site passes raw output, not log_entry"
   assert_contains "$call_line" '"$output"' "call site passes \$output variable"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_dry_run_skips_observe() {
@@ -75,7 +70,6 @@ test_dry_run_skips_observe() {
   CEO_DRY_RUN=1 ceo_morning_observe_hook "morning" "$ENTRY_OUT"
   assert_fails "ledger not created in dry-run" test -f "$CEO_VAULT/CEO/model/2026-06.md"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

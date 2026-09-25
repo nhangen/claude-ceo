@@ -24,7 +24,6 @@ test_pregathered_emits_new_signals_when_inputs_list_them() {
   assert_contains "$block" "Yesterday merged" "yesterday-merged line emitted"
   assert_contains "$block" '"number":7' "yesterday-merged items present"
   assert_contains "$block" "model ledger" "ledger line emitted"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

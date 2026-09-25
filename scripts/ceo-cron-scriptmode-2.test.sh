@@ -125,7 +125,6 @@ JSON
     printf '  FAIL [%s] chunked scan must not fall through to the budget-exceeded failure path\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 
@@ -161,7 +160,6 @@ PB
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "ollama runner requires tier:read" "skips log must record reject reason"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -186,15 +184,8 @@ PB
   local rc=0
   CEO_VERBOSE=1 bash "$CRON" ollama-think-writetier >/dev/null 2>&1 || rc=$?
 
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] ollama-think with non-read tier must exit non-zero (got rc=0)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [ -f "$HOME/ollama-invoked-model.txt" ]; then
-    printf '  FAIL [%s] ollama-think must NOT be invoked for non-read tier\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "ollama-think with non-read tier must exit non-zero"
+  assert_eq "$([ -f "$HOME/ollama-invoked-model.txt" ] && echo 1 || echo 0)" "0" "ollama-think must NOT be invoked for non-read tier"
 }
 
 
@@ -282,7 +273,6 @@ STUB
   local payload
   payload=$(cat "$CURL_CAPTURE_DIR/payload.json" 2>/dev/null || echo "")
   assert_contains "$payload" "ollama-intake-sentinel" "Discord side-channel must fire on ollama success"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -341,7 +331,6 @@ STUB
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "self-reported" "cron-skips.log must record self-reported-failure reason"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -382,7 +371,6 @@ STUB
   local fails
   fails=$(_fail_count)
   assert_eq "$fails" "1" "claude path: model self-reporting **Status:** failed must increment FAIL_COUNT_FILE"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -410,7 +398,6 @@ test_production_morning_brief_registers_with_ollama_runner() {
   assert_eq "$runner" "ollama" "production morning-brief.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-brief.md must declare tier: read"
   assert_eq "$model" "glm4:latest" "production morning-brief.md must declare model: glm4:latest"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -433,7 +420,6 @@ test_production_morning_scan_registers_with_ollama_runner() {
   assert_eq "$runner" "ollama" "production morning-scan.md must declare runner: ollama"
   assert_eq "$tier" "read" "production morning-scan.md must declare tier: read"
   assert_eq "$model" "glm4:latest" "production morning-scan.md must declare model: glm4:latest"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -455,7 +441,6 @@ test_ceo_augment_path_prepends_user_tool_prefixes() {
 
   local first_segment="${out%%:*}"
   assert_eq "$first_segment" "/fake/.bun/bin" "augmented prefix must be FIRST on PATH"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -471,7 +456,6 @@ test_ceo_augment_path_idempotent() {
     [ "$first" = "$second" ] && echo idempotent || echo diverged
   ')
   assert_eq "$out" "idempotent" "ceo_augment_path must not drift PATH on repeated calls"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -481,12 +465,7 @@ test_ceo_augment_path_empty_home_aborts() {
     source '"$SCRIPT_DIR"'/ceo-config.sh
     ceo_augment_path
   ' >/dev/null 2>&1 || rc=$?
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] expected non-zero rc with HOME="", got 0\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "expected non-zero rc with HOME=\"\", got 0"
 }
 
 
@@ -509,7 +488,6 @@ PB
   PATH=/usr/bin:/bin bash "$CRON" path-strip >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ceo-cron must invoke ceo_augment_path so dispatcher resolves binaries under stripped PATH"
   assert_file_exists "$HOME/claude-invoked.txt" "claude stub must fire (proves PATH augmentation reached dispatcher)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -531,7 +509,6 @@ PB
   local v
   v=$(jq -r '.schema_version // "missing"' "$REGISTRY_FILE")
   assert_eq "$v" "3" "playbook scan must write schema_version=3 into registry.json"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -560,7 +537,6 @@ PB
   local after
   after=$(cat "$REGISTRY_FILE")
   assert_eq "$after" "$before" "newer registry content must remain unchanged"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -602,7 +578,6 @@ PB
     printf '  FAIL [%s] claude must NOT fire when schema gate trips\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -640,7 +615,6 @@ PB
     printf '  FAIL [%s] claude must NOT fire when schema gate trips\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -664,7 +638,6 @@ PB
   local rc=0
   bash "$CEO_CLI" playbook list >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "playbook list must reject old registry schema"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -688,7 +661,6 @@ PB
   local rc=0
   bash "$CEO_CLI" playbook info example >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "playbook info must reject old registry schema"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -712,7 +684,6 @@ PB
   local rc=0
   bash "$CEO_CLI" chat example >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "cmd_chat must reject old registry schema"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -736,7 +707,6 @@ PB
   local rc=0
   bash "$CEO_CLI" preflight >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "cmd_preflight must reject old registry schema"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -952,7 +922,6 @@ PB
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "runner:script but no script field" "missing-script error must be logged"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -979,7 +948,6 @@ PB
     printf '  FAIL [%s] non-primary host wrote registry.json (must not)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1002,7 +970,6 @@ PB
   CEO_HOSTNAME=alpha bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "primary host must be allowed to scan"
   assert_file_exists "$REGISTRY_FILE" "registry must be written by primary host"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1025,7 +992,6 @@ PB
   CEO_HOSTNAME=anyhost bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "no primary_host setting → backward-compatible (any host can scan)"
   assert_file_exists "$REGISTRY_FILE" "registry must be written when no gate is configured"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1049,7 +1015,6 @@ PB
   assert_eq "$rc" "0" "typo'd key falls through to no-gate (backward-compat) but must warn"
   assert_contains "$out" "unknown key 'promary_host'" "typo'd key must surface a warning so operator notices"
   assert_file_exists "$REGISTRY_FILE" "scan continues despite typo (gate is not configured from parser's view)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1076,7 +1041,6 @@ PB
     printf '  FAIL [%s] registry written despite malformed settings.json\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1104,7 +1068,6 @@ PB
     printf '  FAIL [%s] registry written despite missing-jq error\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1126,15 +1089,8 @@ status: active
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  if [ ! -L "$HOME/.local/bin/count-blessings" ]; then
-    printf '  FAIL [%s] playbook scan removed user-installed count-blessings symlink\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [ ! -L "$HOME/.local/bin/ceo" ]; then
-    printf '  FAIL [%s] playbook scan removed user-installed ceo symlink\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -L "$HOME/.local/bin/count-blessings" ] && echo 1 || echo 0)" "1" "playbook scan removed user-installed count-blessings symlink"
+  assert_eq "$([ -L "$HOME/.local/bin/ceo" ] && echo 1 || echo 0)" "1" "playbook scan removed user-installed ceo symlink"
 }
 
 
@@ -1154,9 +1110,8 @@ PB
   mkdir -p "$HOME/.local/bin"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
+  assert_eq "$([ -L "$HOME/.local/bin/count-blessings" ] && echo 1 || echo 0)" "1" "declared bin should be symlinked"
   if [ ! -L "$HOME/.local/bin/count-blessings" ]; then
-    printf '  FAIL [%s] declared bin should be symlinked\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
     return
   fi
 
@@ -1173,11 +1128,7 @@ status: active
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  if [ -L "$HOME/.local/bin/count-blessings" ]; then
-    printf '  FAIL [%s] previously-managed bin should be pruned when playbook drops it\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -L "$HOME/.local/bin/count-blessings" ] && echo 1 || echo 0)" "0" "previously-managed bin should be pruned when playbook drops it"
 }
 
 
@@ -1197,9 +1148,8 @@ PB
   mkdir -p "$HOME/.local/bin"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
+  assert_eq "$([ -L "$HOME/.local/bin/count-blessings" ] && echo 1 || echo 0)" "1" "declared bin should be symlinked on first scan"
   if [ ! -L "$HOME/.local/bin/count-blessings" ]; then
-    printf '  FAIL [%s] declared bin should be symlinked on first scan\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
     return
   fi
 
@@ -1218,15 +1168,8 @@ status: active
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
-  if [ -L "$HOME/.local/bin/count-blessings" ]; then
-    printf '  FAIL [%s] manifest-driven prune should remove dropped bin\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [ ! -L "$HOME/.local/bin/ceo" ]; then
-    printf '  FAIL [%s] user-installed ceo symlink should survive prune\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -L "$HOME/.local/bin/count-blessings" ] && echo 1 || echo 0)" "0" "manifest-driven prune should remove dropped bin"
+  assert_eq "$([ -L "$HOME/.local/bin/ceo" ] && echo 1 || echo 0)" "1" "user-installed ceo symlink should survive prune"
 }
 
 
@@ -1250,7 +1193,6 @@ test_pending_drip_success_appends_host_inbox_not_report() {
     printf '  FAIL [%s] successful pending-drip must not append to daily report\n    report: %q\n' "$CURRENT_TEST" "$report"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1265,7 +1207,6 @@ test_pending_drip_rerun_is_idempotent() {
   local count
   count=$(grep -c -F "<!-- pending-drip:" "$CEO_DIR/inbox/testhost.md" 2>/dev/null || echo 0)
   assert_eq "$count" "1" "same-day pending-drip rerun must not append duplicate inbox item"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1281,7 +1222,6 @@ test_pending_drip_append_preserves_task_start_after_missing_newline() {
   local task_count
   task_count=$(grep -c '^- \[ \] Review pending drip' "$CEO_DIR/inbox/testhost.md" 2>/dev/null || echo 0)
   assert_eq "$task_count" "1" "pending-drip append must start on a new line"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1301,7 +1241,6 @@ test_pending_drip_failed_entry_uses_report_not_inbox() {
   assert_file_exists "$report" "failed pending-drip must use normal report path"
   report_body=$(cat "$report" 2>/dev/null)
   assert_contains "$report_body" "Something failed" "failed pending-drip report must include failure output"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1331,7 +1270,6 @@ $filler" "the log entry the pre-fix grep read"
     printf '  FAIL [%s] a "no relevant questions" drip must leave the inbox untouched\n' "$CURRENT_TEST"
     _record_assertion_fail
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1366,7 +1304,6 @@ $filler" "the log entry the pre-fix grep read"
     printf '  FAIL [%s] oversized failed pending-drip must not create inbox task\n' "$CURRENT_TEST"
     _record_assertion_fail
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   assert_file_exists "$report" "oversized failed pending-drip must use normal report path"
 }
 
@@ -1394,7 +1331,6 @@ test_pending_drip_skips_when_pending_md_empty() {
     printf '  FAIL [%s] empty Pending.md must not produce inbox entry\n    inbox: %q\n' "$CURRENT_TEST" "$(cat "$CEO_DIR/inbox/testhost.md")"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -1404,11 +1340,7 @@ test_pending_drip_no_relevant_questions_suppresses_inbox() {
 
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
 
-  if [ -s "$CEO_DIR/inbox/testhost.md" ]; then
-    printf '  FAIL [%s] no-relevant pending-drip must not create inbox task\n    inbox: %q\n' "$CURRENT_TEST" "$(cat "$CEO_DIR/inbox/testhost.md")"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -s "$CEO_DIR/inbox/testhost.md" ] && echo 1 || echo 0)" "0" "no-relevant pending-drip must not create inbox task"
 }
 
 # _report must hand content to ceo-report.sh over stdin, never as a third argv

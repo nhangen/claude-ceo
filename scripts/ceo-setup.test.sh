@@ -128,13 +128,9 @@ _assert_installer_refuses_non_tty() {
   # </dev/null forces non-TTY stdin even when the test harness itself
   # runs under a TTY.
   out=$(bash "$SCRIPT_DIR/$installer" </dev/null 2>&1) || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] %s under </dev/null must exit non-zero (got rc=0)\n' "$CURRENT_TEST" "$installer"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "$installer under </dev/null must exit non-zero"
   assert_contains "$out" "interactive terminal" \
     "$installer must surface the 'interactive terminal' diagnostic"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_setup_mac_refuses_non_tty_invocation() {
@@ -249,11 +245,7 @@ test_is_yes_helper_accepts_y_yes_uppercase_mixedcase() {
   _source_common_with_stubs "$SCRIPT_DIR"
   local v
   for v in y Y yes YES Yes yEs; do
-    if ! _ceo_is_yes "$v"; then
-      printf '  FAIL [%s] _ceo_is_yes must accept %q as yes\n' "$CURRENT_TEST" "$v"
-      FAILS=$((FAILS + 1))
-    fi
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    assert_eq "$(_ceo_is_yes "$v" && echo 1 || echo 0)" "1" "_ceo_is_yes must accept $v as yes"
   done
 }
 
@@ -261,11 +253,7 @@ test_is_yes_helper_rejects_n_no_empty_other() {
   _source_common_with_stubs "$SCRIPT_DIR"
   local v
   for v in n N no NO No "" yep ya whatever 1 0; do
-    if _ceo_is_yes "$v"; then
-      printf '  FAIL [%s] _ceo_is_yes must reject %q as no\n' "$CURRENT_TEST" "$v"
-      FAILS=$((FAILS + 1))
-    fi
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    assert_eq "$(_ceo_is_yes "$v" && echo 1 || echo 0)" "0" "_ceo_is_yes must reject $v as no"
   done
 }
 
@@ -336,12 +324,8 @@ test_setup_vault_pushes_to_missing_config_on_empty_input() {
   local out
   out=$(printf '\n' | ceo_setup_vault 2>&1)
   local cfg="$TEST_HOME/.ceo/config"
-  if [ -f "$cfg" ] && grep -q 'CEO_VAULT=""' "$cfg"; then
-    printf '  FAIL [%s] ~/.ceo/config must NOT be written with CEO_VAULT="" (got: %s)\n' \
-      "$CURRENT_TEST" "$(cat "$cfg")"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$cfg" ] && grep -q 'CEO_VAULT=""' "$cfg" && echo 1 || echo 0)" "0" \
+    "$HOME/.ceo/config must NOT be written with CEO_VAULT=\"\""
   assert_contains "$out" "empty vault path" "must surface the empty-vault diagnostic"
   # MISSING_CONFIG was mutated inside the subshell — assert via a re-source
   # in-process so we can read the array.
@@ -368,11 +352,7 @@ test_setup_vault_writes_config_on_non_empty_input() {
   cfg=$(cat "$TEST_HOME/.ceo/config")
   assert_contains "$cfg" "CEO_VAULT=\"$TEST_HOME/myvault\"" "config must persist the typed path"
   local joined="${MISSING_CONFIG[*]:-}"
-  if [[ "$joined" == *"CEO_VAULT"* ]]; then
-    printf '  FAIL [%s] MISSING_CONFIG must NOT contain CEO_VAULT on valid input\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$joined" "CEO_VAULT" "MISSING_CONFIG must NOT contain CEO_VAULT on valid input"
 }
 
 test_gh_auth_helper_refuses_on_network_failure() {

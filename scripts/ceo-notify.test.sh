@@ -34,7 +34,6 @@ test_silent_when_no_webhook_configured() {
   assert_eq "$rc" "0" "exit 0 when no webhook"
   assert_eq "$out" "" "no output when no webhook"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_silent_when_events_off() {
@@ -46,7 +45,6 @@ test_silent_when_events_off() {
   assert_eq "$rc" "0" "exit 0 when events=off"
   assert_eq "$out" "" "no output when events=off"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_silent_on_success_when_events_failures() {
@@ -59,7 +57,6 @@ test_silent_on_success_when_events_failures() {
   assert_eq "$rc" "0" "exit 0 when events=failures and status=success"
   assert_eq "$out" "" "no output when filtered"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_invalid_status_no_op() {
@@ -70,7 +67,6 @@ test_invalid_status_no_op() {
   assert_eq "$rc" "0" "exit 0 on unknown status"
   assert_contains "$out" "unknown status" "stderr explains"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_args_no_op() {
@@ -79,7 +75,6 @@ test_missing_args_no_op() {
   rc=$?
   assert_eq "$rc" "0" "exit 0 on missing args (must not break cron)"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_unknown_events_warns_and_defaults_to_failures() {
@@ -91,7 +86,6 @@ test_unknown_events_warns_and_defaults_to_failures() {
   assert_eq "$rc" "0" "exit 0 with typo'd events"
   assert_contains "$out" "unknown notify_events 'typoed'" "must warn on unknown value (enum-config-typo-fallback rule)"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_curl_unreachable_does_not_break() {
@@ -103,7 +97,6 @@ test_curl_unreachable_does_not_break() {
   rc=$?
   assert_eq "$rc" "0" "exit 0 even when curl fails"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_env_var_overrides_secrets_file() {
@@ -118,7 +111,6 @@ test_env_var_overrides_secrets_file() {
   assert_no_match "$trace" "from-file" "secrets-file URL must NOT be selected when env var is set"
   assert_eq "$rc" "0" "helper rc=0 even with unreachable host"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_does_not_log_webhook_url() {
@@ -132,7 +124,6 @@ test_does_not_log_webhook_url() {
   assert_eq "$rc" "0" "rc=0"
   assert_no_match "$out" "SECRET-TOKEN-12345" "webhook URL must not appear in script output"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # Installs a fake `curl` on PATH that records the POSTed -d payload to
@@ -177,7 +168,6 @@ test_runner_field_combines_harness_and_model() {
   assert_eq "$runner_val" "ollama (gemma4:12b-it-qat)" "an invoked model renders bare (no 'declared' marker)"
   assert_eq "$model_count" "0" "no separate Model field — runner and model render in one field"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_runner_field_omitted_when_runner_and_model_unset() {
@@ -191,7 +181,6 @@ test_runner_field_omitted_when_runner_and_model_unset() {
   _remove_curl_capture
   assert_eq "$runner_count" "0" "embed must omit the Runner field when both CEO_RUNNER and CEO_MODEL are unset"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_script_runner_with_declared_model_names_artifact_and_marks_declared() {
@@ -208,7 +197,6 @@ test_script_runner_with_declared_model_names_artifact_and_marks_declared() {
   assert_eq "$runner_val" "script: ticket-triage-autopilot.sh (opus, declared)" \
     "a script runner must name the script it ran and mark the frontmatter model 'declared'"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_pure_shell_script_runner_names_artifact_no_model() {
@@ -225,7 +213,6 @@ test_pure_shell_script_runner_names_artifact_no_model() {
   assert_eq "$runner_val" "script: disk-monitor.sh" \
     "a pure-shell script runner with no model must name the script and show no model"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_skill_runner_with_declared_model_names_artifact_and_marks_declared() {
@@ -242,7 +229,6 @@ test_skill_runner_with_declared_model_names_artifact_and_marks_declared() {
   assert_eq "$runner_val" "skill: weekly-synthesis (opus, declared)" \
     "a skill runner must name the skill it ran and mark the frontmatter model 'declared'"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_claude_runner_invoked_model_renders_bare() {
@@ -258,7 +244,6 @@ test_claude_runner_invoked_model_renders_bare() {
   assert_eq "$runner_val" "claude (opus)" \
     "a claude runner shows no artifact and renders the invoked model bare"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_skill_runner_no_model_names_artifact() {
@@ -275,7 +260,6 @@ test_skill_runner_no_model_names_artifact() {
   assert_eq "$runner_val" "skill: workload-report" \
     "a skill runner with no model must name the skill and show no model"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_unknown_model_source_renders_bare() {
@@ -292,7 +276,6 @@ test_unknown_model_source_renders_bare() {
   assert_eq "$runner_val" "script: x.sh (opus)" \
     "an unrecognized CEO_MODEL_SOURCE must render the model bare (never falsely 'declared')"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_jq_argjson_color_no_injection() {
@@ -305,7 +288,6 @@ test_jq_argjson_color_no_injection() {
   rc=$?
   assert_eq "$rc" "0" "special chars in reason must not crash helper"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # --- Run all tests ---

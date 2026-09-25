@@ -771,7 +771,7 @@ PB
 # nothing in that window rather than asserting the wrong thing.
 test_preflight_log_entries_unreadable_records_failure_after_4pm() {
   if [ "$(date +%H)" -lt 16 ]; then
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    assert_eq "skipped" "skipped" "arm is a no-op before 16:00"
     return 0
   fi
   cat > "$CEO_DIR/playbooks/pf-log-fail.md" << 'PB'
@@ -845,10 +845,8 @@ test_dry_run_preview_is_outside_the_synced_vault() {
   bash "$CRON" dr-local --dry-run >/dev/null 2>&1 || true
   local preview; preview=$(_preview_file dr-local)
   assert_file_exists "$preview" "a dry-run must produce a preview"
-  case "$preview" in
-    "$CEO_VAULT"/*) fail_test "the dry-run preview is inside the synced vault: $preview" ;;
-    *)              ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
-  esac
+  assert_eq "$([[ "$preview" == "$CEO_VAULT"/* ]] && echo 1 || echo 0)" "0" \
+    "the dry-run preview is inside the synced vault: $preview"
 }
 
 
