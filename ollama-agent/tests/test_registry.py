@@ -384,3 +384,84 @@ def test_load_rejects_bad_mcp_type():
 def test_load_rejects_empty_mcp_string():
     with pytest.raises(RegistryError, match="mcp must be a non-empty string"):
         load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": "   "}))
+
+
+def test_tools_rejects_non_string_elements():
+    for bad in (123, None, {}, [1]):
+        with pytest.raises(RegistryError, match="tool names must be strings"):
+            load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "tools": ["read_file", bad]}))
+
+
+def test_tools_rejects_unknown_tool_names():
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool 'edit_fil'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read_file", "edit_fil", "write_file"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool 'read-file'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read-file", "git"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool ''"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": [""]}))
+
+
+def test_tools_skills_use_skill_gated_by_skills_flag():
+    # use_skill is permitted only when skills: true
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "skills": True, "tools": ["read_file", "use_skill"]}))
+    assert specs["t"].tools == ["read_file", "use_skill"]
+
+    with pytest.raises(RegistryError, match=r"task 't': tool 'use_skill' requires 'skills: true'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "skills": False, "tools": ["read_file", "use_skill"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': tool 'use_skill' requires 'skills: true'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read_file", "use_skill"]}))
+
+
+def test_tools_mcp_names_gated_by_mcp_declaration():
+    # mcp__<name> is permitted only when mcp server is declared
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "mcp": "node server.js", "tools": ["read_file", "mcp__query"]}))
+    assert specs["t"].tools == ["read_file", "mcp__query"]
+
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool 'mcp__query' \(MCP tool declared but task has no 'mcp' server configured"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read_file", "mcp__query"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': invalid MCP tool name 'mcp__'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "mcp": "node server.js", "tools": ["read_file", "mcp__"]}))
+
+    # When mcp is declared, raw un-prefixed names are permitted at parse time
+    # (they may be un-prefixed MCP tool names) and gated at dispatch time
+    specs_raw = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                      "mcp": "node server.js", "tools": ["echo", "mcp__query"]}))
+    assert specs_raw["t"].tools == ["echo", "mcp__query"]
+
+
+def test_tools_unknown_name_does_not_emit_pairing_warning(capsys):
+    with pytest.raises(RegistryError, match=r"unknown tool 'write_fil'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["write_fil"]}))
+    assert "without 'edit_file'" not in capsys.readouterr().err
+
+
+def test_committed_playbooks_tools_invariant():
+    from ollama_agent.registry import BUILTIN_TOOL_NAMES
+    sources = _registry_sources()
+    assert len(sources) > 1, "no playbook declares an inline registry any more"
+    for origin, source in sources:
+        for name, spec in load_registry(source).items():
+            if isinstance(spec.tools, list):
+                for t in spec.tools:
+                    if t == "use_skill":
+                        assert spec.skills is True, f"{origin}: {name!r} has 'use_skill' but skills is not true"
+                    elif t.startswith("mcp__"):
+                        assert spec.mcp, f"{origin}: {name!r} has MCP tool {t!r} but no mcp server"
+                    else:
+                        assert t in BUILTIN_TOOL_NAMES, f"{origin}: {name!r} has unknown tool {t!r}"
+

@@ -12,6 +12,8 @@ import math
 from pathlib import Path
 import sys
 
+from .tools import TOOLS
+
 RUNNERS = {"ollama"}                       # who may execute a registered task
 # Ordered low→high stakes; the order is used verbatim in the "known: …" diagnostic.
 TIERS = ["deterministic", "low-stakes-write", "high-stakes"]
@@ -19,6 +21,7 @@ TIERS = ["deterministic", "low-stakes-write", "high-stakes"]
 # (billing, credentials, multi-tenant writes, anything irreversible) is never
 # delegated — it stays with a human or a trusted (non-local) agent.
 DELEGABLE_TIERS = {"deterministic", "low-stakes-write"}
+BUILTIN_TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
 
 
 class RegistryError(ValueError):
@@ -107,17 +110,37 @@ def _validate(name, entry, where=""):
     tools = entry.get("tools", "*")
     if tools != "*" and not isinstance(tools, list):
         raise RegistryError(f"task {name!r}: tools must be \"*\" or a list, got {type(tools).__name__}")
-    if isinstance(tools, list) and "write_file" in tools and "edit_file" not in tools:
-        # Advisory, not a refusal: the task still runs correctly without edit_file,
-        # it just rewrites whole files where a surgical edit would do. Printed the
-        # way every other soft signal in the bridge is (cli.py's stale-score and
-        # unknown-tool warnings) rather than via warnings.warn, which an external
-        # PYTHONWARNINGS can silence and which fires only once per process.
-        print(
-            f"warning: {where}task {name!r}: 'tools' contains 'write_file' without "
-            "'edit_file' — allow edit_file so surgical edits avoid full file rewrites",
-            file=sys.stderr,
-        )
+    if isinstance(tools, list):
+        known = set(BUILTIN_TOOL_NAMES)
+        if entry.get("skills") is True:
+            known.add("use_skill")
+        has_mcp = bool(entry.get("mcp") and isinstance(entry["mcp"], str) and entry["mcp"].strip())
+        for t in tools:
+            if not isinstance(t, str):
+                raise RegistryError(f"task {name!r}: tool names must be strings, got {type(t).__name__}")
+            if t == "use_skill" and entry.get("skills") is not True:
+                raise RegistryError(f"task {name!r}: tool 'use_skill' requires 'skills: true'")
+            if t.startswith("mcp__"):
+                if not has_mcp:
+                    raise RegistryError(
+                        f"task {name!r}: unknown tool {t!r} (MCP tool declared but task has no 'mcp' server configured; known: {sorted(known)})")
+                if len(t) <= 5:
+                    raise RegistryError(
+                        f"task {name!r}: invalid MCP tool name {t!r} (must have a suffix after 'mcp__')")
+            elif not has_mcp and t not in known:
+                raise RegistryError(f"task {name!r}: unknown tool {t!r} (known: {sorted(known)})")
+
+        if "write_file" in tools and "edit_file" not in tools:
+            # Advisory, not a refusal: the task still runs correctly without edit_file,
+            # it just rewrites whole files where a surgical edit would do. Printed the
+            # way every other soft signal in the bridge is (cli.py's stale-score and
+            # unknown-tool warnings) rather than via warnings.warn, which an external
+            # PYTHONWARNINGS can silence and which fires only once per process.
+            print(
+                f"warning: {where}task {name!r}: 'tools' contains 'write_file' without "
+                "'edit_file' — allow edit_file so surgical edits avoid full file rewrites",
+                file=sys.stderr,
+            )
     if "min_score" in entry and entry["min_score"] is not None:
         ms = entry["min_score"]
         if isinstance(ms, bool) or not isinstance(ms, (int, float)):
