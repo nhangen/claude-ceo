@@ -346,9 +346,10 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
 
+    allowed_tools = {t["function"]["name"] for t in tools if isinstance(t, dict) and "function" in t and "name" in t["function"]}
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names,
-                      mcp_readonly=mcp_readonly)
+                      mcp_readonly=mcp_readonly, allowed_tools=allowed_tools)
     # Who actually serves the turns. The transport fills this in as it goes, so
     # it is readable after the run even when the run failed (#667).
     provenance = {}
