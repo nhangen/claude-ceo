@@ -921,12 +921,42 @@ def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_pat
     assert row["completed"] is False
     assert row["verified"] is None
     assert row["reason"] == "error"
+    assert row["warnings"] == []
     assert row["ollama_input_tokens"] == 50
     assert row["ollama_output_tokens"] == 15
     # 2 turns carrying 1 turn's tokens is the intended reading: on a crash row
     # `turns` is the turn the run died on, not the count it completed. See the
     # usage_tracker paragraph in run_agent's docstring.
     assert row["turns"] == 2
+
+
+def test_cli_crashed_run_preserves_overflow_warnings(tmp_path, monkeypatch, capsys):
+    # #489: A run that crashes after context overflow must preserve the warning
+    # in the crash ledger row.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+
+    def failing_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant",
+                     "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
+                    {"input": 3800, "output": 15})
+        raise RuntimeError("model transport failed mid-run")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--num-ctx", "4096", "--turn-cap", "5"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["reason"] == "error"
+    expected = ("turn 1: prompt used 3800 of 4096 context tokens (>=90%) -- "
+                "output may be truncated")
+    assert row["warnings"] == [expected]
 
 
 def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, capsys):
