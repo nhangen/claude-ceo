@@ -1246,3 +1246,17 @@ def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert captured["toolbox"].mcp_readonly == {"mcp__genuine"}
     assert "(1 read-only)" in capsys.readouterr().err
+
+
+def test_cli_mcp_server_stderr_surfaces_on_bridge_failure(tmp_path, monkeypatch, capfd):
+    """#511: When an MCP server crashes, its stderr reason surfaces in CLI stderr."""
+    _stub(monkeypatch, {})
+    server = tmp_path / "failing_server.py"
+    server.write_text("import sys\nsys.stderr.write('fatal: postgres down on port 5432\\n')\nsys.exit(1)\n")
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--mcp", f'"{sys.executable}" "{server}"'])
+    assert rc == 1
+    err = capfd.readouterr().err
+    assert "fatal: postgres down on port 5432" in err
+    assert "mcp bridge failed for" in err
+
