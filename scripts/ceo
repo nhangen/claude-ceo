@@ -397,8 +397,9 @@ cmd_doctor() {
     fi
   fi
 
-  # playbook drift — only meaningful when both trees exist
-  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  # playbook drift — only meaningful when both trees exist; reported on
+  # stdout only. The alert file (CEO/alerts/playbook-drift.md) is written solely
+  # by `ceo playbook scan` on the primary host (#504).
   if [ ! -d "$CEO_DIR/playbooks" ] || [ ! -d "${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}" ]; then
     echo "  ? Playbook drift check skipped (vault or repo playbooks dir missing)"
     warn=$((warn + 1))
@@ -407,24 +408,9 @@ cmd_doctor() {
   elif cmd_playbook_diff --quiet >/dev/null 2>&1; then
     echo "  ✓ Playbooks in sync (no vault/repo drift)"
     ok=$((ok + 1))
-    [ -f "$alert_file" ] && rm -f "$alert_file"
   else
     echo "  ✗ Playbook drift detected — run: ceo playbook diff"
     fail=$((fail + 1))
-    mkdir -p "$(dirname "$alert_file")"
-    local _since; _since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
-    [ -z "$_since" ] && _since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    {
-      echo "---"
-      echo "status: drift"
-      echo "since: $_since"
-      echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      echo "---"
-      echo ""
-      echo "# Playbook drift"
-      echo ""
-      echo "Vault and repo playbook trees diverged. Run \`ceo playbook diff\` for details."
-    } > "$alert_file"
   fi
 
   # Completed-but-no-output cross-check — for every active runner:script or
@@ -1969,20 +1955,33 @@ cmd_playbook_scan() {
     echo "  WARN  $shadowed_drift repo playbook(s) shadowed by a DIFFERING vault copy — scan used the vault version, which may be stale. Run 'ceo playbook sync' to reconcile from the repo." >&2
     if [ "$dry_run" -eq 0 ]; then
       mkdir -p "$(dirname "$alert_file")"
-      local _drift_since; _drift_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
-      [ -z "$_drift_since" ] && _drift_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      {
-        echo "---"
-        echo "status: drift"
-        echo "count: $shadowed_drift"
-        echo "since: $_drift_since"
-        echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        echo "---"
-        echo ""
-        echo "# Playbook drift"
-        echo ""
-        echo "$shadowed_drift repo playbook(s) shadowed by differing vault copies. Run \`ceo playbook sync\` to reconcile from the repo."
-      } > "$alert_file"
+      local _drift_since
+      _drift_since=$(ceo_read_alert_field "$alert_file" since 2>/dev/null || true)
+      local _now
+      _now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      [ -z "$_drift_since" ] && _drift_since="$_now"
+      local _primary_host
+      _primary_host=$("${CEO_JQ_BIN:-jq}" -r '.primary_host // ""' "$CEO_DIR/settings.json" 2>/dev/null || true)
+      local _alert_host="${_primary_host:-${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || true)}}"
+      [ -z "$_alert_host" ] && _alert_host="unknown"
+      local _alert_tmp
+      _alert_tmp=$(mktemp "${alert_file}.XXXXXX") || {
+        echo "ERROR: mktemp failed for $alert_file" >&2
+        return 1
+      }
+      if ! {
+        ceo_write_alert_frontmatter \
+          --status=firing \
+          --since="$_drift_since" \
+          --last-check="$_now" \
+          --host="$_alert_host" \
+          --field count="$shadowed_drift"
+        printf '\n# Playbook drift\n\n%s repo playbook(s) shadowed by differing vault copies. Run `ceo playbook sync` to reconcile from the repo.\n' "$shadowed_drift"
+      } > "$_alert_tmp" || ! mv -f "$_alert_tmp" "$alert_file"; then
+        rm -f "$_alert_tmp"
+        echo "ERROR: failed to write $alert_file" >&2
+        return 1
+      fi
     fi
   elif [ "$dry_run" -eq 0 ] && [ -f "$alert_file" ]; then
     if [ -d "$repo_playbook_dir" ] && cmd_playbook_diff --quiet >/dev/null 2>&1; then

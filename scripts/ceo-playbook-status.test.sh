@@ -304,10 +304,18 @@ PB
   local alert_file="$CEO_DIR/alerts/playbook-drift.md"
   assert_file_exists "$alert_file" "shadowed drift must create playbook-drift.md alert"
   local content; content=$(cat "$alert_file" 2>/dev/null || echo "")
-  assert_contains "$content" "status: drift" "alert must carry status: drift frontmatter"
+  assert_contains "$content" "status: firing" "alert must carry status: firing frontmatter"
+  assert_contains "$content" "host:" "alert must carry host frontmatter"
   assert_contains "$content" "count: 1" "alert must carry count frontmatter"
   assert_contains "$content" "since:" "alert must carry since timestamp"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
+
+  # Morning scan must report the alert as cleanly firing, without corrupted warnings (#504)
+  local scan_out scan_err
+  scan_out=$(CEO_VAULT="$CEO_VAULT" bash -c "source '$SCRIPT_DIR/ceo-scan.sh'; printf '%b' \"\$ALERTS_FIRING\"" 2>"$TEST_HOME/scan.err")
+  scan_err=$(cat "$TEST_HOME/scan.err" 2>/dev/null || echo "")
+  assert_not_contains "$scan_err" "corrupted" "morning scan must not report corrupted alert status on stderr"
+  assert_not_contains "$scan_out" "corrupted" "ALERTS_FIRING must not contain corrupted marker"
+  assert_contains "$scan_out" "playbook-drift (host=" "ALERTS_FIRING must contain clean firing playbook-drift alert"
 }
 
 test_scan_drift_alert_refreshes_state() {
@@ -344,6 +352,8 @@ PB
   local alert_file="$CEO_DIR/alerts/playbook-drift.md"
   assert_file_exists "$alert_file" "alert must exist after first scan"
   local content1; content1=$(cat "$alert_file")
+  assert_contains "$content1" "status: firing" "alert must carry status: firing"
+  assert_contains "$content1" "host:" "alert must carry host frontmatter"
   assert_contains "$content1" "count: 1" "alert must carry count: 1"
 
   sed -i.bak -e 's/^since:.*/since: 2020-01-01T00:00:00Z/' \
