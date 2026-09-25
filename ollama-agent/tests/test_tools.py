@@ -390,3 +390,69 @@ def test_overlapping_matches_count_as_ambiguous(tmp_path):
         "path": "ov.txt", "old_string": "aa", "new_string": "B"}))
     assert "error" in result, "overlapping matches must read as ambiguous"
     assert f.read_text() == "aaa", "and the file must be untouched"
+
+
+def test_toolbox_dispatch_enforces_allowed_tools_builtin(tmp_path):
+    """#512: Excluded builtin tools return unknown tool error and append to unknown_calls."""
+    tb = ToolBox(cwd=str(tmp_path), allowed_tools={"read_file"})
+    marker = tmp_path / "side_effect"
+    res = json.loads(tb.dispatch("run_shell", {"command": f"touch {marker}"}))
+    assert res == {"error": "unknown tool: run_shell"}
+    assert not marker.exists(), "unadmitted tool must not execute"
+    assert tb.unknown_calls == ["run_shell"]
+    assert tb.tool_errors == [], "unadmitted tools are not operational failures of admitted tools"
+    assert tb.calls == [("run_shell", {"command": f"touch {marker}"})]
+
+    # Admitted tool executes normally and is not added to unknown_calls
+    f = tmp_path / "test.txt"
+    f.write_text("hello")
+    res2 = json.loads(tb.dispatch("read_file", {"path": "test.txt"}))
+    assert res2["content"] == "hello"
+    assert tb.unknown_calls == ["run_shell"]
+
+
+def test_toolbox_dispatch_enforces_allowed_tools_mcp(tmp_path):
+    """#512: Excluded MCP tools return unknown tool error and do not call MCP client."""
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def call_tool(self, name, args):
+            self.calls.append((name, args))
+            return "echoed"
+
+    client = FakeClient()
+    tb = ToolBox(cwd=str(tmp_path), mcp_client=client, mcp_names={"mcp__echo": "echo"},
+                 allowed_tools={"read_file"})
+    res = json.loads(tb.dispatch("mcp__echo", {"text": "hi"}))
+    assert res == {"error": "unknown tool: mcp__echo"}
+    assert client.calls == [], "unadmitted MCP tool must not be called"
+    assert tb.unknown_calls == ["mcp__echo"]
+    assert tb.tool_errors == []
+
+
+def test_toolbox_dispatch_enforces_allowed_tools_use_skill(tmp_path):
+    """#512: use_skill is rejected if not in allowed_tools."""
+    tb = ToolBox(cwd=str(tmp_path), allowed_tools={"read_file"})
+    res = json.loads(tb.dispatch("use_skill", {"name": "any_skill"}))
+    assert res == {"error": "unknown tool: use_skill"}
+    assert tb.unknown_calls == ["use_skill"]
+
+
+def test_toolbox_dispatch_allowed_tools_empty_set_rejects_all(tmp_path):
+    """#512: Empty allowed_tools rejects all tool dispatches."""
+    tb = ToolBox(cwd=str(tmp_path), allowed_tools=set())
+    res = json.loads(tb.dispatch("read_file", {"path": "anything"}))
+    assert res == {"error": "unknown tool: read_file"}
+    assert tb.unknown_calls == ["read_file"]
+
+
+def test_toolbox_dispatch_default_allowed_tools_none_permits_configured_tools(tmp_path):
+    """#512: Default allowed_tools=None preserves existing behavior where all configured tools can run."""
+    tb = ToolBox(cwd=str(tmp_path))
+    assert tb.allowed_tools is None
+    f = tmp_path / "test.txt"
+    f.write_text("ok")
+    res = json.loads(tb.dispatch("read_file", {"path": "test.txt"}))
+    assert res["content"] == "ok"
+    assert tb.unknown_calls == []

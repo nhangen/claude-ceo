@@ -445,6 +445,7 @@ def test_cli_registered_deterministic_task_applies_model_and_runs(tmp_path, monk
                    "--registry", reg, "--task-name", "triage"])
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"run_shell", "git"}   # restricted to allowlist
+    assert captured["toolbox"].allowed_tools == {"run_shell", "git"}
     err = capsys.readouterr().err
     assert "model=registry-model:7b" in err and "tools restricted to:" in err
     assert "REFUSED" not in err
@@ -1246,3 +1247,58 @@ def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert captured["toolbox"].mcp_readonly == {"mcp__genuine"}
     assert "(1 read-only)" in capsys.readouterr().err
+
+
+def test_cli_no_tools_flag_sets_empty_allowed_tools_on_toolbox(tmp_path, monkeypatch):
+    """#512: --no-tools sets allowed_tools to empty set on ToolBox."""
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--no-tools"])
+    assert rc == 0
+    assert captured["toolbox"].allowed_tools == set()
+
+
+def test_cli_task_tools_allowlist_enforced_at_dispatch_rejects_unadmitted_tool(tmp_path, monkeypatch, capsys):
+    """#512: When model calls an unadmitted tool on a restricted task, dispatch rejects it as unknown."""
+    reg = _registry(tmp_path, restricted={"runner": "ollama", "model": "reg-model:7b",
+                                           "tier": "deterministic", "tools": ["read_file"]})
+    marker = tmp_path / "should_not_exist"
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    turn = 0
+
+    def transport(messages, tools):
+        nonlocal turn
+        turn += 1
+        if turn == 1:
+            return (
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": {"command": f"touch {marker}"},
+                        }
+                    }],
+                },
+                {"input": 10, "output": 10},
+            )
+        # Turn 2: verify error was passed back in tool response message
+        tool_msg = messages[-1]
+        assert tool_msg["role"] == "tool"
+        assert json.loads(tool_msg["content"]) == {"error": "unknown tool: run_shell"}
+        return (
+            {"role": "assistant", "content": "understood"},
+            {"input": 10, "output": 10},
+        )
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: transport)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "restricted", "--json"])
+    assert rc == 0
+    assert not marker.exists(), "unadmitted tool call must not execute shell command"
+    rec = json.loads(capsys.readouterr().out)
+    assert rec["unknown_calls"] == ["run_shell"]
+

@@ -52,13 +52,14 @@ def _clip(s, n):
 
 class ToolBox:
     def __init__(self, cwd=".", timeout=30, skills=None, mcp_client=None, mcp_names=None,
-                 mcp_readonly=None):
+                 mcp_readonly=None, allowed_tools=None):
         self.cwd = Path(cwd).resolve()
         self.timeout = timeout
         self.skills = list(skills) if skills else []   # [Skill] for use_skill, if any
         self.mcp_client = mcp_client                   # MCPClient, if an MCP server is bridged
         self.mcp_names = dict(mcp_names) if mcp_names else {}  # prefixed_name -> real MCP tool name
         self.mcp_readonly = set(mcp_readonly) if mcp_readonly else set()  # read-only tool names (#457)
+        self.allowed_tools = set(allowed_tools) if allowed_tools is not None else None  # admitted tool names (#512)
         self.calls = []            # (name, args) of every dispatched call
         self.unknown_calls = []    # tool/skill names the model hallucinated
         self.tool_errors = []      # {tool, error} for mutating-tool and MCP failures (#215, #271, #457)
@@ -175,6 +176,9 @@ class ToolBox:
         """Route one tool call. Records every call; unknown names are recorded
         separately and returned as an error string (never silently dropped)."""
         self.calls.append((name, args))
+        if self.allowed_tools is not None and name not in self.allowed_tools:
+            self.unknown_calls.append(name)
+            return json.dumps({"error": f"unknown tool: {name}"})
         handler = {
             "run_shell": lambda a: self.run_shell(a.get("command", "")),
             "git": lambda a: self.git(a.get("args", [])),
