@@ -384,3 +384,29 @@ def test_load_rejects_bad_mcp_type():
 def test_load_rejects_empty_mcp_string():
     with pytest.raises(RegistryError, match="mcp must be a non-empty string"):
         load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": "   "}))
+
+
+def test_load_verify_field():
+    specs = load_registry(_reg(
+        verify_task={"runner": "ollama", "model": "m", "tier": "low-stakes-write", "verify": "pytest -q"}))
+    assert specs["verify_task"].verify == "pytest -q"
+
+
+def test_load_verify_field_default_none():
+    specs = load_registry(_reg(
+        plain_task={"runner": "ollama", "model": "m", "tier": "low-stakes-write"}))
+    assert specs["plain_task"].verify is None
+
+
+def test_load_rejects_bad_verify_type():
+    with pytest.raises(RegistryError, match="verify must be a non-empty string"):
+        load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "low-stakes-write", "verify": 123}))
+    with pytest.raises(RegistryError, match="verify must be a non-empty string"):
+        load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "low-stakes-write", "verify": ["pytest"]}))
+
+
+def test_load_rejects_empty_verify_string():
+    with pytest.raises(RegistryError, match="verify must be a non-empty string"):
+        load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "low-stakes-write", "verify": "   "}))
+    with pytest.raises(RegistryError, match="verify must be a non-empty string"):
+        load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "low-stakes-write", "verify": ""}))

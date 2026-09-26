@@ -54,7 +54,8 @@ Entry shape (`tasks.<name>`):
   "min_score": 0.9,            // optional; refuse unless the model earned this on eval_task
   "eval_task": "think-02",     // required WHEN min_score is set ("*" = cross-task mean)
   "eval_model": null,          // optional; override which model's score is checked
-  "mcp": null                  // optional; MCP server command, launched over stdio
+  "mcp": null,                 // optional; MCP server command, launched over stdio
+  "verify": null               // optional; verification command to gate unattended runs
 }
 ```
 
@@ -67,6 +68,10 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   when `min_score` is set — use `eval_task: "*"` to opt into the cross-task mean; an aggregate
   default would let a model that fails the task that matters pass on unrelated tasks. A missing
   score is a refusal, not a silent pass. `eval_model` overrides which model's score is checked.
+- `verify` (optional) is a verification command string (e.g. `"pytest -q"`). When set, it must
+  be a non-empty string; an empty or whitespace-only string is rejected at parse time. A non-empty
+  `--verify-cmd` on the command line overrides it. Unattended runs via `ceo-cron.sh` thread this
+  command to gate execution.
 - A `tools` allowlist carrying `write_file` without `edit_file` warns on stderr at parse time
   (advisory, never a refusal). Pair them so the model can make surgical edits instead of
   rewriting whole files.
