@@ -90,7 +90,10 @@ _registry_report_flag() {
   fi
   case "$val" in
     true|false) echo "$val" ;;
-    *) echo absent ;;
+    *)
+      _dlog "registry flag absent for $field, falling back to settings ($reg)"
+      echo absent
+      ;;
   esac
 }
 
