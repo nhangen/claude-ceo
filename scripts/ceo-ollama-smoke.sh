@@ -69,9 +69,11 @@ ceo_resolve_timeout_bin
 SMOKE_RC=0
 if [ -n "$CEO_TIMEOUT_BIN" ]; then
   OUTPUT=$("$CEO_TIMEOUT_BIN" "$SMOKE_TIMEOUT" bash "$SMOKE_BIN" 2>&1) || SMOKE_RC=$?
+  TIMEOUT_FIELD="${SMOKE_TIMEOUT}s"
 else
   echo "warning: no timeout or gtimeout on PATH; running the smoke with no ${SMOKE_TIMEOUT}s cap" >&2
   OUTPUT=$(bash "$SMOKE_BIN" 2>&1) || SMOKE_RC=$?
+  TIMEOUT_FIELD="none"
 fi
 OUTPUT=$(printf '%s' "$OUTPUT" | sed $'s/\033\\[[0-9;]*m//g')
 
@@ -123,12 +125,16 @@ if ! {
     --since="$SINCE" \
     --last-check="$NOW" \
     --host="$HOST" \
+    --field "timeout=$TIMEOUT_FIELD" \
     --field "stack=$STACK_STATUS" \
     --field "pass_count=$PASS" \
     --field "fail_count=$FAIL" \
     --field "skip_count=$SKIP" || { echo "ERROR: invalid alert frontmatter; existing state preserved" >&2; exit 1; }
   printf '\n# Ollama Live Stack Smoke Canary\n\n'
   printf '<!-- alert: [[CEO/alerts/ollama-smoke]] -->\n\n'
+  if [ "$TIMEOUT_FIELD" = "none" ]; then
+    printf '⚠️ **Warning:** run uncapped (no `timeout` or `gtimeout` binary found on PATH).\n\n'
+  fi
   printf 'Stack: **%s** (PASS=%s, FAIL=%s, SKIP=%s)\n\n' "$STACK_STATUS" "$PASS" "$FAIL" "$SKIP"
   case "$STACK_STATUS" in
     present)       printf 'Every smoke check ran and passed.\n\n' ;;
