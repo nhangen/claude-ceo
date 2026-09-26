@@ -103,4 +103,78 @@ test_noop_when_no_ceo_content() {
   assert_eq "$result" "" "no crontab write when there is no CEO content to remove"
 }
 
+# Regression guard for #467: on the daemon backend (or macOS default),
+# _remove_crontab_block must still read and purge leftover crontab blocks.
+test_removes_block_on_daemon_backend() {
+  export CEO_SCHEDULER=daemon
+  export CRONTAB_BODY="# user job
+0 2 * * * /usr/bin/backup
+# CEO Agent START
+*/5 * * * * /p/ceo-cron.sh morning  # ceo:morning
+# CEO Agent END"
+
+  local rc=0
+  _remove_crontab_block || rc=$?
+
+  assert_eq "$rc" "0" "_remove_crontab_block must succeed on daemon backend"
+  local result; result=$(cat "$INSTALLED")
+  assert_contains "$result" "/usr/bin/backup" \
+    "unrelated user lines must be preserved on daemon backend"
+  assert_not_contains "$result" "# ceo:morning" \
+    "CEO block lines must be purged on daemon backend"
+  assert_not_contains "$result" "CEO Agent START" \
+    "CEO markers must be purged on daemon backend"
+}
+
+# When crontab contains only CEO block lines, removing it installs an empty crontab.
+test_removes_block_when_only_ceo_lines_present() {
+  export CRONTAB_BODY="# CEO Agent START
+*/5 * * * * /p/ceo-cron.sh morning  # ceo:morning
+# CEO Agent END"
+
+  rm -f "$INSTALLED"
+  local rc=0
+  _remove_crontab_block || rc=$?
+
+  assert_eq "$rc" "0" "purging only-CEO crontab must succeed"
+  assert_file_exists "$INSTALLED" "crontab must be updated (installed)"
+  local result; result=$(cat "$INSTALLED")
+  assert_eq "$result" "" "crontab payload must be empty"
+}
+
+# When crontab write fails, the error is reported on stderr and non-zero rc returned.
+test_failure_installing_cleaned_crontab_exits_nonzero() {
+  export CEO_CRONTAB_BIN="$TMP/stub-crontab-failing"
+  cat > "$CEO_CRONTAB_BIN" <<'STUB'
+#!/bin/bash
+case "$1" in
+  -l) printf '%s\n' "$CRONTAB_BODY" ;;
+  -|"") echo "crontab: write error (simulated)" >&2; exit 2 ;;
+  *) echo "stub-crontab: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$CEO_CRONTAB_BIN"
+
+  export CRONTAB_BODY="# CEO Agent START
+*/5 * * * * /p/ceo-cron.sh morning  # ceo:morning
+# CEO Agent END"
+
+  local out rc=0
+  out=$(_remove_crontab_block 2>&1) || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    fail_test "write failure must return non-zero"
+  fi
+  assert_contains "$out" "crontab removal failed" "failure message must be surfaced on stderr"
+  assert_contains "$out" "write error" "underlying crontab error message must be included"
+}
+
+# When crontab binary is missing, _remove_crontab_block is a clean no-op (rc=0).
+test_missing_crontab_binary_returns_zero() {
+  export CEO_CRONTAB_BIN="$TMP/nonexistent-crontab"
+  local rc=0
+  _remove_crontab_block || rc=$?
+  assert_eq "$rc" "0" "missing crontab binary must return 0"
+}
+
 run_tests

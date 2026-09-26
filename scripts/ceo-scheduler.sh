@@ -188,8 +188,10 @@ ceo_scheduler_legacy_launchd_plists() {
 # count (non-empty marker) when any exist; prints nothing (clean) otherwise.
 # `ceo doctor` warns on a non-empty result so the operator removes the block.
 ceo_scheduler_crontab_daemon_conflict() {
+  local crontab_bin="${CEO_CRONTAB_BIN:-crontab}"
+  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
   local _count
-  _count="$(ceo_scheduler_list 2>/dev/null | grep -cE 'ceo-cron\.sh.*#[[:space:]]*ceo:[^[:space:]]+[[:space:]]*$' || true)"
+  _count="$("$crontab_bin" -l 2>/dev/null | grep -cE 'ceo-cron\.sh.*#[[:space:]]*ceo:[^[:space:]]+[[:space:]]*$' || true)"
   [ "${_count:-0}" -gt 0 ] || return 0
   printf '%s\n' "$_count"
 }

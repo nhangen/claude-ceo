@@ -257,6 +257,16 @@ test_crontab_leftover_flagged_even_when_daemon_inactive() {
   assert_eq "$out" "1" "a CEO crontab block is a leftover even with the daemon inactive (the blind-spot fix)"
 }
 
+# Regression guard for #467: on the daemon backend (macOS default, or
+# CEO_SCHEDULER=daemon), leftover crontab entries must still be flagged.
+test_crontab_leftover_flagged_on_daemon_backend() {
+  export CEO_SCHEDULER=daemon
+  _stub_crontab_with_ceo_block
+  local out
+  out=$(ceo_scheduler_crontab_daemon_conflict)
+  assert_eq "$out" "1" "must report leftover cron-trigger count on the daemon backend"
+}
+
 test_no_leftover_when_no_ceo_crontab_block() {
   export CEO_SCHEDULER=crontab
   export CEO_CRONTAB_BIN="$TEST_HOME/crontab-empty"
