@@ -22,6 +22,7 @@ import {
   CATCHUP_LOOKBACK_FLOOR_MS,
   CATCHUP_LOOKBACK_CAP_MS,
   MAX_SLEEP_MS,
+  FATAL_EXIT_CODE,
   type DaemonDeps,
   type Heartbeat,
 } from "cronbird/core";
@@ -30,6 +31,7 @@ import {
   writeHeartbeatFile,
   writeHeartbeatWithSync,
   writeSyncedHeartbeat,
+  PermanentHeartbeatWriteError,
 } from "cronbird/cli";
 import { parseRegistry } from "@/registry";
 import { parseEnabled } from "@/enabled";
@@ -321,10 +323,28 @@ async function main(): Promise<void> {
   log("stopped");
 }
 
+/**
+ * Maps uncaught errors from the daemon loop to appropriate process exit codes.
+ * Permanent heartbeat write failures (EACCES/EROFS/ENOSPC/EISDIR/EPERM) exit
+ * with FATAL_EXIT_CODE (78, EX_CONFIG) so launchd/systemd stops crash-looping (#496).
+ * Generic/transient errors exit with 1.
+ */
+export function resolveFatalExitCode(err: unknown): number {
+  if (
+    err instanceof PermanentHeartbeatWriteError ||
+    (typeof err === "object" && err !== null && (err as { name?: string }).name === "PermanentHeartbeatWriteError")
+  ) {
+    return FATAL_EXIT_CODE;
+  }
+  return 1;
+}
+
+export { main };
+
 // Only run when invoked directly (not when imported by tests).
 if (import.meta.main) {
   main().catch((err) => {
     process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    process.exit(resolveFatalExitCode(err));
   });
 }
