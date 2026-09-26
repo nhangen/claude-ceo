@@ -198,6 +198,25 @@ _doctor_check_freshness() {
   echo "FRESH=$fresh STALE=$stale"
 }
 
+# Check if discord-report debug log is appendable/writable (#484).
+# ceo-discord-report.sh directs diagnostic logs to CEO_DISCORD_REPORT_DEBUG_LOG
+# (default: /tmp/ceo-discord-report-debug.log) with `>> "$log" 2>/dev/null || true`.
+# If unwritable (root-owned, read-only dir, broken symlink, trailing slash),
+# all diagnostic lines are silently dropped.
+_doctor_check_discord_log_writable() {
+  local log="${1:-${CEO_DISCORD_REPORT_DEBUG_LOG:-/tmp/ceo-discord-report-debug.log}}"
+  case "$log" in */) return 1 ;; esac
+  if [ -L "$log" ] && [ ! -e "$log" ]; then
+    return 1
+  fi
+  if [ -e "$log" ]; then
+    [ -f "$log" ] && [ -w "$log" ]
+  else
+    local dir; dir="$(dirname "$log")"
+    [ -d "$dir" ] && [ -w "$dir" ]
+  fi
+}
+
 cmd_doctor() {
   local ok=0
   local warn=0
@@ -652,6 +671,16 @@ cmd_doctor() {
   else
     echo "  ✓ playbook freshness: no scheduled playbook has silently stopped running or delivering"
     ok=$(( ok + 1 ))
+  fi
+
+  # discord-report debug log writability (#484)
+  local _dr_log="${CEO_DISCORD_REPORT_DEBUG_LOG:-/tmp/ceo-discord-report-debug.log}"
+  if _doctor_check_discord_log_writable "$_dr_log"; then
+    echo "  ✓ discord-report debug log writable ($_dr_log)"
+    ok=$(( ok + 1 ))
+  else
+    echo "  ✗ discord-report debug log is not writable: $_dr_log"
+    fail=$(( fail + 1 ))
   fi
 
   local _sti_out _sti_missing _sti_repo
