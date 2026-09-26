@@ -261,15 +261,43 @@ test_no_registry_flag_field_falls_back_to_settings() {
 
   # #424 asked for error lines on the two failure causes, not on the third. A
   # legitimately absent flag is the steady state, so an error line here would
-  # fire on every cron run. Pinned on the two error needles only, which leaves
-  # room for a future informational line on the absent arm.
+  # fire on every cron run. #485 records an informational line on the absent arm
+  # naming the field and path so fallback decisions are auditable without
+  # triggering error needles.
   local log
   log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry flag absent for discord_report, falling back to settings ($HOME/.ceo/registry.json)" \
+    "absent discord_report flag must log informational line naming field and registry"
+  assert_contains "$log" "registry flag absent for discord_prior_day_report, falling back to settings ($HOME/.ceo/registry.json)" \
+    "absent discord_prior_day_report flag must log informational line naming field and registry"
   assert_not_contains "$log" "registry file not found" \
     "a present registry with a legitimately absent flag must not log a not-found error"
   assert_not_contains "$log" "registry jq query failed" \
     "a well-formed registry must not log a jq failure"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 4))
+}
+
+test_empty_registry_falls_back_to_settings_and_logs_absent() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local empty_reg="$TMP/empty-registry.json"
+  : > "$empty_reg"
+
+  printf 'empty reg body' | CEO_REGISTRY_FILE="$empty_reg" "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry flag absent for discord_report, falling back to settings ($empty_reg)" \
+    "a 0-byte registry file must fall through to the absent log line for discord_report"
+  assert_contains "$log" "registry flag absent for discord_prior_day_report, falling back to settings ($empty_reg)" \
+    "a 0-byte registry file must fall through to the absent log line for discord_prior_day_report"
+  assert_not_contains "$log" "registry file not found" \
+    "a 0-byte registry file exists so it must not log file not found"
+  assert_not_contains "$log" "registry jq query failed" \
+    "jq exits 0 on an empty file so it must not log jq query failed"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "empty reg body" \
+    "a 0-byte registry must still deliver via the settings allow-list"
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 5))
 }
 
 test_registry_path_is_not_hardcoded_in_discord_report() {
