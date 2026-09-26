@@ -78,7 +78,7 @@ Each phase picks an appropriate model. Gather is shell (model-free). Synthesis r
 
 - One synthesis run replacing four means one failure = zero briefing today (vs. degraded-partial today). The **raw-digest fallback** mitigates this.
 - Per-phase runner/model selection validates inputs (`enum-config-typo-fallback`, `shell-required-env-vars` apply): reject unknown runner/model at parse, require `$CEO_VAULT`.
-- **Cutover is an ML-1 action** (`ceo-scan-only-on-ml1`). Keep the four old playbooks **disabled, not deleted**, for one cycle; diff old-vs-new briefings before retiring.
+- **Cutover is an ML-1 action** (`ceo-swarm-host-scoping`). Keep the four old playbooks **disabled, not deleted**, for one cycle; diff old-vs-new briefings before retiring.
 - The morning flow writes to the synced vault → it is an **automated writer**; register it in `CEO/registry.json` with declared outputs (`ceo-automated-writers-are-playbooks`).
 
 ## Testing

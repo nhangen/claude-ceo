@@ -9,9 +9,10 @@ actions that must run on ML-1.
 
 - Branch `nh/feat/ceo-morning-flow` is merged to master.
 - You are on ML-1 (check: `hostname` must be ML-1).
-- Per `ceo-scan-only-on-ml1`: `ceo playbook scan` installs host-local launchd
-  agents and rewrites the synced `CEO/registry.json`. Never run it on the
-  MacBook or any other host.
+- Per `.claude/rules/ceo-swarm-host-scoping.md`: `morning` is single-scope and owned
+  by ML-1 (primary host). Running `ceo playbook scan` is safe on any host post-D1
+  (writes only host-local `~/.ceo/registry.json`), but activation/dispatch of `morning`
+  is gated to ML-1.
 
 ## Step 1: Run `ceo playbook scan` on ML-1
 

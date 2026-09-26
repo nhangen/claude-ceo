@@ -62,4 +62,4 @@ Issues #125/#146 (v1). v2 rework 2026-06-27: kills the every-30-min over-firing 
 
 ## Disable
 
-Set `status: disabled` in this file and re-scan **on ML-1** (`ceo playbook scan` rewrites the host-local registry; run only on ML-1 per the `ceo-scan-only-on-ml1` rule). Editing this file activates nothing on its own; the next ML-1 scan picks up the status change.
+Set `status: disabled` in this file and re-scan **on ML-1** (the owner of this single-scope playbook per `.claude/rules/ceo-swarm-host-scoping.md`). Editing this file activates nothing on its own; the next ML-1 scan picks up the status change.
