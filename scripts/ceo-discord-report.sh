@@ -94,6 +94,39 @@ _registry_report_flag() {
   esac
 }
 
+_settings_report_flag() {
+  local key="$1"
+  local settings_file="${SETTINGS_FILE:-${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/settings.json}"
+  if [ ! -f "$settings_file" ]; then
+    echo unset
+    return
+  fi
+  local rc=0 out errf
+  errf=$(mktemp)
+  trap 'rm -f "$errf"' RETURN
+  out=$(jq -r --arg trig "$TRIGGER" --arg key "$key" \
+    '((.[$key] // ["morning-brief"]) | (index($trig) != null))' \
+    "$settings_file" 2>"$errf") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _dlog "settings jq query failed for $key ($settings_file): $(head -1 "$errf")"
+    echo error
+    return
+  fi
+  if [ -z "$out" ]; then
+    _dlog "settings jq query produced no output for $key ($settings_file)"
+    echo error
+    return
+  fi
+  case "$out" in
+    true)  echo 1 ;;
+    false) echo 0 ;;
+    *)
+      _dlog "settings jq query produced unexpected output for $key ($settings_file): $out"
+      echo error
+      ;;
+  esac
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   _dlog "jq not on PATH, bailing 0"
   exit 0
@@ -104,6 +137,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 SETTINGS_FILE="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/settings.json"
+enabled=0
 report_flag=$(_registry_report_flag discord_report)
 case "$report_flag" in
   true)  enabled=1; _dlog "delivery enabled by registry discord_report flag" ;;
@@ -111,13 +145,13 @@ case "$report_flag" in
   absent)
     # Backward-compat fallback: no per-playbook flag in the registry, so honor
     # the hand-maintained settings.json allow-list (default: morning-brief only).
-    if [ -f "$SETTINGS_FILE" ]; then
-      enabled=$(jq -e --arg trig "$TRIGGER" \
-        '(.discord_report_triggers // ["morning-brief"]) | index($trig) != null' \
-        "$SETTINGS_FILE" >/dev/null 2>&1 && echo 1 || echo 0)
-    else
-      [ "$TRIGGER" = "morning-brief" ] && enabled=1 || enabled=0
-    fi
+    case "$(_settings_report_flag discord_report_triggers)" in
+      1) enabled=1 ;;
+      0) enabled=0 ;;
+      unset|error|*)
+        [ "$TRIGGER" = "morning-brief" ] && enabled=1 || enabled=0
+        ;;
+    esac
     ;;
 esac
 [ "$enabled" = "1" ] || {
@@ -226,18 +260,19 @@ fi
 # report keeps its existing front matter and is untouched; the complete prior-day
 # report is delivered here, on Discord only. Gate on its own allow-list so other
 # report triggers don't carry yesterday's report.
+prior_enabled=0
 prior_flag=$(_registry_report_flag discord_prior_day_report)
 case "$prior_flag" in
   true)  prior_enabled=1 ;;
   false) prior_enabled=0 ;;
   absent)
-    if [ -f "$SETTINGS_FILE" ]; then
-      prior_enabled=$(jq -e --arg trig "$TRIGGER" \
-        '(.discord_prior_day_report_triggers // ["morning-brief"]) | index($trig) != null' \
-        "$SETTINGS_FILE" >/dev/null 2>&1 && echo 1 || echo 0)
-    else
-      [ "$TRIGGER" = "morning-brief" ] && prior_enabled=1 || prior_enabled=0
-    fi
+    case "$(_settings_report_flag discord_prior_day_report_triggers)" in
+      1) prior_enabled=1 ;;
+      0) prior_enabled=0 ;;
+      unset|error|*)
+        [ "$TRIGGER" = "morning-brief" ] && prior_enabled=1 || prior_enabled=0
+        ;;
+    esac
     ;;
 esac
 
