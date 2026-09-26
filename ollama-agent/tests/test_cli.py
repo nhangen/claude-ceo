@@ -921,6 +921,7 @@ def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_pat
     assert row["completed"] is False
     assert row["verified"] is None
     assert row["reason"] == "error"
+    assert row["error"] == "RuntimeError: model transport failed mid-run"
     assert row["ollama_input_tokens"] == 50
     assert row["ollama_output_tokens"] == 15
     # 2 turns carrying 1 turn's tokens is the intended reading: on a crash row
@@ -952,9 +953,63 @@ def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, cap
     assert row["completed"] is False
     assert row["verified"] is None
     assert row["reason"] == "killed"
+    assert row["error"] == "KeyboardInterrupt"
     assert row["ollama_input_tokens"] == 30
     assert row["ollama_output_tokens"] == 10
     assert row["turns"] == 2
+
+
+def test_cli_crashed_run_records_error_detail_in_ledger_row(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def failing_transport(messages, tools):
+        raise RuntimeError("ollama HTTP 503 after 3 attempts: no healthy backends")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["error"] == "RuntimeError: ollama HTTP 503 after 3 attempts: no healthy backends"
+
+
+def test_cli_clean_run_records_error_null(tmp_path, monkeypatch):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def clean_transport(messages, tools):
+        return ({"role": "assistant", "content": "done"}, {"input": 10, "output": 5})
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: clean_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is True
+    assert row["error"] is None
+
+
+def test_cli_crashed_run_caps_and_escapes_error_message(tmp_path, monkeypatch):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    long_msg = "line1\nline2\n" + "x" * 250
+    def failing_transport(messages, tools):
+        raise ValueError(long_msg)
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    raw = ledger.read_text().strip()
+    assert len(raw.splitlines()) == 1
+    row = json.loads(raw)
+    assert row["reason"] == "error"
+    assert "\n" not in row["error"]
+    assert "\\n" in row["error"]
+    assert row["error"].startswith("ValueError: line1\\nline2\\n")
 
 
 def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, capsys):

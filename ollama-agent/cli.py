@@ -18,6 +18,7 @@ from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryErr
                           load_registry, load_scores, load_skill_index, mcp_tools_to_ollama,
                           ollama_transport, render_catalog, run_agent)
 from ollama_agent.ledger import append_run
+from ollama_agent.transport import _error_excerpt
 
 # Local open-weights LLMs (Llama/Qwen/Gemma) under byte-pair encoding run
 # ~3-4 characters per token across mixed code, markdown, and JSON schemas.
@@ -106,7 +107,14 @@ def _restore_default_kill_handlers():
             pass
 
 
-def _crash_record(reason, run_id, usage_tracker, toolbox):
+def _format_error(e):
+    """Format and bound an exception string for ledger capture (#493)."""
+    msg = str(e)
+    raw = f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+    return _error_excerpt(raw)
+
+
+def _crash_record(reason, run_id, usage_tracker, toolbox, error=None):
     """A ledger row for a run that died before run_agent could return one.
 
     The counts come from the tracker the caller handed to run_agent, so the row
@@ -126,6 +134,7 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
         "verify_gated": usage_tracker.get("verify_gated"),
         "verify_cmd": usage_tracker.get("verify_cmd"),
         "reason": reason,
+        "error": error,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
         "ollama_input_tokens": usage_tracker.get("ollama_input_tokens", 0),
@@ -372,9 +381,9 @@ def main(argv=None):
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
                         run_id=a.run_id, verify_cmd=a.verify_cmd, usage_tracker=usage_tracker,
                         num_ctx=a.num_ctx)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as e:
         print("agent interrupted", file=sys.stderr)
-        rec = _crash_record("killed", a.run_id, usage_tracker, toolbox)
+        rec = _crash_record("killed", a.run_id, usage_tracker, toolbox, error=_format_error(e))
         exit_code = 130
     # Deliberately broad. The ledger's job is to record that a run burned tokens,
     # and a TypeError in the loop burned them exactly as a RuntimeError would.
@@ -382,7 +391,7 @@ def main(argv=None):
     # this catch exists to close, so the class goes in the message instead.
     except Exception as e:
         print(f"agent failed: {type(e).__name__}: {e}", file=sys.stderr)
-        rec = _crash_record("error", a.run_id, usage_tracker, toolbox)
+        rec = _crash_record("error", a.run_id, usage_tracker, toolbox, error=_format_error(e))
         exit_code = 1
     finally:
         # Before close(), and on the success path too — see the helper's docstring.
