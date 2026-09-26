@@ -36,7 +36,7 @@ The inbox task is appended only on a transition into `firing`, and marked `[done
 
 | File | Mode | When |
 |---|---|---|
-| `CEO/alerts/ollama-smoke.md` | overwrite | Every run. Frontmatter carries `stack`, `pass_count`, `fail_count`, and `skip_count`; the body carries the smoke output with color codes stripped. |
+| `CEO/alerts/ollama-smoke.md` | overwrite | Every run. Frontmatter carries `stack`, `pass_count`, `fail_count`, `skip_count`, and `timeout` (`<cap>s` or `none`); the body carries the smoke output with color codes stripped, plus a warning notice if run uncapped. |
 | `CEO/inbox/ollama-smoke.md` | append `- [ ]` line; rewrite it to `[done]` | Append on a transition into `firing`. Rewrite on `firing → clear`. Idempotent. |
 
 The runner outcome is `fired` only when the inbox changed, so a healthy week and a still-firing week are both silent.

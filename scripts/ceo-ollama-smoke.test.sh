@@ -71,6 +71,12 @@ test_full_pass_is_clear_and_silent() {
   assert_eq "$(_open_tasks)" "0" "no inbox task on a healthy run"
   assert_eq "$(_outcome)" "noop" "a healthy run does not notify"
   assert_eq "$(grep -c "$(printf '\033')" "$ALERT")" "0" "ANSI escapes are stripped from the alert body"
+  if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+    assert_eq "$(_field timeout)" "900s" "default timeout recorded in frontmatter"
+    assert_not_contains "$(cat "$ALERT")" "run uncapped" "capped run does not display uncapped warning"
+  else
+    assert_eq "$(_field timeout)" "none" "uncapped timeout field recorded"
+  fi
 }
 
 test_all_skip_on_owner_host_fires_as_absent() {
@@ -166,6 +172,7 @@ test_timeout_is_a_harness_error() {
   _run
   assert_eq "$(_field stack)" "harness-error" "a hung smoke is a harness error"
   assert_contains "$(cat "$ALERT")" "timed out after 1s" "timeout named in body"
+  assert_eq "$(_field timeout)" "1s" "configured timeout recorded in frontmatter"
 }
 
 test_no_timeout_binary_runs_uncapped_and_warns() {
@@ -191,6 +198,8 @@ test_no_timeout_binary_runs_uncapped_and_warns() {
   err=$(PATH="$nobin" _CEO_PATH_AUGMENTED=1 bash "$SCRIPT" 2>&1 >/dev/null)
   assert_contains "$err" "no timeout or gtimeout on PATH" "running uncapped is announced"
   assert_eq "$(_field status)" "clear" "the smoke still runs and its summary is read"
+  assert_eq "$(_field timeout)" "none" "uncapped run records timeout: none in frontmatter"
+  assert_contains "$(cat "$ALERT")" "run uncapped" "uncapped run surfaced in alert body"
 }
 
 test_since_is_kept_while_steady_and_reset_on_transition() {
