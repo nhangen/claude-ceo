@@ -18,7 +18,7 @@
 - Synthesis must degrade across models (sonnet → ollama) and **fall back to a raw digest** if the LLM run fails — never deliver nothing.
 - Credentials sourced from `~/.config/ceo/credentials.env` (`ZENHUB_TOKEN`, `ZENHUB_WORKSPACE_ID`). Validate presence; missing → graceful skip of the sprint signal, not a crash.
 - Tests: custom bash harness; each `scripts/*.test.sh` sources `test-harness.sh`, defines `setup`/`teardown` + `test_*` functions, runs via `bash scripts/<name>.test.sh`. Stub external CLIs (`gh`, `git`, `curl`) with argv validation (exit non-zero on unexpected shape).
-- Cutover (registry scan, enabling/disabling playbooks) is an **ML-1-only** action (`ceo-scan-only-on-ml1`). The flow writes to the synced vault → register it in the registry as an automated writer (`ceo-automated-writers-are-playbooks`).
+- Cutover (registry scan, enabling/disabling playbooks) is an **ML-1-only** action (`ceo-swarm-host-scoping`). The flow writes to the synced vault → register it in the registry as an automated writer (`ceo-automated-writers-are-playbooks`).
 - Shell: `: "${VAR:?msg}"` for required env (`shell-required-env-vars`); validate enum-ish fields, no silent default-on-typo (`enum-config-typo-fallback`).
 
 ---
@@ -1025,7 +1025,7 @@ Expected: FAIL — statuses not yet changed.
 ```markdown
 # Morning Flow Cutover (ML-1 only)
 
-1. On ML-1 only: `ceo playbook scan` (regenerates ~/.ceo/registry.json from frontmatter; installs schedule via ceo-schedulerd). Never run scan on the MacBook.
+1. On ML-1: `ceo playbook scan` (regenerates ~/.ceo/registry.json from frontmatter; installs schedule via ceo-schedulerd per `ceo-swarm-host-scoping`).
 2. Keep morning-brief enabled in discord_report_triggers for ONE cycle; compare the new `morning` briefing against the old `morning-brief` output for 1-2 days.
 3. Once parity/superiority confirmed: remove `morning-brief` from discord_report_triggers; leave legacy playbooks disabled.
 4. Register `morning` as an automated writer (writes CEO/model/ ledger) in the registry note per ceo-automated-writers-are-playbooks.
@@ -1044,7 +1044,7 @@ git add docs/playbooks/morning.md docs/playbooks/morning-scan.md docs/playbooks/
 git commit -m "feat(ceo): cutover — activate morning flow, disable legacy playbooks"
 ```
 
-> **Note:** The actual `ceo playbook scan` + `CEO/settings.json` edit are runtime ML-1 actions per `ceo-scan-only-on-ml1`; the settings.json change is in the synced vault, not this repo. Do them per `docs/cutover-morning-flow.md` after merge.
+> **Note:** The actual `ceo playbook scan` + `CEO/settings.json` edit are runtime ML-1 actions per `ceo-swarm-host-scoping`; the settings.json change is in the synced vault, not this repo. Do them per `docs/cutover-morning-flow.md` after merge.
 
 ---
 
