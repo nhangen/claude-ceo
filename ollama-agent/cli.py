@@ -269,6 +269,8 @@ def main(argv=None):
         a.no_skills = a.no_skills or not spec.skills
         if not a.mcp and spec.mcp:
             a.mcp = spec.mcp
+        if not a.verify_cmd and spec.verify:
+            a.verify_cmd = spec.verify
         print(f"task {a.task_name!r}: runner={spec.runner} tier={spec.tier} model={spec.model}",
               file=sys.stderr)
 

@@ -433,5 +433,71 @@ test_runner_ollama_agent_no_mcp_omits_mcp_flag() {
   assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--mcp" "--mcp must be absent from cron dispatch argv for task without mcp"
 }
 
+
+test_runner_ollama_agent_threads_verify_cmd_from_task_spec() {
+  _register_agent_pb agent-verify low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-verify": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "turns": 2, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-verify >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "verify-gated agent task exits 0 on verified success"
+  assert_contains "$(cat "$HOME/agent-argv.txt")" "--verify-cmd pytest -q" "cron dispatch threads --verify-cmd from registry task spec"
+}
+
+
+test_runner_ollama_agent_threads_verify_cmd_from_inline_json_registry() {
+  cat > "$CEO_DIR/playbooks/agent-inline-v.md" << 'PB'
+---
+name: agent-inline-v
+description: test inline registry verify threading
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes-write
+status: active
+runner: ollama-agent
+task: inline-v-task
+registry: {"tasks":{"inline-v-task":{"runner":"ollama","model":"mistral:7b","tier":"low-stakes-write","verify":"make test"}}}
+---
+# body
+PB
+  _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-inline-v >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "inline registry verify-gated task exits 0"
+  assert_contains "$(cat "$HOME/agent-argv.txt")" "--verify-cmd make test" "cron dispatch threads --verify-cmd from inline JSON registry"
+}
+
+
+test_runner_ollama_agent_omits_verify_cmd_when_not_in_task_spec() {
+  _register_agent_pb agent-no-verify low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-no-verify": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write"}}}
+EOF
+  _make_agent_stub '{"completed": true, "verified": null, "verify_gated": false, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-no-verify >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ungated agent task exits 0"
+  assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--verify-cmd" "--verify-cmd must be absent when task spec defines no verify field"
+}
+
+
+test_runner_ollama_agent_verify_gated_failure_fails_cron_run() {
+  _register_agent_pb agent-v-fail low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-v-fail": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": false, "verified": false, "verify_gated": true, "turns": 8, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_fails "a verify-gated run that fails verification must exit non-zero" bash "$CRON" agent-v-fail
+  assert_contains "$(_skips_log)" "verification failed" "skips log must record verification failure"
+}
+
+
 run_tests
 
