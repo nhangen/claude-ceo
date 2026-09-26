@@ -154,7 +154,10 @@ if ! {
     --host="$HOST" \
     --field dump_folder_gb="$DUMP_GB" \
     --field c_free_gb="$C_FREE_GB" \
-    --field measurement_failed="$MEASUREMENT_FAILED"
+    --field measurement_failed="$MEASUREMENT_FAILED" || {
+      printf 'ERROR: ceo-disk-monitor: invalid alert frontmatter for %s; existing state preserved\n' "$STATE_FILE" >&2
+      exit 1
+    }
   printf '\n# Disk Monitor — %s\n\n' "$HOST"
   printf '<!-- alert: [[CEO/alerts/disk-%s]] -->\n\n' "$HOST"
   if [ "$CURRENT_STATUS" = "firing" ]; then
@@ -189,7 +192,10 @@ if ! {
   exit 1
 fi
 
-mv "$STATE_TMP" "$STATE_FILE"
+mv "$STATE_TMP" "$STATE_FILE" || {
+  printf 'ERROR: ceo-disk-monitor: failed to replace %s\n' "$STATE_FILE" >&2
+  exit 1
+}
 trap - EXIT
 
 if ! printf '%s status=%s dump=%sG free=%sG reasons="%s"\n' \
@@ -243,13 +249,16 @@ if [ "$MEASUREMENT_FAILED" -eq 0 ] && [ "$PRIOR_STATUS" != "unknown" ] && [ "$CU
     active_task_present || _append_inbox "$TASK_LINE"
   elif [ "$PRIOR_STATUS" = "firing" ] && [ "$CURRENT_STATUS" = "clear" ]; then
     if active_task_present; then
-      tmpfile=$(mktemp) || { echo "ERROR: ceo-disk-monitor: mktemp failed for inbox rewrite" >&2; exit 1; }
+      tmpfile=$(mktemp "${INBOX_FILE}.XXXXXX") || { echo "ERROR: ceo-disk-monitor: mktemp failed for inbox rewrite" >&2; exit 1; }
       trap 'rm -f "$tmpfile"' EXIT
       _done_replacement="- [done] Cleaned wsl-crashes on $HOST $(date +%Y-%m-%d) $TASK_MARKER"
-      awk -v m="$TASK_MARKER" -v r="$_done_replacement" \
-        '/^- \[ \]/ && index($0, m) { print r; next } { print }' "$INBOX_FILE" > "$tmpfile"
-      if ! mv "$tmpfile" "$INBOX_FILE"; then
+      if ! awk -v m="$TASK_MARKER" -v r="$_done_replacement" \
+        '/^- \[ \]/ && index($0, m) { print r; next } { print }' "$INBOX_FILE" > "$tmpfile"; then
         echo "ERROR: ceo-disk-monitor: failed to rewrite $INBOX_FILE" >&2
+        exit 1
+      fi
+      if ! mv "$tmpfile" "$INBOX_FILE"; then
+        echo "ERROR: ceo-disk-monitor: failed to replace $INBOX_FILE" >&2
         exit 1
       fi
       trap - EXIT

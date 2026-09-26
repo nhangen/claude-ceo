@@ -58,11 +58,37 @@ exit 1
 EOF
   chmod +x "$TEST_HOME/stubs/getent"
 
+  local real_awk real_mktemp
+  real_awk=$(type -p awk 2>/dev/null || command -v awk || echo "/usr/bin/awk")
+  real_mktemp=$(type -p mktemp 2>/dev/null || command -v mktemp || echo "/usr/bin/mktemp")
+
+  cat > "$TEST_HOME/stubs/awk" << EOF
+#!/bin/bash
+if [ "\${AWK_FAIL_REWRITE:-0}" = "1" ]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+      r=*) exit 1 ;;
+    esac
+  done
+fi
+exec "$real_awk" "\$@"
+EOF
+  chmod +x "$TEST_HOME/stubs/awk"
+
+  cat > "$TEST_HOME/stubs/mktemp" << EOF
+#!/bin/bash
+if [ -n "\${MKTEMP_LOG:-}" ]; then
+  printf '%s\n' "\$*" >> "\$MKTEMP_LOG"
+fi
+exec "$real_mktemp" "\$@"
+EOF
+  chmod +x "$TEST_HOME/stubs/mktemp"
+
   export PATH="$TEST_HOME/stubs:$PATH"
   # Defaults — tests override per-case.
   export DUMP_GB_STUB="0"
   export C_FREE_GB_STUB="999"
-  unset DUMP_GB_STUB_FAIL C_FREE_GB_STUB_FAIL
+  unset DUMP_GB_STUB_FAIL C_FREE_GB_STUB_FAIL AWK_FAIL_REWRITE MKTEMP_LOG
 }
 
 teardown() {
@@ -72,6 +98,7 @@ teardown() {
   unset CEO_VAULT CEO_DIR CEO_HOSTNAME TEST_HOME HOME_BACKUP PATH_BACKUP
   unset CEO_DISK_WSL_CRASHES_PATH CEO_DISK_C_MOUNT
   unset DUMP_GB_STUB C_FREE_GB_STUB DUMP_GB_STUB_FAIL C_FREE_GB_STUB_FAIL
+  unset AWK_FAIL_REWRITE MKTEMP_LOG
 }
 
 run_monitor() {
@@ -275,6 +302,61 @@ test_inbox_rewrite_handles_host_with_regex_chars() {
   body=$(cat "$CEO_DIR/inbox/odd.host[1].md")
   assert_contains "$body" "[done] Cleaned wsl-crashes on odd.host[1]" "host with regex chars must flip cleanly"
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_failed_frontmatter_write_leaves_prior_state_untouched() {
+  mkdir -p "$CEO_DIR/alerts"
+  local alert_file="$CEO_DIR/alerts/disk-$CEO_HOSTNAME.md"
+  cat > "$alert_file" << 'EOF'
+---
+status: corrupted_val
+since: 2026-05-12T00:00:00-0400
+last_check: 2026-05-12T00:00:00-0400
+host: testhost
+---
+Important prior content
+EOF
+  local content_before
+  content_before=$(cat "$alert_file")
+  local rc=0
+  DUMP_GB_STUB_FAIL=1 bash "$MONITOR" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "frontmatter write failure must cause monitor to exit 1"
+  local content_after
+  content_after=$(cat "$alert_file")
+  assert_eq "$content_after" "$content_before" "failed frontmatter write must leave prior alert file byte-identical"
+  local leftovers
+  leftovers=$(find "$CEO_DIR/alerts" -name "disk-$CEO_HOSTNAME.md.*")
+  assert_eq "$leftovers" "" "no temporary alert files should be left on failure"
+}
+
+test_failing_inbox_awk_leaves_inbox_byte_identical() {
+  DUMP_GB_STUB="20" run_monitor
+  local inbox_file="$CEO_DIR/inbox/testhost.md"
+  local inbox_before
+  inbox_before=$(cat "$inbox_file")
+  assert_contains "$inbox_before" "- [ ] Clean wsl-crashes on testhost" "initial firing task added"
+
+  local rc=0
+  AWK_FAIL_REWRITE=1 DUMP_GB_STUB="0" bash "$MONITOR" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "failing inbox awk rewrite must cause monitor to exit 1"
+  local inbox_after
+  inbox_after=$(cat "$inbox_file")
+  assert_eq "$inbox_after" "$inbox_before" "failing inbox awk must leave inbox file byte-identical"
+  local leftovers
+  leftovers=$(find "$CEO_DIR/inbox" -name "testhost.md.*")
+  assert_eq "$leftovers" "" "no temporary inbox files should be left on failure"
+}
+
+test_inbox_rewrite_uses_inbox_dir_for_mktemp() {
+  DUMP_GB_STUB="20" run_monitor
+  export MKTEMP_LOG="$TEST_HOME/mktemp.log"
+  DUMP_GB_STUB="0" run_monitor
+  assert_file_exists "$MKTEMP_LOG" "mktemp log must be created"
+  local log_content
+  log_content=$(cat "$MKTEMP_LOG")
+  local inbox_file="$CEO_DIR/inbox/testhost.md"
+  assert_contains "$log_content" "${inbox_file}.XXXXXX" "inbox rewrite must use template in inbox directory for atomic rename"
+  unset MKTEMP_LOG
 }
 
 run_tests
