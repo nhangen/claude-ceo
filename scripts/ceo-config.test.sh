@@ -1231,7 +1231,7 @@ test_ceo_state_migrate_returns_2_on_empty_home_when_no_override() {
 
 test_ceo_state_migrate_succeeds_and_prints_path_when_state_dir_valid() {
   local out rc=0
-  out=$(env -u CEO_STATE_DIR HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'") || rc=$?
+  out=$(env -u CEO_STATE_DIR -u CEO_VAULT HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'") || rc=$?
   assert_eq "$rc" "0" "_ceo_state_migrate must return 0 when state dir resolves and creates successfully"
   assert_eq "$out" "$TEST_HOME/.ceo/state/.test-file" "_ceo_state_migrate must print expected host-local path"
   [ -d "$TEST_HOME/.ceo/state" ] || fail_test "state directory was not created"

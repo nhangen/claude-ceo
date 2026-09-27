@@ -262,7 +262,7 @@ _state() {
     mkdir -p "$LOG_DIR" 2>/dev/null || true
     echo "$(date): ERROR — cannot create or resolve the host-local state dir for $1 (${path:-unresolved}); ${TRIGGER:-<sweep>} NOT dispatched" \
       >> "$SKIPS_LOG" 2>/dev/null || true
-    echo "ERROR: cannot create the host-local state directory for $1" >&2
+    echo "ERROR: cannot create or resolve the host-local state directory for $1" >&2
     exit 1
   elif [ "$rc" -eq 1 ]; then
     mkdir -p "$LOG_DIR" 2>/dev/null || true
