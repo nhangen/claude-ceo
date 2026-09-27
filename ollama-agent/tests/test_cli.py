@@ -406,14 +406,13 @@ def test_cli_registry_tools_allowlist_raw_mcp_tool_name_refuses(tmp_path, monkey
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
     _stub_mcp(monkeypatch, closed)
-    # raw name without the mcp__ prefix: the likeliest way to hit this
     rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file", "echo"]), tmp_path)
     assert rc == 2
     assert "tools" not in captured
-    assert closed["v"] is True
+    assert "cmd" not in closed
     err = capsys.readouterr().err
-    assert "warning: registry tools not available (ignored): echo" in err
-    assert "REFUSED: mcp server 'srv --flag' bridged 1 tool(s)" in err
+    assert "registry error: task 'mcp_task': unknown tool 'echo'" in err
+    assert "MCP tools use the mcp__<name> form" in err
 
 
 def test_cli_mcp_flag_forbidden_by_registry_allowlist_refuses(tmp_path, monkeypatch, capsys):

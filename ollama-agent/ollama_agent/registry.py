@@ -6,6 +6,9 @@ validated at parse time AND gated at dispatch, and an unknown value is rejected,
 never defaulted (enum-config-typo-fallback: a `runner: scrpt` typo must fail
 loudly, not silently fall through to a default path). A high-stakes task can
 never be delegated to a local model regardless of what the entry says.
+Every name in a `tools` allowlist is checked the same way: an unknown name is
+rejected at parse time, not dropped at dispatch. An empty list is the registry's
+spelling of a zero-tool run (the CLI's --no-tools), which cron cannot pass.
 """
 import json
 import math
@@ -107,6 +110,12 @@ def _validate(name, entry, where=""):
     if entry["tier"] not in TIERS:
         raise RegistryError(
             f"task {name!r}: unknown tier {entry['tier']!r} (known: {TIERS})")
+    if "mcp" in entry and entry["mcp"] is not None:
+        mcp = entry["mcp"]
+        if not isinstance(mcp, str) or not mcp.strip():
+            raise RegistryError(f"task {name!r}: mcp must be a non-empty string, got {mcp!r}")
+    if entry.get("skills") is not None and not isinstance(entry["skills"], bool):
+        raise RegistryError(f"task {name!r}: skills must be true or false, got {entry['skills']!r}")
     tools = entry.get("tools", "*")
     if tools != "*" and not isinstance(tools, list):
         raise RegistryError(f"task {name!r}: tools must be \"*\" or a list, got {type(tools).__name__}")
@@ -114,7 +123,7 @@ def _validate(name, entry, where=""):
         known = set(BUILTIN_TOOL_NAMES)
         if entry.get("skills") is True:
             known.add("use_skill")
-        has_mcp = bool(entry.get("mcp") and isinstance(entry["mcp"], str) and entry["mcp"].strip())
+        has_mcp = entry.get("mcp") is not None
         for t in tools:
             if not isinstance(t, str):
                 raise RegistryError(f"task {name!r}: tool names must be strings, got {type(t).__name__}")
@@ -124,11 +133,15 @@ def _validate(name, entry, where=""):
                 if not has_mcp:
                     raise RegistryError(
                         f"task {name!r}: unknown tool {t!r} (MCP tool declared but task has no 'mcp' server configured; known: {sorted(known)})")
-                if len(t) <= 5:
+                if t == "mcp__":
                     raise RegistryError(
                         f"task {name!r}: invalid MCP tool name {t!r} (must have a suffix after 'mcp__')")
-            elif not has_mcp and t not in known:
-                raise RegistryError(f"task {name!r}: unknown tool {t!r} (known: {sorted(known)})")
+            elif t not in known:
+                # MCP tools are always bridged as mcp__<name> (mcp_tools_to_ollama), so a
+                # bare name that is not a builtin can never match at dispatch.
+                raise RegistryError(
+                    f"task {name!r}: unknown tool {t!r} (known: {sorted(known)}; "
+                    "MCP tools use the mcp__<name> form)")
 
         if "write_file" in tools and "edit_file" not in tools:
             # Advisory, not a refusal: the task still runs correctly without edit_file,
@@ -150,10 +163,6 @@ def _validate(name, entry, where=""):
             # failure fails open on its whole purpose. Require an explicit pin
             # (use eval_task "*" to opt into the cross-task mean).
             raise RegistryError(f"task {name!r}: min_score requires eval_task (use \"*\" for the cross-task mean)")
-    if "mcp" in entry and entry["mcp"] is not None:
-        mcp = entry["mcp"]
-        if not isinstance(mcp, str) or not mcp.strip():
-            raise RegistryError(f"task {name!r}: mcp must be a non-empty string, got {mcp!r}")
 
 
 def load_registry(source):
