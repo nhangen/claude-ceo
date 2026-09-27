@@ -15,9 +15,11 @@ scope: single
 
 A deterministic discovery and projection worker. Cronbird runs it on one scheduler
 owner after initializing context through the context CLI and reviewing claims there.
-It first queries Vaultkeeper freshness, then watches only CEO/from-nathan.md,
-Profile/_inbox/*.md, Profile/goals.md, and Profile.md. It makes no model calls and
-does not promote inferred facts.
+It first checks Vaultkeeper's local scan health, then watches only CEO/from-nathan.md,
+Profile/_inbox/*.md, Profile/goals.md, Profile.md, and Daily notes from the rolling
+review window. Vaultkeeper health proves only that a local scan completed; it does not
+prove upstream sources arrived. It makes no model calls and does not promote inferred
+facts.
 Every report gather also reads the ledger directly, so a delayed refresh cannot cache
 an old accepted fact. An absent ledger retains the profile migration path.
 
@@ -31,6 +33,9 @@ an old accepted fact. An absent ledger retains the profile migration path.
   candidates for changed bounded sources. It never accepts or withdraws a claim.
 - CEO/alerts/context-discover.md: overwrite discovery state. A stale/faulted
   Vaultkeeper blocks discovery; denylisted source text is never copied into the ledger.
+- CEO/reports/context/daily-review-queue.md: overwrite queue of every local Daily
+  note in the rolling window that needs human review, keyed by its content hash. It is
+  not an upstream-completeness receipt.
 
 ## Session capture
 

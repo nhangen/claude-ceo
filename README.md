@@ -490,9 +490,11 @@ ledger; detected Syncthing conflicts and corrupt records stop projection. This i
 not a distributed database. `build` replaces `CEO/reports/context/current.{json,md}`
 and `CEO/alerts/context.md`, without rewriting unchanged content. The registered
 `context-refresh` script playbook is active after a single Cronbird owner is assigned.
-It queries Vaultkeeper freshness, then stages private inferred review candidates from
-only `CEO/from-nathan.md`, `Profile/_inbox/*.md`, `Profile/goals.md`, and
-`Profile.md`. Discovery never accepts claims or copies denylisted content.
+It checks Vaultkeeper's local scan health, then stages private inferred review
+candidates from only `CEO/from-nathan.md`, `Profile/_inbox/*.md`, `Profile/goals.md`,
+`Profile.md`, and a rolling 14-day Daily-note queue. Local scan health is not proof
+that an upstream source arrived. Discovery never accepts claims or copies denylisted
+content.
 
 Every gather renders the ledger anew for morning and skill runners, including
 weekly synthesis through `ACTIVE_DOMAINS_CONTENT` and `CEO_PROFILE_CONTEXT_VERSION=1`.
