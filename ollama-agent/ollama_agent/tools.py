@@ -174,7 +174,9 @@ class ToolBox:
 
     def dispatch(self, name, args):
         """Route one tool call. Records every call; unknown names are recorded
-        separately and returned as an error string (never silently dropped)."""
+        separately and returned as an error string (never silently dropped). A name
+        outside `allowed_tools`, when set, counts as unknown even if a handler
+        exists (#512)."""
         self.calls.append((name, args))
         if self.allowed_tools is not None and name not in self.allowed_tools:
             self.unknown_calls.append(name)

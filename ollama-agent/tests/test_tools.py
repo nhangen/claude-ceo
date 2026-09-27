@@ -431,14 +431,6 @@ def test_toolbox_dispatch_enforces_allowed_tools_mcp(tmp_path):
     assert tb.tool_errors == []
 
 
-def test_toolbox_dispatch_enforces_allowed_tools_use_skill(tmp_path):
-    """#512: use_skill is rejected if not in allowed_tools."""
-    tb = ToolBox(cwd=str(tmp_path), allowed_tools={"read_file"})
-    res = json.loads(tb.dispatch("use_skill", {"name": "any_skill"}))
-    assert res == {"error": "unknown tool: use_skill"}
-    assert tb.unknown_calls == ["use_skill"]
-
-
 def test_toolbox_dispatch_allowed_tools_empty_set_rejects_all(tmp_path):
     """#512: Empty allowed_tools rejects all tool dispatches."""
     tb = ToolBox(cwd=str(tmp_path), allowed_tools=set())

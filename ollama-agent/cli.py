@@ -346,7 +346,7 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
 
-    allowed_tools = {t["function"]["name"] for t in tools if isinstance(t, dict) and "function" in t and "name" in t["function"]}
+    allowed_tools = {t["function"]["name"] for t in tools}
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names,
                       mcp_readonly=mcp_readonly, allowed_tools=allowed_tools)

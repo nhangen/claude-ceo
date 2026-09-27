@@ -477,3 +477,12 @@ def test_tools_unknown_name_does_not_emit_pairing_warning(capsys):
         load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
                               "tools": ["write_fil"]}))
     assert "without 'edit_file'" not in capsys.readouterr().err
+
+
+def test_skills_true_requires_use_skill_in_a_tools_list():
+    with pytest.raises(RegistryError, match="'skills: true' requires 'use_skill'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "skills": True, "tools": ["read_file"]}))
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "skills": True, "tools": "*"}))
+    assert specs["t"].tools == "*"
