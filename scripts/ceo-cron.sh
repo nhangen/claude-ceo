@@ -1398,6 +1398,11 @@ case "$REGISTRY_RC" in
     _record_failure "registry.json schema_version unreadable/malformed after retry"
     _v "FATAL: registry.json unreadable. Run: ceo playbook scan"
     exit 1 ;;
+  *)
+    echo "$(date): FATAL — registry validation returned unexpected rc=$REGISTRY_RC" >> "$SKIPS_LOG"
+    _record_failure "registry validation returned unexpected rc=$REGISTRY_RC"
+    _v "FATAL: registry validation rc=$REGISTRY_RC"
+    exit 1 ;;
 esac
 
 ENTRY=$(jq -r --arg t "$TRIGGER" '.playbooks[] | select(.name == $t)' "$REGISTRY_FILE" 2>/dev/null)
