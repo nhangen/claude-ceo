@@ -420,6 +420,98 @@ test_doctor_no_legacy_warning_when_only_daemon_agent() {
     "the daemon's own keep-alive agent must not be flagged as legacy"
 }
 
+# --- #501: schedulerd LaunchAgent runs from a feature worktree, not main clone ---
+
+test_doctor_flags_schedulerd_running_from_feature_worktree() {
+  export CEO_SCHEDULER=daemon
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-worktree"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  local mock_wt="$TEST_HOME/code/feature-worktree"
+  mkdir -p "$mock_wt/lib/scheduler"
+  # In git, a linked worktree is identified by .git being a file, not a directory.
+  echo "gitdir: /path/to/main/.git/worktrees/feature-worktree" > "$mock_wt/.git"
+
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>WorkingDirectory</key>
+  <string>$mock_wt/lib/scheduler</string>
+</dict>
+</plist>
+EOF
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "runs from a feature worktree" \
+    "doctor must flag when daemon agent points to a feature worktree"
+  assert_contains "$output" "$mock_wt" \
+    "doctor must name the offending worktree path"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero when schedulerd runs from worktree\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_flags_schedulerd_configured_with_nonexistent_directory() {
+  export CEO_SCHEDULER=daemon
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-nonexistent"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  local missing_dir="$TEST_HOME/code/deleted-worktree"
+
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>WorkingDirectory</key>
+  <string>$missing_dir/lib/scheduler</string>
+</dict>
+</plist>
+EOF
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "nonexistent directory" \
+    "doctor must flag when daemon agent points to nonexistent directory"
+  assert_contains "$output" "$missing_dir" \
+    "doctor must name the missing path"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero when schedulerd path does not exist\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_passes_when_schedulerd_configured_from_main_clone() {
+  export CEO_SCHEDULER=daemon
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-main"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  local main_clone
+  local gcd
+  gcd="$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$gcd" ]; then
+    main_clone="$(cd "$SCRIPT_DIR" && cd "$gcd/.." && pwd)"
+  else
+    main_clone="$(cd "$SCRIPT_DIR/.." && pwd)"
+  fi
+
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>WorkingDirectory</key>
+  <string>$main_clone/lib/scheduler</string>
+</dict>
+</plist>
+EOF
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd agent configured from main clone" \
+    "doctor must report healthy when daemon agent is configured from main clone"
+}
+
 # --- #159 / D1: Linux crontab block is a migration leftover ---
 #
 # The Linux sibling of the macOS orphan check above. The native crontab install

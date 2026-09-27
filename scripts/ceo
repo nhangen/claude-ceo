@@ -344,6 +344,47 @@ cmd_doctor() {
     fail=$((fail + 1))
   fi
 
+  # Check if the keep-alive daemon agent is configured from the main clone (#501).
+  local _daemon_repo
+  _daemon_repo="$(ceo_scheduler_daemon_repo_path 2>/dev/null || true)"
+  if [ -n "$_daemon_repo" ]; then
+    local _cur_main="$INSTALL_DIR"
+    local _gcd
+    if _gcd="$(git -C "$INSTALL_DIR" rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_gcd" ]; then
+      _cur_main="$(cd "$INSTALL_DIR" && cd "$_gcd/.." 2>/dev/null && pwd || echo "$INSTALL_DIR")"
+    fi
+
+    if [ ! -d "$_daemon_repo" ]; then
+      echo "  ✗ ceo-schedulerd agent configured with nonexistent directory: $_daemon_repo"
+      echo "    The daemon will crash-loop. Repoint the keep-alive agent to the main clone ($_cur_main)."
+      fail=$((fail + 1))
+    elif [ -f "$_daemon_repo/.git" ]; then
+      local _common_git _main_clone
+      _common_git="$(git -C "$_daemon_repo" rev-parse --git-common-dir 2>/dev/null || true)"
+      if [ -n "$_common_git" ]; then
+        _main_clone="$(cd "$_daemon_repo" 2>/dev/null && cd "$_common_git/.." 2>/dev/null && pwd || true)"
+      fi
+      local _target_main="${_main_clone:-$_cur_main}"
+      echo "  ✗ ceo-schedulerd agent runs from a feature worktree ($_daemon_repo), not the main clone ($_target_main)"
+      echo "    Removing the worktree breaks the daemon. Repoint the agent to the main clone and reload:"
+      if [ "$(ceo_detect_os)" = "macos" ]; then
+        echo "      launchctl bootout gui/\$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist"
+        echo "      # update paths in ~/Library/LaunchAgents/com.ceo.schedulerd.plist to $_target_main"
+        echo "      launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist"
+      else
+        echo "      # update paths in ~/.config/systemd/user/ceo-schedulerd.service to $_target_main"
+        echo "      systemctl --user daemon-reload && systemctl --user restart ceo-schedulerd.service"
+      fi
+      fail=$((fail + 1))
+    elif [ -n "$_cur_main" ] && [ "$_daemon_repo" != "$_cur_main" ]; then
+      echo "  ✗ ceo-schedulerd agent runs from external directory ($_daemon_repo), expected main clone ($_cur_main)"
+      fail=$((fail + 1))
+    else
+      echo "  ✓ ceo-schedulerd agent configured from main clone"
+      ok=$((ok + 1))
+    fi
+  fi
+
   # plugin
   if claude plugin list 2>/dev/null | grep -q "ceo"; then
     echo "  ✓ CEO plugin installed in Claude Code"

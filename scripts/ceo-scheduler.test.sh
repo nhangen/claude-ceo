@@ -291,6 +291,111 @@ STUB
   assert_eq "$out" "" "a user line mentioning ceo-cron.sh without the # ceo: marker is not a leftover"
 }
 
+# === ceo_scheduler_daemon_repo_path (#501) ===
+
+test_daemon_repo_path_reads_working_directory_from_plist() {
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-repo-path"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>WorkingDirectory</key>
+  <string>/custom/path/to/my-repo/lib/scheduler</string>
+</dict>
+</plist>
+EOF
+  ceo_detect_os() { echo "macos"; }
+  local out
+  out=$(ceo_scheduler_daemon_repo_path)
+  assert_eq "$out" "/custom/path/to/my-repo" "must extract repo root from WorkingDirectory in launchd plist"
+}
+
+test_daemon_repo_path_falls_back_to_program_arguments_in_plist() {
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-prog-args"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/bun</string>
+    <string>run</string>
+    <string>/custom/path/to/fallback-repo/lib/scheduler/src/main.ts</string>
+  </array>
+</dict>
+</plist>
+EOF
+  ceo_detect_os() { echo "macos"; }
+  local out
+  out=$(ceo_scheduler_daemon_repo_path)
+  assert_eq "$out" "/custom/path/to/fallback-repo" "must fall back to ProgramArguments when WorkingDirectory absent"
+}
+
+test_daemon_repo_path_reads_working_directory_from_systemd_service() {
+  export CEO_SYSTEMD_DIR="$TEST_HOME/systemd-user"
+  mkdir -p "$CEO_SYSTEMD_DIR"
+  cat > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service" <<'EOF'
+[Unit]
+Description=CEO scheduler
+
+[Service]
+WorkingDirectory=%h/code/my-linux-repo/lib/scheduler
+ExecStart=%h/.bun/bin/bun run %h/code/my-linux-repo/lib/scheduler/src/main.ts
+EOF
+  ceo_detect_os() { echo "linux"; }
+  local out
+  out=$(ceo_scheduler_daemon_repo_path)
+  assert_eq "$out" "$HOME/code/my-linux-repo" "must expand %h to \$HOME and extract repo root from systemd service"
+}
+
+test_daemon_repo_path_reads_tilde_from_systemd_service() {
+  export CEO_SYSTEMD_DIR="$TEST_HOME/systemd-user-tilde"
+  mkdir -p "$CEO_SYSTEMD_DIR"
+  cat > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service" <<'EOF'
+[Unit]
+Description=CEO scheduler
+
+[Service]
+WorkingDirectory=~/code/tilde-repo/lib/scheduler
+EOF
+  ceo_detect_os() { echo "linux"; }
+  local out
+  out=$(ceo_scheduler_daemon_repo_path)
+  assert_eq "$out" "$HOME/code/tilde-repo" "must expand ~ to \$HOME in systemd service"
+}
+
+test_daemon_repo_path_falls_back_to_exec_start_in_systemd_service() {
+  export CEO_SYSTEMD_DIR="$TEST_HOME/systemd-user-execstart"
+  mkdir -p "$CEO_SYSTEMD_DIR"
+  cat > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service" <<'EOF'
+[Unit]
+Description=CEO scheduler
+
+[Service]
+ExecStart=/usr/local/bin/bun run /opt/ceo-repo/lib/scheduler/src/main.ts
+EOF
+  ceo_detect_os() { echo "linux"; }
+  local out
+  out=$(ceo_scheduler_daemon_repo_path)
+  assert_eq "$out" "/opt/ceo-repo" "must fall back to ExecStart when WorkingDirectory absent"
+}
+
+test_daemon_repo_path_empty_when_definition_absent_or_blank() {
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-empty"
+  mkdir -p "$CEO_LAUNCHD_DIR"
+  : > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist"
+  ceo_detect_os() { echo "macos"; }
+  local out
+  out=$(ceo_scheduler_daemon_repo_path)
+  assert_eq "$out" "" "empty plist must yield empty string without error"
+
+  rm -f "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist"
+  out=$(ceo_scheduler_daemon_repo_path)
+  assert_eq "$out" "" "missing plist must yield empty string without error"
+}
+
 # === Integration: ceo playbook scan end-to-end on the daemon backend ===
 
 test_playbook_scan_installs_no_plists_via_daemon_backend() {
