@@ -124,6 +124,11 @@ def _validate(name, entry, where=""):
         if entry.get("skills") is True:
             known.add("use_skill")
         has_mcp = entry.get("mcp") is not None
+        if entry.get("skills") is True and "use_skill" not in tools:
+            # The catalog would advertise use_skill while dispatch refuses it, and the
+            # refusal would be recorded as a model hallucination rather than a config error.
+            raise RegistryError(
+                f"task {name!r}: 'skills: true' requires 'use_skill' in the tools allowlist")
         for t in tools:
             if not isinstance(t, str):
                 raise RegistryError(f"task {name!r}: tool names must be strings, got {type(t).__name__}")
