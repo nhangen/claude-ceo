@@ -44,7 +44,7 @@ v1 polled merged PRs every 30 minutes, spawned `claude --print /ticket-triage`, 
 - **`surface` returns malformed/unparseable output on a 0 exit**: routed to the failure path (`failed_owners`, `last_error: surface_or_mark_failed`), **not** consumed — a 0-exit with garbage must never read as "no transitions" and silently advance the cursor (non-throwing-client-success-check).
 - **`surface` / `mark` fails for an owner**: recorded; other owners still processed. After `MAX_FAILS` (3) consecutive failing runs the adapter escalates one self-deduping `<!-- triage-autopilot:giveup:<date> -->` inbox line (restored from v1 — logs alone can go unwatched). `consec_failures` resets to 0 on any clean run.
 - **Consume ordering**: `--mark` runs only after the inbox append succeeded, so a failed append is retried next tick (deduped by the marker) rather than lost. Preview and `--mark` are two surfacer invocations; a single cron tick runs them sequentially in one process with nothing mutating the cache between them, and the skill takes an advisory lock around a run, so the read→consume window is not a concurrency hazard at this schedule.
-- **Closed-set priority unknowns** (ZenHub/Projects seam): the skill reports them under `unknown` rather than silently mis-tiering; the adapter escalates one inbox line per owner per day (enum-config-typo-fallback).
+- **Closed-set priority unknowns** (retired tracker/Projects seam): the skill reports them under `unknown` rather than silently mis-tiering; the adapter escalates one inbox line per owner per day (enum-config-typo-fallback).
 
 ## Idempotency
 

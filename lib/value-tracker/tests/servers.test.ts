@@ -8,7 +8,7 @@ describe("server registry", () => {
   });
 
   test("returns null for unregistered server", () => {
-    expect(resolveServer("mcp__zenhub__listSprints")).toBeNull();
+    expect(resolveServer("mcp__unknowntracker__listItems")).toBeNull();
   });
 
   test("classifies decision-support tools", () => {

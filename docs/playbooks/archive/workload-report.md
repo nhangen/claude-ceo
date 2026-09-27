@@ -25,7 +25,7 @@ Runs the `workload-report` Claude Code skill and lands the markdown report at:
 CEO/reports/workload/<YYYY-MM-DD>-<host>.md
 ```
 
-Each fire writes a fresh dated snapshot so trends across sprints stay diffable. The skill queries **GitHub Projects v2 project 80** (`awesomemotive`) — the consolidated board that replaced the retired per-product ZenHub workspaces on 2026-06-29 (covers OptinMonster, TrustPulse, and Beacon). It produces per-assignee, per-Status/pipeline counts and story-point (Estimate) totals, bucketed into Current Sprint / Next Sprint / Other by the project's iteration field.
+Each fire writes a fresh dated snapshot so trends across sprints stay diffable. The skill queries **GitHub Projects v2 project 80** (`awesomemotive`) — the consolidated board that replaced the retired per-product retired tracker workspaces on 2026-06-29 (covers OptinMonster, TrustPulse, and Beacon). It produces per-assignee, per-Status/pipeline counts and story-point (Estimate) totals, bucketed into Current Sprint / Next Sprint / Other by the project's iteration field.
 
 No inbox line. Workload is reference material, not a `- [ ]` task — surfaced via `ceo report` or direct file open.
 
@@ -40,7 +40,7 @@ The skill reads project 80 over the GitHub GraphQL API and needs a token with `p
 - `GH_PROJECT_TOKEN` (or `GITHUB_TOKEN`) in the environment takes precedence.
 - If neither is set, `run-report.sh` falls back to `gh auth token --user nhangenam` (the `nhangenam` gh token already carries `project` scope).
 
-No ZenHub token, no `ZENHUB_WORKSPACE_ID`, no `.env` file, no ZenHub MCP — that data source was removed 2026-06-29.
+No retired tracker token, no `retired tracker_WORKSPACE_ID`, no `.env` file, no retired tracker MCP — that data source was removed 2026-06-29.
 
 ## Verify
 

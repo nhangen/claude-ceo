@@ -125,7 +125,7 @@ for owner in $OWNERS; do
     fi
   done < <(printf '%s' "$surf" | jq -r '.events[]? | [.slug, (.number|tostring), (.title//""), ((.labels//[])|join(",")), (.url//"")] | @tsv' 2>/dev/null)
 
-  # Closed-set priority sources (zenhub/projects) report unrecognized values
+  # Closed-set priority sources (retired tracker/projects) report unrecognized values
   # instead of silently mis-tiering them; escalate once per owner per day.
   unk=$(printf '%s' "$surf" | jq -r '.unknown // [] | length' 2>/dev/null || echo 0)
   case "$unk" in (''|*[!0-9]*) unk=0 ;; esac

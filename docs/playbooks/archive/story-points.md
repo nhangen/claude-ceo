@@ -55,7 +55,7 @@ manual captures live). Built as a CEO playbook rather than a hand-rolled cron so
 `requires:` credential gate (distinct from the `preflight:` function, which is `none`)
 aborts the run with a non-zero exit before exec if it is unset. `GH_PROJECT_TOKEN` must
 carry the `project` scope: story points are read from the single org GitHub Projects
-board (project 80), not ZenHub. Points live in project 80's numeric **Estimate** field
+board (project 80), not retired tracker. Points live in project 80's numeric **Estimate** field
 (there is no "Story Points" field on 80). Project 80 covers OptinMonster, TrustPulse, and
 Beacon; Comment Converter is no longer tracked here.
 
@@ -86,14 +86,14 @@ and stderr.
 Run `ceo playbook scan` **on ML-1 only** (the `ceo-scan-only-on-ml1` rule). The skill
 lives in llm-tools at `home/.claude/skills/story-points/`; ML-1 must have that pulled.
 
-## ZenHub → GitHub Projects migration (complete)
+## retired tracker → GitHub Projects migration (complete)
 
-The ZenHub cutover is done, and the former per-product boards (projects 72–75) have since
+The retired tracker cutover is done, and the former per-product boards (projects 72–75) have since
 been consolidated into a single org board, **project 80**. The bundled `analyzer/` reads
 story points from project 80's numeric **Estimate** field via `ghp-estimates.js` — there
 is no "Story Points" field on 80. Project 80 covers OptinMonster, TrustPulse, and Beacon;
 Comment Converter is dropped. The playbook contract is unchanged apart from `requires:`
-(now `GH_PROJECT_TOKEN` instead of the ZenHub vars).
+(now `GH_PROJECT_TOKEN` instead of the retired tracker vars).
 Before the next `ceo playbook scan` on ML-1, add `GH_PROJECT_TOKEN` (project scope) to
 ML-1's `~/.config/ceo/credentials.env` or the `requires:` credential gate will fail the run.
 

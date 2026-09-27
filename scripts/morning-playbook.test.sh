@@ -11,7 +11,7 @@ test_frontmatter_and_contract_present() {
   assert_contains "$body" "tier: read" "read tier"
   assert_contains "$body" "Daily note Top 3\` as the primary key" "ranking keys on Top 3"
   assert_contains "$body" "Never rank by age alone" "states not-by-age rule"
-  # The ZenHub sprint signal is retired: the workspace and its credentials are
+  # The retired tracker sprint signal is retired: the workspace and its credentials are
   # gone, so the gather helper degraded to `[]` and the injected line carried no
   # data. Matching the bare word, not `current_sprint`, because the residue this
   # caught was prose in Constraints ("Rank by sprint/Top-3 signal") rather than

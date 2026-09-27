@@ -50,15 +50,15 @@ AM-only data sources that are no longer reachable.
 Removed alongside them, and *not* archived because they were dead code rather than
 configuration (recoverable from git history at `cbd060d`):
 
-- `scripts/ceo-zenhub-sprint.sh` + its test — queried the ZenHub GraphQL API, dead
-  since ZenHub access ended 2026-06-29.
+- the retired sprint helper + its test — queried the retired tracker GraphQL API, dead
+  since retired tracker access ended 2026-06-29.
 - `scripts/ceo-gather-sprint.test.sh`.
 - The `CURRENT_SPRINT_ITEMS` / `CURRENT_SPRINT_COUNT` block in `scripts/ceo-gather.sh`,
   and with it the whole `current_sprint` input: the injection branch in
   `ceo_build_pregathered_extras`, the sprint block in `ceo_morning_raw_digest`, and the
   key's entry in `scripts/ceo`'s valid-inputs list. The signal was wired end-to-end —
   `ceo-cron-lib.sh` held the injector, which is why the string never appeared in
-  `ceo-cron.sh` itself — but the ZenHub source has been unreachable since 2026-06-29, so
+  `ceo-cron.sh` itself — but the retired tracker source has been unreachable since 2026-06-29, so
   the injected line read `(0 items): []` for the last six weeks. The `morning` playbook's
   ranking rule was rewritten because its input is gone, not because it never ran.
 - `preflight_has_auto_review_prs()` in `scripts/ceo-cron.sh`, which shelled out to the
