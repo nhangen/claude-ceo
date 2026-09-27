@@ -307,7 +307,7 @@ Unknown playbook names and invalid cron syntax warn to stderr and are ignored �
 | `TODAY_LOG_SUMMARY`, `YESTERDAY_LOG_SUMMARY` | `CEO/log/<date>.md` |
 | `DAILY_NOTE_TOP3`, `DAILY_NOTE_TASKS` | `Daily/<date>.md` |
 | `BRIEFINGS_TRAINING` | `CEO/training/briefings.md` |
-| `ACTIVE_DOMAINS_CONTENT` | `Profile.md` → `## Active Domains` |
+| `ACTIVE_DOMAINS_CONTENT` | `Profile/goals.md` → `## Active Domains` (legacy `Profile.md` only if canonical absent) |
 | `PENDING_ASK_QUESTIONS` | `Pending.md` lines containing `[ask]` (top 20) |
 | `BLESSINGS_TODAY` | `CEO/cache/blessings-today.md` |
 | `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (morning-scan only) |
@@ -434,3 +434,22 @@ count-blessings show         Show today's three picks
 ## License
 
 MIT.
+
+### Current profile context
+
+Report gathering rereads `Profile/goals.md` on every run. Only its `## Active Domains`
+section is included, with source and `active_domains_as_of: YYYY-MM-DD` provenance.
+The date describes the curated section, not a fresh verification of every goal in the
+file. Review the section before advancing it; unrelated edits to `last_updated` do
+not renew it. The default freshness window is 30 days, inclusive. Missing, invalid,
+future or expired dates withhold the domain content and emit a review diagnostic;
+other report inputs still run. Missing/empty/oversized/unreadable canonical content
+never resurrects legacy priorities. Python 3 is required by the bounded extractor;
+a missing interpreter is reported as degraded gathering.
+
+`Profile/_inbox/` and `CEO/training/_candidates.md` remain unpromoted proposals,
+not accepted facts. Recent session notes are evidence for a profile correction,
+not an automatic override of goals or preferences. The current system has no
+automatic profile promotion worker. Morning must require current task evidence
+before recommending work. Skill runners receive `ACTIVE_DOMAINS_CONTENT` with `CEO_PROFILE_CONTEXT_VERSION=1`
+from the same gather; weekly-synthesis consumes it before historical activity inputs.

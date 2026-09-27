@@ -735,4 +735,24 @@ STUB
   ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
+test_morning_uses_current_canonical_domains_on_every_run() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf '## Active Domains\nLegacy Employer\n' > "$CEO_VAULT/Profile.md"
+  printf -- '---\nactive_domains_as_of: %s\n---\n## Active Domains\nCurrent Research\n## Private\nDO NOT INJECT\n' "$(date +%F)" > "$CEO_VAULT/Profile/goals.md"
+  cp "$SCRIPT_DIR/../docs/playbooks/morning.md" "$CEO_DIR/playbooks/morning.md"
+  _stub_claude_capture_stdin
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_FORCE=1 bash "$CRON" morning >/dev/null 2>&1
+  local prompt; prompt=$(cat "$HOME/claude-stdin.txt")
+  assert_contains "$prompt" "Profile/goals.md" "canonical provenance reaches model"
+  assert_contains "$prompt" "Current Research" "canonical domains reach model"
+  assert_not_contains "$prompt" "Legacy Employer" "legacy domain must not leak"
+  assert_not_contains "$prompt" "DO NOT INJECT" "other profile sections stay private"
+  printf -- '---\nactive_domains_as_of: %s\n---\n## Active Domains\nUpdated Research\n' "$(date +%F)" > "$CEO_VAULT/Profile/goals.md"
+  CEO_FORCE=1 bash "$CRON" morning >/dev/null 2>&1
+  prompt=$(cat "$HOME/claude-stdin.txt")
+  assert_contains "$prompt" "Updated Research" "each run rereads accepted context"
+  assert_not_contains "$prompt" "Current Research" "prior context is not cached"
+}
+
 run_tests

@@ -16,11 +16,11 @@ Surface 1-2 outstanding `- [ ]` questions from Pending.md, matched to the curren
 ## Steps
 
 1. Read CEO/TRAINING.md and CEO/training/communication.md for communication rules.
-2. Read Profile.md Active Domains to determine priority domains.
+2. Use the injected dated Active Domains context from Profile/goals.md. If unavailable or needing review, do not infer priority domains.
 3. Read Pending.md - scan all outstanding `- [ ]` entries.
 4. Match entries to today's likely focus:
    - If today's daily note has a Top 3, match pending questions to those domains.
-   - If no daily note, use the highest-priority domain from Profile.md.
+   - If no daily note, use current actionable evidence; a domain label alone is not a pending task.
 5. Pick 1-2 relevant questions. Prefer questions that:
    - Relate to active work (same domain as today's focus)
    - Are quick to answer (role, title, date - not essay questions)
@@ -28,8 +28,8 @@ Surface 1-2 outstanding `- [ ]` questions from Pending.md, matched to the curren
 6. Output in the LOG_ENTRY Output section. For `pending-drip`, the shell will turn this into one unchecked item in `CEO/inbox/<host>.md` instead of appending it to the daily CEO report:
    ```
    **Questions to ask Nathan:**
-   - [from People/slava.md] What is Slava's exact title at OM?
-   - [from Profile.md] Expected MS graduation date?
+   - [from a current task] The specific unresolved decision blocking that task.
+   - [from Profile/goals.md] Expected MS graduation date?
    ```
 
 ## Constraints
