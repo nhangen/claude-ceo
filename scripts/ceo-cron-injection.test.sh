@@ -755,4 +755,33 @@ test_morning_uses_current_canonical_domains_on_every_run() {
   assert_not_contains "$prompt" "Current Research" "prior context is not cached"
 }
 
+test_context_acceptance_updates_next_morning_without_profile_edits() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n## Active Domains\nLegacy Domain\n' "$(date +%F)" > "$CEO_VAULT/Profile/goals.md"
+  printf 'Current research. Approve this context for reports.' > "$CEO_VAULT/context-evidence.md"
+  cat > "$HOME/claim.json" <<'CLAIM'
+{"subject":"research","key":"focus","value":"Accepted Current Research","effective_from":"2026-01-01","authority":"document","visibility":"report","source":"context-evidence.md","quote":"Current research."}
+CLAIM
+  local claim
+  claim=$(bash "$CEO_CLI" context ingest --record "$HOME/claim.json" | jq -r .id)
+  bash "$CEO_CLI" context accept "$claim" --actor test --authorization-source context-evidence.md --authorization-quote 'Approve this context for reports.' >/dev/null
+  cp "$SCRIPT_DIR/../docs/playbooks/morning.md" "$CEO_DIR/playbooks/morning.md"
+  _stub_claude_capture_stdin
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_FORCE=1 bash "$CRON" morning >/dev/null 2>&1
+  local prompt; prompt=$(cat "$HOME/claude-stdin.txt")
+  assert_contains "$prompt" "Accepted Current Research" "accepted ledger reaches actual morning prompt"
+  assert_not_contains "$prompt" "Legacy Domain" "initialized ledger never falls back to profile"
+  bash "$CEO_CLI" context withdraw "$claim" --actor test --authorization-source context-evidence.md --authorization-quote 'Approve this context for reports.' >/dev/null
+  CEO_FORCE=1 bash "$CRON" morning >/dev/null 2>&1
+  prompt=$(cat "$HOME/claude-stdin.txt")
+  assert_not_contains "$prompt" "Accepted Current Research" "withdrawal reaches next report"
+  assert_not_contains "$prompt" "Legacy Domain" "empty ledger cannot resurrect legacy domain"
+  printf 'corrupt' >> "$CEO_DIR/log/context/$(date -u +%Y-%m).md"
+  CEO_FORCE=1 bash "$CRON" morning >/dev/null 2>&1
+  prompt=$(cat "$HOME/claude-stdin.txt")
+  assert_not_contains "$prompt" "Accepted Current Research" "corrupt ledger withheld"
+  assert_not_contains "$prompt" "Legacy Domain" "corrupt ledger cannot resurrect profile"
+}
+
 run_tests

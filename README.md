@@ -307,7 +307,7 @@ Unknown playbook names and invalid cron syntax warn to stderr and are ignored â€
 | `TODAY_LOG_SUMMARY`, `YESTERDAY_LOG_SUMMARY` | `CEO/log/<date>.md` |
 | `DAILY_NOTE_TOP3`, `DAILY_NOTE_TASKS` | `Daily/<date>.md` |
 | `BRIEFINGS_TRAINING` | `CEO/training/briefings.md` |
-| `ACTIVE_DOMAINS_CONTENT` | `Profile/goals.md` â†’ `## Active Domains` (legacy `Profile.md` only if canonical absent) |
+| `ACTIVE_DOMAINS_CONTENT` | `CEO/log/context/` accepted projection; profile fallback only before ledger initialization |
 | `PENDING_ASK_QUESTIONS` | `Pending.md` lines containing `[ask]` (top 20) |
 | `BLESSINGS_TODAY` | `CEO/cache/blessings-today.md` |
 | `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (morning-scan only) |
@@ -435,21 +435,71 @@ count-blessings show         Show today's three picks
 
 MIT.
 
-### Current profile context
+### Current context
 
-Report gathering rereads `Profile/goals.md` on every run. Only its `## Active Domains`
-section is included, with source and `active_domains_as_of: YYYY-MM-DD` provenance.
-The date describes the curated section, not a fresh verification of every goal in the
-file. Review the section before advancing it; unrelated edits to `last_updated` do
-not renew it. The default freshness window is 30 days, inclusive. Missing, invalid,
-future or expired dates withhold the domain content and emit a review diagnostic;
-other report inputs still run. Missing/empty/oversized/unreadable canonical content
-never resurrects legacy priorities. Python 3 is required by the bounded extractor;
-a missing interpreter is reported as degraded gathering.
+`ceo context` is an evidence overlay modeled on the Research Substrate: source-backed
+claims, explicit review decisions, supersession, and a derived current view. It does
+not rewrite historical notes or treat recent activity as an employment assignment.
 
-`Profile/_inbox/` and `CEO/training/_candidates.md` remain unpromoted proposals,
-not accepted facts. Recent session notes are evidence for a profile correction,
-not an automatic override of goals or preferences. The current system has no
-automatic profile promotion worker. Morning must require current task evidence
-before recommending work. Skill runners receive `ACTIVE_DOMAINS_CONTENT` with `CEO_PROFILE_CONTEXT_VERSION=1`
-from the same gather; weekly-synthesis consumes it before historical activity inputs.
+```sh
+ceo context ingest --record /tmp/context-record.json
+ceo context inventory
+ceo context show CLAIM_ID
+ceo context accept CLAIM_ID --actor agent-name --authorization-source Sessions/decision.md --authorization-quote 'Exact authorization text'
+ceo context render
+ceo context build
+```
+
+A record uses this JSON shape (source and quote must match an existing vault note):
+
+```json
+{
+  "subject": "research", "key": "focus", "value": "Robotics research",
+  "effective_from": "2026-09-26", "review_after": "2026-10-26",
+  "authority": "document", "visibility": "report",
+  "source": "Sessions/decision.md", "quote": "Exact supporting text",
+  "supersedes": []
+}
+```
+
+Visibility defaults to `private`; authority is `document`, `direct-user`, or
+`inferred`. An inferred candidate cannot be accepted: capture new confirmation
+instead. `accept`, `reject`, and `withdraw` require an acting-agent label and an
+exact source quote documenting authorization. These are audit records, not an
+identity/authentication mechanism. Treat ingestion and acceptance as separate
+steps even during an authorized session. Never label the agent as the user.
+
+For corrections, put predecessor IDs in `supersedes`. Effective dates determine
+when a replacement takes over; ingestion time never decides truth. Withdrawal,
+privacy, or expiry of a successor cannot revive its predecessor. Conflicting claims
+or accept/reject decisions are withheld for review. Withdrawals are terminal;
+reactivation requires a new observation. Set per-fact `review_after` for facts that
+need renewal. Durable retirements need not expire. Optional `effective_until` is
+inclusive. `list --as-of YYYY-MM-DD` renders a report projection at an effective
+date using all decisions currently recorded; it is not a historical audit replay.
+
+The append-only ledger is `CEO/log/context/YYYY-MM.md`. IDs hash normalized payloads;
+repeating identical evidence/decisions is idempotent. Exact evidence snapshots and
+hashes remain locally inspectable through `show`; report projections contain only
+explicitly report-visible values and opaque IDs. Changed/missing sources emit a
+diagnostic without erasing accepted evidence. Sources must stay inside the vault;
+generated reports, alerts, and logs cannot authorize new facts.
+
+A local file lock protects append operations. Use one writer host for the synced
+ledger; detected Syncthing conflicts and corrupt records stop projection. This is
+not a distributed database. `build` replaces `CEO/reports/context/current.{json,md}`
+and `CEO/alerts/context.md`, without rewriting unchanged content. The registered
+`context-refresh` script playbook is draft until enabled for a single owner.
+
+Every gather renders the ledger anew for morning and skill runners, including
+weekly synthesis through `ACTIVE_DOMAINS_CONTENT` and `CEO_PROFILE_CONTEXT_VERSION=1`.
+No initialized ledger, even empty or unreadable, falls back to profile history.
+Only before initialization does gathering read `Profile/goals.md` Active Domains
+(or `Profile.md` when the canonical file is absent), requiring a valid
+`active_domains_as_of` within 30 days. Seed all intended current facts before
+initialization; ingesting only one correction replaces the entire legacy view.
+
+Session capture is the ingestion path in this version. `Profile/_inbox/` and
+`CEO/training/_candidates.md` are still proposals awaiting deliberate review and
+ingestion. No background NLP process silently promotes them. Morning still needs
+current task evidence before recommending work.

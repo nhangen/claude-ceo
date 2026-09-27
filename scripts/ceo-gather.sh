@@ -564,7 +564,11 @@ BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 export ACTIVE_DOMAINS_CONTENT
 export CEO_PROFILE_CONTEXT_VERSION=1
 _profile_rc=0
-ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_rc=$?
+if [ -e "$CEO_DIR/log/context" ]; then
+  ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-context.py" --vault "$VAULT" render --as-of "$TODAY") || _profile_rc=$?
+else
+  ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_rc=$?
+fi
 if [ "$_profile_rc" -ne 0 ]; then
   _file_gather_mark_degraded "profile-context-failed:rc=$_profile_rc"
   [ -n "$ACTIVE_DOMAINS_CONTENT" ] || ACTIVE_DOMAINS_CONTENT="Active domains unavailable: context reader failed. Do not infer current roles or priorities."

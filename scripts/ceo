@@ -69,6 +69,7 @@ Commands:
   playbook    Manage playbooks (scan, list, info)
   schedule    List/edit per-user playbook schedules (overrides frontmatter)
   swarm       Inspect/heal the synced swarm.json (swarm doctor [--fix])
+  context     Manage evidence-backed current report context
   creds       Manage CEO credentials (list, check, path)
   help        Show this message
 
@@ -2856,7 +2857,7 @@ fi
 # ungated in exactly the silent way this whole change is about.
 case "${1:-help}" in
   help|-h|--help) ;;
-  setup|pr-sources|next|doctor|status|preflight|test|chat|cron|playbook|schedule|swarm|creds)
+  setup|pr-sources|next|doctor|status|preflight|test|chat|cron|playbook|schedule|swarm|creds|context)
     if _wants_help "${@:2}"; then
       case "$1" in
         playbook) _playbook_sub_usage "${2:-}" ;;
@@ -2865,6 +2866,7 @@ case "${1:-help}" in
         # read the flag as a playbook name and demanded a vault.
         creds)    cmd_creds help ;;
         status)   _status_usage ;;
+        context)  python3 "$SCRIPT_DIR/ceo-context.py" --help ;;
         *)        cmd_help ;;
       esac
       exit 0
@@ -2891,6 +2893,7 @@ case "${1:-help}" in
   playbook) ceo_require_vault; _bind_vault; shift; cmd_playbook "$@" ;;
   schedule) ceo_require_vault; _bind_vault; shift; cmd_schedule "$@" ;;
   swarm)    ceo_require_vault; _bind_vault; shift; cmd_swarm "$@" ;;
+  context)  ceo_require_vault; shift; python3 "$SCRIPT_DIR/ceo-context.py" --vault "$CEO_VAULT" "$@" ;;
   creds)    shift; cmd_creds "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
