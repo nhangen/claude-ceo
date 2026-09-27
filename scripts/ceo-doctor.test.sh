@@ -420,26 +420,41 @@ test_doctor_no_legacy_warning_when_only_daemon_agent() {
     "the daemon's own keep-alive agent must not be flagged as legacy"
 }
 
-# --- #501: schedulerd LaunchAgent runs from a feature worktree, not main clone ---
+# --- #501: schedulerd LaunchAgent/systemd service runs from a feature worktree, not main clone ---
 
-test_doctor_flags_schedulerd_running_from_feature_worktree() {
-  export CEO_SCHEDULER=daemon
-  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-worktree"
-  mkdir -p "$CEO_LAUNCHD_DIR"
-  local mock_wt="$TEST_HOME/code/feature-worktree"
-  mkdir -p "$mock_wt/lib/scheduler"
-  # In git, a linked worktree is identified by .git being a file, not a directory.
-  echo "gitdir: /path/to/main/.git/worktrees/feature-worktree" > "$mock_wt/.git"
+_setup_mock_daemon_definition() {
+  local repo_dir="$1"
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-$CURRENT_TEST"
+  export CEO_SYSTEMD_DIR="$TEST_HOME/systemd-$CURRENT_TEST"
+  mkdir -p "$CEO_LAUNCHD_DIR" "$CEO_SYSTEMD_DIR"
 
   cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
   <key>WorkingDirectory</key>
-  <string>$mock_wt/lib/scheduler</string>
+  <string>$repo_dir/lib/scheduler</string>
 </dict>
 </plist>
 EOF
+
+  cat > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service" <<EOF
+[Unit]
+Description=CEO scheduler
+
+[Service]
+WorkingDirectory=$repo_dir/lib/scheduler
+EOF
+}
+
+test_doctor_flags_schedulerd_running_from_feature_worktree() {
+  export CEO_SCHEDULER=daemon
+  local mock_wt="$TEST_HOME/code/feature-worktree"
+  mkdir -p "$mock_wt/lib/scheduler"
+  # In git, a linked worktree is identified by .git being a file, not a directory.
+  echo "gitdir: /path/to/main/.git/worktrees/feature-worktree" > "$mock_wt/.git"
+
+  _setup_mock_daemon_definition "$mock_wt"
 
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
@@ -456,19 +471,9 @@ EOF
 
 test_doctor_flags_schedulerd_configured_with_nonexistent_directory() {
   export CEO_SCHEDULER=daemon
-  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-nonexistent"
-  mkdir -p "$CEO_LAUNCHD_DIR"
   local missing_dir="$TEST_HOME/code/deleted-worktree"
 
-  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-  <key>WorkingDirectory</key>
-  <string>$missing_dir/lib/scheduler</string>
-</dict>
-</plist>
-EOF
+  _setup_mock_daemon_definition "$missing_dir"
 
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
@@ -483,10 +488,28 @@ EOF
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+test_doctor_flags_schedulerd_configured_from_external_directory() {
+  export CEO_SCHEDULER=daemon
+  local ext_repo="$TEST_HOME/code/other-repo"
+  mkdir -p "$ext_repo/lib/scheduler"
+
+  _setup_mock_daemon_definition "$ext_repo"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "runs from external directory" \
+    "doctor must flag when daemon agent points to external repository"
+  assert_contains "$output" "$ext_repo" \
+    "doctor must name the external repository"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] doctor must return non-zero when schedulerd points to external repo\n' "$CURRENT_TEST"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
 test_doctor_passes_when_schedulerd_configured_from_main_clone() {
   export CEO_SCHEDULER=daemon
-  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-main"
-  mkdir -p "$CEO_LAUNCHD_DIR"
   local main_clone
   local gcd
   gcd="$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
@@ -496,15 +519,7 @@ test_doctor_passes_when_schedulerd_configured_from_main_clone() {
     main_clone="$(cd "$SCRIPT_DIR/.." && pwd)"
   fi
 
-  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-  <key>WorkingDirectory</key>
-  <string>$main_clone/lib/scheduler</string>
-</dict>
-</plist>
-EOF
+  _setup_mock_daemon_definition "$main_clone"
 
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
