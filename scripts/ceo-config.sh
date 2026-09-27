@@ -640,14 +640,12 @@ ceo_status_valid() {
 
 # ceo_registry_version <registry_file>
 #   Prints the integer schema_version, or nothing if missing/malformed/unresolvable.
+#   Returns 1 when no path is given and the default cannot be resolved; otherwise
+#   returns jq's status.
 ceo_registry_version() {
-  local registry_file
-  if [ -n "${1:-}" ]; then
-    registry_file="$1"
-  else
-    if ! registry_file=$(_ceo_registry_path); then
-      return 1
-    fi
+  local registry_file="${1:-}"
+  if [ -z "$registry_file" ]; then
+    registry_file=$(_ceo_registry_path) || return 1
   fi
   jq -r '
     if has("schema_version")
@@ -671,13 +669,9 @@ ceo_registry_version() {
 # Codes 2 and 3 are kept distinct so a real downgrade is never retried into
 # acceptance and a transient unreadable read is never misreported as a downgrade.
 ceo_registry_validate() {
-  local registry_file
-  if [ -n "${1:-}" ]; then
-    registry_file="$1"
-  else
-    if ! registry_file=$(_ceo_registry_path); then
-      return 4
-    fi
+  local registry_file="${1:-}"
+  if [ -z "$registry_file" ]; then
+    registry_file=$(_ceo_registry_path) || return 4
   fi
   if [ ! -f "$registry_file" ]; then
     return 1

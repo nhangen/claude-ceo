@@ -164,13 +164,35 @@ test_registry_validate_missing_file_is_code_1() {
 }
 
 test_registry_validate_no_arg_returns_4_when_home_unset() {
+  local err rc=0
+  err=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "4" "ceo_registry_validate with no args must return 4 when HOME is unset"
+  assert_contains "$err" "HOME must be set" "rc=4 alone does not say why; the path helper's diagnostic must still reach stderr"
+}
+
+# The override makes HOME irrelevant (#425), and rc=4 is documented as "no
+# override" only: with CEO_REGISTRY_FILE set, an unset HOME must never yield 4.
+test_registry_validate_no_arg_honors_override_when_home_unset() {
   local rc=0
-  env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+  env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_REGISTRY_FILE="$TEST_HOME/absent.json" PATH="$PATH" bash -c "
     set -uo pipefail
     source '$LIB'
     ceo_registry_validate
   " >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "4" "ceo_registry_validate with no args must return 4 when HOME is unset"
+  assert_eq "$rc" "1" "no-arg validate with an override and HOME unset must report the override's absence (1), not 4"
+
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$TEST_HOME/override.json"
+  rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_REGISTRY_FILE="$TEST_HOME/override.json" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "no-arg validate with a valid override and HOME unset must return 0"
 }
 
 test_registry_validate_no_arg_returns_4_when_home_empty() {
@@ -215,7 +237,7 @@ test_registry_validate_no_arg_returns_0_when_home_set_and_valid_registry() {
   assert_eq "$rc" "0" "ceo_registry_validate with no args must return 0 when HOME has valid registry"
 }
 
-test_registry_version_no_arg_returns_nonzero_when_home_unset() {
+test_registry_version_no_arg_returns_1_when_home_unset() {
   local out rc=0
   out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
     set -uo pipefail
