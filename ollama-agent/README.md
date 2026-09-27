@@ -67,6 +67,11 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   when `min_score` is set — use `eval_task: "*"` to opt into the cross-task mean; an aggregate
   default would let a model that fails the task that matters pass on unrelated tasks. A missing
   score is a refusal, not a silent pass. `eval_model` overrides which model's score is checked.
+- Every name in a `tools` allowlist must be a built-in tool, `use_skill` (only with
+  `skills: true`), or `mcp__<tool>` (only with `mcp` set). Anything else, including a typo or
+  a raw MCP tool name, is refused at parse time (exit 2) rather than dropped at dispatch.
+  `"tools": []` is allowed and runs the task with no tools, the registry's equivalent of
+  `--no-tools`. `skills` must be a boolean.
 - A `tools` allowlist carrying `write_file` without `edit_file` warns on stderr at parse time
   (advisory, never a refusal). Pair them so the model can make surgical edits instead of
   rewriting whole files.
