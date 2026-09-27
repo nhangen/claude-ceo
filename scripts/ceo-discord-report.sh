@@ -218,6 +218,9 @@ if [ "$total" -gt 0 ]; then
   # be created or a legacy file that could not be moved; either way this script
   # degrades to fresh state, and its own writes are already guarded. Only the cron
   # dispatcher refuses to run on rc=2, because only it half-applies bookkeeping.
+  # A state dir that cannot even be resolved (HOME unset, no CEO_STATE_DIR) prints
+  # nothing, so the path here is empty; the stamp write below fails and the
+  # stamp goes stale (#536).
   _deliver_stamp=$(_ceo_state_migrate ".last-deliver-${TRIGGER}") || true
   date +%s > "$_deliver_stamp" 2>/dev/null || true
 fi
