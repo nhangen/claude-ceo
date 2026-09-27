@@ -220,7 +220,8 @@ def projection(vault, root, as_of):
             except (OSError, ValueError):
                 changed = True
             if changed:
-                diagnostics.append("Evidence changed or unavailable; retained accepted snapshot: " + ident)
+                diagnostics.append("Evidence changed or unavailable; withheld pending review: " + ident)
+                continue
             if record["visibility"] == "report":
                 facts.append({k: record[k] for k in ("subject", "key", "value", "effective_from")} | {"id": ident})
     return dict(schema=1, as_of=as_of, facts=sorted(facts, key=lambda f: f["id"]), diagnostics=sorted(diagnostics))

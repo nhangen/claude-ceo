@@ -78,12 +78,12 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(result["diagnostics"])
         self.assertNotIn("SECRET VALUE", self.cli("render").stdout)
 
-    def test_source_drift_keeps_snapshot_but_reports_degradation(self):
+    def test_source_drift_withholds_snapshot_pending_review(self):
         claim = self.ingest()
         self.decide("accept", claim)
         (self.vault / "evidence.md").write_text("Unrelated appended activity")
         result = self.view()
-        self.assertEqual(result["facts"][0]["value"], "Current")
+        self.assertEqual(result["facts"], [])
         self.assertTrue(result["diagnostics"])
 
     def test_expired_replacement_does_not_revive_predecessor(self):

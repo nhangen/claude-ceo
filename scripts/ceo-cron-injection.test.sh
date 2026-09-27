@@ -758,6 +758,13 @@ test_morning_uses_current_canonical_domains_on_every_run() {
 test_context_acceptance_updates_next_morning_without_profile_edits() {
   mkdir -p "$CEO_VAULT/Profile"
   printf -- '---\nactive_domains_as_of: %s\n---\n## Active Domains\nLegacy Domain\n' "$(date +%F)" > "$CEO_VAULT/Profile/goals.md"
+  printf 'Current research focus is active.\n' > "$CEO_VAULT/CEO/from-nathan.md"
+  printf '#!/bin/bash\nexit 0\n' > "$HOME/fresh-vaultkeeper.sh"
+  chmod +x "$HOME/fresh-vaultkeeper.sh"
+  CEO_VAULTKEEPER_STALENESS_CMD="$HOME/fresh-vaultkeeper.sh" python3 "$SCRIPT_DIR/ceo-context-discover.py" --vault "$CEO_VAULT" >/dev/null
+  local candidate_state
+  candidate_state=$(bash "$CEO_CLI" context inventory | jq -r '.[0].state')
+  assert_eq "$candidate_state" "candidate" "fresh source discovery stages a review candidate"
   printf 'Current research. Approve this context for reports.' > "$CEO_VAULT/context-evidence.md"
   cat > "$HOME/claim.json" <<'CLAIM'
 {"subject":"research","key":"focus","value":"Accepted Current Research","effective_from":"2026-01-01","authority":"document","visibility":"report","source":"context-evidence.md","quote":"Current research."}

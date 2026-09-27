@@ -481,15 +481,18 @@ date using all decisions currently recorded; it is not a historical audit replay
 The append-only ledger is `CEO/log/context/YYYY-MM.md`. IDs hash normalized payloads;
 repeating identical evidence/decisions is idempotent. Exact evidence snapshots and
 hashes remain locally inspectable through `show`; report projections contain only
-explicitly report-visible values and opaque IDs. Changed/missing sources emit a
-diagnostic without erasing accepted evidence. Sources must stay inside the vault;
+explicitly report-visible values and opaque IDs. Changed/missing sources withhold the
+affected fact and emit a diagnostic until reviewed. Sources must stay inside the vault;
 generated reports, alerts, and logs cannot authorize new facts.
 
 A local file lock protects append operations. Use one writer host for the synced
 ledger; detected Syncthing conflicts and corrupt records stop projection. This is
 not a distributed database. `build` replaces `CEO/reports/context/current.{json,md}`
 and `CEO/alerts/context.md`, without rewriting unchanged content. The registered
-`context-refresh` script playbook is draft until enabled for a single owner.
+`context-refresh` script playbook is active after a single Cronbird owner is assigned.
+It queries Vaultkeeper freshness, then stages private inferred review candidates from
+only `CEO/from-nathan.md`, `Profile/_inbox/*.md`, `Profile/goals.md`, and
+`Profile.md`. Discovery never accepts claims or copies denylisted content.
 
 Every gather renders the ledger anew for morning and skill runners, including
 weekly synthesis through `ACTIVE_DOMAINS_CONTENT` and `CEO_PROFILE_CONTEXT_VERSION=1`.
