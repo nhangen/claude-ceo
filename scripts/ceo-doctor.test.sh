@@ -366,6 +366,28 @@ EOF
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
+# _registry_schema_error writes to stderr, so a bare $(...) around it captured
+# nothing and the doctor printed an empty "✗". The reason must sit on the ✗ line.
+test_doctor_prints_the_registry_schema_reason_on_the_fail_line() {
+  printf '{"playbooks":[]}\n' > "$REGISTRY_FILE"
+  local output
+  output=$("$CEO_BIN" doctor 2>/dev/null || true)
+  assert_contains "$output" "✗ Registry schema_version missing or malformed" \
+    "a registry with no schema_version is rc=3 and must be named on the doctor's ✗ line"
+
+  printf '{"schema_version":1,"playbooks":[]}\n' > "$REGISTRY_FILE"
+  output=$("$CEO_BIN" doctor 2>/dev/null || true)
+  assert_contains "$output" "✗ Registry schema_version below" \
+    "an old schema_version is rc=2 and must be named as a downgrade, not as malformed"
+}
+
+test_registry_schema_error_names_the_unresolvable_path() {
+  local err
+  err=$(CEO_LIB_ONLY=1 bash -c 'set +u; source "$0"; _registry_schema_error 4' "$CEO_BIN" 2>&1 >/dev/null)
+  assert_contains "$err" "Registry path unresolvable" \
+    "rc=4 from ceo_registry_validate must get its own message, not the generic fallback"
+}
+
 test_doctor_reports_platform() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
