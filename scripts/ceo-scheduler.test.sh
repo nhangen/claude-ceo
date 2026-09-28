@@ -487,4 +487,10 @@ EOF
   assert_contains "$out" "ceo-schedulerd" "scan must surface the daemon guidance"
 }
 
+test_shipped_systemd_unit_stops_on_fatal_exit_code() {
+  local hits
+  hits=$(grep -c '^RestartPreventExitStatus=78$' "$SCRIPT_DIR/../lib/scheduler/deploy/ceo-schedulerd.service")
+  assert_eq "$hits" "1" "a permanent write fault (exit 78) must not be restarted (#496)"
+}
+
 run_tests
