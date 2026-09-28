@@ -18,6 +18,7 @@ setup() {
   export CEO_LOCAL_CI_SUSTAINED_SECONDS=0
   export CEO_LOCAL_CI_MAX_STATUS_AGE_SECONDS=120
   export CEO_LOCAL_CI_PROBE_TIMEOUT_SECONDS=1
+  export CEO_RUNNER_OUTCOME_FILE="$TEST_HOME/outcome"
   export CEO_LOCAL_CI_DOCKER_BIN="$TEST_HOME/stubs/docker"
   export CEO_LOCAL_CI_SYSTEMCTL_BIN="$TEST_HOME/stubs/systemctl"
   export CEO_LOCAL_CI_CURL_BIN="$TEST_HOME/stubs/curl"
@@ -58,6 +59,7 @@ teardown() {
   export PATH="$PATH_BACKUP"
   unset CEO_VAULT CEO_HOSTNAME CEO_LOCAL_CI_STATUS_URL CEO_LOCAL_CI_SUSTAINED_SECONDS
   unset CEO_LOCAL_CI_MAX_STATUS_AGE_SECONDS CEO_LOCAL_CI_PROBE_TIMEOUT_SECONDS CEO_LOCAL_CI_TIMEOUT_BIN
+  unset CEO_RUNNER_OUTCOME_FILE
   unset CEO_LOCAL_CI_DOCKER_BIN CEO_LOCAL_CI_SYSTEMCTL_BIN CEO_LOCAL_CI_CURL_BIN
   unset API_STUB_FILE TEST_HOME HOME_BACKUP PATH_BACKUP
   unset DOCKER_STUB_FAIL SERVICE_STUB_FAIL CURL_STUB_FAIL
@@ -71,6 +73,10 @@ state_field() {
   awk "/^$1:/ { sub(/^$1:[[:space:]]*/, \"\"); print; exit }" "$CEO_VAULT/CEO/alerts/local-ci-health-$CEO_HOSTNAME.md" | tr -d '[:space:]'
 }
 
+outcome() {
+  cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null
+}
+
 test_healthy_fleet_is_clear_and_dynamic() {
   run_monitor
   assert_eq "$(state_field status)" "clear" "healthy fleet should be clear"
@@ -78,6 +84,7 @@ test_healthy_fleet_is_clear_and_dynamic() {
   body=$(cat "$CEO_VAULT/CEO/alerts/local-ci-health-$CEO_HOSTNAME.md")
   assert_contains "$body" "| one | online |" "first configured repository should be reported"
   assert_contains "$body" "| two | busy |" "busy runner should remain healthy"
+  assert_eq "$(outcome)" "noop" "healthy check should stay silent"
 }
 
 test_timeout_resolver_supports_normal_invocation() {
@@ -98,13 +105,16 @@ test_docker_failure_fires_without_restarting() {
 
 test_sustained_failure_escalates_once() {
   DOCKER_STUB_FAIL=1 run_monitor
+  assert_eq "$(outcome)" "noop" "first failure should stay silent"
   if [ -s "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md" ]; then
     fail_test "first failure must not create an inbox task"
   else
     ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   fi
   DOCKER_STUB_FAIL=1 run_monitor
+  assert_eq "$(outcome)" "fired" "sustained escalation should notify"
   DOCKER_STUB_FAIL=1 run_monitor
+  assert_eq "$(outcome)" "noop" "steady firing should stay silent"
   local count
   count=$(grep -c -F -- "- [ ] Restore local CI health" "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md")
   assert_eq "$count" "1" "sustained failure should create one task"
@@ -119,6 +129,7 @@ test_recovery_closes_active_task() {
   inbox=$(cat "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md")
   assert_contains "$inbox" "- [done] Local CI health restored" "recovery should close the task"
   assert_not_contains "$inbox" "- [ ] Restore local CI health" "no active task should remain"
+  assert_eq "$(outcome)" "fired" "recovery should notify"
 }
 
 test_invalid_api_preserves_firing_and_escalates() {

@@ -23,6 +23,8 @@ The first failed check updates the alert. An inbox task appears only when the
 failure is still present on the next five-minute check. Recovery closes the
 active task. Failed or incomplete observations cannot clear an existing alert.
 The playbook never restarts Docker, services, containers, or runners.
+Routine checks and steady failures are silent. Creating or resolving an inbox
+task emits the runner outcome that enables one success notification.
 
 ## Outputs
 

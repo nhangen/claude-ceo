@@ -213,6 +213,7 @@ printf '%s status=%s docker=%s service=%s api=%s total=%s attention=%s observati
 TASK_MARKER="<!-- local-ci-health:$HOST -->"
 TASK_LINE="- [ ] Restore local CI health on $HOST - see [[CEO/alerts/local-ci-health-$HOST]] $TASK_MARKER"
 touch "$INBOX_FILE"
+INBOX_CHANGED=0
 
 active_task_present() {
   awk -v m="$TASK_MARKER" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$INBOX_FILE"
@@ -223,7 +224,10 @@ if [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
     _since_epoch=$(date -d "$PRIOR_SINCE" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%S%z' "$PRIOR_SINCE" +%s 2>/dev/null || echo 0)
     _now_epoch=$(date +%s)
     if [ "$_since_epoch" -gt 0 ] && [ $((_now_epoch - _since_epoch)) -ge "$SUSTAINED_SECONDS" ]; then
-      active_task_present || printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+      if ! active_task_present; then
+        printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
+        INBOX_CHANGED=1
+      fi
     fi
   elif [ "$OBSERVATION_FAILED" -eq 0 ] && [ "$CURRENT_STATUS" = "clear" ] && active_task_present; then
     _tmpfile=$(mktemp) || exit 1
@@ -232,6 +236,15 @@ if [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
     awk -v m="$TASK_MARKER" -v r="$_replacement" '/^- \[ \]/ && index($0, m) { print r; next } { print }' "$INBOX_FILE" > "$_tmpfile"
     mv "$_tmpfile" "$INBOX_FILE"
     trap - EXIT
+    INBOX_CHANGED=1
+  fi
+fi
+
+if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
+  if [ "$INBOX_CHANGED" -eq 1 ]; then
+    printf 'fired' > "$CEO_RUNNER_OUTCOME_FILE"
+  else
+    printf 'noop' > "$CEO_RUNNER_OUTCOME_FILE"
   fi
 fi
 
