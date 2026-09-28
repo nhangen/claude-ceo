@@ -329,16 +329,17 @@ EOF
   assert_eq "$leftovers" "" "no temporary alert files should be left on failure"
 }
 
-test_failing_inbox_awk_leaves_inbox_byte_identical() {
+test_inbox_rewrite_awk_failure_is_fatal_and_named() {
   DUMP_GB_STUB="20" run_monitor
   local inbox_file="$CEO_DIR/inbox/testhost.md"
   local inbox_before
   inbox_before=$(cat "$inbox_file")
   assert_contains "$inbox_before" "- [ ] Clean wsl-crashes on testhost" "initial firing task added"
 
-  local rc=0
-  AWK_FAIL_REWRITE=1 DUMP_GB_STUB="0" bash "$MONITOR" >/dev/null 2>&1 || rc=$?
+  local rc=0 err
+  err=$(AWK_FAIL_REWRITE=1 DUMP_GB_STUB="0" bash "$MONITOR" 2>&1 >/dev/null) || rc=$?
   assert_eq "$rc" "1" "failing inbox awk rewrite must cause monitor to exit 1"
+  assert_contains "$err" "failed to rewrite $inbox_file" "awk failure must name the inbox it could not rewrite"
   local inbox_after
   inbox_after=$(cat "$inbox_file")
   assert_eq "$inbox_after" "$inbox_before" "failing inbox awk must leave inbox file byte-identical"
