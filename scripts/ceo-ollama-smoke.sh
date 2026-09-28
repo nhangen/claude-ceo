@@ -69,9 +69,11 @@ ceo_resolve_timeout_bin
 SMOKE_RC=0
 if [ -n "$CEO_TIMEOUT_BIN" ]; then
   OUTPUT=$("$CEO_TIMEOUT_BIN" "$SMOKE_TIMEOUT" bash "$SMOKE_BIN" 2>&1) || SMOKE_RC=$?
+  TIMEOUT_FIELD="$SMOKE_TIMEOUT"
 else
   echo "warning: no timeout or gtimeout on PATH; running the smoke with no ${SMOKE_TIMEOUT}s cap" >&2
   OUTPUT=$(bash "$SMOKE_BIN" 2>&1) || SMOKE_RC=$?
+  TIMEOUT_FIELD="none"
 fi
 OUTPUT=$(printf '%s' "$OUTPUT" | sed $'s/\033\\[[0-9;]*m//g')
 
@@ -104,7 +106,13 @@ elif [ "$SKIP" -gt 0 ]; then
 else
   STACK_STATUS="present"
 fi
-if [ "$STACK_STATUS" = "present" ]; then CURRENT_STATUS="clear"; else CURRENT_STATUS="firing"; fi
+# An uncapped run fires even when the stack is healthy: a hang would hold the
+# global cron lock with no limit, and a clear alert is never surfaced (#503).
+if [ "$STACK_STATUS" = "present" ] && [ "$TIMEOUT_FIELD" != "none" ]; then
+  CURRENT_STATUS="clear"
+else
+  CURRENT_STATUS="firing"
+fi
 
 if [ "$CURRENT_STATUS" = "$PRIOR_STATUS" ] && [ -n "$PRIOR_SINCE" ]; then
   SINCE="$PRIOR_SINCE"
@@ -123,12 +131,16 @@ if ! {
     --since="$SINCE" \
     --last-check="$NOW" \
     --host="$HOST" \
+    --field "timeout_seconds=$TIMEOUT_FIELD" \
     --field "stack=$STACK_STATUS" \
     --field "pass_count=$PASS" \
     --field "fail_count=$FAIL" \
     --field "skip_count=$SKIP" || { echo "ERROR: invalid alert frontmatter; existing state preserved" >&2; exit 1; }
   printf '\n# Ollama Live Stack Smoke Canary\n\n'
   printf '<!-- alert: [[CEO/alerts/ollama-smoke]] -->\n\n'
+  if [ "$TIMEOUT_FIELD" = "none" ]; then
+    printf '**Warning:** run uncapped (no `timeout` or `gtimeout` binary found on PATH). Install coreutils to restore the %ss cap.\n\n' "$SMOKE_TIMEOUT"
+  fi
   printf 'Stack: **%s** (PASS=%s, FAIL=%s, SKIP=%s)\n\n' "$STACK_STATUS" "$PASS" "$FAIL" "$SKIP"
   case "$STACK_STATUS" in
     present)       printf 'Every smoke check ran and passed.\n\n' ;;
@@ -146,7 +158,9 @@ mv "$STATE_TMP" "$STATE_FILE" || { echo "ERROR: failed to replace $STATE_FILE" >
 trap - EXIT
 
 TASK_MARKER="<!-- ollama-smoke -->"
-TASK_LINE="- [ ] Investigate local ollama stack ($STACK_STATUS) — see [[CEO/alerts/ollama-smoke]] $TASK_MARKER"
+TASK_REASON="$STACK_STATUS"
+[ "$TIMEOUT_FIELD" = "none" ] && TASK_REASON="$STACK_STATUS, run uncapped: no timeout or gtimeout on PATH"
+TASK_LINE="- [ ] Investigate local ollama stack ($TASK_REASON) — see [[CEO/alerts/ollama-smoke]] $TASK_MARKER"
 
 active_task_present() {
   [ -f "$INBOX_FILE" ] || return 1
