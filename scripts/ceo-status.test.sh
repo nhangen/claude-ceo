@@ -103,7 +103,6 @@ test_status_hands_the_subcommand_and_flags_to_the_scheduler_cli() {
   assert_contains "$(cat "$ARGV_LOG")" "cwd: $(cd "$ROOT/lib/scheduler" && pwd -P)" \
     "the scheduler CLI must run from lib/scheduler"
   assert_not_contains "$out" "ERROR" "no guard should fire on a complete install"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_next_runs_hands_the_subcommand_and_window_to_the_scheduler_cli() {
@@ -112,7 +111,6 @@ test_next_runs_hands_the_subcommand_and_window_to_the_scheduler_cli() {
   assert_eq "$rc" "0" "ceo playbook next-runs must exit 0 when the scheduler CLI succeeds"
   assert_contains "$(cat "$ARGV_LOG")" "argv: run src/status.ts next-runs --within 31m" \
     "next-runs must pass its subcommand and --within through unchanged"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_stale_daemon_exit_code_reaches_the_caller() {
@@ -123,7 +121,6 @@ test_stale_daemon_exit_code_reaches_the_caller() {
   rc=0
   _run playbook next-runs >/dev/null || rc=$?
   assert_eq "$rc" "69" "next-runs must propagate STALE_EXIT_CODE too"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_usage_error_exit_code_reaches_the_caller() {
@@ -131,7 +128,6 @@ test_usage_error_exit_code_reaches_the_caller() {
   local rc=0
   _run status --nope >/dev/null || rc=$?
   assert_eq "$rc" "2" "rc=2 from the scheduler CLI must not be flattened to 1"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_bun_is_named_for_both_commands() {
@@ -143,7 +139,6 @@ test_missing_bun_is_named_for_both_commands() {
   out=$(_run_without_bun playbook next-runs) || rc=$?
   assert_eq "$rc" "1" "next-runs must exit 1 when bun is missing"
   assert_contains "$out" "bun is required for playbook next-runs" "must name the command in the error"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_scheduler_lib_is_named() {
@@ -152,7 +147,6 @@ test_missing_scheduler_lib_is_named() {
   out=$(_run status) || rc=$?
   assert_eq "$rc" "1" "status must exit 1 when lib/scheduler is absent"
   assert_contains "$out" "scheduler lib directory not found" "must name the absent directory"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_dependencies_name_the_install_command() {
@@ -164,7 +158,6 @@ test_missing_dependencies_name_the_install_command() {
     "a missing node_modules must be named, not left to Bun's module resolver"
   assert_contains "$out" "bun install" "the error must carry the command that fixes it"
   assert_eq "$(cat "$ARGV_LOG" 2>/dev/null | wc -l | tr -d ' ')" "0" "bun must not be invoked"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_stale_registry_schema_is_refused_before_bun_runs() {
@@ -179,7 +172,6 @@ test_stale_registry_schema_is_refused_before_bun_runs() {
   local json_stdout
   json_stdout=$(PATH="$STUB_BIN:$PATH" bash "$CEO_CLI" status --json 2>/dev/null)
   assert_eq "$json_stdout" "" "a registry refusal must go to stderr, leaving --json stdout clean"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_help_is_answered_without_bun() {
@@ -188,7 +180,6 @@ test_help_is_answered_without_bun() {
   assert_contains "$direct" "Usage: ceo status" "status --help must be answered by the shell"
   sub=$(_run_without_bun playbook next-runs --help)
   assert_contains "$sub" "Usage: ceo playbook next-runs" "next-runs --help must be answered by the shell"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

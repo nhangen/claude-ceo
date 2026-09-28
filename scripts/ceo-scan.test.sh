@@ -452,6 +452,112 @@ test_scan_leaves_registry_intact_when_explicit_repo_dir_missing() {
     "a refused scan must not rewrite the registry"
 }
 
+test_scan_refuses_active_script_missing_from_scheduler_runtime() {
+  rm -f "$CEO_DIR/playbooks/scope-bogus.md"
+  cat > "$CEO_DIR/playbooks/runtime-only.md" <<'PB'
+---
+name: runtime-only
+description: script added after the scheduler checkout was deployed
+trigger: cron
+schedule: "*/5 * * * *"
+status: active
+runner: script
+script: runtime-only.sh
+scope: each
+---
+PB
+
+  local scheduler_repo="$TMP/scheduler-runtime"
+  mkdir -p "$scheduler_repo/lib/scheduler" "$scheduler_repo/scripts"
+  export CEO_SYSTEMD_DIR="$TMP/systemd-user"
+  mkdir -p "$CEO_SYSTEMD_DIR"
+  cat > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service" <<EOF
+[Service]
+WorkingDirectory=$scheduler_repo/lib/scheduler
+EOF
+  ceo_detect_os() { echo linux; }
+
+  mkdir -p "$HOME/.ceo"
+  printf '%s\n' '{"schema_version":3,"generated":"before","playbooks":[{"name":"known-good"}]}' \
+    > "$HOME/.ceo/registry.json"
+  local before; before=$(cat "$HOME/.ceo/registry.json")
+
+  _run_scan_split
+
+  assert_eq "$SCAN_RC" "1" \
+    "scan must fail when the scheduler checkout lacks an active script-runner artifact"
+  assert_contains "$SCAN_STDERR" "runtime-only" \
+    "the refusal must name the playbook whose runtime artifact is missing"
+  assert_contains "$SCAN_STDERR" "$scheduler_repo/scripts/runtime-only.sh" \
+    "the refusal must name the exact missing path in the scheduler checkout"
+  assert_eq "$(cat "$HOME/.ceo/registry.json")" "$before" \
+    "a runtime validation failure must preserve the previous live registry"
+}
+
+test_scan_requires_scheduler_runtime_script_to_be_executable() {
+  rm -f "$CEO_DIR/playbooks/scope-bogus.md"
+  cat > "$CEO_DIR/playbooks/runtime-mode.md" <<'PB'
+---
+name: runtime-mode
+description: script whose deployed mode controls schedulability
+trigger: cron
+schedule: "*/5 * * * *"
+status: active
+runner: script
+script: runtime-mode.sh
+scope: each
+---
+PB
+
+  local scheduler_repo="$TMP/scheduler-runtime"
+  mkdir -p "$scheduler_repo/lib/scheduler" "$scheduler_repo/scripts"
+  : > "$scheduler_repo/scripts/runtime-mode.sh"
+  chmod 0644 "$scheduler_repo/scripts/runtime-mode.sh"
+  export CEO_SYSTEMD_DIR="$TMP/systemd-user"
+  mkdir -p "$CEO_SYSTEMD_DIR"
+  printf '[Service]\nWorkingDirectory=%s/lib/scheduler\n' "$scheduler_repo" \
+    > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service"
+  ceo_detect_os() { echo linux; }
+
+  _run_scan_split
+  assert_eq "$SCAN_RC" "1" \
+    "scan must fail when an active scheduler-runtime script is not executable"
+  assert_contains "$SCAN_STDERR" "not executable" \
+    "the refusal must distinguish a bad mode from a missing script"
+
+  chmod 0755 "$scheduler_repo/scripts/runtime-mode.sh"
+  _run_scan_split
+  assert_eq "$SCAN_RC" "0" \
+    "scan must succeed once the configured scheduler runtime can execute the script"
+  assert_contains "$(cat "$HOME/.ceo/registry.json")" "runtime-mode" \
+    "the runnable script playbook must be written to the registry"
+}
+
+test_scan_allows_script_registration_before_scheduler_is_installed() {
+  rm -f "$CEO_DIR/playbooks/scope-bogus.md"
+  cat > "$CEO_DIR/playbooks/setup-script.md" <<'PB'
+---
+name: setup-script
+description: script registered during initial host setup
+trigger: cron
+schedule: "*/5 * * * *"
+status: active
+runner: script
+script: setup-script.sh
+scope: each
+---
+PB
+
+  export CEO_SYSTEMD_DIR="$TMP/systemd-user-absent"
+  ceo_detect_os() { echo linux; }
+  _run_scan_split
+
+  assert_eq "$SCAN_RC" "0" \
+    "a host with no scheduler definition must still be able to build its initial registry"
+  assert_contains "$(cat "$HOME/.ceo/registry.json")" "setup-script" \
+    "initial setup must retain the active script playbook"
+}
+
 # --dry-run writes nothing, so there is no registry to protect: the preview a
 # broken config most needs is the one it should still get. It must still report
 # the error and still exit non-zero.
