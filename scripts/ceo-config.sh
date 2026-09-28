@@ -13,7 +13,7 @@
 #   ceo_pin_home_or_warn()  — resolve+export $HOME from passwd; warn-and-rc=1 on fail
 #   ceo_inbox_has_unchecked() — scan inbox sources for an unchecked todo; rc=0/1/2
 #   ceo_assert_primary_host() — gate Syncthing-shared writes; rc=0 allowed/1 deny
-#   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2
+#   ceo_registry_validate() — verifies registry.json schema_version; returns 0/1/2/3/4
 #   ceo_write_alert_frontmatter() — emit alert frontmatter to stdout; validates enum
 #   ceo_read_alert_field()  — read a single frontmatter field; handles colons in values
 #
@@ -412,10 +412,11 @@ _ceo_legacy_state_dir() {
 #   Degradation is reported through the exit status, never through stderr. The
 #   scheduler spawns the dispatcher with `stderr: "ignore"`
 #   (lib/scheduler/src/main.ts), so a warning written here would reach nobody on
-#   the runs that matter — the same defect #398 found in the completion log. The
-#   path is printed either way, so a caller that ignores the status still works.
+#   the runs that matter — the same defect #398 found in the completion log.
+#   When resolution succeeds the path is printed even if migration fails, so a caller
+#   that ignores rc=1 still works. If the path cannot even be resolved, nothing is printed.
 #
-#   **2** — the state directory could not be created. Nothing will be readable or
+#   **2** — the state directory could not be resolved or created. Nothing will be readable or
 #   writable there; the caller should refuse to dispatch rather than let a bare
 #   redirect abort it halfway through bookkeeping.
 #   **1** — a legacy file could not be moved. The run proceeds with fresh state:
@@ -423,7 +424,7 @@ _ceo_legacy_state_dir() {
 #   over it is worse. Worth journalling, not worth aborting.
 _ceo_state_migrate() {
   local name="$1" new_dir legacy rc=0
-  new_dir=$(_ceo_state_dir) || return 1
+  new_dir=$(_ceo_state_dir) || return 2
   # Not `|| true`. A state dir that cannot be created sends every later read and
   # write at a path that does not exist, and the first of those in _record_success
   # is a bare redirect under `set -e` — which aborts it *after* _bookkeeping_done
@@ -639,9 +640,14 @@ ceo_status_valid() {
 }
 
 # ceo_registry_version <registry_file>
-#   Prints the integer schema_version, or nothing if missing/malformed.
+#   Prints the integer schema_version, or nothing if missing/malformed/unresolvable.
+#   Returns 1 when no path is given and the default cannot be resolved; otherwise
+#   returns jq's status.
 ceo_registry_version() {
-  local registry_file="${1:-$(_ceo_registry_path)}"
+  local registry_file="${1:-}"
+  if [ -z "$registry_file" ]; then
+    registry_file=$(_ceo_registry_path) || return 1
+  fi
   jq -r '
     if has("schema_version")
       and (.schema_version | type) == "number"
@@ -660,10 +666,14 @@ ceo_registry_version() {
 #   3 — registry exists but has no parseable integer schema_version (missing
 #       field, malformed JSON, non-integer). On a synced vault this also covers
 #       a file caught mid-replace, so callers should retry once before failing.
+#   4 — registry path could not be resolved ($HOME unset/empty and no override)
 # Codes 2 and 3 are kept distinct so a real downgrade is never retried into
 # acceptance and a transient unreadable read is never misreported as a downgrade.
 ceo_registry_validate() {
-  local registry_file="${1:-$(_ceo_registry_path)}"
+  local registry_file="${1:-}"
+  if [ -z "$registry_file" ]; then
+    registry_file=$(_ceo_registry_path) || return 4
+  fi
   if [ ! -f "$registry_file" ]; then
     return 1
   fi
