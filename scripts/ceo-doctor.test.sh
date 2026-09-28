@@ -442,6 +442,177 @@ test_doctor_no_legacy_warning_when_only_daemon_agent() {
     "the daemon's own keep-alive agent must not be flagged as legacy"
 }
 
+# --- #501: schedulerd LaunchAgent/systemd service runs from a feature worktree, not main clone ---
+
+# _setup_mock_daemon_definition <repo_dir> [working_directory]  (default: <repo_dir>/lib/scheduler)
+_setup_mock_daemon_definition() {
+  local wd="${2:-$1/lib/scheduler}"
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-$CURRENT_TEST"
+  export CEO_SYSTEMD_DIR="$TEST_HOME/systemd-$CURRENT_TEST"
+  mkdir -p "$CEO_LAUNCHD_DIR" "$CEO_SYSTEMD_DIR"
+
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>WorkingDirectory</key>
+  <string>$wd</string>
+</dict>
+</plist>
+EOF
+
+  cat > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service" <<EOF
+[Unit]
+Description=CEO scheduler
+
+[Service]
+WorkingDirectory=$wd
+EOF
+}
+
+# The main clone of the checkout under test, which is what a correctly installed
+# daemon points at.
+_main_clone_under_test() {
+  local gcd
+  gcd="$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$gcd" ]; then
+    (cd "$SCRIPT_DIR" && cd "$gcd/.." && pwd -P)
+  else
+    (cd "$SCRIPT_DIR/.." && pwd -P)
+  fi
+}
+
+_assert_doctor_fails() {
+  local rc="$1" msg="$2"
+  if [ "$rc" = "0" ]; then
+    printf '  FAIL [%s] %s\n' "$CURRENT_TEST" "$msg"
+    _record_assertion_fail
+  fi
+  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+}
+
+test_doctor_flags_schedulerd_running_from_feature_worktree() {
+  export CEO_SCHEDULER=daemon
+  export GIT_AUTHOR_NAME="Test User" GIT_AUTHOR_EMAIL="test@example.com"
+  export GIT_COMMITTER_NAME="Test User" GIT_COMMITTER_EMAIL="test@example.com"
+  local real_main="$TEST_HOME/code/fixture-main" mock_wt="$TEST_HOME/code/feature-worktree"
+  mkdir -p "$real_main" "$TEST_HOME/hooks-none"
+  git -C "$real_main" init -q
+  git -C "$real_main" config core.hooksPath "$TEST_HOME/hooks-none"
+  git -C "$real_main" commit -q --allow-empty -m init
+  git -C "$real_main" worktree add -q -b feature "$mock_wt"
+  mkdir -p "$mock_wt/lib/scheduler"
+  local expected_main
+  expected_main="$(cd "$real_main" && pwd -P)"
+
+  _setup_mock_daemon_definition "$mock_wt"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "runs from a feature worktree" \
+    "doctor must flag when daemon agent points to a feature worktree"
+  assert_contains "$output" "not the main clone ($expected_main)" \
+    "doctor must name the worktree's own main clone as the target"
+  assert_contains "$output" "Repoint the agent to the main clone ($expected_main) and reload" \
+    "doctor must print the reload remediation"
+  _assert_doctor_fails "$rc" "doctor must return non-zero when schedulerd runs from worktree"
+}
+
+test_doctor_flags_schedulerd_configured_with_nonexistent_directory() {
+  export CEO_SCHEDULER=daemon
+  local missing_dir="$TEST_HOME/code/deleted-worktree"
+
+  _setup_mock_daemon_definition "$missing_dir"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "nonexistent directory" \
+    "doctor must flag when daemon agent points to nonexistent directory"
+  assert_contains "$output" "$missing_dir" \
+    "doctor must name the missing path"
+  assert_contains "$output" "Repoint the agent to the main clone" \
+    "doctor must print the reload remediation"
+  _assert_doctor_fails "$rc" "doctor must return non-zero when schedulerd path does not exist"
+}
+
+test_doctor_flags_schedulerd_configured_from_external_directory() {
+  export CEO_SCHEDULER=daemon
+  local ext_repo="$TEST_HOME/code/other-repo"
+  mkdir -p "$ext_repo/lib/scheduler"
+
+  _setup_mock_daemon_definition "$ext_repo"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "runs from external directory" \
+    "doctor must flag when daemon agent points to external repository"
+  assert_contains "$output" "other-repo" \
+    "doctor must name the external repository"
+  assert_contains "$output" "Repoint the agent to the main clone" \
+    "doctor must print the reload remediation"
+  _assert_doctor_fails "$rc" "doctor must return non-zero when schedulerd points to external repo"
+}
+
+test_doctor_passes_when_schedulerd_configured_from_main_clone() {
+  export CEO_SCHEDULER=daemon
+  _setup_mock_daemon_definition "$(_main_clone_under_test)"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd agent configured from main clone" \
+    "doctor must report healthy when daemon agent is configured from main clone"
+}
+
+test_doctor_passes_when_schedulerd_reaches_main_clone_through_symlink() {
+  export CEO_SCHEDULER=daemon
+  ln -s "$(_main_clone_under_test)" "$TEST_HOME/main-link"
+  _setup_mock_daemon_definition "$TEST_HOME/main-link"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd agent configured from main clone" \
+    "a symlinked path to the main clone is the main clone"
+  assert_not_contains "$output" "runs from external directory" \
+    "a symlinked path to the main clone must not read as external"
+}
+
+test_doctor_passes_when_schedulerd_working_directory_has_trailing_slash() {
+  export CEO_SCHEDULER=daemon
+  local main_clone
+  main_clone="$(_main_clone_under_test)"
+  _setup_mock_daemon_definition "$main_clone" "$main_clone/"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd agent configured from main clone" \
+    "a trailing slash on the main clone path must not read as external"
+}
+
+test_doctor_warns_when_schedulerd_definition_is_unreadable() {
+  export CEO_SCHEDULER=daemon
+  _setup_mock_daemon_definition "/unused"
+  printf '<plist version="1.0"><dict></dict></plist>\n' > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist"
+  printf '[Service]\nType=simple\n' > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "its repo path could not be read" \
+    "a definition with no readable repo path must be reported, not skipped"
+}
+
+test_doctor_silent_on_schedulerd_repo_when_no_definition() {
+  export CEO_SCHEDULER=daemon
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-none" CEO_SYSTEMD_DIR="$TEST_HOME/systemd-none"
+  mkdir -p "$CEO_LAUNCHD_DIR" "$CEO_SYSTEMD_DIR"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_not_contains "$output" "ceo-schedulerd agent" \
+    "no definition means no schedulerd-agent line"
+  assert_not_contains "$output" "its repo path could not be read" \
+    "no definition is not an unreadable definition"
+}
+
 # --- #159 / D1: Linux crontab block is a migration leftover ---
 #
 # The Linux sibling of the macOS orphan check above. The native crontab install
