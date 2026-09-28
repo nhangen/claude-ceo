@@ -37,7 +37,9 @@ _registry_schema_error() {
   local rc="$1"
   case "$rc" in
     1) echo "No registry found. Run: ceo playbook scan" >&2 ;;
-    2) echo "Registry schema_version missing, malformed, or below $CEO_REGISTRY_SCHEMA_VERSION. Run: ceo playbook scan" >&2 ;;
+    2) echo "Registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on an older binary). Run: ceo playbook scan" >&2 ;;
+    3) echo "Registry schema_version missing or malformed. Run: ceo playbook scan" >&2 ;;
+    4) echo "Registry path unresolvable: HOME is unset or empty and CEO_REGISTRY_FILE is not set" >&2 ;;
     *) echo "Registry validation failed (rc=$rc)" >&2 ;;
   esac
 }
@@ -373,7 +375,7 @@ cmd_doctor() {
     local registry_rc=0
     ceo_registry_validate "$registry_file" || registry_rc=$?
     if [ "$registry_rc" != "0" ]; then
-      echo "  ✗ $(_registry_schema_error "$registry_rc")"
+      echo "  ✗ $(_registry_schema_error "$registry_rc" 2>&1)"
       fail=$((fail + 1))
     else
       local missing_bins=0 bin_total=0
@@ -638,10 +640,11 @@ cmd_doctor() {
   # running, or (the morning-report bug) runs but silently stopped delivering to
   # Discord. Complements the daemon-heartbeat check above: that catches the whole
   # daemon dying; this catches one playbook wedged or gated while the daemon lives.
-  local _fresh_out _fr_stale
+  local _fresh_out _fr_stale _fr_state_dir
   # The cooldown stamps moved to the host-local state dir in #394; the dispatcher
   # writes them there, so this reads there.
-  _fresh_out=$(_doctor_check_freshness "$(_ceo_registry_path)" "$(_ceo_state_dir)")
+  _fr_state_dir=$(_ceo_state_dir)
+  _fresh_out=$(_doctor_check_freshness "$registry_file" "$_fr_state_dir")
   # `|| true`: under `set -e` a non-matching grep exits 1 and aborts cmd_doctor
   # before it prints its Result line — so doctor silently truncated on exactly
   # the healthy hosts where there was nothing to report.
@@ -2438,7 +2441,8 @@ _run_scheduler_cli() {
     echo "ERROR: scheduler dependencies not installed. Run: (cd $sched_dir && bun install)" >&2
     return 1
   fi
-  _require_registry_current "$(_ceo_registry_path)"
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
   ( cd "$sched_dir" && bun run src/status.ts "$sub" "$@" )
 }
 
