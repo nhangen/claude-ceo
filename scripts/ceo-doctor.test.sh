@@ -444,9 +444,9 @@ test_doctor_no_legacy_warning_when_only_daemon_agent() {
 
 # --- #501: schedulerd LaunchAgent/systemd service runs from a feature worktree, not main clone ---
 
-# _setup_mock_daemon_definition <repo_dir> [working_directory]
+# _setup_mock_daemon_definition <repo_dir> [working_directory]  (default: <repo_dir>/lib/scheduler)
 _setup_mock_daemon_definition() {
-  local repo_dir="$1" wd="${2:-$1/lib/scheduler}"
+  local wd="${2:-$1/lib/scheduler}"
   export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-$CURRENT_TEST"
   export CEO_SYSTEMD_DIR="$TEST_HOME/systemd-$CURRENT_TEST"
   mkdir -p "$CEO_LAUNCHD_DIR" "$CEO_SYSTEMD_DIR"
