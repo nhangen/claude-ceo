@@ -7,6 +7,7 @@ turn (non-throwing-client-success-check).
 """
 import http.client
 import json
+import re
 import socket
 import sys
 import time
@@ -112,13 +113,67 @@ def _note(provenance, key, value, limit=None):
     seen.append(value)
 
 
+REDACTED = "***REDACTED***"
+
+# Credential shapes scrubbed from upstream text before it is cut or escaped. A
+# proxy's error body is arbitrary text and can echo request content -- the
+# prompt, which carries file contents the model read -- and cli.py persists the
+# resulting message to runs.jsonl (#493). A denylist fails open on shapes it
+# does not name, which is why it runs here, on the raw body: escaping first turns
+# a newline into a literal `\n` whose `n` hides a line-initial `TOKEN=` from the
+# word-boundary guard, and cutting first can split `user:pass@` from its `@`.
+# The marker and coverage track scripts/ceo-cron.sh `_redact_secrets`.
+_NOT_ALNUM = r"(?<![A-Za-z0-9])"
+# Provider prefixes are split across adjacent literals so this source does not
+# itself match a secret scanner's key detectors.
+_SECRET_PATTERNS = (
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)",
+                re.S), REDACTED),
+    (re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,31}://)[^/\s@]{1,256}@"), r"\1" + REDACTED + "@"),
+    (re.compile(r"\b((?:proxy-)?authorization|(?:set-)?cookie)(\s*:\s*)"
+                r"(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+", re.I), r"\1\2" + REDACTED),
+    (re.compile(_NOT_ALNUM + r"(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", re.I), r"\1 " + REDACTED),
+    (re.compile(_NOT_ALNUM + r"(?:gh[pousr]_|github_pat_|gl" r"pat-|hf_|npm_|xox[abprs]-|sk-|"
+                r"(?:sk|rk|pk)_(?:live|test)_)[A-Za-z0-9_-]{8,}"), REDACTED),
+    (re.compile(_NOT_ALNUM + r"(?:AK" r"IA[0-9A-Z]{16}|AI" r"za[0-9A-Za-z_-]{35})"), REDACTED),
+    (re.compile(_NOT_ALNUM + r"(token)\s+[A-Za-z0-9._~+/=-]{16,}", re.I), r"\1 " + REDACTED),
+    (re.compile(_NOT_ALNUM + r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"), REDACTED),
+    # Keys like HF_TOKEN or refresh_token: the name may carry a `_`-joined
+    # prefix, which a leading \b would refuse. A value that is only digits is
+    # a count ("token: 4096"), not a credential.
+    (re.compile(_NOT_ALNUM + r"([A-Za-z0-9_-]{0,64}?(?:api[_-]?key|token|secret|password|passwd|pwd|"
+                r"passphrase|private[_-]?key|credentials?))"
+                r"([\"']?\s*[:=]\s*[\"']?)(?![0-9]+(?:[\s\"',}&]|$))(?!\*\*\*REDACTED)"
+                r"[^\s\"',}&]+", re.I), r"\1\2" + REDACTED),
+)
+
+
+# How far past the cut redaction looks. Redacting the whole body would let a
+# large one (an echoed base64 image, a 1 MB proxy page) cost seconds to minutes
+# of regex work on every retry; a window this much wider than any credential
+# still catches one that straddles the cut.
+REDACT_WINDOW = 4096
+
+
+def redact_secrets(text):
+    """`text` with the credential shapes in `_SECRET_PATTERNS` replaced.
+
+    Callers bound `text` first (see `REDACT_WINDOW`); the patterns are linear per
+    match but not over arbitrarily long unbroken runs."""
+    for pattern, repl in _SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def _error_excerpt(text, limit=200):
-    """The first `limit` chars of an upstream body, safe to put on one log line.
+    """The first `limit` chars of an upstream body, redacted and safe to put on one log line.
 
     Escaped, not raw: ollama-author.sh classifies a run by line-anchored
     patterns in the log these messages land in (`^REFUSED`, `...Error:`), so a
     multi-line upstream body could forge one of those lines and change how the
-    run is retried."""
+    run is retried. Redacted before the cut and the escape, for the reasons
+    `_SECRET_PATTERNS` gives."""
+    text = redact_secrets(text[:limit + REDACT_WINDOW])
     return text[:limit].replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
 
 

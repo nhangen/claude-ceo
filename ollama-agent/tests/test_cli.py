@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cli  # noqa: E402
+from ollama_agent.transport import parse_chat_response  # noqa: E402
 
 
 def _rule(d, name, desc):
@@ -1051,6 +1052,7 @@ def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_pat
     assert row["reason"] == "error"
     assert row["warnings"] == []
     assert row["error_class"] == "RuntimeError"
+    assert row["error"] == "model transport failed mid-run"
     assert row["ollama_input_tokens"] == 50
     assert row["ollama_output_tokens"] == 15
     # 2 turns carrying 1 turn's tokens is the intended reading: on a crash row
@@ -1113,9 +1115,192 @@ def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, cap
     assert row["verified"] is None
     assert row["reason"] == "killed"
     assert row["error_class"] == "KeyboardInterrupt"
+    # A bare Ctrl-C has no message; the class alone is error_class's job.
+    assert row["error"] is None
     assert row["ollama_input_tokens"] == 30
     assert row["ollama_output_tokens"] == 10
     assert row["turns"] == 2
+
+
+def test_cli_crashed_run_records_error_detail_in_ledger_row(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def failing_transport(messages, tools):
+        raise RuntimeError("ollama HTTP 503 after 3 attempts: no healthy backends")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
+    assert row["error"] == "ollama HTTP 503 after 3 attempts: no healthy backends"
+
+
+def test_cli_clean_run_records_error_null(tmp_path, monkeypatch):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def clean_transport(messages, tools):
+        return ({"role": "assistant", "content": "done"}, {"input": 10, "output": 5})
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: clean_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is True
+    assert row["error"] is None
+
+
+def test_cli_crashed_run_caps_and_escapes_error_message(tmp_path, monkeypatch):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    long_msg = "line1\nline2\n" + "x" * 250
+    def failing_transport(messages, tools):
+        raise ValueError(long_msg)
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    raw = ledger.read_text().strip()
+    assert len(raw.splitlines()) == 1
+    row = json.loads(raw)
+    assert row["reason"] == "error"
+    assert "\n" not in row["error"]
+    assert "\\n" in row["error"]
+    assert row["error_class"] == "ValueError"
+    assert row["error"].startswith("line1\\nline2\\n")
+    # Capped at 200 raw chars, then escaped: 12 raw chars of prefix, 188 x's.
+    assert row["error"] == "line1\\nline2\\n" + "x" * 188
+
+
+def _crash_error(tmp_path, monkeypatch, exc_factory):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def failing_transport(messages, tools):
+        raise exc_factory()
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    return json.loads(ledger.read_text().strip())["error"]
+
+
+# Provider-shaped fixtures are assembled from pieces so no source literal
+# trips a secret scanner; each still equals the credential shape it tests.
+@pytest.mark.parametrize("raw, leaked, kept", [
+    ("ollama unreachable at http://alice:hunter2@gpu-box:11434/api/chat: refused",
+     "hunter2", "http://***REDACTED***@gpu-box:11434"),
+    ("upstream said Authorization: Bearer abc.def-ghi123 rejected",
+     "abc.def-ghi123", "Authorization: ***REDACTED***"),
+    ("upstream said Bearer abc.def-ghi123 rejected", "abc.def-ghi123", "Bearer ***REDACTED***"),
+    ("upstream said Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz", "Authorization: ***REDACTED***"),
+    ("upstream said Authorization: Token abcdef123456", "abcdef123456", "Authorization: ***REDACTED***"),
+    ("upstream said cookie: session=abc123", "abc123", "cookie: ***REDACTED***"),
+    ('{"api_key": "s3cr3tvalue", "model": "m"}', "s3cr3tvalue", '"api_key": "***REDACTED***"'),
+    ("echoed prompt: export HF_TOKEN=abcdefgh123 done", "abcdefgh123", "HF_TOKEN=***REDACTED***"),
+    ("echoed: DATABASE_PASSWORD=hunter2hunter2", "hunter2hunter2", "DATABASE_PASSWORD=***REDACTED***"),
+    ("echoed: refresh_token=abcdef123456", "abcdef123456", "refresh_token=***REDACTED***"),
+    ("echoed: access_token=abcdef123456", "abcdef123456", "access_token=***REDACTED***"),
+    ("echoed: password: hunter2", "hunter2", "password: ***REDACTED***"),
+    ("echoed: passwd=hunter2", "hunter2", "passwd=***REDACTED***"),
+    ("echoed prompt: key " + "sk-" + "proj-" + "ABCDEFGHIJ0123456789 end", "ABCDEFGHIJ", "key ***REDACTED*** end"),
+    ("echoed: " + "sk_" + "live_" + "ABCDEFGHIJKLMNOP1234 end", "ABCDEFGHIJ", "***REDACTED*** end"),
+    ("echoed: " + "gh" + "u_" + "abcdefghijklmnop1234 end", "abcdefghij", "***REDACTED*** end"),
+    ("echoed: " + "gl" + "pat-" + "ABCDEFGHIJKLMNOPQRST end", "ABCDEFGHIJ", "***REDACTED*** end"),
+    ("echoed: " + "xo" + "xb-" + "1234567890-abcdef end", "1234567890", "***REDACTED*** end"),
+    ("echoed: " + "AK" + "IA" + "ABCDEFGHIJKLMNOP end", "AK" + "IA" + "ABCDEFGHIJKLMNOP", "***REDACTED*** end"),
+    ("echoed: " + "AI" + "za" + "SyA1234567890" + "abcdefghijklmnopqrstuv end", "SyA1234567890", "***REDACTED*** end"),
+    ("echoed: Token abcdefghijklmnop1234 end", "abcdefghijklmnop1234", "Token ***REDACTED*** end"),
+    ("echoed: passphrase=correcthorse", "correcthorse", "passphrase=***REDACTED***"),
+    ("echoed: private_key=abcdef123456", "abcdef123456", "private_key=***REDACTED***"),
+    ("echoed: DB_URL=postgres://u:pw1234@db/x", "pw1234", "postgres://***REDACTED***@db"),
+    ("echoed: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig end", "eyJzdWIiOiIxIn0", "***REDACTED*** end"),
+    ("echoed: -----BEGIN RSA PRIVATE KEY-----MIIEowIBAAKCAQEA", "MIIEow", "echoed: ***REDACTED***"),
+])
+def test_cli_crashed_run_redacts_credentials_in_error(tmp_path, monkeypatch, raw, leaked, kept):
+    # #493: a proxy error body can echo request content, and the url can carry
+    # userinfo; runs.jsonl persists and token-scope reads it.
+    error = _crash_error(tmp_path, monkeypatch, lambda: RuntimeError(raw))
+    assert leaked not in error
+    assert kept in error
+
+
+@pytest.mark.parametrize("raw", [
+    "basic validation failed for field x",
+    "prompt used token: 4096 of the window",
+    "max_tokens=4096 exceeded",
+    "ollama unreachable at http://gpu-box:11434/api/chat: refused",
+    "ollama HTTP 503 after 3 attempts: no healthy backends for model qwen3:32b",
+    "token budget exceeded; num_ctx=32768 max_tokens: 4096",
+])
+def test_cli_crashed_run_keeps_diagnostic_text_unredacted(tmp_path, monkeypatch, raw):
+    assert _crash_error(tmp_path, monkeypatch, lambda: RuntimeError(raw)) == raw
+
+
+@pytest.mark.parametrize("body, leaked", [
+    ("echo:\nTOKEN=abcdef123", "abcdef123"),
+    ("echo:\n" + "gh" + "p_" + "abcdefghijklmnop1234", "abcdefghij"),
+    ("echo:\r\nsecret=xyz12345", "xyz12345"),
+    ("echo:\nAuthorization: Bearer abcdefgh1234", "abcdefgh1234"),
+    # The transport cuts the body at 200; a userinfo whose `@` lands past the
+    # cut must still go, so redaction has to run before the cut.
+    ("x" * 150 + "http://alice:hunter2longpassword" + "p" * 40 + "@host/", "hunter2"),
+])
+def test_cli_transport_error_body_is_redacted_before_escape_and_cut(tmp_path, monkeypatch,
+                                                                      body, leaked):
+    # Drives the real parse_chat_response, whose excerpt escapes and cuts the
+    # body before cli.py ever sees it -- the path #441/#447 bodies take.
+    def raise_from_transport():
+        try:
+            parse_chat_response(502, body)
+        except RuntimeError as e:
+            return e
+        raise AssertionError("parse_chat_response did not raise")
+
+    error = _crash_error(tmp_path, monkeypatch, raise_from_transport)
+    assert error.startswith("ollama HTTP 502: ")
+    assert leaked not in error
+    assert "REDACTED" in error
+
+
+def test_cli_transport_error_is_escaped_once(tmp_path, monkeypatch):
+    def raise_from_transport():
+        try:
+            parse_chat_response(502, "line1\nline2 a\\b")
+        except RuntimeError as e:
+            return e
+
+    error = _crash_error(tmp_path, monkeypatch, raise_from_transport)
+    assert error == "ollama HTTP 502: line1\\nline2 a\\\\b"
+
+
+def test_cli_crashed_run_redacts_before_capping(tmp_path, monkeypatch):
+    # Capped first, the token would keep "sk-ABCD": too short to match the
+    # 8-char minimum, so only redacting the whole message scrubs it.
+    error = _crash_error(tmp_path, monkeypatch,
+                         lambda: RuntimeError("x" * 192 + " sk-ABCDEFGHIJKLMNOP"))
+    assert "sk-" not in error
+
+
+def test_cli_crashed_run_escapes_other_control_characters(tmp_path, monkeypatch):
+    error = _crash_error(tmp_path, monkeypatch, lambda: RuntimeError("a\tb\x1bc"))
+    assert error == "a\\tb\\x1bc"
+
+
+def test_cli_crashed_run_survives_an_unprintable_exception(tmp_path, monkeypatch):
+    class Unprintable(Exception):
+        def __str__(self):
+            raise ValueError("no")
+
+    assert _crash_error(tmp_path, monkeypatch, Unprintable) == "<unprintable Unprintable>"
 
 
 def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, capsys):
@@ -1279,6 +1464,8 @@ def test_cli_sigterm_writes_a_killed_ledger_row(tmp_path):
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "killed"
     assert row["error_class"] == "_Terminated"
+    # The killed arm plumbs the message too; a bare Ctrl-C only pins its null case.
+    assert row["error"] == "signal 15"
     assert row["completed"] is False
     assert row["ollama_input_tokens"] == 77
     assert row["ollama_output_tokens"] == 33
@@ -1525,3 +1712,18 @@ def test_cli_task_tools_allowlist_enforced_at_dispatch_rejects_unadmitted_tool(t
     assert not marker.exists(), "unadmitted tool call must not execute shell command"
     rec = json.loads(capsys.readouterr().out)
     assert rec["unknown_calls"] == ["run_shell"]
+
+
+def test_cli_stderr_line_keeps_more_than_the_ledger_cap(tmp_path, monkeypatch, capsys):
+    tail = "raise --num-ctx to fix"
+    error = _crash_error(tmp_path, monkeypatch, lambda: RuntimeError("y" * 300 + tail))
+    assert len(error) == 200
+    assert tail in capsys.readouterr().err
+
+
+def test_cli_crashed_run_redacts_the_stderr_line_too(tmp_path, monkeypatch, capsys):
+    _crash_error(tmp_path, monkeypatch,
+                 lambda: RuntimeError("echoed: export HF_TOKEN=abcdefgh123"))
+    err = capsys.readouterr().err
+    assert "agent failed: RuntimeError: echoed: export HF_TOKEN=***REDACTED***" in err
+    assert "abcdefgh123" not in err

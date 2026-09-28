@@ -163,6 +163,23 @@ def test_append_run_verify_cmd_absent_reads_as_null(tmp_path):
     assert json.loads(p.read_text().strip())["verify_cmd"] is None
 
 
+def test_append_run_records_error_field(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(completed=False, reason="error",
+                    error="ollama HTTP 503 after 3 attempts: no healthy backends"),
+               "m", "t", "/c", path=str(p))
+    line = json.loads(p.read_text().strip())
+    assert line["reason"] == "error"
+    assert line["error"] == "ollama HTTP 503 after 3 attempts: no healthy backends"
+
+
+def test_append_run_error_absent_reads_as_null(tmp_path):
+    # #493: clean runs without error write error: null, not omitting the key.
+    p = tmp_path / "runs.jsonl"
+    append_run(_rec(), "m", "t", "/c", path=str(p))
+    assert json.loads(p.read_text().strip())["error"] is None
+
+
 def test_append_run_records_error_class(tmp_path):
     p = tmp_path / "runs.jsonl"
     append_run(_rec(completed=False, verified=None, reason="error", error_class="RuntimeError"),

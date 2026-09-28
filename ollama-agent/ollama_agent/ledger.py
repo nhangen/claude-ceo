@@ -93,12 +93,18 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     inline credentials.
 
     `error_class` holds the crashing exception's class name, `type(e).__name__`,
-    and never its message: a transport message can carry a response body (#505,
-    no-secrets-in-logs). It is null on every row whose `reason` is not `error` or
+    and never its message (#505). It is null on every row whose `reason` is not `error` or
     `killed`, and a row from before #505 has no key, per the rule above. On a
     `killed` row, `_Terminated` means a supervisor sent SIGTERM or SIGHUP and
     `KeyboardInterrupt` means Ctrl-C, so that class name is part of this
     contract.
+
+    `error` holds the message without the class, credential shapes redacted,
+    capped at 200 chars and escaped onto one line (#493). A transport message can
+    carry an upstream response body, and a proxy's body can echo request content,
+    so the field is bounded rather than raw. It is null on a clean row and on a
+    crash whose exception has no message (a bare Ctrl-C), and a row from before
+    #493 has no key.
 
     `scripts/ceo-model-ledger.sh` appends claude-tier, interactive-tier, and
     ceo-loop rows to this same file. It always writes `verified`,
@@ -106,8 +112,8 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     claude-tier and interactive-tier writers, and the real gate for ceo-loop,
     whose runs are always verify-gated (#491). Those rows carry `writer`, which
     is how a reader tells them from Python rows. The other Python-only keys —
-    `turns`, `reason`, `error_class`, `warnings`, the token counts, and the provenance keys —
-    are absent on `writer` rows, and there the absence carries no dating meaning.
+    `turns`, `reason`, `error_class`, `error`, `warnings`, the token counts, and the
+    provenance keys — are absent on `writer` rows, and there the absence carries no dating meaning.
     """
     p = Path(path) if path is not None else ledger_path()
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -127,6 +133,7 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
         "verify_cmd": rec.get("verify_cmd"),
         "reason": rec.get("reason"),
         "error_class": rec.get("error_class"),
+        "error": rec.get("error"),
         # Absent on a pre-#384 row, [] on a run that had nothing to warn about --
         # the same absent-vs-empty distinction the provenance fields keep, and for
         # the same reason: an old row must not read as a fresh clean one.
