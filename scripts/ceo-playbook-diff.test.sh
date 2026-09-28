@@ -37,7 +37,6 @@ test_clean_returns_0_and_says_no_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "0" "clean → exit 0"
   assert_contains "$out" "No drift detected" "clean → no-drift message"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_clean_quiet_silent() {
@@ -46,7 +45,6 @@ test_clean_quiet_silent() {
   out=$(bash "$CEO_CLI" playbook diff --quiet 2>&1); rc=$?
   assert_eq "$rc" "0" "clean --quiet → exit 0"
   assert_eq "$out" "" "clean --quiet → empty stdout+stderr"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_vault_only_drift() {
@@ -55,7 +53,6 @@ test_vault_only_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "1" "vault-only → exit 1"
   assert_contains "$out" "Vault only: only-in-vault.md" "drift message"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_repo_only_drift() {
@@ -64,7 +61,6 @@ test_repo_only_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "1" "repo-only → exit 1"
   assert_contains "$out" "Repo only: only-in-repo.md" "drift message"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_differs_shows_unified_diff() {
@@ -75,7 +71,6 @@ test_differs_shows_unified_diff() {
   assert_eq "$rc" "1" "differs → exit 1"
   assert_contains "$out" "Differs: foo.md" "differs label"
   assert_contains "$out" "+++" "unified diff header present"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_quiet_on_drift_silent_but_nonzero() {
@@ -84,7 +79,6 @@ test_quiet_on_drift_silent_but_nonzero() {
   out=$(bash "$CEO_CLI" playbook diff --quiet 2>&1); rc=$?
   assert_eq "$rc" "1" "quiet drift → exit 1"
   assert_eq "$out" "" "quiet drift → no output"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_quiet_arg_forwarded_from_dispatcher() {
@@ -94,7 +88,6 @@ test_quiet_arg_forwarded_from_dispatcher() {
   local out
   out=$(bash "$CEO_CLI" playbook diff --quiet 2>&1 || true)
   assert_not_contains "$out" "Vault only" "dispatcher must forward --quiet flag"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_vault_dir_returns_2_not_1() {
@@ -102,7 +95,6 @@ test_missing_vault_dir_returns_2_not_1() {
   local rc=0
   bash "$CEO_CLI" playbook diff --quiet >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "2" "missing vault dir → exit 2 (distinct from drift's 1)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_repo_dir_returns_2() {
@@ -110,7 +102,6 @@ test_missing_repo_dir_returns_2() {
   local rc=0
   bash "$CEO_CLI" playbook diff --quiet >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "2" "missing repo dir → exit 2"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_unset_vault_fails_loudly() {
@@ -124,7 +115,6 @@ test_unset_vault_fails_loudly() {
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$out" "CEO_VAULT" "error must name the missing variable"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_both_dirs_empty_no_drift() {
@@ -132,7 +122,6 @@ test_both_dirs_empty_no_drift() {
   out=$(bash "$CEO_CLI" playbook diff); rc=$?
   assert_eq "$rc" "0" "both empty → exit 0"
   assert_contains "$out" "No drift detected" "both empty → no drift"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # --- #367: --help and unknown flags ---
@@ -144,7 +133,6 @@ test_diff_help_prints_usage_and_reports_no_drift_scan() {
   assert_eq "$rc" "0" "diff --help → exit 0"
   assert_contains "$out" "Usage: ceo playbook diff" "diff --help → usage"
   assert_not_contains "$out" "No drift detected" "diff --help must not run the comparison"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_diff_rejects_unknown_flag() {
@@ -155,7 +143,6 @@ test_diff_rejects_unknown_flag() {
   out=$(bash "$CEO_CLI" playbook diff --quite 2>&1); rc=$?
   assert_eq "$rc" "1" "diff → exit 1 on an unrecognized flag"
   assert_contains "$out" "unknown diff argument" "diff must name the flag it rejected"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

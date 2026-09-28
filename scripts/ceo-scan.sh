@@ -26,6 +26,8 @@ YESTERDAY=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
 # be created or a legacy file that could not be moved; either way this script
 # degrades to fresh state, and its own writes are already guarded. Only the cron
 # dispatcher refuses to run on rc=2, because only it half-applies bookkeeping.
+# A state dir that cannot even be resolved (HOME unset, no CEO_STATE_DIR) prints
+# nothing, so the path here is empty; the vault gate above aborts first today.
 LAST_SCAN_MARKER=$(_ceo_state_migrate ".last-scan") || true
 
 # --- Create scan marker if missing (first run = yesterday midnight) ---

@@ -54,7 +54,8 @@ Entry shape (`tasks.<name>`):
   "min_score": 0.9,            // optional; refuse unless the model earned this on eval_task
   "eval_task": "think-02",     // required WHEN min_score is set ("*" = cross-task mean)
   "eval_model": null,          // optional; override which model's score is checked
-  "mcp": null                  // optional; MCP server command, launched over stdio
+  "mcp": null,                 // optional; MCP server command, launched over stdio
+  "verify": null               // optional; verification command to gate unattended runs
 }
 ```
 
@@ -67,6 +68,19 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   when `min_score` is set — use `eval_task: "*"` to opt into the cross-task mean; an aggregate
   default would let a model that fails the task that matters pass on unrelated tasks. A missing
   score is a refusal, not a silent pass. `eval_model` overrides which model's score is checked.
+- `verify` (optional) is a verification command string (e.g. `"pytest -q"`). When set, it must
+  be a non-empty string; an empty or whitespace-only string is rejected at parse time. A non-empty
+  `--verify-cmd` on the command line overrides it. `ceo-cron.sh` passes `--registry`, and the
+  bridge adopts `verify` from it, so unattended runs are gated the same way (#486).
+- A `low-stakes-write` task needs a gate: with no `verify` and no `--verify-cmd`, the bridge
+  refuses it (exit 3) before any model call. A write run that succeeds only because the model
+  stopped calling tools is not a success signal. `deterministic` tasks may run ungated.
+- Every name in a `tools` allowlist must be a built-in tool, `use_skill` (only with
+  `skills: true`), or `mcp__<tool>` (only with `mcp` set). Anything else, including a typo or
+  a raw MCP tool name, is refused at parse time (exit 2) rather than dropped at dispatch.
+  `"tools": []` (with `skills` false) is allowed and runs the task with no tools, the registry's equivalent of
+  `--no-tools`. `skills` must be a boolean, and `skills: true` with a list-form `tools` must include
+  `use_skill`, since the catalog would otherwise advertise a tool dispatch refuses.
 - A `tools` allowlist carrying `write_file` without `edit_file` warns on stderr at parse time
   (advisory, never a refusal). Pair them so the model can make surgical edits instead of
   rewriting whole files.
@@ -76,6 +90,11 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   command line overrides it. MCP tools are named `mcp__<tool>` in a `tools` allowlist. If the
   allowlist admits none of the server's tools, the run is refused (exit 2) and the server is shut
   down, whether the server came from the registry or from `--mcp`.
+- `--registry` takes inline JSON (anything beginning with `{`) or a path. A relative path resolves
+  against `--cwd` (default: the process working directory), which under cron is `$CEO_DIR`. A
+  path that is missing or not a file, a file that is not valid JSON, and a registry that is not an
+  object with a `tasks` object are all refused (exit 2) with a message naming the file when there
+  is one, never parsed as inline JSON. A relative `--scores` still resolves against the process working directory.
 
 ## Tools
 
@@ -91,9 +110,11 @@ The model is given six real tools, each bounded (timeout + truncated output) and
 | `list_dir` | list a directory under cwd |
 
 **Trust boundary:** `run_shell` runs arbitrary commands by design — that *is* the tool.
-There is no command allowlist or path jail yet; per-task tool restriction and
-safe-delegation tiering arrive in the governance slice (#190). Until then, treat this
-as a deliberately-invoked local tool: you choose `--cwd` and the model you trust.
+There is no command allowlist or path jail yet. A registered task's `tools` allowlist is
+enforced inside `ToolBox.dispatch`, not only in the schemas offered to the model: a call to a
+tool outside it is refused as unknown and recorded in `unknown_calls`, which ceo-cron treats as
+a failed run. Beyond that, treat this as a deliberately-invoked local tool: you choose `--cwd`
+and the model you trust.
 
 ## Batch delegation (the recipe that saves money)
 
