@@ -684,7 +684,7 @@ test_doctor_stignore_clean_when_live_file_matches_repo() {
     assert_contains "$output" "host-local runtime state is not syncing" \
       "a deployed .stignore must read as clean"
   else
-    assert_eq "skip" "skip" "repo shared.stignore not reachable from the test bin path"
+    skip_test "repo shared.stignore not reachable from the test bin path"
   fi
 }
 
