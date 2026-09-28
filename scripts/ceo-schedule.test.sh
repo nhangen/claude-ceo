@@ -96,21 +96,13 @@ test_malformed_overrides_json_warns_and_ignored() {
 
 test_validate_cron_expr_accepts_valid_forms() {
   for expr in "0 0 * * *" "57 8 * * 1-5" "*/5 * * * *" "0 9,13,17 * * 1-5"; do
-    if ! _validate_cron_expr "$expr" >/dev/null 2>&1; then
-      printf '  FAIL [%s] valid expr rejected: %q\n' "$CURRENT_TEST" "$expr"
-      FAILS=$((FAILS + 1))
-    fi
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    assert_eq "$(_validate_cron_expr "$expr" >/dev/null 2>&1 && echo 1 || echo 0)" "1" "valid expr rejected: $expr"
   done
 }
 
 test_validate_cron_expr_rejects_bad_forms() {
   for expr in "0 0 * *" "0 0 * * * *" "abc def ghi jkl mno" ""; do
-    if _validate_cron_expr "$expr" >/dev/null 2>&1; then
-      printf '  FAIL [%s] invalid expr accepted: %q\n' "$CURRENT_TEST" "$expr"
-      FAILS=$((FAILS + 1))
-    fi
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+    assert_eq "$(_validate_cron_expr "$expr" >/dev/null 2>&1 && echo 1 || echo 0)" "0" "invalid expr accepted: $expr"
   done
 }
 

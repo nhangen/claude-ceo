@@ -87,7 +87,6 @@ test_status_active_recorded_active_in_registry() {
   local crontab
   crontab=$(cat "$HOME/.fake-crontab")
   assert_not_contains "$crontab" "ceo:p-active" "scan must NOT install a cron line for an active playbook"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_draft_recorded_draft_in_registry() {
@@ -95,7 +94,6 @@ test_status_draft_recorded_draft_in_registry() {
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   assert_eq "$(_registry_status p-draft)" "draft" \
     "draft playbook must be recorded draft (daemon must not dispatch a non-active status)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_disabled_recorded_disabled_in_registry() {
@@ -103,7 +101,6 @@ test_status_disabled_recorded_disabled_in_registry() {
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   assert_eq "$(_registry_status p-disabled)" "disabled" \
     "disabled playbook must be recorded disabled (daemon must not dispatch it)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_toggle_active_to_disabled_updates_registry() {
@@ -115,7 +112,6 @@ test_status_toggle_active_to_disabled_updates_registry() {
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   assert_eq "$(_registry_status p-toggle)" "disabled" \
     "disabled rescan must flip the registry status so the daemon stops dispatching it"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_invalid_rejects_at_parse() {
@@ -128,7 +124,6 @@ test_status_invalid_rejects_at_parse() {
   local registry_has
   registry_has=$(jq -r '[.playbooks[] | select(.name=="p-typo")] | length' "$REGISTRY_FILE" 2>/dev/null)
   assert_eq "$registry_has" "0" "rejected playbook must not land in the registry"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_invalid_exits_nonzero() {
@@ -136,7 +131,6 @@ test_status_invalid_exits_nonzero() {
   local rc=0
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "1" "unknown-status SKIP must propagate non-zero exit per enum-config-typo-fallback"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_scan_rejects_unknown_argument() {
@@ -149,7 +143,6 @@ test_scan_rejects_unknown_argument() {
   local crontab
   crontab=$(cat "$HOME/.fake-crontab")
   assert_eq "$crontab" "" "unknown scan argument must NOT touch the crontab"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_status_missing_defaults_to_inactive() {
@@ -170,7 +163,6 @@ PB
   local registry_has
   registry_has=$(jq -r '[.playbooks[] | select(.name=="p-empty")] | length' "$REGISTRY_FILE" 2>/dev/null)
   assert_eq "$registry_has" "1" "missing-status playbook must still land in registry (back-compat)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_dry_run_does_not_modify_crontab() {
@@ -180,7 +172,6 @@ test_dry_run_does_not_modify_crontab() {
   local crontab
   crontab=$(cat "$HOME/.fake-crontab")
   assert_eq "$crontab" "" "scan --dry-run must not write to the crontab"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_dry_run_does_not_write_registry() {
@@ -190,7 +181,6 @@ test_dry_run_does_not_write_registry() {
   local exists="missing"
   [ -f "$REGISTRY_FILE" ] && exists="present"
   assert_eq "$exists" "missing" "scan --dry-run must not create registry.json"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_dry_run_reports_summary_without_writing() {
@@ -199,7 +189,6 @@ test_dry_run_reports_summary_without_writing() {
   output=$(bash "$CEO_CLI" playbook scan --dry-run 2>&1)
   assert_contains "$output" "NOT written" "dry-run must declare that nothing was written"
   assert_contains "$output" "Registry:" "dry-run must report the registry summary"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_playbook_list_shows_draft_tag() {
@@ -211,7 +200,6 @@ test_playbook_list_shows_draft_tag() {
   output=$(bash "$CEO_CLI" playbook list 2>&1)
   assert_contains "$output" "p-wip" "list must include draft playbooks"
   assert_contains "$output" "draft" "list must surface the draft status"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_playbook_list_shows_disabled_tag() {
@@ -221,7 +209,6 @@ test_playbook_list_shows_disabled_tag() {
   output=$(bash "$CEO_CLI" playbook list 2>&1)
   assert_contains "$output" "p-off" "list must include disabled playbooks"
   assert_contains "$output" "disabled" "list must surface the disabled status"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_surfaces_drafts() {
@@ -233,7 +220,6 @@ test_doctor_surfaces_drafts() {
   # Drafts block but leaves the standard playbook enumeration intact fails.
   assert_contains "$output" "Drafts (not scheduled by the daemon" "doctor must emit the Drafts section header"
   assert_contains "$output" "p-doctor-wip" "doctor must list the draft playbook by name"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_invariant_non_active_repo_playbook_is_never_active_in_registry() {
@@ -269,7 +255,6 @@ PB
     "disabled repo playbook must be recorded as disabled, never active"
   assert_eq "$(_registry_status repo-draft)" "draft" \
     "draft repo playbook must be recorded as draft, never active"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 test_scan_persists_playbook_drift_alert_on_shadowed_drift() {
@@ -307,7 +292,6 @@ PB
   assert_contains "$content" "status: drift" "alert must carry status: drift frontmatter"
   assert_contains "$content" "count: 1" "alert must carry count frontmatter"
   assert_contains "$content" "since:" "alert must carry since timestamp"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_scan_drift_alert_refreshes_state() {
@@ -431,7 +415,6 @@ PB
   local exists="present"
   [ ! -f "$alert_file" ] && exists="missing"
   assert_eq "$exists" "missing" "scan must remove playbook-drift.md when trees are in sync"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
 }
 
 run_tests
