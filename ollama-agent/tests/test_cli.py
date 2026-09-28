@@ -399,6 +399,7 @@ def test_cli_registry_tools_allowlist_admitting_some_mcp_tools_runs(tmp_path, mo
     rc = _run_mcp_task(_mcp_registry(tmp_path, ["mcp__echo"]), tmp_path)
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"mcp__echo"}
+    assert captured["toolbox"].allowed_tools == {"mcp__echo"}
     assert "REFUSED" not in capsys.readouterr().err
 
 
@@ -406,14 +407,13 @@ def test_cli_registry_tools_allowlist_raw_mcp_tool_name_refuses(tmp_path, monkey
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
     _stub_mcp(monkeypatch, closed)
-    # raw name without the mcp__ prefix: the likeliest way to hit this
     rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file", "echo"]), tmp_path)
     assert rc == 2
     assert "tools" not in captured
-    assert closed["v"] is True
+    assert "cmd" not in closed
     err = capsys.readouterr().err
-    assert "warning: registry tools not available (ignored): echo" in err
-    assert "REFUSED: mcp server 'srv --flag' bridged 1 tool(s)" in err
+    assert "registry error: task 'mcp_task': unknown tool 'echo'" in err
+    assert "MCP tools use the mcp__<name> form" in err
 
 
 def test_cli_mcp_flag_forbidden_by_registry_allowlist_refuses(tmp_path, monkeypatch, capsys):
@@ -445,6 +445,7 @@ def test_cli_registered_deterministic_task_applies_model_and_runs(tmp_path, monk
                    "--registry", reg, "--task-name", "triage"])
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"run_shell", "git"}   # restricted to allowlist
+    assert captured["toolbox"].allowed_tools == {"run_shell", "git"}
     err = capsys.readouterr().err
     assert "model=registry-model:7b" in err and "tools restricted to:" in err
     assert "REFUSED" not in err
@@ -488,16 +489,29 @@ def test_cli_task_name_without_registry_returns_2(tmp_path, monkeypatch, capsys)
     assert "requires --registry" in capsys.readouterr().err
 
 
-def test_cli_registry_tool_typo_is_warned_not_silent(tmp_path, monkeypatch, capsys):
+def test_cli_registry_tool_typo_refuses_at_parse_time(tmp_path, monkeypatch, capsys):
     reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
                                  "tools": ["read-file", "git"]})  # 'read-file' is a typo
-    captured = {}
-    _stub(monkeypatch, captured)
+    _stub(monkeypatch, {})
     rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "registry error: task 't': unknown tool 'read-file'" in err
+
+
+def test_cli_registry_tool_unavailable_at_dispatch_is_warned(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                 "tools": ["git"]})
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-tools",
+                   "--registry", reg, "--task-name", "t"])
     assert rc == 0
-    assert _tool_names(captured["tools"]) == {"git"}   # only the valid name survives
-    assert "not available (ignored): read-file" in capsys.readouterr().err
+    assert _tool_names(captured["tools"]) == set()
+    err = capsys.readouterr().err
+    assert "warning: registry tools not available (ignored): git" in err
+    assert "tools restricted to: (none)" in err
 
 
 def test_cli_registry_rules_skills_propagation(tmp_path, monkeypatch, capsys):
@@ -1255,3 +1269,116 @@ def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert captured["toolbox"].mcp_readonly == {"mcp__genuine"}
     assert "(1 read-only)" in capsys.readouterr().err
+
+
+def test_cli_mcp_server_stderr_surfaces_on_bridge_failure(tmp_path, monkeypatch, capfd):
+    """#511: When an MCP server crashes, its stderr reason surfaces in CLI stderr."""
+    _stub(monkeypatch, {})
+    server = tmp_path / "failing_server.py"
+    server.write_text("import sys\nsys.stderr.write('fatal: postgres down on port 5432\\n')\nsys.exit(1)\n")
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--mcp", f'"{sys.executable}" "{server}"'])
+    assert rc == 1
+    err = capfd.readouterr().err
+    assert "fatal: postgres down on port 5432" in err
+    assert "mcp bridge failed for" in err
+
+
+def test_cli_relative_registry_path_resolves_against_cwd(tmp_path, monkeypatch, capsys):
+    """#510: A relative --registry argument resolves against --cwd."""
+    reg = tmp_path / "custom.json"
+    reg.write_text(json.dumps({"tasks": {"work": {"runner": "ollama", "model": "rel-reg:3b",
+                                                  "tier": "deterministic"}}}))
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--registry", "custom.json", "--task-name", "work",
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    assert "model=rel-reg:3b" in capsys.readouterr().err
+
+
+def test_cli_missing_relative_registry_path_surfaces_path_not_found_not_json_error(tmp_path, capsys):
+    """#510: A missing relative --registry path prints registry path not found, not Expecting value."""
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--registry", "missing.json", "--task-name", "work"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert ("registry error: registry path not found or not a file: missing.json "
+            f"(resolved against cwd {tmp_path.resolve()})") in err
+    assert "Expecting value" not in err
+
+
+def test_cli_registry_default_cwd_names_the_resolved_process_cwd(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["--task", "do work", "--registry", "missing.json", "--task-name", "work"])
+    assert rc == 2
+    assert f"(resolved against cwd {tmp_path.resolve()})" in capsys.readouterr().err
+
+
+def test_cli_no_tools_flag_sets_empty_allowed_tools_on_toolbox(tmp_path, monkeypatch):
+    """#512: --no-tools sets allowed_tools to empty set on ToolBox."""
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--no-tools"])
+    assert rc == 0
+    assert captured["toolbox"].allowed_tools == set()
+
+
+def test_cli_registry_empty_tools_admits_nothing_at_dispatch(tmp_path, monkeypatch):
+    """#512: the registry's zero-tool mode (the only one cron can express) is enforced."""
+    reg = _registry(tmp_path, bare={"runner": "ollama", "model": "reg-model:7b",
+                                     "tier": "deterministic", "tools": []})
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "bare"])
+    assert rc == 0
+    assert captured["tools"] == []
+    assert captured["toolbox"].allowed_tools == set()
+
+
+def test_cli_task_tools_allowlist_enforced_at_dispatch_rejects_unadmitted_tool(tmp_path, monkeypatch, capsys):
+    """#512: When model calls an unadmitted tool on a restricted task, dispatch rejects it as unknown."""
+    reg = _registry(tmp_path, restricted={"runner": "ollama", "model": "reg-model:7b",
+                                           "tier": "deterministic", "tools": ["read_file"]})
+    marker = tmp_path / "should_not_exist"
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    turn = 0
+    replies = []
+
+    def transport(messages, tools):
+        nonlocal turn
+        turn += 1
+        if turn == 1:
+            return (
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": {"command": f"touch {marker}"},
+                        }
+                    }],
+                },
+                {"input": 10, "output": 10},
+            )
+        replies.append(messages[-1])
+        return (
+            {"role": "assistant", "content": "understood"},
+            {"input": 10, "output": 10},
+        )
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: transport)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "restricted", "--json"])
+    assert rc == 0
+    assert turn == 2
+    assert replies[0]["role"] == "tool"
+    assert json.loads(replies[0]["content"]) == {"error": "unknown tool: run_shell"}
+    assert not marker.exists(), "unadmitted tool call must not execute shell command"
+    rec = json.loads(capsys.readouterr().out)
+    assert rec["unknown_calls"] == ["run_shell"]

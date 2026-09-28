@@ -293,6 +293,13 @@ fi
 
 notify_kills
 
+# notify_kills is this playbook's only Discord voice. Without noop, ceo-cron.sh
+# posts a generic "completed" notice after every ten-minute run (#540).
+if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
+  printf 'noop' > "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null || \
+    printf 'WARN: process-watchdog: cannot write outcome file %s\n' "$CEO_RUNNER_OUTCOME_FILE" >&2
+fi
+
 if [ "${#FAILED[@]}" -gt 0 ]; then
   exit 1
 fi
