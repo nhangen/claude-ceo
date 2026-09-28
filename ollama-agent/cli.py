@@ -382,7 +382,8 @@ def main(argv=None):
     # Deliberately broad. The ledger's job is to record that a run burned tokens,
     # and a TypeError in the loop burned them exactly as a RuntimeError would.
     # Naming only the types seen so far puts the next unseen one back in the hole
-    # this catch exists to close, so the class goes in the message instead.
+    # this catch exists to close, so the class is recorded (in the message and in
+    # error_class) rather than branched on.
     except Exception as e:
         print(f"agent failed: {type(e).__name__}: {e}", file=sys.stderr)
         rec = _crash_record("error", a.run_id, usage_tracker, toolbox,

@@ -92,6 +92,14 @@ def append_run(rec, model, task_name, cwd, now=None, path=None, provenance=None)
     for the reason given above. It is written verbatim, so a gate must not carry
     inline credentials.
 
+    `error_class` holds the crashing exception's class name, `type(e).__name__`,
+    and never its message: a transport message can carry a response body (#505,
+    no-secrets-in-logs). It is null on every row whose `reason` is not `error` or
+    `killed`, and a row from before #505 has no key, per the rule above. On a
+    `killed` row, `_Terminated` means a supervisor sent SIGTERM or SIGHUP and
+    `KeyboardInterrupt` means Ctrl-C, so that class name is part of this
+    contract.
+
     `scripts/ceo-model-ledger.sh` appends claude-tier, interactive-tier, and
     ceo-loop rows to this same file. It always writes `verified`,
     `verify_gated` (#434), and `verify_cmd` (#491): explicit `null` for the ungated
