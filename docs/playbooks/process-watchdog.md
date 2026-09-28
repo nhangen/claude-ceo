@@ -68,7 +68,9 @@ process command line. Some providers place credentials in process arguments.
 
 Discord delivery uses the regular `discord_webhook` secret and honors
 `notify_events: "off"`. It does not post on every ten-minute check, even when
-`notify_events` is `"all"`. A failed post (a non-2xx response or a transport error)
+`notify_events` is `"all"`: each successful run writes `noop` to
+`CEO_RUNNER_OUTCOME_FILE`, so `ceo-cron.sh` skips its generic completion notice (#540).
+A failed run still posts through the dispatcher's failure path. A failed post (a non-2xx response or a transport error)
 is reported on stderr and in `/tmp/process-watchdog-notify.log`. The kill itself
 is still recorded in the alert and the log.
 
