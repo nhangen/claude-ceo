@@ -128,6 +128,7 @@ test_removes_block_on_daemon_backend() {
 
 # When crontab contains only CEO block lines, removing it installs an empty crontab.
 test_removes_block_when_only_ceo_lines_present() {
+  export CEO_SCHEDULER=daemon
   export CRONTAB_BODY="# CEO Agent START
 */5 * * * * /p/ceo-cron.sh morning  # ceo:morning
 # CEO Agent END"
@@ -138,8 +139,9 @@ test_removes_block_when_only_ceo_lines_present() {
 
   assert_eq "$rc" "0" "purging only-CEO crontab must succeed"
   assert_file_exists "$INSTALLED" "crontab must be updated (installed)"
-  local result; result=$(cat "$INSTALLED")
-  assert_eq "$result" "" "crontab payload must be empty"
+  if [ -s "$INSTALLED" ]; then
+    fail_test "crontab payload must be zero bytes, not a blank line"
+  fi
 }
 
 # When crontab write fails, the error is reported on stderr and non-zero rc returned.
