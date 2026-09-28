@@ -1523,6 +1523,41 @@ _write_playbook_drift_alert() {
   fi
 }
 
+_validate_scheduler_script_runtime() {
+  local registry="$1"
+  local active_scripts
+  active_scripts=$(printf '%s\n' "$registry" | jq -r \
+    '.playbooks[] | select(.status == "active" and .runner == "script") | [.name, .script] | @tsv')
+  [ -n "$active_scripts" ] || return 0
+
+  local scheduler_repo="" repo_rc=0
+  scheduler_repo=$(ceo_scheduler_daemon_repo_path) || repo_rc=$?
+  if [ "$repo_rc" -eq 2 ]; then
+    echo "ERROR: ceo-schedulerd is configured, but its runtime checkout cannot be resolved." >&2
+    echo "Update the keep-alive definition, reload the daemon, then rerun 'ceo playbook scan'." >&2
+    return 1
+  fi
+  [ -n "$scheduler_repo" ] || return 0
+
+  local name script script_full invalid=0
+  while IFS=$'\t' read -r name script; do
+    [ -n "$name" ] || continue
+    script_full="$scheduler_repo/scripts/$script"
+    if [ ! -f "$script_full" ]; then
+      echo "ERROR: active script playbook '$name' is missing from the scheduler runtime: $script_full" >&2
+      invalid=$((invalid + 1))
+    elif [ ! -x "$script_full" ]; then
+      echo "ERROR: active script playbook '$name' is not executable in the scheduler runtime: $script_full" >&2
+      invalid=$((invalid + 1))
+    fi
+  done <<< "$active_scripts"
+
+  if [ "$invalid" -gt 0 ]; then
+    echo "Update the scheduler runtime and restart ceo-schedulerd before scanning the new registry." >&2
+    return 1
+  fi
+}
+
 cmd_playbook_scan() {
   _wants_help "$@" && { _playbook_sub_usage scan; return 0; }
   # Extract a scalar field from YAML frontmatter without requiring yq.
@@ -2012,6 +2047,16 @@ cmd_playbook_scan() {
 
   # Apply schedule overrides — registry should reflect effective schedules.
   new_registry=$(_playbook_apply_schedule_overrides "$new_registry")
+
+  # The scheduler dispatches scripts from its own configured checkout, which can
+  # differ from the checkout running this CLI. Refuse the registry write if that
+  # runtime cannot execute every active script entry. Otherwise a scan can make a
+  # playbook runnable before its artifact is deployed, and the first scheduled
+  # tick fails before the playbook can record its own result.
+  if ! _validate_scheduler_script_runtime "$new_registry"; then
+    echo "ERROR: refusing to replace $registry_file with an unrunnable registry." >&2
+    return 1
+  fi
 
   # Surface stale Discord report allow-list entries: a name in settings.json's
   # discord_report_triggers / discord_prior_day_report_triggers that matches no
