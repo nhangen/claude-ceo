@@ -184,8 +184,6 @@ if ! {
     fi
   elif [ "$CURRENT_STATUS" = "clear" ]; then
     printf 'No active disk pressure. C: free %sG, wsl-crashes %sG.\n' "$C_FREE_GB" "$DUMP_GB"
-  else
-    printf 'Status unknown — measurement failed and no prior state available.\n'
   fi
 } > "$STATE_TMP"; then
   printf 'ERROR: ceo-disk-monitor: failed to render state for %s; existing state preserved\n' "$STATE_FILE" >&2
