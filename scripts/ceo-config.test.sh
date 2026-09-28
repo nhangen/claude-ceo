@@ -398,7 +398,7 @@ test_resolve_real_home_ignores_env_HOME() {
       FAILS=$((FAILS + 1))
       return 0
     fi
-    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
+    skip_test "expected home $expected is not a directory"
     return 0
   fi
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME=/tmp/this-is-not-the-real-home PATH="$PATH" bash -c "

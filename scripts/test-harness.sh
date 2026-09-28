@@ -49,11 +49,23 @@ fail_test() {
 # Counts as an assertion so NO ASSERTIONS RAN does not trip, prints
 # "  SKIP [<test>] <reason>", and records the skip so run_tests can include
 # it in the summary line ("All tests passed. (N tests, M skipped)").
+# It cannot end the caller's test, so follow it with `return 0`. A reasonless
+# skip fails instead, since an unexplained skip is the silent pass this replaces.
+# Like assert_eq, its assertion count is lost if called inside a nested subshell.
+# In setup or teardown it only prints: the test still runs and nothing is tallied.
 skip_test() {
   local reason="${1:-}"
+  if [ -z "$reason" ]; then
+    fail_test "skip_test called without a reason"
+    return 0
+  fi
   ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   printf '  SKIP [%s] %s\n' "$CURRENT_TEST" "$reason"
-  [ -n "${TEST_SKIPS_TMP:-}" ] && echo 1 >> "$TEST_SKIPS_TMP"
+  # Unset outside a test body (setup, teardown); a bare `&&` tail would then
+  # return 1 and read as an aborted setup.
+  if [ -n "${TEST_SKIPS_TMP:-}" ]; then
+    echo 1 >> "$TEST_SKIPS_TMP"
+  fi
 }
 
 assert_eq() {
