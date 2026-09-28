@@ -107,7 +107,7 @@ create the `reports/analytics/` directory.
 
 ```bash
 ceo swarm doctor            # confirm/assign the owner (ML-1)
-ceo playbook scan           # ML-1 only — rewrites the host-local registry
+ceo playbook scan           # rewrites the host-local registry
 ```
 
 `status: draft` means `ceo playbook scan` installs no schedule; run it on demand with

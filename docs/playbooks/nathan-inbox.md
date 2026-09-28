@@ -128,5 +128,5 @@ supervision) are later subsystems. Design lives in Obsidian, not the repo.
 
 ## Install / Disable
 
-Registered by `ceo playbook scan` (ML-1 only, `scope: single`). Disable via
+Registered by `ceo playbook scan` (`scope: single`, owned by ML-1). Disable via
 `status: disabled` + re-scan.

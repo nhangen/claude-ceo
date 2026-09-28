@@ -258,16 +258,17 @@ RAW_LOG="$LOG_DIR/cron-raw-$RUNS_LOG_HOST.log"
 _state() {
   local path rc=0
   path=$(_ceo_state_migrate "$1") || rc=$?
-  case "$rc" in
-    2) mkdir -p "$LOG_DIR" 2>/dev/null || true
-       echo "$(date): ERROR — cannot create the host-local state dir for $1 ($path); ${TRIGGER:-<sweep>} NOT dispatched" \
-         >> "$SKIPS_LOG" 2>/dev/null || true
-       echo "ERROR: cannot create the host-local state directory for $1" >&2
-       exit 1 ;;
-    1) mkdir -p "$LOG_DIR" 2>/dev/null || true
-       echo "$(date): WARN — could not migrate legacy state $1 out of the vault; ${TRIGGER:-<sweep>} continues with fresh state (a cooldown or failure streak may have reset)" \
-         >> "$SKIPS_LOG" 2>/dev/null || true ;;
-  esac
+  if [ "$rc" -eq 2 ] || [ -z "$path" ]; then
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    echo "$(date): ERROR — cannot create or resolve the host-local state dir for $1 (${path:-unresolved}); ${TRIGGER:-<sweep>} NOT dispatched" \
+      >> "$SKIPS_LOG" 2>/dev/null || true
+    echo "ERROR: cannot create or resolve the host-local state directory for $1" >&2
+    exit 1
+  elif [ "$rc" -eq 1 ]; then
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    echo "$(date): WARN — could not migrate legacy state $1 out of the vault; ${TRIGGER:-<sweep>} continues with fresh state (a cooldown or failure streak may have reset)" \
+      >> "$SKIPS_LOG" 2>/dev/null || true
+  fi
   printf '%s\n' "$path"
 }
 LAST_RUN_FILE=$(_state ".last-run-${TRIGGER}")
@@ -1397,6 +1398,11 @@ case "$REGISTRY_RC" in
     _record_failure "registry.json schema_version unreadable/malformed after retry"
     _v "FATAL: registry.json unreadable. Run: ceo playbook scan"
     exit 1 ;;
+  *)
+    echo "$(date): FATAL — registry validation returned unexpected rc=$REGISTRY_RC" >> "$SKIPS_LOG"
+    _record_failure "registry validation returned unexpected rc=$REGISTRY_RC"
+    _v "FATAL: registry validation rc=$REGISTRY_RC"
+    exit 1 ;;
 esac
 
 ENTRY=$(jq -r --arg t "$TRIGGER" '.playbooks[] | select(.name == $t)' "$REGISTRY_FILE" 2>/dev/null)
@@ -1657,7 +1663,8 @@ if [ "$RUNNER" = "ollama-agent" ]; then
 
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
-  # No --mcp here: cli.py reads tasks.<name>.mcp from --registry itself.
+  # No --mcp or --verify-cmd here: cli.py reads tasks.<name>.mcp and .verify from
+  # --registry itself, and refuses a low-stakes-write task with no verify (#486).
   AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
     --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
 
@@ -1679,6 +1686,9 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _agent_completed=$(printf '%s' "$AGENT_OUT" | jq -r '.completed // false')
   _agent_unknown_json=$(printf '%s' "$AGENT_OUT" | jq -c '.unknown_calls // []')
   _agent_unknown=$(printf '%s' "$_agent_unknown_json" | jq -r 'length')
+  _agent_verify_gated=$(printf '%s' "$AGENT_OUT" | jq -r '.verify_gated // false')
+  _agent_verified=$(printf '%s' "$AGENT_OUT" | jq -r '.verified')
+  _agent_reason=$(printf '%s' "$AGENT_OUT" | jq -r '.reason // "unknown"')
 
   # Record one events row per run (epic #197 slice D) so a downstream pass can
   # correlate the injected rule set (rules_loaded_hash) with completion. Fires on
@@ -1694,6 +1704,13 @@ if [ "$RUNNER" = "ollama-agent" ]; then
     # pass/fail verdict, even if the helper itself hits an unwritable log under
     # set -e. The gate checks below are the sole authority on the run's outcome.
     _ingest_hallucinated_calls "$AGENT_RUN_ID" "$AGENT_TASK" "$_agent_unknown_json" || true
+  fi
+
+  # The bridge only sets completed on a gated run once verify passes, so this
+  # mostly names the outcome; it also refuses a gated completion that did not verify.
+  if [ "$_agent_verify_gated" = "true" ] && [ "$_agent_verified" != "true" ]; then
+    _record_failure "ollama-agent task '$AGENT_TASK' gated run ended $_agent_reason (verified=$_agent_verified) for $TRIGGER"
+    exit 1
   fi
 
   if [ "$_agent_completed" != "true" ]; then

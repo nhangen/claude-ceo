@@ -75,7 +75,6 @@ test_runner_ollama_agent_tool_error_records_failure() {
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "tool error" "cron-skips.log must record the tool-error failure reason"
   assert_contains "$skips_log" "write_file" "the failure reason must name the failing tool"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -90,7 +89,6 @@ test_runner_ollama_agent_clean_completed_run_succeeds() {
   local rc=0
   bash "$CRON" agent-clean >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "a completed run with no tool errors must succeed (no false-positive on the no-op path)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -433,5 +431,107 @@ test_runner_ollama_agent_no_mcp_omits_mcp_flag() {
   assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--mcp" "--mcp must be absent from cron dispatch argv for task without mcp"
 }
 
-run_tests
+test_runner_ollama_agent_relative_registry_resolved_by_real_cli() {
+  # #510: Dispatches with a relative registry path to real cli.py (CEO_OLLAMA_AGENT_CMD unset).
+  # 1. Missing relative registry: cli.py reports "registry path not found or not a file: ... (resolved against cwd ...)"
+  #    and not JSONDecodeError ("Expecting value").
+  cat > "$CEO_DIR/playbooks/agent-rel-miss.md" << 'PB'
+---
+name: agent-rel-miss
+description: relative registry missing test
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes-write
+status: active
+runner: ollama-agent
+registry: non-existent-relative-reg.json
+---
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local old_cmd="${CEO_OLLAMA_AGENT_CMD:-}"
+  unset CEO_OLLAMA_AGENT_CMD
+  local rc_miss=0
+  bash "$CRON" agent-rel-miss >/dev/null 2>&1 || rc_miss=$?
+  assert_eq "$rc_miss" "1" "missing relative registry causes cron failure"
+  local stderr_content
+  stderr_content="$(_stderr_log)"
+  assert_contains "$stderr_content" "registry path not found or not a file: non-existent-relative-reg.json" "stderr names missing relative registry path"
+  assert_contains "$stderr_content" "(resolved against cwd $(cd "$CEO_DIR" && pwd -P))" "stderr names the resolved cwd directory"
+  assert_not_contains "$stderr_content" "Expecting value" "stderr must not report cryptic JSON decode error"
 
+  # 2. Present relative registry: cli.py resolves bridge-registry.json against $CEO_DIR.
+  # Task 'agent-rel-pres' is not in the registry's tasks, so cli.py prints "no registered task".
+  # This proves cli.py found and parsed the file from $CEO_DIR rather than failing on path resolution.
+  cat > "$CEO_DIR/playbooks/agent-rel-pres.md" << 'PB'
+---
+name: agent-rel-pres
+description: relative registry present test
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: low-stakes-write
+status: active
+runner: ollama-agent
+registry: bridge-registry.json
+---
+PB
+  printf '{"tasks":{}}' > "$CEO_DIR/bridge-registry.json"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc_pres=0
+  bash "$CRON" agent-rel-pres >/dev/null 2>&1 || rc_pres=$?
+  assert_eq "$rc_pres" "1" "unregistered task causes cron failure"
+  assert_contains "$(_stderr_log)" "no registered task 'agent-rel-pres'" "cli.py successfully loaded relative registry from CEO_DIR"
+
+  if [ -n "$old_cmd" ]; then
+    export CEO_OLLAMA_AGENT_CMD="$old_cmd"
+  else
+    unset CEO_OLLAMA_AGENT_CMD
+  fi
+  return 0
+}
+
+
+test_runner_ollama_agent_leaves_verify_to_bridge() {
+  # Same channel as mcp: cron passes --registry and cli.py adopts tasks.<name>.verify
+  # itself, so there is one reader of the registry, not two that can disagree.
+  _register_agent_pb agent-verify low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-verify": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "verify_cmd": "pytest -q", "turns": 2, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-verify >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "verify-gated agent task exits 0 on verified success"
+  assert_contains "$(cat "$HOME/agent-argv.txt")" "--registry" "cron hands the bridge the registry it adopts verify from"
+  assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--verify-cmd" "cron must not re-parse verify out of the registry"
+}
+
+
+test_runner_ollama_agent_gated_unverified_completion_fails_cron_run() {
+  # completed:true with verified:false is the state only this gate catches; the
+  # did-not-complete check below it would pass the run.
+  _register_agent_pb agent-v-fail low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-v-fail": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": true, "verified": false, "verify_gated": true, "reason": "verify-failed", "turns": 8, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_fails "a gated run that did not verify must exit non-zero" bash "$CRON" agent-v-fail
+  assert_contains "$(_skips_log)" "gated run ended verify-failed" "skips log must name the gated run's end reason"
+}
+
+
+test_runner_ollama_agent_gated_turn_cap_is_not_reported_as_verify_failure() {
+  _register_agent_pb agent-v-cap low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-v-cap": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": false, "verified": null, "verify_gated": true, "reason": "turn-cap", "turns": 8, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_fails "a gated run that hit the turn cap must exit non-zero" bash "$CRON" agent-v-cap
+  assert_contains "$(_skips_log)" "gated run ended turn-cap" "turn cap must be logged as such, not as a verification failure"
+}
+
+run_tests
