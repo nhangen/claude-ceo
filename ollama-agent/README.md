@@ -70,8 +70,11 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   score is a refusal, not a silent pass. `eval_model` overrides which model's score is checked.
 - `verify` (optional) is a verification command string (e.g. `"pytest -q"`). When set, it must
   be a non-empty string; an empty or whitespace-only string is rejected at parse time. A non-empty
-  `--verify-cmd` on the command line overrides it. Unattended runs via `ceo-cron.sh` thread this
-  command to gate execution.
+  `--verify-cmd` on the command line overrides it. `ceo-cron.sh` passes `--registry`, and the
+  bridge adopts `verify` from it, so unattended runs are gated the same way (#486).
+- A `low-stakes-write` task needs a gate: with no `verify` and no `--verify-cmd`, the bridge
+  refuses it (exit 3) before any model call. A write run that succeeds only because the model
+  stopped calling tools is not a success signal. `deterministic` tasks may run ungated.
 - A `tools` allowlist carrying `write_file` without `edit_file` warns on stderr at parse time
   (advisory, never a refusal). Pair them so the model can make surgical edits instead of
   rewriting whole files.
