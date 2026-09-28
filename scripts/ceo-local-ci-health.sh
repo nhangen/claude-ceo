@@ -207,8 +207,10 @@ fi
 mv "$STATE_TMP" "$STATE_FILE"
 trap - EXIT
 
-printf '%s status=%s docker=%s service=%s api=%s total=%s attention=%s observation_failed=%s\n' \
-  "$NOW" "$CURRENT_STATUS" "$DOCKER_STATE" "$SERVICE_STATE" "$API_STATE" "$TOTAL" "$ATTENTION" "$OBSERVATION_FAILED" >> "$LOG_FILE"
+if ! printf '%s status=%s docker=%s service=%s api=%s total=%s attention=%s observation_failed=%s\n' \
+    "$NOW" "$CURRENT_STATUS" "$DOCKER_STATE" "$SERVICE_STATE" "$API_STATE" "$TOTAL" "$ATTENTION" "$OBSERVATION_FAILED" >> "$LOG_FILE"; then
+  printf 'WARN: ceo-local-ci-health: failed to append log line to %s\n' "$LOG_FILE" >&2
+fi
 
 TASK_MARKER="<!-- local-ci-health:$HOST -->"
 TASK_LINE="- [ ] Restore local CI health on $HOST - see [[CEO/alerts/local-ci-health-$HOST]] $TASK_MARKER"
@@ -230,7 +232,7 @@ if [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
       fi
     fi
   elif [ "$OBSERVATION_FAILED" -eq 0 ] && [ "$CURRENT_STATUS" = "clear" ] && active_task_present; then
-    _tmpfile=$(mktemp) || exit 1
+    _tmpfile=$(mktemp "${INBOX_FILE}.XXXXXX") || exit 1
     trap 'rm -f "$_tmpfile"' EXIT
     _replacement="- [done] Local CI health restored on $HOST $(date +%Y-%m-%d) $TASK_MARKER"
     awk -v m="$TASK_MARKER" -v r="$_replacement" '/^- \[ \]/ && index($0, m) { print r; next } { print }' "$INBOX_FILE" > "$_tmpfile"

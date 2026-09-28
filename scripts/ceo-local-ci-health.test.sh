@@ -66,6 +66,15 @@ teardown() {
 }
 
 run_monitor() {
+  local rc=0
+  bash "$MONITOR" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail_test "monitor exited non-zero" "rc=$rc"
+  fi
+  return 0
+}
+
+run_monitor_raw() {
   bash "$MONITOR" >/dev/null 2>&1
 }
 
@@ -204,7 +213,7 @@ test_clear_retries_an_interrupted_inbox_recovery() {
   DOCKER_STUB_FAIL=1 run_monitor
   DOCKER_STUB_FAIL=1 run_monitor
   chmod 0500 "$CEO_VAULT/CEO/inbox"
-  run_monitor || true
+  run_monitor_raw || true
   chmod 0700 "$CEO_VAULT/CEO/inbox"
   assert_eq "$(state_field status)" "clear" "state should already record confirmed recovery"
   run_monitor
@@ -212,6 +221,23 @@ test_clear_retries_an_interrupted_inbox_recovery() {
   inbox=$(cat "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md")
   assert_contains "$inbox" "- [done] Local CI health restored" "next clear run should retry inbox reconciliation"
   assert_not_contains "$inbox" "- [ ] Restore local CI health" "retried recovery should close the task"
+}
+
+test_log_append_failure_does_not_block_escalation() {
+  if [ "$(id -u)" = "0" ]; then
+    skip_test "file permissions do not block root"
+    return 0
+  fi
+  run_monitor
+  local log_file
+  log_file="$CEO_VAULT/CEO/log/local-ci-health/$(date +%Y-%m).md"
+  chmod 0400 "$log_file"
+  DOCKER_STUB_FAIL=1 run_monitor
+  DOCKER_STUB_FAIL=1 run_monitor
+  chmod 0600 "$log_file"
+  local count
+  count=$(grep -c -F -- "- [ ] Restore local CI health" "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md")
+  assert_eq "$count" "1" "forensic log failure must not block escalation"
 }
 
 test_unhealthy_dynamic_runner_fires() {
