@@ -48,8 +48,10 @@ PROPOSALS="$LOG_DIR/proposed-answers.md"
 # means one of them silently skips notes it never read.
 # The status is deliberately ignored here. It reports a state dir that could not
 # be created or a legacy file that could not be moved; either way this script
-# degrades to fresh state, and its own writes are already guarded. Only the cron
-# dispatcher refuses to run on rc=2, because only it half-applies bookkeeping.
+# degrades to fresh state. Only the cron dispatcher refuses to run on rc=2,
+# because only it half-applies bookkeeping. A state dir that cannot even be
+# resolved (HOME unset, no CEO_STATE_DIR) prints nothing, and the writes below
+# are not guarded against that empty path yet (#536).
 SEEN=$(_ceo_state_migrate ".from-nathan-seen") || true
 NB_COUNTER=$(_ceo_state_migrate ".nathan-nb-counter") || true
 ARCHIVE_DIR="$LOG_DIR/from-nathan"

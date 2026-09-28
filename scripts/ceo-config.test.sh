@@ -154,6 +154,104 @@ test_registry_validate_missing_file_is_code_1() {
   assert_eq "$(_validate_rc "$TEST_HOME/does-not-exist.json")" "1" "absent registry file -> not-found (1)"
 }
 
+test_registry_validate_no_arg_returns_4_when_home_unset() {
+  local err rc=0
+  err=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "4" "ceo_registry_validate with no args must return 4 when HOME is unset"
+  assert_contains "$err" "HOME must be set" "rc=4 alone does not say why; the path helper's diagnostic must still reach stderr"
+}
+
+# The override makes HOME irrelevant (#425), and rc=4 is documented as "no
+# override" only: with CEO_REGISTRY_FILE set, an unset HOME must never yield 4.
+test_registry_validate_no_arg_honors_override_when_home_unset() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_REGISTRY_FILE="$TEST_HOME/absent.json" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "no-arg validate with an override and HOME unset must report the override's absence (1), not 4"
+
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$TEST_HOME/override.json"
+  rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_REGISTRY_FILE="$TEST_HOME/override.json" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "no-arg validate with a valid override and HOME unset must return 0"
+}
+
+test_registry_validate_no_arg_returns_4_when_home_empty() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "4" "ceo_registry_validate with no args must return 4 when HOME is empty"
+}
+
+test_registry_validate_explicit_empty_arg_returns_4_when_home_unset() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate ''
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "4" "ceo_registry_validate with explicit '' must return 4 when HOME is unset"
+}
+
+test_registry_validate_no_arg_returns_1_when_home_set_but_no_registry() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "ceo_registry_validate with no args must return 1 when HOME is set but registry does not exist"
+}
+
+test_registry_validate_no_arg_returns_0_when_home_set_and_valid_registry() {
+  mkdir -p "$TEST_HOME/.ceo"
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$TEST_HOME/.ceo/registry.json"
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo_registry_validate with no args must return 0 when HOME has valid registry"
+}
+
+test_registry_version_no_arg_returns_1_when_home_unset() {
+  local out rc=0
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_version
+  " 2>/dev/null) || rc=$?
+  assert_eq "$out" "" "ceo_registry_version with no args must print nothing when HOME is unset"
+  assert_eq "$rc" "1" "ceo_registry_version with no args must return 1 when HOME is unset"
+}
+
+test_registry_version_no_arg_prints_version_when_home_set() {
+  mkdir -p "$TEST_HOME/.ceo"
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$TEST_HOME/.ceo/registry.json"
+  local out rc=0
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_version
+  " 2>/dev/null) || rc=$?
+  assert_eq "$out" "3" "ceo_registry_version with no args must print schema_version when HOME has valid registry"
+  assert_eq "$rc" "0" "ceo_registry_version with no args must return 0 on success"
+}
+
 # ceo_inbox_has_unchecked — preflight helper that scans both the legacy
 # CEO/inbox.md (user-curated) and per-host CEO/inbox/<host>.md shadow files.
 # Used by morning-brief and inbox cron preflights.
@@ -290,7 +388,7 @@ test_resolve_real_home_ignores_env_HOME() {
       fail_test "CI environment must have a real home for the test user"
       return 0
     fi
-    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
+    skip_test "expected home $expected is not a directory"
     return 0
   fi
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME=/tmp/this-is-not-the-real-home PATH="$PATH" bash -c "
@@ -1087,6 +1185,28 @@ test_ceo_state_dir_aborts_on_unset_home_when_no_override() {
   [ "$rc" -ne 0 ] || fail_test "_ceo_state_dir must exit non-zero when HOME is unset and no override is given"
   assert_contains "$err" "HOME must be set to resolve the host-local state directory" \
     "error message must guide that HOME is required"
+}
+
+test_ceo_state_migrate_returns_2_on_unset_home_when_no_override() {
+  local out rc=0
+  out=$(env -u HOME -u CEO_STATE_DIR bash -c "source '$LIB'; _ceo_state_migrate '.test-file'" 2>/dev/null) || rc=$?
+  assert_eq "$rc" "2" "_ceo_state_migrate must return 2 when state directory cannot be resolved"
+  assert_eq "$out" "" "_ceo_state_migrate must not print a path when state directory cannot be resolved"
+}
+
+test_ceo_state_migrate_returns_2_on_empty_home_when_no_override() {
+  local out rc=0
+  out=$(env -u CEO_STATE_DIR HOME="" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'" 2>/dev/null) || rc=$?
+  assert_eq "$rc" "2" "_ceo_state_migrate must return 2 when HOME is empty and no override is given"
+  assert_eq "$out" "" "_ceo_state_migrate must not print a path when HOME is empty"
+}
+
+test_ceo_state_migrate_succeeds_and_prints_path_when_state_dir_valid() {
+  local out rc=0
+  out=$(env -u CEO_STATE_DIR -u CEO_VAULT HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'") || rc=$?
+  assert_eq "$rc" "0" "_ceo_state_migrate must return 0 when state dir resolves and creates successfully"
+  assert_eq "$out" "$TEST_HOME/.ceo/state/.test-file" "_ceo_state_migrate must print expected host-local path"
+  [ -d "$TEST_HOME/.ceo/state" ] || fail_test "state directory was not created"
 }
 
 test_ceo_enabled_path_defaults_to_home() {
