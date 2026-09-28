@@ -16,6 +16,7 @@ HOST="${CEO_HOSTNAME:-$(hostname -s)}"
 : "${HOST:?HOST resolution failed; set CEO_HOSTNAME or fix hostname}"
 
 STATUS_URL="${CEO_LOCAL_CI_STATUS_URL:-http://100.102.197.40:8876/api/status}"
+CONFIG_PATH="${CEO_LOCAL_CI_CONFIG:-$HOME/.config/local-ci/config.toml}"
 SUSTAINED_SECONDS="${CEO_LOCAL_CI_SUSTAINED_SECONDS:-300}"
 MAX_STATUS_AGE_SECONDS="${CEO_LOCAL_CI_MAX_STATUS_AGE_SECONDS:-120}"
 PROBE_TIMEOUT_SECONDS="${CEO_LOCAL_CI_PROBE_TIMEOUT_SECONDS:-20}"
@@ -97,13 +98,17 @@ if command -v "$CURL_BIN" >/dev/null 2>&1 && command -v "$PYTHON_BIN" >/dev/null
     _parsed=""
     if _parsed=$(printf '%s' "$_api_body" | "$PYTHON_BIN" -c '
 import datetime as dt
-import json, sys
+import json, sys, tomllib
 d = json.load(sys.stdin)
 s = d["summary"]
 repos = d["repos"]
 if not isinstance(repos, list) or not repos:
     raise ValueError("repos must be a non-empty list")
 max_age = int(sys.argv[1])
+with open(sys.argv[2], "rb") as f:
+    configured = set(tomllib.load(f)["repos"])
+if not configured:
+    raise ValueError("config has no repos")
 generated = dt.datetime.fromisoformat(d["generated_at"].replace("Z", "+00:00"))
 age = (dt.datetime.now(dt.timezone.utc) - generated).total_seconds()
 if generated.tzinfo is None or age < -60 or age > max_age:
@@ -131,9 +136,11 @@ for repo in repos:
     healthy = phase == "active" and running and runner_status == "online" and status in {"online", "busy"}
     problems += 0 if healthy else 1
     rows.append("| {} | {} | {} | {} | {} |".format(name, status, phase, "yes" if running else "no", runner_status))
+if names != configured:
+    raise ValueError("status fleet does not match current config")
 print("{}\t{}\t{}\t{}\t{}".format(s["total"], s["online"], s["busy"], s["attention"], problems))
 print("\n".join(rows))
-' "$MAX_STATUS_AGE_SECONDS"); then
+' "$MAX_STATUS_AGE_SECONDS" "$CONFIG_PATH"); then
       _summary=$(printf '%s\n' "$_parsed" | head -n 1)
       IFS=$'\t' read -r TOTAL ONLINE BUSY ATTENTION _problem_count <<< "$_summary"
       REPO_ROWS=$(printf '%s\n' "$_parsed" | tail -n +2)

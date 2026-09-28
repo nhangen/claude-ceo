@@ -16,8 +16,9 @@ artifact: CEO/alerts/local-ci-health-{HOST}.md
 
 Read-only ML1 monitor for the local CI dependency chain. It checks Docker API
 access, `local-ci-status.service`, the status API, and every repository returned
-by that API. Runner discovery comes from the current local CI configuration
-rather than a fixed repository list. A busy online runner is healthy.
+by that API. It compares the returned repository identities with the current
+local CI configuration, so a service that still holds an older in-memory config
+cannot report a partial fleet as healthy. A busy online runner is healthy.
 
 The first failed check updates the alert. An inbox task appears only when the
 failure is still present on the next five-minute check. Recovery closes the

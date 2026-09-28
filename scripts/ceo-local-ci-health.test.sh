@@ -15,6 +15,7 @@ setup() {
   export CEO_VAULT="$TEST_HOME/vault"
   export CEO_HOSTNAME="ml1-test"
   export CEO_LOCAL_CI_STATUS_URL="http://status.test/api/status"
+  export CEO_LOCAL_CI_CONFIG="$TEST_HOME/config.toml"
   export CEO_LOCAL_CI_SUSTAINED_SECONDS=0
   export CEO_LOCAL_CI_MAX_STATUS_AGE_SECONDS=120
   export CEO_LOCAL_CI_PROBE_TIMEOUT_SECONDS=1
@@ -26,6 +27,7 @@ setup() {
   export CEO_LOCAL_CI_TIMEOUT_BIN
   mkdir -p "$CEO_VAULT/CEO" "$TEST_HOME/stubs"
   touch "$CEO_VAULT/CEO/inbox.md"
+  write_config one two
 
   python3 - <<PY
 import datetime as dt, json
@@ -58,6 +60,7 @@ teardown() {
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
   unset CEO_VAULT CEO_HOSTNAME CEO_LOCAL_CI_STATUS_URL CEO_LOCAL_CI_SUSTAINED_SECONDS
+  unset CEO_LOCAL_CI_CONFIG
   unset CEO_LOCAL_CI_MAX_STATUS_AGE_SECONDS CEO_LOCAL_CI_PROBE_TIMEOUT_SECONDS CEO_LOCAL_CI_TIMEOUT_BIN
   unset CEO_RUNNER_OUTCOME_FILE
   unset CEO_LOCAL_CI_DOCKER_BIN CEO_LOCAL_CI_SYSTEMCTL_BIN CEO_LOCAL_CI_CURL_BIN
@@ -76,6 +79,14 @@ run_monitor() {
 
 run_monitor_raw() {
   bash "$MONITOR" >/dev/null 2>&1
+}
+
+write_config() {
+  : > "$CEO_LOCAL_CI_CONFIG"
+  local repo
+  for repo in "$@"; do
+    printf '[repos.%s]\n' "$repo" >> "$CEO_LOCAL_CI_CONFIG"
+  done
 }
 
 state_field() {
@@ -178,6 +189,7 @@ PY
 }
 
 test_error_shaped_repo_is_reported_as_unhealthy() {
+  write_config broken
   python3 - <<PY
 import datetime as dt, json
 data = {"generated_at": dt.datetime.now(dt.timezone.utc).isoformat(), "summary":{"total":1,"online":0,"busy":0,"attention":1},"repos":[{"repo":"broken","status":"attention","error":"host unavailable"}]}
@@ -241,6 +253,7 @@ test_log_append_failure_does_not_block_escalation() {
 }
 
 test_unhealthy_dynamic_runner_fires() {
+  write_config offline-repo
   python3 - <<PY
 import datetime as dt, json
 data = {"generated_at": dt.datetime.now(dt.timezone.utc).isoformat(), "summary":{"total":1,"online":0,"busy":0,"attention":1},"repos":[{"repo":"offline-repo","phase":"active","host":{"running":True},"runner":{"status":"offline","busy":False},"status":"attention"}]}
@@ -251,6 +264,13 @@ PY
   local body
   body=$(cat "$CEO_VAULT/CEO/alerts/local-ci-health-$CEO_HOSTNAME.md")
   assert_contains "$body" "| offline-repo | attention |" "unhealthy repository should be named"
+}
+
+test_config_change_missing_from_live_snapshot_fires() {
+  write_config one two three
+  run_monitor
+  assert_eq "$(state_field status)" "firing" "snapshot missing a configured repository should fire"
+  assert_eq "$(state_field status_api)" "invalid" "config mismatch should invalidate the snapshot"
 }
 
 test_inactive_status_service_fires() {
