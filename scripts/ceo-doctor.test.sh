@@ -890,12 +890,19 @@ test_doctor_flags_unwritable_discord_log() {
   chmod -w "$ro_log"
   local output rc=0
   output=$(CEO_DISCORD_REPORT_DEBUG_LOG="$ro_log" "$CEO_BIN" doctor 2>&1) || rc=$?
-  assert_contains "$output" "discord-report debug log is not writable: $ro_log" \
-    "doctor must flag unwritable discord-report debug log"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on unwritable discord debug log (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
+  assert_contains "$output" "⚠ discord-report debug log is not writable: $ro_log" \
+    "doctor must warn on an unwritable discord-report debug log"
+  assert_contains "$output" "fix: set CEO_DISCORD_REPORT_DEBUG_LOG to a writable path, or fix ownership" \
+    "doctor must say how to fix an unwritable discord-report debug log"
+  # Losing debug lines does not stop delivery, so it warns rather than fails.
+  assert_eq "$rc" "0" "an unwritable debug log alone must not fail doctor"
+}
+
+test_doctor_reports_discord_log_disabled_for_dev_null() {
+  local output
+  output=$(CEO_DISCORD_REPORT_DEBUG_LOG=/dev/null "$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "✓ discord-report debug log disabled (/dev/null)" \
+    "doctor must report /dev/null as a deliberately disabled debug log"
 }
 
 test_doctor_reports_drift_on_stdout_without_writing_or_deleting_alert_file() {

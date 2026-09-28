@@ -725,12 +725,17 @@ cmd_doctor() {
 
   # discord-report debug log writability (#484)
   local _dr_log="${CEO_DISCORD_REPORT_DEBUG_LOG:-/tmp/ceo-discord-report-debug.log}"
-  if _doctor_check_discord_log_writable "$_dr_log"; then
+  if [ "$_dr_log" = "/dev/null" ]; then
+    echo "  ✓ discord-report debug log disabled (/dev/null)"
+    ok=$(( ok + 1 ))
+  elif _doctor_check_discord_log_writable "$_dr_log"; then
     echo "  ✓ discord-report debug log writable ($_dr_log)"
     ok=$(( ok + 1 ))
   else
-    echo "  ✗ discord-report debug log is not writable: $_dr_log"
-    fail=$(( fail + 1 ))
+    # Lost debug lines do not stop delivery (_dlog ends in `|| true`), so warn.
+    echo "  ⚠ discord-report debug log is not writable: $_dr_log"
+    echo "    fix: set CEO_DISCORD_REPORT_DEBUG_LOG to a writable path, or fix ownership (a root-owned file from an earlier sudo run is the usual cause)"
+    warn=$(( warn + 1 ))
   fi
 
   local _sti_out _sti_missing _sti_repo
