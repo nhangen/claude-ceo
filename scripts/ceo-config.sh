@@ -1095,7 +1095,8 @@ ceo_assert_primary_host() {
 #                                     (repeatable). Values must not contain newlines.
 #
 # Writes the `---`-delimited YAML frontmatter block to stdout. Caller is
-# responsible for the body (`{ ceo_write_alert_frontmatter ...; printf '...'; } > file`).
+# responsible for the body. Render it first (`fm=$(ceo_write_alert_frontmatter ...) || fail`):
+# in `{ ceo_write_alert_frontmatter ...; printf '...'; } > file` a rejection is masked by printf (#556).
 # ---------------------------------------------------------------------------
 ceo_write_alert_frontmatter() {
   local status="" since="" host="" last_check=""

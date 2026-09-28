@@ -456,8 +456,9 @@ cmd_doctor() {
     fi
   fi
 
-  # playbook drift — only meaningful when both trees exist
-  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  # playbook drift — only meaningful when both trees exist; reported on
+  # stdout only. The alert file (CEO/alerts/playbook-drift.md) is written solely
+  # by `ceo playbook scan`, on the primary host when primary_host is set (#504).
   if [ ! -d "$CEO_DIR/playbooks" ] || [ ! -d "${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}" ]; then
     echo "  ? Playbook drift check skipped (vault or repo playbooks dir missing)"
     warn=$((warn + 1))
@@ -466,24 +467,9 @@ cmd_doctor() {
   elif cmd_playbook_diff --quiet >/dev/null 2>&1; then
     echo "  ✓ Playbooks in sync (no vault/repo drift)"
     ok=$((ok + 1))
-    [ -f "$alert_file" ] && rm -f "$alert_file"
   else
     echo "  ✗ Playbook drift detected — run: ceo playbook diff"
     fail=$((fail + 1))
-    mkdir -p "$(dirname "$alert_file")"
-    local _since; _since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
-    [ -z "$_since" ] && _since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    {
-      echo "---"
-      echo "status: drift"
-      echo "since: $_since"
-      echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      echo "---"
-      echo ""
-      echo "# Playbook drift"
-      echo ""
-      echo "Vault and repo playbook trees diverged. Run \`ceo playbook diff\` for details."
-    } > "$alert_file"
   fi
 
   # Completed-but-no-output cross-check — for every active runner:script or
@@ -1514,6 +1500,29 @@ cmd_playbook_sync() {
   return 0
 }
 
+# Frontmatter is rendered before anything is written: in `{ helper; printf; } >`
+# the group takes printf's status, so a rejected field installed a body-only
+# alert that the morning scan reports as corrupted.
+_write_playbook_drift_alert() {
+  local alert_file="$1" status="$2" since="$3" now="$4" host="$5" count="$6" body="$7"
+  local fm tmp
+  fm=$(ceo_write_alert_frontmatter --status="$status" --since="$since" \
+    --last-check="$now" --host="$host" --field count="$count") || {
+    echo "ERROR: invalid alert frontmatter for $alert_file" >&2
+    return 1
+  }
+  mkdir -p "$(dirname "$alert_file")"
+  tmp=$(mktemp "${alert_file}.XXXXXX") || {
+    echo "ERROR: mktemp failed for $alert_file" >&2
+    return 1
+  }
+  if ! printf '%s\n%s\n' "$fm" "$body" > "$tmp" || ! mv -f "$tmp" "$alert_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to write $alert_file" >&2
+    return 1
+  fi
+}
+
 _validate_scheduler_script_runtime() {
   local registry="$1"
   local active_scripts
@@ -2072,26 +2081,33 @@ cmd_playbook_scan() {
   local alert_file="$CEO_DIR/alerts/playbook-drift.md"
   if [ "$shadowed_drift" -gt 0 ]; then
     echo "  WARN  $shadowed_drift repo playbook(s) shadowed by a DIFFERING vault copy — scan used the vault version, which may be stale. Run 'ceo playbook sync' to reconcile from the repo." >&2
-    if [ "$dry_run" -eq 0 ]; then
-      mkdir -p "$(dirname "$alert_file")"
-      local _drift_since; _drift_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
-      [ -z "$_drift_since" ] && _drift_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      {
-        echo "---"
-        echo "status: drift"
-        echo "count: $shadowed_drift"
-        echo "since: $_drift_since"
-        echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        echo "---"
-        echo ""
-        echo "# Playbook drift"
-        echo ""
-        echo "$shadowed_drift repo playbook(s) shadowed by differing vault copies. Run \`ceo playbook sync\` to reconcile from the repo."
-      } > "$alert_file"
+  fi
+  # The alert tracks shadowed drift only, so it clears on the condition that
+  # raised it. Tree divergence (a vault-only playbook is intentional) stays a
+  # doctor report; with no repo checkout the drift is unknown, so it must not clear.
+  if [ "$dry_run" -eq 0 ] && { [ "$shadowed_drift" -gt 0 ] || { [ -d "$repo_playbook_dir" ] && [ -f "$alert_file" ]; }; }; then
+    # Scan has passed ceo_assert_primary_host, so this host is the primary one
+    # whenever primary_host is set.
+    local _alert_host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || true)}"
+    if [ -z "$_alert_host" ]; then
+      echo "ERROR: cannot resolve this host's name for $alert_file" >&2
+      return 1
     fi
-  elif [ "$dry_run" -eq 0 ] && [ -f "$alert_file" ]; then
-    if [ -d "$repo_playbook_dir" ] && cmd_playbook_diff --quiet >/dev/null 2>&1; then
-      rm -f "$alert_file"
+    local _now _prior_status _drift_since
+    _now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    _prior_status=$(ceo_read_alert_field "$alert_file" status 2>/dev/null || true)
+    _drift_since=$(ceo_read_alert_field "$alert_file" since 2>/dev/null || true)
+    if [ "$shadowed_drift" -gt 0 ]; then
+      # since marks when the alert entered its current status.
+      [ "$_prior_status" = "clear" ] && _drift_since=""
+      _write_playbook_drift_alert "$alert_file" firing "${_drift_since:-$_now}" "$_now" \
+        "$_alert_host" "$shadowed_drift" \
+        "$(printf '\n# Playbook drift\n\n%s repo playbook(s) shadowed by differing vault copies. Run `ceo playbook sync` to reconcile from the repo.' "$shadowed_drift")" || return 1
+    else
+      [ "$_prior_status" = "clear" ] || _drift_since=""
+      _write_playbook_drift_alert "$alert_file" clear "${_drift_since:-$_now}" "$_now" \
+        "$_alert_host" 0 \
+        "$(printf '\n# Playbook drift\n\nNo repo playbook is shadowed by a differing vault copy.')" || return 1
     fi
   fi
 
