@@ -465,3 +465,46 @@ for line in sys.stdin:
         assert [e["tool"] for e in tb.tool_errors] == ["mcp__lookup"]
     finally:
         transport.close()
+
+
+def test_stdio_transport_server_stderr_inherited(tmp_path, capfd):
+    """#511: StdioMCPTransport inherits stderr so child error messages are not swallowed."""
+    server = tmp_path / "err_server.py"
+    server.write_text("import sys; sys.stderr.write('crash reason: db unavailable\\n'); sys.exit(1)\n")
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    try:
+        with pytest.raises(MCPTransportError, match="closed stdout"):
+            transport.recv()
+        err = capfd.readouterr().err
+        assert "crash reason: db unavailable" in err
+    finally:
+        transport.close()
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("sys.exit(3)", "exited with code 3"),
+    ("os.kill(os.getpid(), signal.SIGKILL)", "killed by signal 9"),
+    ("os.close(1); time.sleep(0.3); sys.exit(4)", "exited with code 4"),
+    ("os.close(1); time.sleep(10)", "still running"),
+])
+def test_stdio_transport_closed_stdout_reports_exit_status(tmp_path, code, expected):
+    """#511: a server that dies silently still leaves its exit status as the reason."""
+    server = tmp_path / "silent.py"
+    server.write_text(f"import os, signal, sys, time\n{code}\n")
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    try:
+        with pytest.raises(MCPTransportError, match=rf"closed stdout \({expected}\)"):
+            transport.recv()
+    finally:
+        transport.close()
+
+
+def test_stdio_transport_blank_line_is_not_reported_as_closed_stdout(tmp_path):
+    server = tmp_path / "blank.py"
+    server.write_text("import sys, time\nsys.stdout.write('\\n'); sys.stdout.flush(); time.sleep(10)\n")
+    transport = StdioMCPTransport([sys.executable, str(server)])
+    try:
+        with pytest.raises(MCPTransportError, match="server sent an empty line"):
+            transport.recv()
+    finally:
+        transport.close()

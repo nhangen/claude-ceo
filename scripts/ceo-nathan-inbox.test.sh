@@ -357,7 +357,7 @@ test_discretion_candidate_path_no_llm_egress() {
 # Finding B: if the Pending.md commit write fails, the ok must NOT be reported as
 # committed (no confirm-line deletion, no profile write) and must surface.
 test_commit_write_failure_not_reported_committed() {
-  if [ "$(id -u)" = "0" ]; then assert_eq root root "perms test skipped as root"; return; fi
+  if [ "$(id -u)" = "0" ]; then skip_test "perms test skipped as root"; return; fi
   write_pending "- [ ] [ask] (qid: q-1) top goal"
   write_dropbox "- an answer"
   PROPOSE_QID="q-1" PROPOSE_CONF="0.9" run_ingest

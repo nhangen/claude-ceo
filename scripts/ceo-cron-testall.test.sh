@@ -55,10 +55,8 @@ test_test_all_report_is_under_host_local_preview() {
   local report; report=$(_test_all_report)
   assert_contains "$report" "/preview/test-all/" "sweep report must live under the preview tree"
   assert_file_exists "$report" "sweep report must exist at the host-local path"
-  case "$report" in
-    "$CEO_VAULT"/*) fail_test "the sweep report is inside the synced vault: $report" ;;
-    *)              ASSERTION_COUNT=$((ASSERTION_COUNT + 1)) ;;
-  esac
+  assert_eq "$([[ "$report" == "$CEO_VAULT"/* ]] && echo 1 || echo 0)" "0" \
+    "the sweep report is inside the synced vault: $report"
 }
 
 
