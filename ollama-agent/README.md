@@ -81,10 +81,12 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   whitespace-only string is rejected at parse time (exit 2). A non-empty `--mcp` on the
   command line overrides it. MCP tools are named `mcp__<tool>` in a `tools` allowlist. If the
   allowlist admits none of the server's tools, the run is refused (exit 2) and the server is shut
-- Relative `--registry` paths resolve against `--cwd` (defaulting to the process working directory).
-  If the argument looks like a path (does not begin with `{`) and the file does not exist,
-  loading raises `RegistryError` naming the missing path and resolved directory rather than
-  attempting to parse the path string as inline JSON.
+  down, whether the server came from the registry or from `--mcp`.
+- `--registry` takes inline JSON (anything beginning with `{`) or a path. A relative path resolves
+  against `--cwd` (default: the process working directory), which under cron is `$CEO_DIR`. A
+  path that is missing or not a file, a file that is not valid JSON, and a registry that is not an
+  object with a `tasks` object are all refused (exit 2) with a message naming the file when there
+  is one, never parsed as inline JSON. A relative `--scores` still resolves against the process working directory.
 
 ## Tools
 
