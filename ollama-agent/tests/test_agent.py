@@ -547,6 +547,38 @@ def test_transport_honors_retry_after_header(monkeypatch):
     assert sleeps == [1.5]
 
 
+def test_transport_retry_warning_redacts_the_upstream_body(monkeypatch, capsys):
+    # #493: the retry warning's detail is the proxy body, which can echo the request.
+    import ollama_agent.transport as t
+
+    def fail(req, timeout):
+        raise t.urllib.error.HTTPError(
+            "u", 503, "busy", {}, io.BytesIO(b"busy; echoed:\nHF_TOKEN=abcdefgh1234"))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
+    with pytest.raises(RuntimeError) as exc:
+        t.ollama_transport("local-coder", host="router:40114")(
+            [{"role": "user", "content": "hi"}], [])
+    err = capsys.readouterr().err
+    assert "HF_TOKEN=***REDACTED***" in err
+    assert "abcdefgh1234" not in err + str(exc.value)
+
+
+def test_error_excerpt_stays_fast_on_a_huge_unbroken_body():
+    # Redacting before the cut must not mean redacting the whole body: two of
+    # the patterns are quadratic over a long `[A-Za-z0-9_-]` run, which a
+    # base64 image echoed in a 413 body is.
+    import time
+    body = '{"error":"request too large: image=' + "_-" * 100_000 + '"}'
+    start = time.monotonic()
+    try:
+        parse_chat_response(413, body)
+    except RuntimeError:
+        pass
+    assert time.monotonic() - start < 1.0
+
+
 def test_transport_stops_after_bounded_502_retries(monkeypatch, capsys):
     import io
     import ollama_agent.transport as t
