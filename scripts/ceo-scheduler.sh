@@ -30,6 +30,12 @@
 #                                  `ceo doctor` can warn about orphans that would
 #                                  double-fire alongside the daemon. Prints one
 #                                  absolute path per line; empty when clean.
+#   ceo_scheduler_daemon_repo_path
+#                                — prints the repository root configured in the
+#                                  daemon keep-alive agent (com.ceo.schedulerd.plist
+#                                  or ceo-schedulerd.service). rc=0 with no output
+#                                  when no definition exists; rc=2 when a definition
+#                                  exists but no repo path could be read from it.
 #
 # Backend selection priority:
 #   1. CEO_SCHEDULER env (explicit override for tests/dev); must be one of the
@@ -39,6 +45,7 @@
 #
 # Env overrides (for tests):
 #   CEO_LAUNCHD_DIR  — directory holding com.ceo.*.plist (default ~/Library/LaunchAgents)
+#   CEO_SYSTEMD_DIR  — directory holding ceo-schedulerd.service (default ~/.config/systemd/user)
 
 _CEO_SCHEDULER_KNOWN="crontab daemon"
 
@@ -193,3 +200,46 @@ ceo_scheduler_crontab_daemon_conflict() {
   [ "${_count:-0}" -gt 0 ] || return 0
   printf '%s\n' "$_count"
 }
+
+# Reads the definition file on disk, not the job launchd/systemd has loaded, so an
+# edited-but-not-reloaded definition reports the new path.
+ceo_scheduler_daemon_repo_path() {
+  local dir plist service raw_path=""
+  case "$(ceo_detect_os)" in
+    macos)
+      dir="${CEO_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
+      plist="$dir/com.ceo.schedulerd.plist"
+      [ -f "$plist" ] || return 0
+      raw_path="$(awk '
+        /<key>WorkingDirectory<\/key>/ {
+          if ($0 !~ /<string>/) getline
+          if ($0 ~ /<string>/) { sub(/.*<key>WorkingDirectory<\/key>/, ""); sub(/^[^<]*<string>/, ""); sub(/<\/string>.*/, ""); print; exit }
+        }' "$plist" 2>/dev/null || true)"
+      if [ -z "$raw_path" ]; then
+        raw_path="$(awk '/<key>ProgramArguments<\/key>/,/<\/array>/ { if (match($0, /<string>[^<]*main\.ts<\/string>/)) { s = substr($0, RSTART + 8, RLENGTH - 17); print s; exit } }' "$plist" 2>/dev/null || true)"
+      fi
+      ;;
+    wsl|linux)
+      dir="${CEO_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
+      service="$dir/ceo-schedulerd.service"
+      [ -f "$service" ] || return 0
+      raw_path="$(awk '/^[[:space:]]*WorkingDirectory[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit }' "$service" 2>/dev/null || true)"
+      if [ -z "$raw_path" ]; then
+        raw_path="$(awk '/^[[:space:]]*ExecStart[[:space:]]*=/ { for (i=1; i<=NF; i++) { if ($i ~ /main\.ts/) { print $i; exit } } }' "$service" 2>/dev/null || true)"
+      fi
+      # systemd: a leading "-" on WorkingDirectory means "tolerate missing".
+      raw_path="${raw_path#-}"
+      raw_path="${raw_path#\"}"
+      raw_path="${raw_path%\"}"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  [ -n "$raw_path" ] || return 2
+  raw_path="${raw_path//%h/$HOME}"
+  raw_path="${raw_path/#\~/$HOME}"
+  raw_path="${raw_path%/lib/scheduler*}"
+  printf '%s\n' "${raw_path%/}"
+}
+

@@ -120,11 +120,7 @@ test_doctor_flags_completed_but_missing_artifact() {
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "value-tracker" "doctor output must name the offending playbook"
   assert_contains "$output" "artifact missing or empty" "doctor must surface the missing-artifact reason"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero when an artifact is missing (got rc=0)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero when an artifact is missing"
 }
 
 test_doctor_flags_completed_but_missing_artifact_for_ollama_agent() {
@@ -142,11 +138,7 @@ test_doctor_flags_completed_but_missing_artifact_for_ollama_agent() {
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "cron-failure-digest" "doctor must name the offending ollama-agent playbook"
   assert_contains "$output" "artifact missing or empty" "doctor must flag the missing ollama-agent artifact"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero for a missing ollama-agent artifact (got rc=0)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero for a missing ollama-agent artifact"
 }
 
 test_doctor_passes_when_artifact_present() {
@@ -157,11 +149,7 @@ test_doctor_passes_when_artifact_present() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "Playbook artifacts present" "doctor must report the artifact check passing"
-  if echo "$output" | grep -qF "artifact missing"; then
-    printf '  FAIL [%s] doctor must NOT flag when artifact is present\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$output" "artifact missing" "doctor must NOT flag when artifact is present"
 }
 
 test_doctor_skips_when_playbook_not_completed_today() {
@@ -170,11 +158,7 @@ test_doctor_skips_when_playbook_not_completed_today() {
   : > "$CEO_DIR/log/cron-runs-${CEO_HOSTNAME}.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "artifact missing"; then
-    printf '  FAIL [%s] doctor must NOT flag a playbook that did not run today\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$output" "artifact missing" "doctor must NOT flag a playbook that did not run today"
 }
 
 test_doctor_flags_malformed_artifact_template() {
@@ -202,11 +186,7 @@ EOF
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "malformed artifact template" "doctor must name the malformed-template failure"
   assert_contains "$output" "bogus-token" "doctor must name the offending playbook"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on malformed artifact template\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on malformed artifact template"
 }
 
 test_doctor_warns_when_cron_log_missing() {
@@ -219,7 +199,6 @@ test_doctor_warns_when_cron_log_missing() {
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "doctor artifact cross-check skipped" "doctor must surface skip-reason when log absent"
   assert_contains "$output" "no cron-runs*.log found" "skip message must name what it looked for"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_reads_cooldown_stamps_from_the_host_local_state_dir() {
@@ -253,11 +232,7 @@ test_doctor_ignores_a_peer_hosts_runs_log() {
   _log_completed_today value-tracker "cron-runs-otherhost.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "artifact missing"; then
-    fail_test "doctor must not cross-check a peer host's completion line"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_not_contains "$output" "artifact missing" "doctor must not cross-check a peer host's completion line"
 }
 
 test_doctor_says_when_the_cross_check_matched_nothing() {
@@ -272,11 +247,7 @@ test_doctor_says_when_the_cross_check_matched_nothing() {
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "artifact cross-check matched no completions" \
     "a cross-check that checked nothing must say so, not look like a pass"
-  if echo "$output" | grep -qF "artifacts present for today"; then
-    fail_test "doctor must not claim artifacts are present when it matched none"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_not_contains "$output" "artifacts present for today" "doctor must not claim artifacts are present when it matched none"
 }
 
 test_doctor_flags_a_completion_log_it_is_not_reading() {
@@ -307,11 +278,7 @@ SWARM
   _log_completed_today value-tracker "cron-runs-peer-ml1.log"
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "not being cross-checked"; then
-    fail_test "a registered swarm peer's log must not be reported as drift"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_not_contains "$output" "not being cross-checked" "a registered swarm peer's log must not be reported as drift"
 
   # And the unregistered case still warns, so the skip above is a discriminator
   # rather than a blanket mute.
@@ -359,22 +326,36 @@ EOF
   _log_completed_today no-artifact
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
-  if echo "$output" | grep -qF "artifact missing"; then
-    printf '  FAIL [%s] doctor must not check playbooks without an artifact template\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$output" "artifact missing" "doctor must not check playbooks without an artifact template"
+}
+
+# _registry_schema_error writes to stderr, so a bare $(...) around it captured
+# nothing and the doctor printed an empty "✗". The reason must sit on the ✗ line.
+test_doctor_prints_the_registry_schema_reason_on_the_fail_line() {
+  printf '{"playbooks":[]}\n' > "$REGISTRY_FILE"
+  local output
+  output=$("$CEO_BIN" doctor 2>/dev/null || true)
+  assert_contains "$output" "✗ Registry schema_version missing or malformed" \
+    "a registry with no schema_version is rc=3 and must be named on the doctor's ✗ line"
+
+  printf '{"schema_version":1,"playbooks":[]}\n' > "$REGISTRY_FILE"
+  output=$("$CEO_BIN" doctor 2>/dev/null || true)
+  assert_contains "$output" "✗ Registry schema_version below" \
+    "an old schema_version is rc=2 and must be named as a downgrade, not as malformed"
+}
+
+test_registry_schema_error_names_the_unresolvable_path() {
+  local err
+  err=$(CEO_LIB_ONLY=1 bash -c 'set +u; source "$0"; _registry_schema_error 4' "$CEO_BIN" 2>&1 >/dev/null)
+  assert_contains "$err" "Registry path unresolvable" \
+    "rc=4 from ceo_registry_validate must get its own message, not the generic fallback"
 }
 
 test_doctor_reports_platform() {
   local output
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "Platform:" "doctor must report the detected platform"
-  if ! echo "$output" | grep -qE "Platform: (wsl|linux|macos|unknown)"; then
-    printf '  FAIL [%s] doctor platform line must name wsl/linux/macos/unknown\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$(echo "$output" | grep -cE "Platform: (wsl|linux|macos|unknown)")" -gt 0 ] && echo 1 || echo 0)" "1" "doctor platform line must name wsl/linux/macos/unknown"
 }
 
 # #144: on the daemon backend (macOS) doctor reports scheduling-via-daemon and
@@ -402,11 +383,7 @@ test_doctor_flags_legacy_per_playbook_launchd_agents() {
   assert_contains "$output" "legacy per-playbook launchd agent" \
     "doctor must warn about retired per-playbook agents"
   assert_contains "$output" "double-fire" "warning must explain the risk"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero when legacy agents are present\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero when legacy agents are present"
 }
 
 test_doctor_no_legacy_warning_when_only_daemon_agent() {
@@ -418,6 +395,173 @@ test_doctor_no_legacy_warning_when_only_daemon_agent() {
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_not_contains "$output" "legacy per-playbook launchd agent" \
     "the daemon's own keep-alive agent must not be flagged as legacy"
+}
+
+# --- #501: schedulerd LaunchAgent/systemd service runs from a feature worktree, not main clone ---
+
+# _setup_mock_daemon_definition <repo_dir> [working_directory]  (default: <repo_dir>/lib/scheduler)
+_setup_mock_daemon_definition() {
+  local wd="${2:-$1/lib/scheduler}"
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-$CURRENT_TEST"
+  export CEO_SYSTEMD_DIR="$TEST_HOME/systemd-$CURRENT_TEST"
+  mkdir -p "$CEO_LAUNCHD_DIR" "$CEO_SYSTEMD_DIR"
+
+  cat > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>WorkingDirectory</key>
+  <string>$wd</string>
+</dict>
+</plist>
+EOF
+
+  cat > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service" <<EOF
+[Unit]
+Description=CEO scheduler
+
+[Service]
+WorkingDirectory=$wd
+EOF
+}
+
+# The main clone of the checkout under test, which is what a correctly installed
+# daemon points at.
+_main_clone_under_test() {
+  local gcd
+  gcd="$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$gcd" ]; then
+    (cd "$SCRIPT_DIR" && cd "$gcd/.." && pwd -P)
+  else
+    (cd "$SCRIPT_DIR/.." && pwd -P)
+  fi
+}
+
+_assert_doctor_fails() {
+  local rc="$1" msg="$2"
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "$msg (rc=$rc)"
+}
+
+test_doctor_flags_schedulerd_running_from_feature_worktree() {
+  export CEO_SCHEDULER=daemon
+  export GIT_AUTHOR_NAME="Test User" GIT_AUTHOR_EMAIL="test@example.com"
+  export GIT_COMMITTER_NAME="Test User" GIT_COMMITTER_EMAIL="test@example.com"
+  local real_main="$TEST_HOME/code/fixture-main" mock_wt="$TEST_HOME/code/feature-worktree"
+  mkdir -p "$real_main" "$TEST_HOME/hooks-none"
+  git -C "$real_main" init -q
+  git -C "$real_main" config core.hooksPath "$TEST_HOME/hooks-none"
+  git -C "$real_main" commit -q --allow-empty -m init
+  git -C "$real_main" worktree add -q -b feature "$mock_wt"
+  mkdir -p "$mock_wt/lib/scheduler"
+  local expected_main
+  expected_main="$(cd "$real_main" && pwd -P)"
+
+  _setup_mock_daemon_definition "$mock_wt"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "runs from a feature worktree" \
+    "doctor must flag when daemon agent points to a feature worktree"
+  assert_contains "$output" "not the main clone ($expected_main)" \
+    "doctor must name the worktree's own main clone as the target"
+  assert_contains "$output" "Repoint the agent to the main clone ($expected_main) and reload" \
+    "doctor must print the reload remediation"
+  _assert_doctor_fails "$rc" "doctor must return non-zero when schedulerd runs from worktree"
+}
+
+test_doctor_flags_schedulerd_configured_with_nonexistent_directory() {
+  export CEO_SCHEDULER=daemon
+  local missing_dir="$TEST_HOME/code/deleted-worktree"
+
+  _setup_mock_daemon_definition "$missing_dir"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "nonexistent directory" \
+    "doctor must flag when daemon agent points to nonexistent directory"
+  assert_contains "$output" "$missing_dir" \
+    "doctor must name the missing path"
+  assert_contains "$output" "Repoint the agent to the main clone" \
+    "doctor must print the reload remediation"
+  _assert_doctor_fails "$rc" "doctor must return non-zero when schedulerd path does not exist"
+}
+
+test_doctor_flags_schedulerd_configured_from_external_directory() {
+  export CEO_SCHEDULER=daemon
+  local ext_repo="$TEST_HOME/code/other-repo"
+  mkdir -p "$ext_repo/lib/scheduler"
+
+  _setup_mock_daemon_definition "$ext_repo"
+
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "runs from external directory" \
+    "doctor must flag when daemon agent points to external repository"
+  assert_contains "$output" "other-repo" \
+    "doctor must name the external repository"
+  assert_contains "$output" "Repoint the agent to the main clone" \
+    "doctor must print the reload remediation"
+  _assert_doctor_fails "$rc" "doctor must return non-zero when schedulerd points to external repo"
+}
+
+test_doctor_passes_when_schedulerd_configured_from_main_clone() {
+  export CEO_SCHEDULER=daemon
+  _setup_mock_daemon_definition "$(_main_clone_under_test)"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd agent configured from main clone" \
+    "doctor must report healthy when daemon agent is configured from main clone"
+}
+
+test_doctor_passes_when_schedulerd_reaches_main_clone_through_symlink() {
+  export CEO_SCHEDULER=daemon
+  ln -s "$(_main_clone_under_test)" "$TEST_HOME/main-link"
+  _setup_mock_daemon_definition "$TEST_HOME/main-link"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd agent configured from main clone" \
+    "a symlinked path to the main clone is the main clone"
+  assert_not_contains "$output" "runs from external directory" \
+    "a symlinked path to the main clone must not read as external"
+}
+
+test_doctor_passes_when_schedulerd_working_directory_has_trailing_slash() {
+  export CEO_SCHEDULER=daemon
+  local main_clone
+  main_clone="$(_main_clone_under_test)"
+  _setup_mock_daemon_definition "$main_clone" "$main_clone/"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "ceo-schedulerd agent configured from main clone" \
+    "a trailing slash on the main clone path must not read as external"
+}
+
+test_doctor_warns_when_schedulerd_definition_is_unreadable() {
+  export CEO_SCHEDULER=daemon
+  _setup_mock_daemon_definition "/unused"
+  printf '<plist version="1.0"><dict></dict></plist>\n' > "$CEO_LAUNCHD_DIR/com.ceo.schedulerd.plist"
+  printf '[Service]\nType=simple\n' > "$CEO_SYSTEMD_DIR/ceo-schedulerd.service"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "its repo path could not be read" \
+    "a definition with no readable repo path must be reported, not skipped"
+}
+
+test_doctor_silent_on_schedulerd_repo_when_no_definition() {
+  export CEO_SCHEDULER=daemon
+  export CEO_LAUNCHD_DIR="$TEST_HOME/LaunchAgents-none" CEO_SYSTEMD_DIR="$TEST_HOME/systemd-none"
+  mkdir -p "$CEO_LAUNCHD_DIR" "$CEO_SYSTEMD_DIR"
+
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_not_contains "$output" "ceo-schedulerd agent" \
+    "no definition means no schedulerd-agent line"
+  assert_not_contains "$output" "its repo path could not be read" \
+    "no definition is not an unreadable definition"
 }
 
 # --- #159 / D1: Linux crontab block is a migration leftover ---
@@ -478,11 +622,7 @@ test_doctor_flags_crontab_block_as_migration_leftover() {
     "the warning must name the crontab block as the thing to remove"
   assert_contains "$output" "Remove" \
     "the warning must recommend removing the leftover crontab block"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on a lingering crontab block (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on a lingering crontab block"
 }
 
 test_doctor_flags_crontab_leftover_even_when_daemon_inactive() {
@@ -495,11 +635,7 @@ test_doctor_flags_crontab_leftover_even_when_daemon_inactive() {
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "Migration leftover" \
     "a lingering CEO crontab block is a migration leftover regardless of daemon state (blind-spot fix)"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on a lingering crontab block even with the daemon inactive (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on a lingering crontab block even with the daemon inactive"
 }
 
 test_doctor_no_leftover_warning_when_no_crontab_block() {
@@ -533,11 +669,7 @@ test_doctor_flags_stale_schedulerd_heartbeat() {
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "heartbeat stale" "doctor must flag a stale heartbeat"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on stale heartbeat (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on stale heartbeat"
 }
 
 test_doctor_notes_schedulerd_absent_without_failing() {
@@ -595,11 +727,7 @@ test_doctor_flags_malformed_schedulerd_heartbeat() {
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "heartbeat malformed" "doctor must flag a heartbeat with no ts"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on malformed heartbeat (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on malformed heartbeat"
 }
 
 test_doctor_flags_nonnumeric_schedulerd_ts() {
@@ -608,11 +736,7 @@ test_doctor_flags_nonnumeric_schedulerd_ts() {
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "heartbeat malformed" "doctor must flag a non-numeric ts as malformed, not error on arithmetic"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] doctor must return non-zero on non-numeric ts (got rc=0)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "doctor must return non-zero on non-numeric ts"
 }
 
 test_doctor_clamps_future_schedulerd_heartbeat_to_alive() {
@@ -662,7 +786,7 @@ test_doctor_stignore_clean_when_live_file_matches_repo() {
     assert_contains "$output" "host-local runtime state is not syncing" \
       "a deployed .stignore must read as clean"
   else
-    assert_eq "skip" "skip" "repo shared.stignore not reachable from the test bin path"
+    skip_test "repo shared.stignore not reachable from the test bin path"
   fi
 }
 

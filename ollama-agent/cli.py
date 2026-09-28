@@ -106,7 +106,7 @@ def _restore_default_kill_handlers():
             pass
 
 
-def _crash_record(reason, run_id, usage_tracker, toolbox):
+def _crash_record(reason, run_id, usage_tracker, toolbox, error_class=None):
     """A ledger row for a run that died before run_agent could return one.
 
     The counts come from the tracker the caller handed to run_agent, so the row
@@ -118,18 +118,20 @@ def _crash_record(reason, run_id, usage_tracker, toolbox):
         # From the tracker, not a hardcoded None, so a gated run whose check went
         # red before it crashed records False rather than reading as ungated.
         # With `verify_gated`, (verify_gated=True, verified=None) distinguishes a run
-        # that died before the gate first ran from one configured with no gate at all
-        # (verify_gated=False). The name is deliberately not `gated`: in this CLI that
+        # that died before the gate completed (never ran, or last timed out) from one
+        # configured with no gate at all (verify_gated=False). The name is deliberately not `gated`: in this CLI that
         # word means the delegation gate behind --ungated, which is unrelated.
         # True is unreachable here: a green gate breaks and returns normally.
         "verified": usage_tracker.get("verified"),
         "verify_gated": usage_tracker.get("verify_gated"),
         "verify_cmd": usage_tracker.get("verify_cmd"),
         "reason": reason,
+        "error_class": error_class,
         "turns": usage_tracker.get("turns", 0),
         "run_id": run_id,
         "ollama_input_tokens": usage_tracker.get("ollama_input_tokens", 0),
         "ollama_output_tokens": usage_tracker.get("ollama_output_tokens", 0),
+        "warnings": list(usage_tracker.get("warnings", [])),
         "transcript": [],
         "calls": toolbox.calls,
         "unknown_calls": toolbox.unknown_calls,
@@ -215,7 +217,7 @@ def main(argv=None):
     # no-gate run. "   " is truthy, so the gate "runs", exits 0 having verified
     # nothing, and records verify_gated=True with verified=True — the strongest
     # assurance the ledger carries. Refuse rather than warn: these runs happen
-    # under ceo-cron, which discards stderr. run_agent carries the same predicate
+    # under ceo-cron, which logs stderr unread. run_agent carries the same predicate
     # as a library backstop, but keep this one ahead of it: without it the raise
     # lands in the broad except below, which writes a crash row seeded from
     # bool(a.verify_cmd) — True for "   " — claiming the run was gated (#436).
@@ -232,7 +234,7 @@ def main(argv=None):
             print("--task-name requires --registry", file=sys.stderr)
             return 2
         try:
-            specs = load_registry(a.registry)
+            specs = load_registry(a.registry, cwd=a.cwd)
         except (RegistryError, ValueError, OSError) as e:
             print(f"registry error: {e}", file=sys.stderr)
             return 2
@@ -336,7 +338,7 @@ def main(argv=None):
               file=sys.stderr)
         # Declaring a server and then forbidding every tool it bridges is a
         # config error. Refuse rather than warn, for the reason given at the
-        # --verify-cmd check above: ceo-cron discards stderr and reads rc 0 as
+        # --verify-cmd check above: ceo-cron logs stderr unread and reads rc 0 as
         # success, so a warning would let the task run daily without its server.
         if mcp_names and not any(t["function"]["name"] in mcp_names for t in tools):
             mcp_transport.close()
@@ -346,9 +348,10 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
 
+    allowed_tools = {t["function"]["name"] for t in tools}
     toolbox = ToolBox(cwd=a.cwd, timeout=a.shell_timeout, skills=skills,
                       mcp_client=mcp_client, mcp_names=mcp_names,
-                      mcp_readonly=mcp_readonly)
+                      mcp_readonly=mcp_readonly, allowed_tools=allowed_tools)
     # Who actually serves the turns. The transport fills this in as it goes, so
     # it is readable after the run even when the run failed (#667).
     provenance = {}
@@ -364,7 +367,7 @@ def main(argv=None):
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
                      "verified": None, "verify_gated": bool(a.verify_cmd),
-                     "verify_cmd": a.verify_cmd}
+                     "verify_cmd": a.verify_cmd, "warnings": []}
     _install_kill_handlers()
     rec = None
     exit_code = 0
@@ -372,17 +375,20 @@ def main(argv=None):
         rec = run_agent(a.task, system, transport, toolbox, tools, turn_cap=a.turn_cap,
                         run_id=a.run_id, verify_cmd=a.verify_cmd, usage_tracker=usage_tracker,
                         num_ctx=a.num_ctx)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as e:
         print("agent interrupted", file=sys.stderr)
-        rec = _crash_record("killed", a.run_id, usage_tracker, toolbox)
+        rec = _crash_record("killed", a.run_id, usage_tracker, toolbox,
+                            error_class=type(e).__name__)
         exit_code = 130
     # Deliberately broad. The ledger's job is to record that a run burned tokens,
     # and a TypeError in the loop burned them exactly as a RuntimeError would.
     # Naming only the types seen so far puts the next unseen one back in the hole
-    # this catch exists to close, so the class goes in the message instead.
+    # this catch exists to close, so the class is recorded (in the message and in
+    # error_class) rather than branched on.
     except Exception as e:
         print(f"agent failed: {type(e).__name__}: {e}", file=sys.stderr)
-        rec = _crash_record("error", a.run_id, usage_tracker, toolbox)
+        rec = _crash_record("error", a.run_id, usage_tracker, toolbox,
+                            error_class=type(e).__name__)
         exit_code = 1
     finally:
         # Before close(), and on the success path too — see the helper's docstring.
@@ -413,6 +419,10 @@ def main(argv=None):
         print(f"served-by: {what} via {where} (requested {a.model})", file=sys.stderr)
 
     if exit_code != 0:
+        # A context overflow is often why the run crashed, and the success-path
+        # print below is never reached, so surface the warning here too (#489).
+        for w in rec.get("warnings") or []:
+            print(f"warning: {w}", file=sys.stderr)
         return exit_code
 
     if a.json:
@@ -426,10 +436,12 @@ def main(argv=None):
             print(f"warning: {w}", file=sys.stderr)
         # verify_gated rides alongside verified for the same reason the ledger
         # carries both: verified=None alone cannot say whether a gate was
-        # configured and never reached, or never configured at all.
+        # configured and never reached, or never configured at all. reason
+        # separates a gate that timed out (verify-error) from one never reached.
         print(f"completed={rec['completed']} verified={rec['verified']} "
               f"verify_gated={rec['verify_gated']} turns={rec['turns']} "
-              f"calls={len(rec['calls'])} unknown={rec['unknown_calls']}")
+              f"calls={len(rec['calls'])} unknown={rec['unknown_calls']} "
+              f"reason={rec.get('reason')}")
         print(f"ollama tokens: in={rec['ollama_input_tokens']} out={rec['ollama_output_tokens']}")
         print("--- final message ---")
         print(final.get("content", "(no content)"))
