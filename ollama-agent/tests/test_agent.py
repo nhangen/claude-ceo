@@ -956,18 +956,20 @@ def test_run_agent_returns_verify_gated_from_the_verify_cmd(tmp_path):
 
 def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     # The docstring promises a reused tracker does not double-count and that a
-    # stale `verified` cannot leak forward. Without the entry reset both are false
-    # and nothing else in the suite notices.
+    # stale `verified` or run 1's overflow warnings cannot leak forward into run
+    # 2's crash row (#489). Without the entry reset all of these are false and
+    # nothing else in the suite notices.
     tracker = {}
-    first = _script(({"role": "assistant", "content": "done"}, {"input": 10, "output": 20}))
+    first = _script(({"role": "assistant", "content": "done"}, {"input": 4000, "output": 20}))
     rec1 = run_agent("task", "sys", first, ToolBox(cwd=tmp_path), TOOLS,
-                     turn_cap=1, verify_cmd="false", usage_tracker=tracker)
+                     turn_cap=1, verify_cmd="false", num_ctx=4096, usage_tracker=tracker)
     assert tracker["verified"] is False
     assert tracker["verify_gated"] is True
     assert tracker["verify_cmd"] == "false"
     assert rec1["verify_gated"] is True
     assert rec1["verify_cmd"] == "false"
-    assert tracker["ollama_input_tokens"] == 10
+    assert tracker["ollama_input_tokens"] == 4000
+    assert len(tracker["warnings"]) == 1
 
     second = _script(({"role": "assistant", "content": "done"}, {"input": 3, "output": 4}))
     rec2 = run_agent("task", "sys", second, ToolBox(cwd=tmp_path), TOOLS,
@@ -979,6 +981,7 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     assert rec2["verify_cmd"] is None
     assert tracker["ollama_input_tokens"] == 3
     assert tracker["turns"] == 1
+    assert tracker["warnings"] == []
 
 
 # --- #384: context overflow detected from the token count, not a daemon string ---

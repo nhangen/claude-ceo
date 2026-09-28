@@ -131,6 +131,7 @@ def _crash_record(reason, run_id, usage_tracker, toolbox, error_class=None):
         "run_id": run_id,
         "ollama_input_tokens": usage_tracker.get("ollama_input_tokens", 0),
         "ollama_output_tokens": usage_tracker.get("ollama_output_tokens", 0),
+        "warnings": list(usage_tracker.get("warnings", [])),
         "transcript": [],
         "calls": toolbox.calls,
         "unknown_calls": toolbox.unknown_calls,
@@ -366,7 +367,7 @@ def main(argv=None):
               file=sys.stderr)
     usage_tracker = {"ollama_input_tokens": 0, "ollama_output_tokens": 0, "turns": 0,
                      "verified": None, "verify_gated": bool(a.verify_cmd),
-                     "verify_cmd": a.verify_cmd}
+                     "verify_cmd": a.verify_cmd, "warnings": []}
     _install_kill_handlers()
     rec = None
     exit_code = 0
@@ -418,6 +419,10 @@ def main(argv=None):
         print(f"served-by: {what} via {where} (requested {a.model})", file=sys.stderr)
 
     if exit_code != 0:
+        # A context overflow is often why the run crashed, and the success-path
+        # print below is never reached, so surface the warning here too (#489).
+        for w in rec.get("warnings") or []:
+            print(f"warning: {w}", file=sys.stderr)
         return exit_code
 
     if a.json:
