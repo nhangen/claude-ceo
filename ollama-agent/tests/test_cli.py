@@ -787,7 +787,7 @@ def test_cli_writes_the_reason_to_a_real_ledger(tmp_path, monkeypatch, capsys):
     assert row["error_class"] is None
 
 
-def test_cli_verify_gate_timeout_records_verify_error(tmp_path, monkeypatch):
+def test_cli_verify_gate_timeout_records_verify_error(tmp_path, monkeypatch, capsys):
     # #487: A verify command timeout records reason="verify-error" and verified=None.
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
@@ -806,6 +806,7 @@ def test_cli_verify_gate_timeout_records_verify_error(tmp_path, monkeypatch):
     assert row["verify_gated"] is True
     assert row["reason"] == "verify-error"
     assert row["verify_cmd"] == "pytest"
+    assert "reason=verify-error" in capsys.readouterr().out
 
 
 def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):

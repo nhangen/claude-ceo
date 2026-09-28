@@ -924,9 +924,8 @@ def test_reason_verify_failed_when_the_gate_is_still_red_at_the_cap(tmp_path):
 
 
 def test_reason_verify_error_when_the_gate_times_out(tmp_path):
-    # #487: A verify command that times out (or returns returncode=None) is an
-    # infrastructure/harness error, not a test failure. reason must be verify-error
-    # and verified must be None.
+    # #487: A verify command that times out (returncode=None) never completed, so
+    # it proves neither pass nor fail. reason must be verify-error and verified None.
     tb = ToolBox(cwd=tmp_path)
     tb.run_shell = lambda cmd: json.dumps({"returncode": None, "error": "timeout>30s"})
     transport = _script({"role": "assistant", "content": "done"})
@@ -943,6 +942,9 @@ def test_reason_verify_error_when_the_gate_times_out(tmp_path):
     assert len(user_msgs) == 1
     assert "error:\ntimeout>30s" in user_msgs[0]["content"]
     assert "returncode=None" in user_msgs[0]["content"]
+    # The model must not be told to fix failures it was never shown (#487).
+    assert "Fix the remaining failures" not in user_msgs[0]["content"]
+    assert "did not finish" in user_msgs[0]["content"]
 
 
 def test_reason_verify_error_supersedes_earlier_verify_failed_when_gate_later_times_out(tmp_path):
@@ -966,6 +968,26 @@ def test_reason_verify_error_supersedes_earlier_verify_failed_when_gate_later_ti
     assert rec["completed"] is False
     assert rec["verified"] is None
     assert rec["reason"] == "verify-error"
+
+
+def test_reason_verify_failed_when_gate_times_out_then_goes_red(tmp_path):
+    # #487 mirror: a timeout on turn 1 followed by a real red on turn 2 is a test
+    # failure, not a harness error, so the earlier timeout must not stick.
+    tb = ToolBox(cwd=tmp_path)
+    results = iter([
+        {"returncode": None, "error": "timeout>30s"},
+        {"returncode": 1, "stdout": "", "stderr": "failed"},
+    ])
+    tb.run_shell = lambda cmd: json.dumps(next(results))
+    transport = _script(
+        {"role": "assistant", "content": "done 1"},
+        {"role": "assistant", "content": "done 2"},
+    )
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=2, verify_cmd="pytest")
+    assert rec["completed"] is False
+    assert rec["verified"] is False
+    assert rec["reason"] == "verify-failed"
 
 
 def test_run_agent_updates_usage_tracker_across_turns(tmp_path):

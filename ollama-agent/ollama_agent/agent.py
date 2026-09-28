@@ -79,7 +79,8 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     which are reserved for the model's own tool invocations. A non-zero exit
     feeds the failure back and the loop continues, so the run drives to a green
     gate rather than to the model's own say-so. `verified` is None when no gate
-    is configured, else the last check's pass/fail; the turn cap still bounds
+    is configured or the last check did not complete (a timeout, recorded as
+    `reason: verify-error`), else the last check's pass/fail; the turn cap still bounds
     the loop. An empty or whitespace-only string raises instead of running: ""
     is falsy so the gate would be dropped in silence and the row would read
     verify_gated=False, byte-identical to a deliberate ungated run, while "   "
@@ -171,7 +172,6 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                     break
                 if res.get("returncode") is None:
                     # Timeout or harness error: command did not complete cleanly (#487).
-                    # verified is None (we make no claim it passed or failed).
                     verified = None
                     verify_error = True
                     _track(usage_tracker, "verified", None)
@@ -180,13 +180,23 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                     verify_error = False
                     _track(usage_tracker, "verified", False)
                 err_detail = ("\nerror:\n%s" % res["error"]) if res.get("error") else ""
-                feedback = {"role": "user", "content": (
-                    "Verification command `%s` is not passing yet (returncode=%s). "
-                    "Fix the remaining failures and keep going — do not stop until "
-                    "it exits 0.%s\nstdout:\n%s\nstderr:\n%s" % (
-                        verify_cmd, res.get("returncode"),
-                        err_detail,
-                        res.get("stdout", ""), res.get("stderr", "")))}
+                if verify_error:
+                    # A timeout is not evidence the code is wrong, but a change that
+                    # hangs the suite also lands here, so the model is told to find
+                    # out which before editing rather than that its code is fine.
+                    instruction = (
+                        "Verification command `%s` did not finish (returncode=None). "
+                        "Either the command is slow or your change makes it hang. "
+                        "Find out which, for example with a narrower check, before "
+                        "changing code to fix a failure you have not seen." % verify_cmd)
+                else:
+                    instruction = (
+                        "Verification command `%s` is not passing yet (returncode=%s). "
+                        "Fix the remaining failures and keep going — do not stop until "
+                        "it exits 0." % (verify_cmd, res.get("returncode")))
+                feedback = {"role": "user", "content": "%s%s\nstdout:\n%s\nstderr:\n%s" % (
+                    instruction, err_detail,
+                    res.get("stdout", ""), res.get("stderr", ""))}
                 transcript.append(feedback)
                 messages.append(feedback)
                 continue
