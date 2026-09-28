@@ -206,16 +206,20 @@ _doctor_check_freshness() {
 # If unwritable (root-owned, read-only dir, broken symlink, trailing slash),
 # all diagnostic lines are silently dropped.
 _doctor_check_discord_log_writable() {
-  local log="${1:-${CEO_DISCORD_REPORT_DEBUG_LOG:-/tmp/ceo-discord-report-debug.log}}"
+  local log="$1"
   case "$log" in */) return 1 ;; esac
   if [ -L "$log" ] && [ ! -e "$log" ]; then
     return 1
   fi
-  if [ -e "$log" ]; then
+  # A character device such as /dev/null is how an operator turns the log off.
+  if [ -c "$log" ]; then
+    [ -w "$log" ]
+  elif [ -e "$log" ]; then
     [ -f "$log" ] && [ -w "$log" ]
   else
     local dir; dir="$(dirname "$log")"
-    [ -d "$dir" ] && [ -w "$dir" ]
+    # Creating an entry needs search (x) on the parent as well as write.
+    [ -d "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]
   fi
 }
 

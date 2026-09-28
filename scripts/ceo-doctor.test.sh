@@ -847,6 +847,30 @@ test_doctor_check_discord_log_writable_unit() {
   local rc_nodir=0
   _doctor_check_discord_log_writable "$TEST_HOME/no-such-dir/file.log" || rc_nodir=$?
   assert_eq "$rc_nodir" "1" "non-existent parent directory must return 1"
+
+  # 8. Valid symlink to a writable file
+  touch "$TEST_HOME/real.log"
+  ln -s "$TEST_HOME/real.log" "$TEST_HOME/good-link"
+  local rc_goodlink=0
+  _doctor_check_discord_log_writable "$TEST_HOME/good-link" || rc_goodlink=$?
+  assert_eq "$rc_goodlink" "0" "symlink to a writable file must return 0"
+
+  # 9. /dev/null, the conventional way to turn a debug log off
+  local rc_null=0
+  _doctor_check_discord_log_writable /dev/null || rc_null=$?
+  assert_eq "$rc_null" "0" "/dev/null must return 0"
+
+  # 10-11. New file under a read-only, or writable-but-unsearchable, parent
+  if [ "$(id -u)" != "0" ]; then
+    mkdir "$TEST_HOME/rodir" "$TEST_HOME/noxdir"
+    chmod 500 "$TEST_HOME/rodir"
+    chmod 600 "$TEST_HOME/noxdir"
+    local rc_rodir=0 rc_noxdir=0
+    _doctor_check_discord_log_writable "$TEST_HOME/rodir/x.log" || rc_rodir=$?
+    _doctor_check_discord_log_writable "$TEST_HOME/noxdir/x.log" || rc_noxdir=$?
+    assert_eq "$rc_rodir" "1" "new file under a read-only parent must return 1"
+    assert_eq "$rc_noxdir" "1" "new file under an unsearchable parent must return 1"
+  fi
 }
 
 test_doctor_reports_discord_log_writable_clean() {
