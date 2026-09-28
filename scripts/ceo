@@ -200,6 +200,19 @@ _doctor_check_freshness() {
   echo "FRESH=$fresh STALE=$stale"
 }
 
+_doctor_schedulerd_remediation() {
+  local target="$1"
+  echo "    Repoint the agent to the main clone ($target) and reload:"
+  if [ "$(ceo_detect_os)" = "macos" ]; then
+    echo "      launchctl bootout gui/\$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist"
+    echo "      # update paths in ~/Library/LaunchAgents/com.ceo.schedulerd.plist to $target"
+    echo "      launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist"
+  else
+    echo "      # update paths in ~/.config/systemd/user/ceo-schedulerd.service to $target"
+    echo "      systemctl --user daemon-reload && systemctl --user restart ceo-schedulerd.service"
+  fi
+}
+
 cmd_doctor() {
   local ok=0
   local warn=0
@@ -344,6 +357,50 @@ cmd_doctor() {
     echo "  ✗ Migration leftover: CEO crontab block ($_cron_daemon_conflict triggers) still installed — ceo-schedulerd is the sole scheduler; this block double-fires (or mis-fires) playbooks"
     echo "    Remove the leftover crontab block (the daemon reads the registry): crontab -l | sed '/# CEO Agent START/,/# CEO Agent END/d' | grep -v '^# CEO Agent\$' | crontab -"
     fail=$((fail + 1))
+  fi
+
+  # Check if the keep-alive daemon agent is configured from the main clone (#501).
+  local _daemon_repo _daemon_rc=0
+  _daemon_repo="$(ceo_scheduler_daemon_repo_path)" || _daemon_rc=$?
+  if [ "$_daemon_rc" -ne 0 ]; then
+    echo "  ! ceo-schedulerd keep-alive definition is present but its repo path could not be read — cannot verify it runs from the main clone"
+    warn=$((warn + 1))
+  elif [ -n "$_daemon_repo" ]; then
+    # Compare physical paths: INSTALL_DIR descends from `readlink -f`, while the
+    # definition holds whatever path was typed, possibly through a symlink.
+    local _cur_main _gcd
+    _cur_main="$(cd "$INSTALL_DIR" && pwd -P)"
+    if _gcd="$(git -C "$INSTALL_DIR" rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_gcd" ]; then
+      _cur_main="$(cd "$INSTALL_DIR" && cd "$_gcd/.." 2>/dev/null && pwd -P || echo "$_cur_main")"
+    fi
+
+    if [ ! -d "$_daemon_repo" ]; then
+      echo "  ✗ ceo-schedulerd agent configured with nonexistent directory: $_daemon_repo"
+      echo "    The daemon will crash-loop."
+      _doctor_schedulerd_remediation "$_cur_main"
+      fail=$((fail + 1))
+    else
+      _daemon_repo="$(cd "$_daemon_repo" 2>/dev/null && pwd -P || printf '%s' "$_daemon_repo")"
+      if [ -f "$_daemon_repo/.git" ]; then
+        local _common_git _main_clone=""
+        _common_git="$(git -C "$_daemon_repo" rev-parse --git-common-dir 2>/dev/null || true)"
+        if [ -n "$_common_git" ]; then
+          _main_clone="$(cd "$_daemon_repo" 2>/dev/null && cd "$_common_git/.." 2>/dev/null && pwd -P || true)"
+        fi
+        local _target_main="${_main_clone:-$_cur_main}"
+        echo "  ✗ ceo-schedulerd agent runs from a feature worktree ($_daemon_repo), not the main clone ($_target_main)"
+        echo "    Removing the worktree breaks the daemon."
+        _doctor_schedulerd_remediation "$_target_main"
+        fail=$((fail + 1))
+      elif [ "$_daemon_repo" != "$_cur_main" ]; then
+        echo "  ✗ ceo-schedulerd agent runs from external directory ($_daemon_repo), expected main clone ($_cur_main)"
+        _doctor_schedulerd_remediation "$_cur_main"
+        fail=$((fail + 1))
+      else
+        echo "  ✓ ceo-schedulerd agent configured from main clone"
+        ok=$((ok + 1))
+      fi
+    fi
   fi
 
   # plugin
