@@ -1655,37 +1655,12 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # anchor for the post-run findings ingestion below. Overridable for tests.
   AGENT_RUN_ID="${CEO_AGENT_RUN_ID:-${TRIGGER}-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 
-  # An optional verify field on TaskSpec (#486) gates completion (drive-to-green).
-  # Extract verify command from registry (file path or inline JSON).
-  AGENT_VERIFY=""
-  if [ -n "$AGENT_REGISTRY" ]; then
-    if [ -f "$AGENT_REGISTRY" ]; then
-      AGENT_VERIFY=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].verify // empty' "$AGENT_REGISTRY" 2>/dev/null || true)
-    elif [ -f "$CEO_DIR/$AGENT_REGISTRY" ]; then
-      AGENT_VERIFY=$(jq -r --arg t "$AGENT_TASK" '.tasks[$t].verify // empty' "$CEO_DIR/$AGENT_REGISTRY" 2>/dev/null || true)
-    elif [[ "$AGENT_REGISTRY" == \{* ]]; then
-      AGENT_VERIFY=$(printf '%s' "$AGENT_REGISTRY" | jq -r --arg t "$AGENT_TASK" '.tasks[$t].verify // empty' 2>/dev/null || true)
-    fi
-    [ -z "${AGENT_VERIFY//[[:space:]]/}" ] && AGENT_VERIFY=""
-  fi
-
-  _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID${AGENT_VERIFY:+, verify:$AGENT_VERIFY})"
+  _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
-  # No --mcp here: cli.py reads tasks.<name>.mcp from --registry itself.
-  # --verify-cmd is threaded from the registry task spec when configured (#486).
-  _agent_dispatch_args=(
-    --task "$AGENT_PROMPT"
-    --task-name "$AGENT_TASK"
-    --registry "$AGENT_REGISTRY"
-    --cwd "$CEO_DIR"
-    --run-id "$AGENT_RUN_ID"
-  )
-  if [ -n "$AGENT_VERIFY" ]; then
-    _agent_dispatch_args+=(--verify-cmd "$AGENT_VERIFY")
-  fi
-  _agent_dispatch_args+=(--json)
-
-  AGENT_OUT=$("${_agent_cmd[@]}" "${_agent_dispatch_args[@]}" 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
+  # No --mcp or --verify-cmd here: cli.py reads tasks.<name>.mcp and .verify from
+  # --registry itself, and refuses a low-stakes-write task with no verify (#486).
+  AGENT_OUT=$("${_agent_cmd[@]}" --task "$AGENT_PROMPT" --task-name "$AGENT_TASK" \
+    --registry "$AGENT_REGISTRY" --cwd "$CEO_DIR" --run-id "$AGENT_RUN_ID" --json 2>>"$CRON_STDERR_LOG") || AGENT_RC=$?
 
   if [ "$AGENT_RC" -ne 0 ]; then
     _record_failure "ollama-agent bridge exited $AGENT_RC for $TRIGGER"
@@ -1706,7 +1681,8 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   _agent_unknown_json=$(printf '%s' "$AGENT_OUT" | jq -c '.unknown_calls // []')
   _agent_unknown=$(printf '%s' "$_agent_unknown_json" | jq -r 'length')
   _agent_verify_gated=$(printf '%s' "$AGENT_OUT" | jq -r '.verify_gated // false')
-  _agent_verified=$(printf '%s' "$AGENT_OUT" | jq -r '.verified // false')
+  _agent_verified=$(printf '%s' "$AGENT_OUT" | jq -r '.verified')
+  _agent_reason=$(printf '%s' "$AGENT_OUT" | jq -r '.reason // "unknown"')
 
   # Record one events row per run (epic #197 slice D) so a downstream pass can
   # correlate the injected rule set (rules_loaded_hash) with completion. Fires on
@@ -1724,11 +1700,10 @@ if [ "$RUNNER" = "ollama-agent" ]; then
     _ingest_hallucinated_calls "$AGENT_RUN_ID" "$AGENT_TASK" "$_agent_unknown_json" || true
   fi
 
-  # Verification gate (#486): a gated run must be verified before reaching
-  # success. Check before generic completion so verification failures are
-  # recorded with their specific failure reason.
+  # The bridge only sets completed on a gated run once verify passes, so this
+  # mostly names the outcome; it also refuses a gated completion that did not verify.
   if [ "$_agent_verify_gated" = "true" ] && [ "$_agent_verified" != "true" ]; then
-    _record_failure "ollama-agent task '$AGENT_TASK' verification failed for $TRIGGER"
+    _record_failure "ollama-agent task '$AGENT_TASK' gated run ended $_agent_reason (verified=$_agent_verified) for $TRIGGER"
     exit 1
   fi
 
