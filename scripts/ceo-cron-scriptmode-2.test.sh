@@ -164,7 +164,7 @@ PB
 
 
 test_runner_ollama_think_rejects_non_read_tier() {
-  # Sibling pin for runner:ollama-think — the guard at ceo-cron.sh:459 covers
+  # Sibling pin for runner:ollama-think — the tier guard in ceo-cron.sh covers
   # both ollama variants, so a regression that drops one side would leak.
   cat > "$CEO_DIR/playbooks/ollama-think-writetier.md" << 'PB'
 ---
@@ -185,7 +185,9 @@ PB
   CEO_VERBOSE=1 bash "$CRON" ollama-think-writetier >/dev/null 2>&1 || rc=$?
 
   assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "ollama-think with non-read tier must exit non-zero"
-  assert_eq "$([ -f "$HOME/ollama-invoked-model.txt" ] && echo 1 || echo 0)" "0" "ollama-think must NOT be invoked for non-read tier"
+  # A non-zero rc alone is not the guard: without it the run still exits 99 for
+  # another reason. The recorded reason is what pins the guard.
+  assert_contains "$(_skips_log)" "ollama runner requires tier:read" "skips log must record reject reason"
 }
 
 
@@ -1340,7 +1342,7 @@ test_pending_drip_no_relevant_questions_suppresses_inbox() {
 
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
 
-  assert_eq "$([ -s "$CEO_DIR/inbox/testhost.md" ] && echo 1 || echo 0)" "0" "no-relevant pending-drip must not create inbox task"
+  assert_eq "$(cat "$CEO_DIR/inbox/testhost.md" 2>/dev/null)" "" "no-relevant pending-drip must not create inbox task"
 }
 
 # _report must hand content to ceo-report.sh over stdin, never as a third argv

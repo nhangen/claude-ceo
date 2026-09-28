@@ -124,7 +124,7 @@ test_creates_host_suffixed_report_and_appends_per_host_inbox_line() {
 
 test_does_not_write_to_shared_inbox_md() {
   bash "$INTAKE" >/dev/null 2>&1
-  assert_eq "$([ -f "$CEO_DIR/inbox.md" ] && [ -s "$CEO_DIR/inbox.md" ] && echo 1 || echo 0)" "0" \
+  assert_eq "$(cat "$CEO_DIR/inbox.md" 2>/dev/null)" "" \
     "writer must not touch shared CEO/inbox.md"
 }
 
@@ -231,7 +231,8 @@ test_exits_nonzero_when_capture_command_missing() {
   local today report
   today=$(date +%Y-%m-%d)
   report="$CEO_DIR/reports/token/$today-$CEO_HOSTNAME.md"
-  assert_eq "$([ -f "$report" ] && ! grep -qF "unavailable on PATH=" "$report" && echo 1 || echo 0)" "0" "report must record the missing-binary sentinel for forensics"
+  assert_file_exists "$report" "report must be written even when capture failed"
+  assert_contains "$(cat "$report")" "unavailable on PATH=" "report must record the missing-binary sentinel for forensics"
 }
 
 test_exits_nonzero_when_capture_command_fails() {
@@ -543,7 +544,8 @@ test_stale_plugin_skips_the_credits_capture() {
   bash "$INTAKE" >/dev/null 2>&1
   local report
   report="$CEO_DIR/reports/token/$(date +%Y-%m-%d)-$CEO_HOSTNAME.md"
-  assert_not_contains "$(cat "$report" 2>/dev/null)" "credits vs weekly cap" "credits capture must be skipped when unsupported"
+  assert_file_exists "$report" "report must be written when the plugin is stale"
+  assert_not_contains "$(cat "$report")" "credits vs weekly cap" "credits capture must be skipped when unsupported"
 }
 
 test_missing_binary_is_not_misdiagnosed_as_a_stale_plugin() {

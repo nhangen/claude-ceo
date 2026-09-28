@@ -767,11 +767,11 @@ PB
 
 # The cron copy of preflight_has_log_entries_after_4pm was likewise unpinned:
 # reverting the whole rewrite, grep classification and all, left the suite green.
-# The hour gate makes this arm a no-op before 16:00, which is why it asserts
-# nothing in that window rather than asserting the wrong thing.
+# The hour gate makes this arm a no-op before 16:00, which is why it skips in
+# that window rather than asserting the wrong thing.
 test_preflight_log_entries_unreadable_records_failure_after_4pm() {
   if [ "$(date +%H)" -lt 16 ]; then
-    assert_eq "skipped" "skipped" "arm is a no-op before 16:00"
+    skip_test "arm only meaningful at or after 16:00 local (now $(date +%H):xx)"
     return 0
   fi
   cat > "$CEO_DIR/playbooks/pf-log-fail.md" << 'PB'

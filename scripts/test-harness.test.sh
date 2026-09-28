@@ -628,11 +628,30 @@ test_285_zero_discovered_tests_is_a_failure() {
 
 # --- #513: sibling test suites must not carry manual ASSERTION_COUNT bumps ---
 
+# Any write to ASSERTION_COUNT, in any spelling: `+ N`, `+N`, `++`, `+=`, `let`.
+# A read (`$ASSERTION_COUNT`) is excluded by the `$` in the leading class.
+_513_bump_scan() {
+  grep -Hn -E '(^|[^_A-Za-z0-9$])ASSERTION_COUNT[[:space:]]*(=|\+=|-=|\+\+|--)|(\+\+|--)[[:space:]]*ASSERTION_COUNT' "$@" \
+    | grep -v '/test-harness.test.sh:' || true
+}
+
 test_513_no_test_suite_carries_manual_assertion_count_bumps() {
   local matches
-  matches=$(grep -n -E 'ASSERTION_COUNT=\$\(\(ASSERTION_COUNT \+ [0-9]+\)\)' "$SCRIPT_DIR"/*.test.sh \
-    | grep -v 'test-harness.test.sh' || true)
+  matches=$(_513_bump_scan "$SCRIPT_DIR"/*.test.sh "$SCRIPT_DIR"/../hooks/*.test.sh)
   assert_eq "$matches" "" "no sibling test suite may carry manual ASSERTION_COUNT bumps"
+}
+
+test_513_bump_scan_flags_every_write_spelling_and_no_read() {
+  cat > "$TMP/fixture.test.sh" <<'FX'
+ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+ASSERTION_COUNT=$((ASSERTION_COUNT+1))
+((ASSERTION_COUNT++))
+((ASSERTION_COUNT += 1))
+let ASSERTION_COUNT++
+echo "$ASSERTION_COUNT assertions"
+FX
+  assert_eq "$(_513_bump_scan "$TMP/fixture.test.sh" | wc -l | tr -d ' ')" "5" \
+    "the guard must flag all five write spellings and ignore the read"
 }
 
 run_tests

@@ -451,8 +451,7 @@ test_pin_home_or_warn_emits_warn_on_resolver_failure() {
     ceo_pin_home_or_warn
   " 2>&1 >/dev/null) || rc=$?
   assert_eq "$rc" "1" "ceo_pin_home_or_warn must return 1 when resolver fails"
-  assert_contains "$stderr" "WARN: ceo_pin_home_or_warn" "expected WARN line on stderr"
-  assert_contains "$stderr" "passwd resolution failed" "expected passwd resolution failed on stderr"
+  assert_contains "$stderr" "WARN: ceo_pin_home_or_warn: passwd resolution failed" "expected WARN line on stderr"
 }
 
 test_resolve_plugin_cli_returns_runtime_and_abs_path() {
@@ -560,8 +559,7 @@ test_write_alert_frontmatter_rejects_invalid_status() {
     ceo_write_alert_frontmatter --status=frring --since=t --host=h --last-check=t
   " 2>&1 >/dev/null) || rc=$?
   assert_eq "$rc" "1" "invalid status must return 1"
-  assert_contains "$stderr" "invalid" "expected error on stderr"
-  assert_contains "$stderr" "status" "expected error on stderr"
+  assert_contains "$stderr" "invalid --status=" "expected error on stderr"
 }
 
 test_write_alert_frontmatter_accepts_clear_and_firing() {
