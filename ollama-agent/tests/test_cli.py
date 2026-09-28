@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cli  # noqa: E402
+from ollama_agent.transport import parse_chat_response  # noqa: E402
 
 
 def _rule(d, name, desc):
@@ -323,6 +324,96 @@ def test_cli_operator_explicit_mcp_overrides_registry_spec(tmp_path, monkeypatch
     assert closed["v"] is True
 
 
+def test_cli_adopts_spec_verify_when_flag_omitted(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        verify_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+            "verify": "pytest -q",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "verify_task"])
+    assert rc == 0
+    assert captured["verify_cmd"] == "pytest -q"
+
+
+def test_cli_operator_explicit_verify_cmd_overrides_registry_spec(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        verify_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+            "verify": "pytest -q",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "verify_task",
+                   "--verify-cmd", "make test"])
+    assert rc == 0
+    assert captured["verify_cmd"] == "make test"
+
+
+def test_cli_task_spec_no_verify_defaults_none(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        plain_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "plain_task"])
+    assert rc == 0
+    assert captured["verify_cmd"] is None
+
+
+def test_cli_refuses_low_stakes_write_task_without_verify_gate(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        write_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "write_task"])
+    assert rc == 3
+    assert "verify_cmd" not in captured
+    assert "low-stakes-write requires a verify gate" in capsys.readouterr().err
+
+
+def test_cli_low_stakes_write_task_runs_with_operator_verify_cmd(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        write_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "write_task",
+                   "--verify-cmd", "make test"])
+    assert rc == 0
+    assert captured["verify_cmd"] == "make test"
+
+
 def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
@@ -399,6 +490,7 @@ def test_cli_registry_tools_allowlist_admitting_some_mcp_tools_runs(tmp_path, mo
     rc = _run_mcp_task(_mcp_registry(tmp_path, ["mcp__echo"]), tmp_path)
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"mcp__echo"}
+    assert captured["toolbox"].allowed_tools == {"mcp__echo"}
     assert "REFUSED" not in capsys.readouterr().err
 
 
@@ -406,14 +498,13 @@ def test_cli_registry_tools_allowlist_raw_mcp_tool_name_refuses(tmp_path, monkey
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
     _stub_mcp(monkeypatch, closed)
-    # raw name without the mcp__ prefix: the likeliest way to hit this
     rc = _run_mcp_task(_mcp_registry(tmp_path, ["read_file", "echo"]), tmp_path)
     assert rc == 2
     assert "tools" not in captured
-    assert closed["v"] is True
+    assert "cmd" not in closed
     err = capsys.readouterr().err
-    assert "warning: registry tools not available (ignored): echo" in err
-    assert "REFUSED: mcp server 'srv --flag' bridged 1 tool(s)" in err
+    assert "registry error: task 'mcp_task': unknown tool 'echo'" in err
+    assert "MCP tools use the mcp__<name> form" in err
 
 
 def test_cli_mcp_flag_forbidden_by_registry_allowlist_refuses(tmp_path, monkeypatch, capsys):
@@ -445,6 +536,7 @@ def test_cli_registered_deterministic_task_applies_model_and_runs(tmp_path, monk
                    "--registry", reg, "--task-name", "triage"])
     assert rc == 0
     assert _tool_names(captured["tools"]) == {"run_shell", "git"}   # restricted to allowlist
+    assert captured["toolbox"].allowed_tools == {"run_shell", "git"}
     err = capsys.readouterr().err
     assert "model=registry-model:7b" in err and "tools restricted to:" in err
     assert "REFUSED" not in err
@@ -488,16 +580,29 @@ def test_cli_task_name_without_registry_returns_2(tmp_path, monkeypatch, capsys)
     assert "requires --registry" in capsys.readouterr().err
 
 
-def test_cli_registry_tool_typo_is_warned_not_silent(tmp_path, monkeypatch, capsys):
+def test_cli_registry_tool_typo_refuses_at_parse_time(tmp_path, monkeypatch, capsys):
     reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
                                  "tools": ["read-file", "git"]})  # 'read-file' is a typo
-    captured = {}
-    _stub(monkeypatch, captured)
+    _stub(monkeypatch, {})
     rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
                    "--registry", reg, "--task-name", "t"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "registry error: task 't': unknown tool 'read-file'" in err
+
+
+def test_cli_registry_tool_unavailable_at_dispatch_is_warned(tmp_path, monkeypatch, capsys):
+    reg = _registry(tmp_path, t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                 "tools": ["git"]})
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "x", "--cwd", str(tmp_path), "--no-tools",
+                   "--registry", reg, "--task-name", "t"])
     assert rc == 0
-    assert _tool_names(captured["tools"]) == {"git"}   # only the valid name survives
-    assert "not available (ignored): read-file" in capsys.readouterr().err
+    assert _tool_names(captured["tools"]) == set()
+    err = capsys.readouterr().err
+    assert "warning: registry tools not available (ignored): git" in err
+    assert "tools restricted to: (none)" in err
 
 
 def test_cli_registry_rules_skills_propagation(tmp_path, monkeypatch, capsys):
@@ -770,6 +875,29 @@ def test_cli_writes_the_reason_to_a_real_ledger(tmp_path, monkeypatch, capsys):
     assert row["completed"] is False
     assert row["verified"] is False
     assert row["reason"] == "verify-failed"
+    assert row["error_class"] is None
+
+
+def test_cli_verify_gate_timeout_records_verify_error(tmp_path, monkeypatch, capsys):
+    # #487: A verify command timeout records reason="verify-error" and verified=None.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+    monkeypatch.setattr(cli, "ollama_transport",
+                        lambda *a, **k: (lambda m, t: ({"role": "assistant", "content": "ok"},
+                                                       {"input": 10, "output": 20})))
+    from ollama_agent.tools import ToolBox
+    monkeypatch.setattr(ToolBox, "run_shell",
+                        lambda self, cmd: json.dumps({"returncode": None, "error": "timeout>30s"}))
+    rc = cli.main(["--ungated", "--task", "fix it", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--verify-cmd", "pytest", "--turn-cap", "2"])
+    assert rc == 0
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["verified"] is None
+    assert row["verify_gated"] is True
+    assert row["reason"] == "verify-error"
+    assert row["verify_cmd"] == "pytest"
+    assert "reason=verify-error" in capsys.readouterr().out
 
 
 def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):
@@ -891,6 +1019,7 @@ def test_cli_surfaces_unparseable_json_error_and_records_crash(
     row = json.loads(ledger.read_text().strip())
     assert row["completed"] is False
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["verified"] is None
     assert row["verify_gated"] is False
     assert row["ollama_input_tokens"] == 45
@@ -921,12 +1050,45 @@ def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_pat
     assert row["completed"] is False
     assert row["verified"] is None
     assert row["reason"] == "error"
+    assert row["warnings"] == []
+    assert row["error_class"] == "RuntimeError"
+    assert row["error"] == "model transport failed mid-run"
     assert row["ollama_input_tokens"] == 50
     assert row["ollama_output_tokens"] == 15
     # 2 turns carrying 1 turn's tokens is the intended reading: on a crash row
     # `turns` is the turn the run died on, not the count it completed. See the
     # usage_tracker paragraph in run_agent's docstring.
     assert row["turns"] == 2
+
+
+def test_cli_crashed_run_preserves_overflow_warnings(tmp_path, monkeypatch, capsys):
+    # #489: A run that crashes after context overflow must preserve the warning
+    # in the crash ledger row and show it on stderr.
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    call_count = 0
+
+    def failing_transport(messages, tools):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ({"role": "assistant",
+                     "tool_calls": [{"function": {"name": "list_dir", "arguments": {"path": "."}}}]},
+                    {"input": 3800, "output": 15})
+        raise RuntimeError("model transport failed mid-run")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--num-ctx", "4096", "--turn-cap", "5"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is False
+    assert row["reason"] == "error"
+    expected = ("turn 1: prompt used 3800 of 4096 context tokens (>=90%) -- "
+                "output may be truncated")
+    assert row["warnings"] == [expected]
+    assert f"warning: {expected}" in capsys.readouterr().err
 
 
 def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, capsys):
@@ -952,9 +1114,193 @@ def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, cap
     assert row["completed"] is False
     assert row["verified"] is None
     assert row["reason"] == "killed"
+    assert row["error_class"] == "KeyboardInterrupt"
+    # A bare Ctrl-C has no message; the class alone is error_class's job.
+    assert row["error"] is None
     assert row["ollama_input_tokens"] == 30
     assert row["ollama_output_tokens"] == 10
     assert row["turns"] == 2
+
+
+def test_cli_crashed_run_records_error_detail_in_ledger_row(tmp_path, monkeypatch, capsys):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def failing_transport(messages, tools):
+        raise RuntimeError("ollama HTTP 503 after 3 attempts: no healthy backends")
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    row = json.loads(ledger.read_text().strip())
+    assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
+    assert row["error"] == "ollama HTTP 503 after 3 attempts: no healthy backends"
+
+
+def test_cli_clean_run_records_error_null(tmp_path, monkeypatch):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def clean_transport(messages, tools):
+        return ({"role": "assistant", "content": "done"}, {"input": 10, "output": 5})
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: clean_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    row = json.loads(ledger.read_text().strip())
+    assert row["completed"] is True
+    assert row["error"] is None
+
+
+def test_cli_crashed_run_caps_and_escapes_error_message(tmp_path, monkeypatch):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    long_msg = "line1\nline2\n" + "x" * 250
+    def failing_transport(messages, tools):
+        raise ValueError(long_msg)
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    raw = ledger.read_text().strip()
+    assert len(raw.splitlines()) == 1
+    row = json.loads(raw)
+    assert row["reason"] == "error"
+    assert "\n" not in row["error"]
+    assert "\\n" in row["error"]
+    assert row["error_class"] == "ValueError"
+    assert row["error"].startswith("line1\\nline2\\n")
+    # Capped at 200 raw chars, then escaped: 12 raw chars of prefix, 188 x's.
+    assert row["error"] == "line1\\nline2\\n" + "x" * 188
+
+
+def _crash_error(tmp_path, monkeypatch, exc_factory):
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    def failing_transport(messages, tools):
+        raise exc_factory()
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: failing_transport)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills"])
+    assert rc == 1
+    return json.loads(ledger.read_text().strip())["error"]
+
+
+# Provider-shaped fixtures are assembled from pieces so no source literal
+# trips a secret scanner; each still equals the credential shape it tests.
+@pytest.mark.parametrize("raw, leaked, kept", [
+    ("ollama unreachable at http://alice:hunter2@gpu-box:11434/api/chat: refused",
+     "hunter2", "http://***REDACTED***@gpu-box:11434"),
+    ("upstream said Authorization: Bearer abc.def-ghi123 rejected",
+     "abc.def-ghi123", "Authorization: ***REDACTED***"),
+    ("upstream said Bearer abc.def-ghi123 rejected", "abc.def-ghi123", "Bearer ***REDACTED***"),
+    ("upstream said Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz", "Authorization: ***REDACTED***"),
+    ("upstream said Authorization: Token abcdef123456", "abcdef123456", "Authorization: ***REDACTED***"),
+    ("upstream said cookie: session=abc123", "abc123", "cookie: ***REDACTED***"),
+    ('{"api_key": "s3cr3tvalue", "model": "m"}', "s3cr3tvalue", '"api_key": "***REDACTED***"'),
+    ("echoed prompt: export HF_TOKEN=abcdefgh123 done", "abcdefgh123", "HF_TOKEN=***REDACTED***"),
+    ("echoed: DATABASE_PASSWORD=hunter2hunter2", "hunter2hunter2", "DATABASE_PASSWORD=***REDACTED***"),
+    ("echoed: refresh_token=abcdef123456", "abcdef123456", "refresh_token=***REDACTED***"),
+    ("echoed: access_token=abcdef123456", "abcdef123456", "access_token=***REDACTED***"),
+    ("echoed: password: hunter2", "hunter2", "password: ***REDACTED***"),
+    ("echoed: passwd=hunter2", "hunter2", "passwd=***REDACTED***"),
+    ("echoed prompt: key " + "sk-" + "proj-" + "ABCDEFGHIJ0123456789 end", "ABCDEFGHIJ", "key ***REDACTED*** end"),
+    ("echoed: " + "sk_" + "live_" + "ABCDEFGHIJKLMNOP1234 end", "ABCDEFGHIJ", "***REDACTED*** end"),
+    ("echoed: " + "gh" + "u_" + "abcdefghijklmnop1234 end", "abcdefghij", "***REDACTED*** end"),
+    ("echoed: " + "gl" + "pat-" + "ABCDEFGHIJKLMNOPQRST end", "ABCDEFGHIJ", "***REDACTED*** end"),
+    ("echoed: " + "xo" + "xb-" + "1234567890-abcdef end", "1234567890", "***REDACTED*** end"),
+    ("echoed: " + "AK" + "IA" + "ABCDEFGHIJKLMNOP end", "AK" + "IA" + "ABCDEFGHIJKLMNOP", "***REDACTED*** end"),
+    ("echoed: " + "AI" + "za" + "SyA1234567890" + "abcdefghijklmnopqrstuv end", "SyA1234567890", "***REDACTED*** end"),
+    ("echoed: Token abcdefghijklmnop1234 end", "abcdefghijklmnop1234", "Token ***REDACTED*** end"),
+    ("echoed: passphrase=correcthorse", "correcthorse", "passphrase=***REDACTED***"),
+    ("echoed: private_key=abcdef123456", "abcdef123456", "private_key=***REDACTED***"),
+    ("echoed: DB_URL=postgres://u:pw1234@db/x", "pw1234", "postgres://***REDACTED***@db"),
+    ("echoed: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig end", "eyJzdWIiOiIxIn0", "***REDACTED*** end"),
+    ("echoed: -----BEGIN RSA PRIVATE KEY-----MIIEowIBAAKCAQEA", "MIIEow", "echoed: ***REDACTED***"),
+])
+def test_cli_crashed_run_redacts_credentials_in_error(tmp_path, monkeypatch, raw, leaked, kept):
+    # #493: a proxy error body can echo request content, and the url can carry
+    # userinfo; runs.jsonl persists and token-scope reads it.
+    error = _crash_error(tmp_path, monkeypatch, lambda: RuntimeError(raw))
+    assert leaked not in error
+    assert kept in error
+
+
+@pytest.mark.parametrize("raw", [
+    "basic validation failed for field x",
+    "prompt used token: 4096 of the window",
+    "max_tokens=4096 exceeded",
+    "ollama unreachable at http://gpu-box:11434/api/chat: refused",
+    "ollama HTTP 503 after 3 attempts: no healthy backends for model qwen3:32b",
+    "token budget exceeded; num_ctx=32768 max_tokens: 4096",
+])
+def test_cli_crashed_run_keeps_diagnostic_text_unredacted(tmp_path, monkeypatch, raw):
+    assert _crash_error(tmp_path, monkeypatch, lambda: RuntimeError(raw)) == raw
+
+
+@pytest.mark.parametrize("body, leaked", [
+    ("echo:\nTOKEN=abcdef123", "abcdef123"),
+    ("echo:\n" + "gh" + "p_" + "abcdefghijklmnop1234", "abcdefghij"),
+    ("echo:\r\nsecret=xyz12345", "xyz12345"),
+    ("echo:\nAuthorization: Bearer abcdefgh1234", "abcdefgh1234"),
+    # The transport cuts the body at 200; a userinfo whose `@` lands past the
+    # cut must still go, so redaction has to run before the cut.
+    ("x" * 150 + "http://alice:hunter2longpassword" + "p" * 40 + "@host/", "hunter2"),
+])
+def test_cli_transport_error_body_is_redacted_before_escape_and_cut(tmp_path, monkeypatch,
+                                                                      body, leaked):
+    # Drives the real parse_chat_response, whose excerpt escapes and cuts the
+    # body before cli.py ever sees it -- the path #441/#447 bodies take.
+    def raise_from_transport():
+        try:
+            parse_chat_response(502, body)
+        except RuntimeError as e:
+            return e
+        raise AssertionError("parse_chat_response did not raise")
+
+    error = _crash_error(tmp_path, monkeypatch, raise_from_transport)
+    assert error.startswith("ollama HTTP 502: ")
+    assert leaked not in error
+    assert "REDACTED" in error
+
+
+def test_cli_transport_error_is_escaped_once(tmp_path, monkeypatch):
+    def raise_from_transport():
+        try:
+            parse_chat_response(502, "line1\nline2 a\\b")
+        except RuntimeError as e:
+            return e
+
+    error = _crash_error(tmp_path, monkeypatch, raise_from_transport)
+    assert error == "ollama HTTP 502: line1\\nline2 a\\\\b"
+
+
+def test_cli_crashed_run_redacts_before_capping(tmp_path, monkeypatch):
+    # Capped first, the token would keep "sk-ABCD": too short to match the
+    # 8-char minimum, so only redacting the whole message scrubs it.
+    error = _crash_error(tmp_path, monkeypatch,
+                         lambda: RuntimeError("x" * 192 + " sk-ABCDEFGHIJKLMNOP"))
+    assert "sk-" not in error
+
+
+def test_cli_crashed_run_escapes_other_control_characters(tmp_path, monkeypatch):
+    error = _crash_error(tmp_path, monkeypatch, lambda: RuntimeError("a\tb\x1bc"))
+    assert error == "a\\tb\\x1bc"
+
+
+def test_cli_crashed_run_survives_an_unprintable_exception(tmp_path, monkeypatch):
+    class Unprintable(Exception):
+        def __str__(self):
+            raise ValueError("no")
+
+    assert _crash_error(tmp_path, monkeypatch, Unprintable) == "<unprintable Unprintable>"
 
 
 def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, capsys):
@@ -973,6 +1319,7 @@ def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, ca
     assert row["verify_gated"] is False
     assert row["verified"] is None
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["ollama_input_tokens"] == 0
     assert row["ollama_output_tokens"] == 0
 
@@ -1003,6 +1350,7 @@ def test_cli_crashed_run_records_a_row_for_a_non_runtimeerror(tmp_path, monkeypa
     assert "agent failed: OSError: connection reset by peer" in capsys.readouterr().err
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["error_class"] == "OSError"
     assert row["ollama_input_tokens"] == 11
     assert row["ollama_output_tokens"] == 22
 
@@ -1029,6 +1377,7 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["verify_gated"] is True
     assert row["verify_cmd"] == "false"
     assert row["verified"] is False
@@ -1052,6 +1401,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["verify_gated"] is True
     assert row["verify_cmd"] == "pytest"
     assert row["verified"] is None
@@ -1113,6 +1463,9 @@ def test_cli_sigterm_writes_a_killed_ledger_row(tmp_path):
     assert rc == 130
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "killed"
+    assert row["error_class"] == "_Terminated"
+    # The killed arm plumbs the message too; a bare Ctrl-C only pins its null case.
+    assert row["error"] == "signal 15"
     assert row["completed"] is False
     assert row["ollama_input_tokens"] == 77
     assert row["ollama_output_tokens"] == 33
@@ -1246,3 +1599,131 @@ def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert captured["toolbox"].mcp_readonly == {"mcp__genuine"}
     assert "(1 read-only)" in capsys.readouterr().err
+
+
+def test_cli_mcp_server_stderr_surfaces_on_bridge_failure(tmp_path, monkeypatch, capfd):
+    """#511: When an MCP server crashes, its stderr reason surfaces in CLI stderr."""
+    _stub(monkeypatch, {})
+    server = tmp_path / "failing_server.py"
+    server.write_text("import sys\nsys.stderr.write('fatal: postgres down on port 5432\\n')\nsys.exit(1)\n")
+    rc = cli.main(["--ungated", "--task", "x", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--mcp", f'"{sys.executable}" "{server}"'])
+    assert rc == 1
+    err = capfd.readouterr().err
+    assert "fatal: postgres down on port 5432" in err
+    assert "mcp bridge failed for" in err
+
+
+def test_cli_relative_registry_path_resolves_against_cwd(tmp_path, monkeypatch, capsys):
+    """#510: A relative --registry argument resolves against --cwd."""
+    reg = tmp_path / "custom.json"
+    reg.write_text(json.dumps({"tasks": {"work": {"runner": "ollama", "model": "rel-reg:3b",
+                                                  "tier": "deterministic"}}}))
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--registry", "custom.json", "--task-name", "work",
+                   "--no-rules", "--no-skills"])
+    assert rc == 0
+    assert "model=rel-reg:3b" in capsys.readouterr().err
+
+
+def test_cli_missing_relative_registry_path_surfaces_path_not_found_not_json_error(tmp_path, capsys):
+    """#510: A missing relative --registry path prints registry path not found, not Expecting value."""
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
+                   "--registry", "missing.json", "--task-name", "work"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert ("registry error: registry path not found or not a file: missing.json "
+            f"(resolved against cwd {tmp_path.resolve()})") in err
+    assert "Expecting value" not in err
+
+
+def test_cli_registry_default_cwd_names_the_resolved_process_cwd(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["--task", "do work", "--registry", "missing.json", "--task-name", "work"])
+    assert rc == 2
+    assert f"(resolved against cwd {tmp_path.resolve()})" in capsys.readouterr().err
+
+
+def test_cli_no_tools_flag_sets_empty_allowed_tools_on_toolbox(tmp_path, monkeypatch):
+    """#512: --no-tools sets allowed_tools to empty set on ToolBox."""
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--ungated", "--task", "work", "--cwd", str(tmp_path),
+                   "--no-rules", "--no-skills", "--no-tools"])
+    assert rc == 0
+    assert captured["toolbox"].allowed_tools == set()
+
+
+def test_cli_registry_empty_tools_admits_nothing_at_dispatch(tmp_path, monkeypatch):
+    """#512: the registry's zero-tool mode (the only one cron can express) is enforced."""
+    reg = _registry(tmp_path, bare={"runner": "ollama", "model": "reg-model:7b",
+                                     "tier": "deterministic", "tools": []})
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main(["--task", "work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "bare"])
+    assert rc == 0
+    assert captured["tools"] == []
+    assert captured["toolbox"].allowed_tools == set()
+
+
+def test_cli_task_tools_allowlist_enforced_at_dispatch_rejects_unadmitted_tool(tmp_path, monkeypatch, capsys):
+    """#512: When model calls an unadmitted tool on a restricted task, dispatch rejects it as unknown."""
+    reg = _registry(tmp_path, restricted={"runner": "ollama", "model": "reg-model:7b",
+                                           "tier": "deterministic", "tools": ["read_file"]})
+    marker = tmp_path / "should_not_exist"
+    ledger = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
+
+    turn = 0
+    replies = []
+
+    def transport(messages, tools):
+        nonlocal turn
+        turn += 1
+        if turn == 1:
+            return (
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": {"command": f"touch {marker}"},
+                        }
+                    }],
+                },
+                {"input": 10, "output": 10},
+            )
+        replies.append(messages[-1])
+        return (
+            {"role": "assistant", "content": "understood"},
+            {"input": 10, "output": 10},
+        )
+
+    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: transport)
+    rc = cli.main(["--task", "do work", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "restricted", "--json"])
+    assert rc == 0
+    assert turn == 2
+    assert replies[0]["role"] == "tool"
+    assert json.loads(replies[0]["content"]) == {"error": "unknown tool: run_shell"}
+    assert not marker.exists(), "unadmitted tool call must not execute shell command"
+    rec = json.loads(capsys.readouterr().out)
+    assert rec["unknown_calls"] == ["run_shell"]
+
+
+def test_cli_stderr_line_keeps_more_than_the_ledger_cap(tmp_path, monkeypatch, capsys):
+    tail = "raise --num-ctx to fix"
+    error = _crash_error(tmp_path, monkeypatch, lambda: RuntimeError("y" * 300 + tail))
+    assert len(error) == 200
+    assert tail in capsys.readouterr().err
+
+
+def test_cli_crashed_run_redacts_the_stderr_line_too(tmp_path, monkeypatch, capsys):
+    _crash_error(tmp_path, monkeypatch,
+                 lambda: RuntimeError("echoed: export HF_TOKEN=abcdefgh123"))
+    err = capsys.readouterr().err
+    assert "agent failed: RuntimeError: echoed: export HF_TOKEN=***REDACTED***" in err
+    assert "abcdefgh123" not in err

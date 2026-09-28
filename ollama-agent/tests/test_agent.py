@@ -547,6 +547,38 @@ def test_transport_honors_retry_after_header(monkeypatch):
     assert sleeps == [1.5]
 
 
+def test_transport_retry_warning_redacts_the_upstream_body(monkeypatch, capsys):
+    # #493: the retry warning's detail is the proxy body, which can echo the request.
+    import ollama_agent.transport as t
+
+    def fail(req, timeout):
+        raise t.urllib.error.HTTPError(
+            "u", 503, "busy", {}, io.BytesIO(b"busy; echoed:\nHF_TOKEN=abcdefgh1234"))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(t.time, "sleep", lambda *a: None)
+    with pytest.raises(RuntimeError) as exc:
+        t.ollama_transport("local-coder", host="router:40114")(
+            [{"role": "user", "content": "hi"}], [])
+    err = capsys.readouterr().err
+    assert "HF_TOKEN=***REDACTED***" in err
+    assert "abcdefgh1234" not in err + str(exc.value)
+
+
+def test_error_excerpt_stays_fast_on_a_huge_unbroken_body():
+    # Redacting before the cut must not mean redacting the whole body: two of
+    # the patterns are quadratic over a long `[A-Za-z0-9_-]` run, which a
+    # base64 image echoed in a 413 body is.
+    import time
+    body = '{"error":"request too large: image=' + "_-" * 100_000 + '"}'
+    start = time.monotonic()
+    try:
+        parse_chat_response(413, body)
+    except RuntimeError:
+        pass
+    assert time.monotonic() - start < 1.0
+
+
 def test_transport_stops_after_bounded_502_retries(monkeypatch, capsys):
     import io
     import ollama_agent.transport as t
@@ -923,6 +955,73 @@ def test_reason_verify_failed_when_the_gate_is_still_red_at_the_cap(tmp_path):
     assert rec["reason"] == "verify-failed"
 
 
+def test_reason_verify_error_when_the_gate_times_out(tmp_path):
+    # #487: A verify command that times out (returncode=None) never completed, so
+    # it proves neither pass nor fail. reason must be verify-error and verified None.
+    tb = ToolBox(cwd=tmp_path)
+    tb.run_shell = lambda cmd: json.dumps({"returncode": None, "error": "timeout>30s"})
+    transport = _script({"role": "assistant", "content": "done"})
+    tracker = {}
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=1, verify_cmd="pytest", usage_tracker=tracker)
+    assert rec["completed"] is False
+    assert rec["verified"] is None
+    assert rec["verify_gated"] is True
+    assert rec["reason"] == "verify-error"
+    assert tracker["verified"] is None
+    # Feedback message must surface the timeout error string to the model
+    user_msgs = [m for m in rec["transcript"] if m.get("role") == "user" and "Verification command" in m.get("content", "")]
+    assert len(user_msgs) == 1
+    assert "error:\ntimeout>30s" in user_msgs[0]["content"]
+    assert "returncode=None" in user_msgs[0]["content"]
+    # The model must not be told to fix failures it was never shown (#487).
+    assert "Fix the remaining failures" not in user_msgs[0]["content"]
+    assert "did not finish" in user_msgs[0]["content"]
+
+
+def test_reason_verify_error_supersedes_earlier_verify_failed_when_gate_later_times_out(tmp_path):
+    # #487: If gate was red on turn 1 and timed out on turn 2, the terminal state is verify-error.
+    tb = ToolBox(cwd=tmp_path)
+    call_count = 0
+    def mock_run_shell(cmd):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps({"returncode": 1, "stdout": "", "stderr": "failed"})
+        return json.dumps({"returncode": None, "error": "timeout>30s"})
+
+    tb.run_shell = mock_run_shell
+    transport = _script(
+        {"role": "assistant", "content": "done 1"},
+        {"role": "assistant", "content": "done 2"},
+    )
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=2, verify_cmd="pytest")
+    assert rec["completed"] is False
+    assert rec["verified"] is None
+    assert rec["reason"] == "verify-error"
+
+
+def test_reason_verify_failed_when_gate_times_out_then_goes_red(tmp_path):
+    # #487 mirror: a timeout on turn 1 followed by a real red on turn 2 is a test
+    # failure, not a harness error, so the earlier timeout must not stick.
+    tb = ToolBox(cwd=tmp_path)
+    results = iter([
+        {"returncode": None, "error": "timeout>30s"},
+        {"returncode": 1, "stdout": "", "stderr": "failed"},
+    ])
+    tb.run_shell = lambda cmd: json.dumps(next(results))
+    transport = _script(
+        {"role": "assistant", "content": "done 1"},
+        {"role": "assistant", "content": "done 2"},
+    )
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=2, verify_cmd="pytest")
+    assert rec["completed"] is False
+    assert rec["verified"] is False
+    assert rec["reason"] == "verify-failed"
+
+
 def test_run_agent_updates_usage_tracker_across_turns(tmp_path):
     tracker = {}
     transport = _script(
@@ -956,18 +1055,20 @@ def test_run_agent_returns_verify_gated_from_the_verify_cmd(tmp_path):
 
 def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     # The docstring promises a reused tracker does not double-count and that a
-    # stale `verified` cannot leak forward. Without the entry reset both are false
-    # and nothing else in the suite notices.
+    # stale `verified` or run 1's overflow warnings cannot leak forward into run
+    # 2's crash row (#489). Without the entry reset all of these are false and
+    # nothing else in the suite notices.
     tracker = {}
-    first = _script(({"role": "assistant", "content": "done"}, {"input": 10, "output": 20}))
+    first = _script(({"role": "assistant", "content": "done"}, {"input": 4000, "output": 20}))
     rec1 = run_agent("task", "sys", first, ToolBox(cwd=tmp_path), TOOLS,
-                     turn_cap=1, verify_cmd="false", usage_tracker=tracker)
+                     turn_cap=1, verify_cmd="false", num_ctx=4096, usage_tracker=tracker)
     assert tracker["verified"] is False
     assert tracker["verify_gated"] is True
     assert tracker["verify_cmd"] == "false"
     assert rec1["verify_gated"] is True
     assert rec1["verify_cmd"] == "false"
-    assert tracker["ollama_input_tokens"] == 10
+    assert tracker["ollama_input_tokens"] == 4000
+    assert len(tracker["warnings"]) == 1
 
     second = _script(({"role": "assistant", "content": "done"}, {"input": 3, "output": 4}))
     rec2 = run_agent("task", "sys", second, ToolBox(cwd=tmp_path), TOOLS,
@@ -979,6 +1080,7 @@ def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     assert rec2["verify_cmd"] is None
     assert tracker["ollama_input_tokens"] == 3
     assert tracker["turns"] == 1
+    assert tracker["warnings"] == []
 
 
 # --- #384: context overflow detected from the token count, not a daemon string ---

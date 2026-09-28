@@ -18,7 +18,6 @@ test_frontmatter_and_contract_present() {
   # the frontmatter key.
   assert_not_contains "$body" "sprint" "no retired sprint signal"
   assert_contains "$body" "CEO-PREDICTED-PRIORITIES" "emits predicted block contract"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests
