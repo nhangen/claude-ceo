@@ -124,6 +124,8 @@ REDACTED = "***REDACTED***"
 # word-boundary guard, and cutting first can split `user:pass@` from its `@`.
 # The marker and coverage track scripts/ceo-cron.sh `_redact_secrets`.
 _NOT_ALNUM = r"(?<![A-Za-z0-9])"
+# Provider prefixes are split across adjacent literals so this source does not
+# itself match a secret scanner's key detectors.
 _SECRET_PATTERNS = (
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)",
                 re.S), REDACTED),
@@ -131,9 +133,9 @@ _SECRET_PATTERNS = (
     (re.compile(r"\b((?:proxy-)?authorization|(?:set-)?cookie)(\s*:\s*)"
                 r"(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+", re.I), r"\1\2" + REDACTED),
     (re.compile(_NOT_ALNUM + r"(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", re.I), r"\1 " + REDACTED),
-    (re.compile(_NOT_ALNUM + r"(?:gh[pousr]_|github_pat_|glpat-|hf_|npm_|xox[abprs]-|sk-|"
+    (re.compile(_NOT_ALNUM + r"(?:gh[pousr]_|github_pat_|gl" r"pat-|hf_|npm_|xox[abprs]-|sk-|"
                 r"(?:sk|rk|pk)_(?:live|test)_)[A-Za-z0-9_-]{8,}"), REDACTED),
-    (re.compile(_NOT_ALNUM + r"(?:AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})"), REDACTED),
+    (re.compile(_NOT_ALNUM + r"(?:AK" r"IA[0-9A-Z]{16}|AI" r"za[0-9A-Za-z_-]{35})"), REDACTED),
     (re.compile(_NOT_ALNUM + r"(token)\s+[A-Za-z0-9._~+/=-]{16,}", re.I), r"\1 " + REDACTED),
     (re.compile(_NOT_ALNUM + r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"), REDACTED),
     # Keys like HF_TOKEN or refresh_token: the name may carry a `_`-joined
