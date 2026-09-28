@@ -132,7 +132,7 @@ teardown() {
   unset CEO_PROCESS_WATCHDOG_KILL_BIN CEO_PROCESS_WATCHDOG_NOTIFY_LOG
   unset CEO_PROCESS_WATCHDOG_TERM_GRACE_SECONDS CEO_PROCESS_WATCHDOG_MIN_AGE_MINUTES CEO_PROCESS_WATCHDOG_MIN_CPU_PERCENT
   unset CEO_PROCESS_WATCHDOG_DRY_RUN CEO_PROCESS_WATCHDOG_MATCH CEO_PROCESS_WATCHDOG_LABEL CEO_PROCESS_WATCHDOG_KILL_AFTER_TERM
-  unset CEO_DISCORD_WEBHOOK CURL_CAPTURE_FILE
+  unset CEO_DISCORD_WEBHOOK CURL_CAPTURE_FILE CEO_RUNNER_OUTCOME_FILE
 }
 
 # Writes the ps fixture from stdin and marks every PID in it alive.
@@ -393,6 +393,27 @@ EOF
   run_watchdog
   assert_eq "$(state_field killed_count)" "1" "kill still happens when notifications are off"
   assert_fails "notify_events=off must suppress kill notification" test -s "$CURL_CAPTURE_FILE"
+}
+
+test_successful_runs_tell_the_dispatcher_to_stay_quiet() {
+  # ceo-cron.sh posts a generic "completed" notice after every success unless the
+  # script reports noop (#173). This script sends its own kill alert, so every
+  # successful run, clear or killing, reports noop (#540).
+  export CEO_RUNNER_OUTCOME_FILE="$TEST_HOME/outcome"
+  ps_table << 'EOF2'
+  100     1   01:00:00  75.0 /usr/bin/yes
+EOF2
+  run_watchdog
+  assert_eq "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" "noop" "clear run reports noop"
+
+  rm -f "$CEO_RUNNER_OUTCOME_FILE"
+  ps_table << EOF2
+  101     1   02:00:00  75.0 $HOT
+EOF2
+  run_watchdog
+  assert_eq "$(state_field killed_count)" "1" "the kill still happens"
+  assert_eq "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" "noop" "a kill run reports noop; its own alert already posted"
+  assert_file_exists "$CURL_CAPTURE_FILE" "the kill alert is still sent"
 }
 
 test_playbook_scan_registers_process_watchdog() {

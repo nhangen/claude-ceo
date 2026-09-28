@@ -214,9 +214,10 @@ PB
 
 # ceo-scan.sh reads the host-local marker since #394; a seed left on the old
 # vault path silently exercises the first-run branch instead of the one
-# production takes. This harness sources no library, so the default is spelled
-# here — it must track _ceo_state_dir in ceo-config.sh.
-_dbg_state="${CEO_STATE_DIR:-$HOME/.ceo/state}"
+# production takes. Resolve via _ceo_state_dir in ceo-config.sh (#472).
+# shellcheck source=scripts/ceo-config.sh
+source "$SCRIPT_DIR/ceo-config.sh"
+_dbg_state=$(_ceo_state_dir)
 mkdir -p "$_dbg_state"
 touch -t 202501010000 "$_dbg_state/.last-scan"
 

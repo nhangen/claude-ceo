@@ -94,7 +94,6 @@ test_appends_inbox_line_and_invokes_bun() {
   assert_contains "$output" "bun-stub:" "script must invoke bun"
   assert_contains "$output" "--since $yesterday" "bun invocation must pass --since with yesterday's date"
   assert_contains "$output" "--obsidian-vault $CEO_VAULT" "bun invocation must pass obsidian-vault"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_idempotent_inbox_append() {
@@ -107,7 +106,6 @@ test_idempotent_inbox_append() {
 
   count=$(grep -c -F "$WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox" || true)
   assert_eq "$count" "1" "two runs must leave exactly one inbox line"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_idempotent_preserves_checked_off_line() {
@@ -127,7 +125,6 @@ test_idempotent_preserves_checked_off_line() {
   unchecked=$(grep -c -F -- "- [ ] Review daily value-tracker report $WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox" || true)
   assert_eq "$checked" "1" "checked-off line must survive re-run"
   assert_eq "$unchecked" "0" "must not re-append an unchecked line"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_exits_with_bun_exit_code_when_bun_fails() {
@@ -142,32 +139,21 @@ STUB
   assert_eq "$rc" "7" "must propagate bun exit code (got rc=$rc; stderr: $stderr)"
 
   local inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
-  if [ -f "$inbox" ] && grep -qF "$WIKILINK_PREFIX/" "$inbox"; then
-    printf '  FAIL [%s] inbox must NOT have a line when bun failed\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$inbox" ] && grep -qF "$WIKILINK_PREFIX/" "$inbox" && echo 1 || echo 0)" "0" \
+    "inbox must NOT have a line when bun failed"
 }
 
 test_fails_when_home_is_empty() {
   local rc=0 stderr
   stderr=$(HOME="" bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] HOME="" must fail (PR-#11 anti-regression)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "HOME=\"\" must fail (PR-#11 anti-regression)"
   assert_contains "$stderr" "HOME" "stderr must mention HOME (got: $stderr)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_ceo_vault_is_unset() {
   local rc=0 stderr
   stderr=$(unset CEO_VAULT; bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] unset CEO_VAULT must fail\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "unset CEO_VAULT must fail"
 }
 
 test_fails_when_bun_missing_from_path() {
@@ -176,23 +162,15 @@ test_fails_when_bun_missing_from_path() {
   # Pre-set _CEO_PATH_AUGMENTED to bypass ceo_augment_path so it can't reintroduce
   # the real bun from /usr/local/bin or /opt/homebrew/bin.
   stderr=$(_CEO_PATH_AUGMENTED=1 PATH="$TEST_HOME/stubs:/usr/bin:/bin" bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] missing bun must fail\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "missing bun must fail"
   assert_contains "$stderr" "bun" "stderr must mention bun (got: $stderr)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_entry_missing() {
   local rc=0 stderr
   stderr=$(CEO_VALUE_TRACKER_ENTRY="$TEST_HOME/nope/cli.ts" bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] missing entry must fail\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "missing entry must fail"
   assert_contains "$stderr" "entry not found" "stderr must mention entry not found (got: $stderr)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_two_hosts_write_to_disjoint_files() {
@@ -209,7 +187,6 @@ test_two_hosts_write_to_disjoint_files() {
   h2=$(grep -c -F "$WIKILINK_PREFIX/$today-otherhost]]" "$CEO_DIR/inbox/otherhost.md" || true)
   assert_eq "$h1" "1" "host1 must have its own line"
   assert_eq "$h2" "1" "host2 must have its own line"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_bun_exits_zero_but_writes_no_note() {
@@ -226,20 +203,14 @@ STUB
 
   local rc=0 stderr
   stderr=$(bash "$TRACKER" 2>&1 >/dev/null) || rc=$?
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] wrapper must exit non-zero when bun produced no note (#88)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "wrapper must exit non-zero when bun produced no note (#88)"
   assert_contains "$stderr" "did not write" "stderr must name the missing-note failure (got: $stderr)"
 
   local today inbox
   today=$(date +%Y-%m-%d)
   inbox="$CEO_DIR/inbox/$CEO_HOSTNAME.md"
-  if [ -f "$inbox" ] && grep -qF "$WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox"; then
-    printf '  FAIL [%s] inbox must NOT have a line when no note was written\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ -f "$inbox" ] && grep -qF "$WIKILINK_PREFIX/$today-$CEO_HOSTNAME]]" "$inbox" && echo 1 || echo 0)" "0" \
+    "inbox must NOT have a line when no note was written"
 }
 
 test_fails_when_bun_writes_empty_note() {
@@ -271,7 +242,6 @@ STUB
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$stderr" "did not write" "stderr must name the missing-note failure (got: $stderr)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_fails_when_note_has_no_h1() {
@@ -304,7 +274,6 @@ STUB
     FAILS=$((FAILS + 1))
   fi
   assert_contains "$stderr" "no '# value-tracker' h1" "stderr must name the sentinel failure (got: $stderr)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_asserts_on_analyzer_reported_path_not_local_date() {
@@ -351,7 +320,6 @@ STUB
     bad=$(grep -c -F -- "$local_link" "$inbox" 2>/dev/null || true)
     assert_eq "$bad" "0" "inbox must not contain a wrapper-reconstructed local-date wikilink"
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

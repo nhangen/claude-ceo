@@ -76,14 +76,8 @@ test_ceo_report_fails_loud_on_unresolved_vault() {
   local rc=0 out
   out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo-report.sh" intake test-trigger "content" 2>&1) || rc=$?
   assert_eq "$rc" "1" "ceo-report.sh must exit 1 when no vault resolves"
-  case "$out" in
-    *FATAL*) ;;
-    *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
-  esac
-  if [ -d "$TEST_HOME/empty/Documents/Obsidian/CEO" ]; then
-    printf '  FAIL [%s] silent provision under default path\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
+  assert_contains "$out" "FATAL" "stderr missing FATAL"
+  assert_eq "$([ -d "$TEST_HOME/empty/Documents/Obsidian/CEO" ] && echo 1 || echo 0)" "0" "silent provision under default path"
 }
 
 test_ceo_callers_fail_loud_on_unresolved_vault() {
@@ -92,10 +86,7 @@ test_ceo_callers_fail_loud_on_unresolved_vault() {
     rc=0
     out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/$script" 2>&1) || rc=$?
     assert_eq "$rc" "1" "$script must exit 1 when no vault resolves"
-    case "$out" in
-      *FATAL*) ;;
-      *) printf '  FAIL [%s] stderr missing FATAL\n    got: %q\n' "$CURRENT_TEST" "$out"; FAILS=$((FAILS + 1)) ;;
-    esac
+    assert_contains "$out" "FATAL" "$script stderr missing FATAL"
   done
 }
 
@@ -161,6 +152,104 @@ test_registry_validate_genuine_downgrade_is_code_2() {
 
 test_registry_validate_missing_file_is_code_1() {
   assert_eq "$(_validate_rc "$TEST_HOME/does-not-exist.json")" "1" "absent registry file -> not-found (1)"
+}
+
+test_registry_validate_no_arg_returns_4_when_home_unset() {
+  local err rc=0
+  err=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " 2>&1 >/dev/null) || rc=$?
+  assert_eq "$rc" "4" "ceo_registry_validate with no args must return 4 when HOME is unset"
+  assert_contains "$err" "HOME must be set" "rc=4 alone does not say why; the path helper's diagnostic must still reach stderr"
+}
+
+# The override makes HOME irrelevant (#425), and rc=4 is documented as "no
+# override" only: with CEO_REGISTRY_FILE set, an unset HOME must never yield 4.
+test_registry_validate_no_arg_honors_override_when_home_unset() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_REGISTRY_FILE="$TEST_HOME/absent.json" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "no-arg validate with an override and HOME unset must report the override's absence (1), not 4"
+
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$TEST_HOME/override.json"
+  rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_REGISTRY_FILE="$TEST_HOME/override.json" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "no-arg validate with a valid override and HOME unset must return 0"
+}
+
+test_registry_validate_no_arg_returns_4_when_home_empty() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "4" "ceo_registry_validate with no args must return 4 when HOME is empty"
+}
+
+test_registry_validate_explicit_empty_arg_returns_4_when_home_unset() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate ''
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "4" "ceo_registry_validate with explicit '' must return 4 when HOME is unset"
+}
+
+test_registry_validate_no_arg_returns_1_when_home_set_but_no_registry() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "ceo_registry_validate with no args must return 1 when HOME is set but registry does not exist"
+}
+
+test_registry_validate_no_arg_returns_0_when_home_set_and_valid_registry() {
+  mkdir -p "$TEST_HOME/.ceo"
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$TEST_HOME/.ceo/registry.json"
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_validate
+  " >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "ceo_registry_validate with no args must return 0 when HOME has valid registry"
+}
+
+test_registry_version_no_arg_returns_1_when_home_unset() {
+  local out rc=0
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_version
+  " 2>/dev/null) || rc=$?
+  assert_eq "$out" "" "ceo_registry_version with no args must print nothing when HOME is unset"
+  assert_eq "$rc" "1" "ceo_registry_version with no args must return 1 when HOME is unset"
+}
+
+test_registry_version_no_arg_prints_version_when_home_set() {
+  mkdir -p "$TEST_HOME/.ceo"
+  printf '{"schema_version":3,"playbooks":[]}\n' > "$TEST_HOME/.ceo/registry.json"
+  local out rc=0
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$PATH" bash -c "
+    set -uo pipefail
+    source '$LIB'
+    ceo_registry_version
+  " 2>/dev/null) || rc=$?
+  assert_eq "$out" "3" "ceo_registry_version with no args must print schema_version when HOME has valid registry"
+  assert_eq "$rc" "0" "ceo_registry_version with no args must return 0 on success"
 }
 
 # ceo_inbox_has_unchecked — preflight helper that scans both the legacy
@@ -296,11 +385,10 @@ test_resolve_real_home_ignores_env_HOME() {
   expected=$(eval echo "~$(id -un)")
   if [ ! -d "$expected" ]; then
     if [ -n "${CI:-}" ]; then
-      printf '  FAIL [%s] CI environment must have a real home for the test user\n' "$CURRENT_TEST"
-      FAILS=$((FAILS + 1))
+      fail_test "CI environment must have a real home for the test user"
       return 0
     fi
-    printf "  SKIP [%s] expected home %q is not a directory\n" "$CURRENT_TEST" "$expected"
+    skip_test "expected home $expected is not a directory"
     return 0
   fi
   got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME=/tmp/this-is-not-the-real-home PATH="$PATH" bash -c "
@@ -363,11 +451,7 @@ test_pin_home_or_warn_emits_warn_on_resolver_failure() {
     ceo_pin_home_or_warn
   " 2>&1 >/dev/null) || rc=$?
   assert_eq "$rc" "1" "ceo_pin_home_or_warn must return 1 when resolver fails"
-  case "$stderr" in
-    *"WARN: ceo_pin_home_or_warn"*"passwd resolution failed"*) ;;
-    *) printf '  FAIL [%s] expected WARN line on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
-       FAILS=$((FAILS + 1)) ;;
-  esac
+  assert_contains "$stderr" "WARN: ceo_pin_home_or_warn: passwd resolution failed" "expected WARN line on stderr"
 }
 
 test_resolve_plugin_cli_returns_runtime_and_abs_path() {
@@ -460,22 +544,10 @@ test_write_alert_frontmatter_emits_required_fields() {
       --host=ml1 --last-check=2026-05-13T19:00:00-0400
   ")
   assert_eq "$(printf '%s\n' "$out" | sed -n '1p')" "---" "first line must be frontmatter delimiter"
-  case "$out" in
-    *"status: firing"*) ;;
-    *) printf '  FAIL [%s] missing status\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
-  case "$out" in
-    *"since: 2026-05-13T18:00:00-0400"*) ;;
-    *) printf '  FAIL [%s] missing since\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
-  case "$out" in
-    *"last_check: 2026-05-13T19:00:00-0400"*) ;;
-    *) printf '  FAIL [%s] missing last_check\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
-  case "$out" in
-    *"host: ml1"*) ;;
-    *) printf '  FAIL [%s] missing host\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)) ;;
-  esac
+  assert_contains "$out" "status: firing" "missing status"
+  assert_contains "$out" "since: 2026-05-13T18:00:00-0400" "missing since"
+  assert_contains "$out" "last_check: 2026-05-13T19:00:00-0400" "missing last_check"
+  assert_contains "$out" "host: ml1" "missing host"
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "---" "last line must be closing delimiter"
 }
 
@@ -487,11 +559,7 @@ test_write_alert_frontmatter_rejects_invalid_status() {
     ceo_write_alert_frontmatter --status=frring --since=t --host=h --last-check=t
   " 2>&1 >/dev/null) || rc=$?
   assert_eq "$rc" "1" "invalid status must return 1"
-  case "$stderr" in
-    *"invalid"*"status"*) ;;
-    *) printf '  FAIL [%s] expected error on stderr, got: %q\n' "$CURRENT_TEST" "$stderr"
-       FAILS=$((FAILS + 1)) ;;
-  esac
+  assert_contains "$stderr" "invalid --status=" "expected error on stderr"
 }
 
 test_write_alert_frontmatter_accepts_clear_and_firing() {
@@ -1115,6 +1183,28 @@ test_ceo_state_dir_aborts_on_unset_home_when_no_override() {
   [ "$rc" -ne 0 ] || fail_test "_ceo_state_dir must exit non-zero when HOME is unset and no override is given"
   assert_contains "$err" "HOME must be set to resolve the host-local state directory" \
     "error message must guide that HOME is required"
+}
+
+test_ceo_state_migrate_returns_2_on_unset_home_when_no_override() {
+  local out rc=0
+  out=$(env -u HOME -u CEO_STATE_DIR bash -c "source '$LIB'; _ceo_state_migrate '.test-file'" 2>/dev/null) || rc=$?
+  assert_eq "$rc" "2" "_ceo_state_migrate must return 2 when state directory cannot be resolved"
+  assert_eq "$out" "" "_ceo_state_migrate must not print a path when state directory cannot be resolved"
+}
+
+test_ceo_state_migrate_returns_2_on_empty_home_when_no_override() {
+  local out rc=0
+  out=$(env -u CEO_STATE_DIR HOME="" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'" 2>/dev/null) || rc=$?
+  assert_eq "$rc" "2" "_ceo_state_migrate must return 2 when HOME is empty and no override is given"
+  assert_eq "$out" "" "_ceo_state_migrate must not print a path when HOME is empty"
+}
+
+test_ceo_state_migrate_succeeds_and_prints_path_when_state_dir_valid() {
+  local out rc=0
+  out=$(env -u CEO_STATE_DIR -u CEO_VAULT HOME="$TEST_HOME" bash -c "source '$LIB'; _ceo_state_migrate '.test-file'") || rc=$?
+  assert_eq "$rc" "0" "_ceo_state_migrate must return 0 when state dir resolves and creates successfully"
+  assert_eq "$out" "$TEST_HOME/.ceo/state/.test-file" "_ceo_state_migrate must print expected host-local path"
+  [ -d "$TEST_HOME/.ceo/state" ] || fail_test "state directory was not created"
 }
 
 test_ceo_enabled_path_defaults_to_home() {
