@@ -22,6 +22,12 @@ setup() {
   mkdir -p "$CEO_STATE_DIR" "$CEO_DIR/playbooks" "$HOME/.ceo"
   : > "$CEO_DIR/inbox.md"
   ALERT="$CEO_DIR/alerts/ollama-smoke.md"
+  # A pass-through timeout shim makes _run capped on every host, including a
+  # runner with no timeout binary, where an uncapped run would fire (#503). It
+  # enforces no cap, so a test that needs a real kill runs the script directly.
+  mkdir -p "$TEST_HOME/shim"
+  printf '#!/bin/bash\nshift\nexec "$@"\n' > "$TEST_HOME/shim/timeout"
+  chmod +x "$TEST_HOME/shim/timeout"
   INBOX="$CEO_DIR/inbox/ollama-smoke.md"
 }
 
@@ -39,16 +45,16 @@ _mock() {
   cat > "$OLLAMA_SMOKE_BIN" <<STUB
 #!/bin/bash
 printf '\n\033[1m%s\033[0m\n' "Prerequisites"
-for _ in \$(seq 1 $p); do printf '  \033[32mPASS\033[0m %s\n' "check"; done
-for _ in \$(seq 1 $f); do printf '  \033[31mFAIL\033[0m %s\n' "ccr chat"; done
-for _ in \$(seq 1 $s); do printf '  \033[33mSKIP\033[0m %s (%s)\n' "ccr chat" "ccr down"; done
+for ((i=0; i<$p; i++)); do printf '  \033[32mPASS\033[0m %s\n' "check"; done
+for ((i=0; i<$f; i++)); do printf '  \033[31mFAIL\033[0m %s\n' "ccr chat"; done
+for ((i=0; i<$s; i++)); do printf '  \033[33mSKIP\033[0m %s (%s)\n' "ccr chat" "ccr down"; done
 printf 'PASS=%d  FAIL=%d  SKIP=%d\n' $p $f $s
 exit $rc
 STUB
   chmod +x "$OLLAMA_SMOKE_BIN"
 }
 
-_run() { bash "$SCRIPT" >/dev/null 2>&1; }
+_run() { PATH="$TEST_HOME/shim:$PATH" _CEO_PATH_AUGMENTED=1 bash "$SCRIPT" >/dev/null 2>&1; }
 _field() { awk -v f="$1" 'index($0, f ": ") == 1 { sub("^" f ": ", ""); print; exit }' "$ALERT"; }
 _open_tasks() {
   if [ -f "$INBOX" ]; then grep -c '^- \[ \].*<!-- ollama-smoke -->' "$INBOX"; else echo 0; fi
@@ -71,12 +77,8 @@ test_full_pass_is_clear_and_silent() {
   assert_eq "$(_open_tasks)" "0" "no inbox task on a healthy run"
   assert_eq "$(_outcome)" "noop" "a healthy run does not notify"
   assert_eq "$(grep -c "$(printf '\033')" "$ALERT")" "0" "ANSI escapes are stripped from the alert body"
-  if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
-    assert_eq "$(_field timeout)" "900s" "default timeout recorded in frontmatter"
-    assert_not_contains "$(cat "$ALERT")" "run uncapped" "capped run does not display uncapped warning"
-  else
-    assert_eq "$(_field timeout)" "none" "uncapped timeout field recorded"
-  fi
+  assert_eq "$(_field timeout_seconds)" "900" "default cap recorded in frontmatter"
+  assert_not_contains "$(cat "$ALERT")" "run uncapped" "a capped run shows no uncapped warning"
 }
 
 test_all_skip_on_owner_host_fires_as_absent() {
@@ -168,10 +170,10 @@ test_timeout_is_a_harness_error() {
   printf '#!/bin/bash\nsleep 10\n' > "$OLLAMA_SMOKE_BIN"
   chmod +x "$OLLAMA_SMOKE_BIN"
   export OLLAMA_SMOKE_TIMEOUT=1
-  _run
+  bash "$SCRIPT" >/dev/null 2>&1
   assert_eq "$(_field stack)" "harness-error" "a hung smoke is a harness error"
   assert_contains "$(cat "$ALERT")" "timed out after 1s" "timeout named in body"
-  assert_eq "$(_field timeout)" "1s" "configured timeout recorded in frontmatter"
+  assert_eq "$(_field timeout_seconds)" "1" "configured cap recorded in frontmatter"
 }
 
 test_no_timeout_binary_runs_uncapped_and_warns() {
@@ -192,13 +194,19 @@ test_no_timeout_binary_runs_uncapped_and_warns() {
   unset IFS
   printf '#!/bin/bash\necho "PASS=3 FAIL=0 SKIP=0"\n' > "$OLLAMA_SMOKE_BIN"
   chmod +x "$OLLAMA_SMOKE_BIN"
+  mkdir -p "$CEO_DIR/alerts"
+  printf -- '---\nstatus: clear\nsince: 2026-01-01T00:00:00Z\nlast_check: x\nhost: testhost\n---\n' > "$ALERT"
   # _CEO_PATH_AUGMENTED=1 stops ceo_augment_path from prepending Homebrew, which
   # would put gtimeout straight back on PATH on a Mac.
   err=$(PATH="$nobin" _CEO_PATH_AUGMENTED=1 bash "$SCRIPT" 2>&1 >/dev/null)
   assert_contains "$err" "no timeout or gtimeout on PATH" "running uncapped is announced"
-  assert_eq "$(_field status)" "clear" "the smoke still runs and its summary is read"
-  assert_eq "$(_field timeout)" "none" "uncapped run records timeout: none in frontmatter"
+  assert_eq "$(_field stack)" "present" "the smoke still runs and its summary is read"
+  assert_eq "$(_field status)" "firing" "an uncapped run fires even on a healthy stack"
+  assert_eq "$(_field timeout_seconds)" "none" "uncapped run records timeout_seconds: none"
   assert_contains "$(cat "$ALERT")" "run uncapped" "uncapped run surfaced in alert body"
+  assert_eq "$(_open_tasks)" "1" "clear -> firing on an uncapped run files one inbox task"
+  assert_contains "$(cat "$INBOX")" "run uncapped" "the inbox task names the uncapped run"
+  assert_eq "$(_outcome)" "fired" "the uncapped transition notifies"
 }
 
 test_since_is_kept_while_steady_and_reset_on_transition() {
