@@ -411,7 +411,6 @@ test_corrupt_settings_logs_jq_failure_and_falls_back_to_default() {
     "morning-brief must not claim to be disabled when settings is corrupt"
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "corrupt settings body" \
     "morning-brief must still deliver via default fallback when settings is corrupt"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 5))
 }
 
 test_corrupt_settings_does_not_enable_non_default_trigger() {
@@ -430,7 +429,6 @@ test_corrupt_settings_does_not_enable_non_default_trigger() {
     "corrupt settings must not fail open to arbitrary non-default triggers"
   assert_eq "$([ -f "$CURL_CAPTURE_DIR"/payload-0.json ] && echo yes || echo no)" "no" \
     "non-default trigger must not post when settings is corrupt"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_empty_settings_logs_no_output_and_falls_back_to_default() {
@@ -449,7 +447,6 @@ test_empty_settings_logs_no_output_and_falls_back_to_default() {
     "empty settings.json must log no-output message for discord_prior_day_report_triggers"
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "empty settings body" \
     "morning-brief must still deliver via default fallback when settings is empty"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_records_last_deliver_timestamp_on_successful_post() {
