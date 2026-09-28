@@ -271,6 +271,15 @@ def main(argv=None):
         a.no_skills = a.no_skills or not spec.skills
         if not a.mcp and spec.mcp:
             a.mcp = spec.mcp
+        if not a.verify_cmd and spec.verify:
+            a.verify_cmd = spec.verify
+        # #486: a write run whose success rests only on the model stopping is
+        # not a success signal, so an ungated low-stakes-write task is refused.
+        # Checked after adoption so either the registry or --verify-cmd satisfies it.
+        if spec.tier == "low-stakes-write" and not a.verify_cmd:
+            print(f"REJECTED task {a.task_name!r}: low-stakes-write requires a verify gate "
+                  f"(registry tasks.<name>.verify or --verify-cmd)", file=sys.stderr)
+            return 3
         print(f"task {a.task_name!r}: runner={spec.runner} tier={spec.tier} model={spec.model}",
               file=sys.stderr)
 

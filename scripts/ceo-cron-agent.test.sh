@@ -491,4 +491,47 @@ PB
   return 0
 }
 
+
+test_runner_ollama_agent_leaves_verify_to_bridge() {
+  # Same channel as mcp: cron passes --registry and cli.py adopts tasks.<name>.verify
+  # itself, so there is one reader of the registry, not two that can disagree.
+  _register_agent_pb agent-verify low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-verify": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "verify_cmd": "pytest -q", "turns": 2, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" agent-verify >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "verify-gated agent task exits 0 on verified success"
+  assert_contains "$(cat "$HOME/agent-argv.txt")" "--registry" "cron hands the bridge the registry it adopts verify from"
+  assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--verify-cmd" "cron must not re-parse verify out of the registry"
+}
+
+
+test_runner_ollama_agent_gated_unverified_completion_fails_cron_run() {
+  # completed:true with verified:false is the state only this gate catches; the
+  # did-not-complete check below it would pass the run.
+  _register_agent_pb agent-v-fail low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-v-fail": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": true, "verified": false, "verify_gated": true, "reason": "verify-failed", "turns": 8, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_fails "a gated run that did not verify must exit non-zero" bash "$CRON" agent-v-fail
+  assert_contains "$(_skips_log)" "gated run ended verify-failed" "skips log must name the gated run's end reason"
+}
+
+
+test_runner_ollama_agent_gated_turn_cap_is_not_reported_as_verify_failure() {
+  _register_agent_pb agent-v-cap low-stakes-write
+  cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
+{"tasks": {"agent-v-cap": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
+EOF
+  _make_agent_stub '{"completed": false, "verified": null, "verify_gated": true, "reason": "turn-cap", "turns": 8, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_fails "a gated run that hit the turn cap must exit non-zero" bash "$CRON" agent-v-cap
+  assert_contains "$(_skips_log)" "gated run ended turn-cap" "turn cap must be logged as such, not as a verification failure"
+}
+
 run_tests

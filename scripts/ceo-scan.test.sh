@@ -221,6 +221,12 @@ test_scan_registers_real_cron_failure_digest_with_inline_registry() {
   tier=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].tier' 2>/dev/null)
   assert_eq "$tier" "low-stakes-write" \
     "inline-JSON registry must survive scan and re-parse to the bridge task tier"
+  # The bridge refuses an ungated low-stakes-write task (#486), so the shipped
+  # playbook must carry its verify gate through scan intact.
+  local verify
+  verify=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].verify // empty' 2>/dev/null)
+  assert_contains "$verify" "reports/cron-failures/" \
+    "shipped low-stakes-write playbook must carry a verify gate through scan"
 }
 
 test_discord_report_flags_carried_to_registry() {
