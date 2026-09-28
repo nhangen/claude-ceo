@@ -140,6 +140,18 @@ test_sustained_failure_escalates_once() {
   assert_eq "$count" "1" "sustained failure should create one task"
 }
 
+test_checked_task_is_not_recreated_during_same_failure() {
+  DOCKER_STUB_FAIL=1 run_monitor
+  DOCKER_STUB_FAIL=1 run_monitor
+  sed -i.bak 's/^- \[ \]/- [x]/' "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md"
+  rm -f "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md.bak"
+  DOCKER_STUB_FAIL=1 run_monitor
+  local count
+  count=$(grep -c -F -- "<!-- local-ci-health:$CEO_HOSTNAME:" "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md")
+  assert_eq "$count" "1" "same failure generation should keep one task marker"
+  assert_eq "$(outcome)" "noop" "checked task should not re-notify during same failure"
+}
+
 test_recovery_closes_active_task() {
   DOCKER_STUB_FAIL=1 run_monitor
   DOCKER_STUB_FAIL=1 run_monitor

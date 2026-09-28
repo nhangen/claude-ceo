@@ -219,13 +219,18 @@ if ! printf '%s status=%s docker=%s service=%s api=%s total=%s attention=%s obse
   printf 'WARN: ceo-local-ci-health: failed to append log line to %s\n' "$LOG_FILE" >&2
 fi
 
-TASK_MARKER="<!-- local-ci-health:$HOST -->"
+TASK_PREFIX="<!-- local-ci-health:$HOST:"
+TASK_MARKER="${TASK_PREFIX}${SINCE} -->"
 TASK_LINE="- [ ] Restore local CI health on $HOST - see [[CEO/alerts/local-ci-health-$HOST]] $TASK_MARKER"
 touch "$INBOX_FILE"
 INBOX_CHANGED=0
 
 active_task_present() {
-  awk -v m="$TASK_MARKER" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$INBOX_FILE"
+  awk -v m="$TASK_PREFIX" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$INBOX_FILE"
+}
+
+task_marker_present() {
+  awk -v m="$TASK_MARKER" 'index($0, m) { found=1; exit } END { exit !found }' "$INBOX_FILE"
 }
 
 if [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
@@ -233,7 +238,7 @@ if [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
     _since_epoch=$(date -d "$PRIOR_SINCE" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%S%z' "$PRIOR_SINCE" +%s 2>/dev/null || echo 0)
     _now_epoch=$(date +%s)
     if [ "$_since_epoch" -gt 0 ] && [ $((_now_epoch - _since_epoch)) -ge "$SUSTAINED_SECONDS" ]; then
-      if ! active_task_present; then
+      if ! task_marker_present; then
         printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE"
         INBOX_CHANGED=1
       fi
@@ -242,7 +247,7 @@ if [ "$PRIOR_STATUS" != "unknown" ] && [ "$CURRENT_STATUS" != "unknown" ]; then
     _tmpfile=$(mktemp "${INBOX_FILE}.XXXXXX") || exit 1
     trap 'rm -f "$_tmpfile"' EXIT
     _replacement="- [done] Local CI health restored on $HOST $(date +%Y-%m-%d) $TASK_MARKER"
-    awk -v m="$TASK_MARKER" -v r="$_replacement" '/^- \[ \]/ && index($0, m) { print r; next } { print }' "$INBOX_FILE" > "$_tmpfile"
+    awk -v m="$TASK_PREFIX" -v r="$_replacement" '/^- \[ \]/ && index($0, m) { print r; next } { print }' "$INBOX_FILE" > "$_tmpfile"
     mv "$_tmpfile" "$INBOX_FILE"
     trap - EXIT
     INBOX_CHANGED=1
