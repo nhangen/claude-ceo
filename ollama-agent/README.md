@@ -82,6 +82,11 @@ A registered task (`--registry registry.json --task-name <name>`) is gated **bef
   command line overrides it. MCP tools are named `mcp__<tool>` in a `tools` allowlist. If the
   allowlist admits none of the server's tools, the run is refused (exit 2) and the server is shut
   down, whether the server came from the registry or from `--mcp`.
+- `--registry` takes inline JSON (anything beginning with `{`) or a path. A relative path resolves
+  against `--cwd` (default: the process working directory), which under cron is `$CEO_DIR`. A
+  path that is missing or not a file, a file that is not valid JSON, and a registry that is not an
+  object with a `tasks` object are all refused (exit 2) with a message naming the file when there
+  is one, never parsed as inline JSON. A relative `--scores` still resolves against the process working directory.
 
 ## Tools
 

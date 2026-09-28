@@ -232,7 +232,7 @@ def main(argv=None):
             print("--task-name requires --registry", file=sys.stderr)
             return 2
         try:
-            specs = load_registry(a.registry)
+            specs = load_registry(a.registry, cwd=a.cwd)
         except (RegistryError, ValueError, OSError) as e:
             print(f"registry error: {e}", file=sys.stderr)
             return 2

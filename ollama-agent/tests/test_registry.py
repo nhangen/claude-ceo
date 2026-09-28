@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -384,6 +385,93 @@ def test_load_rejects_bad_mcp_type():
 def test_load_rejects_empty_mcp_string():
     with pytest.raises(RegistryError, match="mcp must be a non-empty string"):
         load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "deterministic", "mcp": "   "}))
+
+
+def test_load_registry_resolves_relative_path_against_cwd(tmp_path):
+    """#510: A relative registry path resolves against the supplied cwd."""
+    reg = tmp_path / "custom_reg.json"
+    reg.write_text(json.dumps({"tasks": {"t": {"runner": "ollama", "model": "m", "tier": "deterministic"}}}))
+    specs = load_registry("custom_reg.json", cwd=tmp_path)
+    assert "t" in specs
+    assert specs["t"].tier == "deterministic"
+
+
+def test_load_registry_missing_path_raises_registry_error(tmp_path):
+    """#510: An argument that looks like a path and does not exist raises RegistryError, not JSONDecodeError."""
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("missing.json", cwd=tmp_path)
+    assert str(exc_info.value) == (
+        f"registry path not found or not a file: missing.json (resolved against cwd {tmp_path.resolve()})")
+
+
+def test_load_registry_missing_path_defaults_to_process_cwd(tmp_path, monkeypatch):
+    """#510: When cwd=None, the error names the process cwd, resolved."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("missing.json")
+    assert str(exc_info.value) == (
+        f"registry path not found or not a file: missing.json (resolved against cwd {tmp_path.resolve()})")
+
+
+def test_load_registry_missing_absolute_path_claims_no_resolution(tmp_path):
+    missing = tmp_path / "absent.json"
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry(str(missing), cwd="/somewhere/else")
+    assert str(exc_info.value) == f"registry path not found or not a file: {missing}"
+
+
+def test_load_registry_directory_path_raises_registry_error(tmp_path):
+    """#510: Passing a directory path raises RegistryError rather than crashing with IsADirectoryError."""
+    (tmp_path / "somedir").mkdir()
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("somedir", cwd=tmp_path)
+    assert str(exc_info.value) == (
+        f"registry path not found or not a file: somedir (resolved against cwd {tmp_path.resolve()})")
+
+
+def test_load_registry_inline_json_with_leading_whitespace():
+    assert load_registry('  {"tasks": {}}') == {}
+
+
+@pytest.mark.parametrize("content", ["", '{"tasks": {"t": '])
+def test_load_registry_empty_or_truncated_file_names_the_file(tmp_path, content):
+    f = tmp_path / "reg.json"
+    f.write_text(content)
+    with pytest.raises(RegistryError, match=rf"registry {re.escape(str(f))}: invalid JSON"):
+        load_registry("reg.json", cwd=tmp_path)
+
+
+def test_load_registry_non_utf8_file_names_the_file(tmp_path):
+    f = tmp_path / "reg.json"
+    f.write_bytes(b'{"tasks": {"\xff": {}}}')
+    with pytest.raises(RegistryError, match=rf"registry {re.escape(str(f))}: invalid JSON"):
+        load_registry("reg.json", cwd=tmp_path)
+
+
+def test_load_registry_path_with_surrounding_whitespace_resolves(tmp_path):
+    (tmp_path / "reg.json").write_text('{"tasks": {}}')
+    assert load_registry("  reg.json\n", cwd=tmp_path) == {}
+
+
+@pytest.mark.parametrize("content,msg", [
+    ("[]", "registry must be a JSON object, got list"),
+    ('{"tasks": []}', "registry 'tasks' must be an object, got list"),
+    ('{"task": {}}', "registry has no 'tasks' key"),
+])
+def test_load_registry_malformed_shape_is_a_registry_error(tmp_path, content, msg):
+    f = tmp_path / "reg.json"
+    f.write_text(content)
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("reg.json", cwd=tmp_path)
+    assert str(exc_info.value) == f"{f}: {msg}"
+
+
+def test_load_registry_warning_names_the_resolved_file(tmp_path, capsys):
+    f = tmp_path / "reg.json"
+    f.write_text(json.dumps({"tasks": {"t": {"runner": "ollama", "model": "m", "tier": "deterministic",
+                                             "tools": ["write_file"]}}}))
+    load_registry("reg.json", cwd=tmp_path)
+    assert f"warning: {f}: task 't'" in capsys.readouterr().err
 
 
 def test_tools_rejects_non_string_elements():
