@@ -1274,6 +1274,7 @@ def test_cli_mcp_server_stderr_surfaces_on_bridge_failure(tmp_path, monkeypatch,
     assert "fatal: postgres down on port 5432" in err
     assert "mcp bridge failed for" in err
 
+
 def test_cli_relative_registry_path_resolves_against_cwd(tmp_path, monkeypatch, capsys):
     """#510: A relative --registry argument resolves against --cwd."""
     reg = tmp_path / "custom.json"

@@ -215,7 +215,7 @@ def main(argv=None):
     # no-gate run. "   " is truthy, so the gate "runs", exits 0 having verified
     # nothing, and records verify_gated=True with verified=True — the strongest
     # assurance the ledger carries. Refuse rather than warn: these runs happen
-    # under ceo-cron, which discards stderr. run_agent carries the same predicate
+    # under ceo-cron, which logs stderr unread. run_agent carries the same predicate
     # as a library backstop, but keep this one ahead of it: without it the raise
     # lands in the broad except below, which writes a crash row seeded from
     # bool(a.verify_cmd) — True for "   " — claiming the run was gated (#436).
@@ -336,7 +336,7 @@ def main(argv=None):
               file=sys.stderr)
         # Declaring a server and then forbidding every tool it bridges is a
         # config error. Refuse rather than warn, for the reason given at the
-        # --verify-cmd check above: ceo-cron discards stderr and reads rc 0 as
+        # --verify-cmd check above: ceo-cron logs stderr unread and reads rc 0 as
         # success, so a warning would let the task run daily without its server.
         if mcp_names and not any(t["function"]["name"] in mcp_names for t in tools):
             mcp_transport.close()

@@ -176,7 +176,7 @@ class StdioMCPTransport:
                 raise MCPTransportError(f"server stdout read error: {e}") from e
             if not chunk:
                 if not self._buffer:
-                    raise MCPTransportError("server closed stdout (crashed or exited)")
+                    raise self._closed_stdout_error()
                 line, self._buffer = self._buffer, ""
                 break
             self._buffer += chunk.decode("utf-8", errors="replace")
@@ -186,11 +186,23 @@ class StdioMCPTransport:
 
         line = line.strip()
         if not line:
-            raise MCPTransportError("server closed stdout (crashed or exited)")
+            raise MCPTransportError("server sent an empty line")
         try:
             return json.loads(line)
         except (json.JSONDecodeError, ValueError) as e:
             raise MCPTransportError(f"server returned invalid JSON: {line[:_PAYLOAD_CLIP]}") from e
+
+    def _closed_stdout_error(self):
+        # A server that dies without writing to stderr (signal, OOM, bare exit)
+        # leaves its exit status as the only reason, so report it. EOF can land
+        # just before the process is reapable, hence the short wait.
+        try:
+            rc = self.proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return MCPTransportError("server closed stdout (still running)")
+        if rc < 0:
+            return MCPTransportError(f"server closed stdout (killed by signal {-rc})")
+        return MCPTransportError(f"server closed stdout (exited with code {rc})")
 
     def close(self):
         # Runs in a finally; must never raise, and must reap the process even when
