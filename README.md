@@ -206,11 +206,22 @@ does not restart Docker, services, containers, or runners.
 Deploy or refresh the playbook from a reviewed claude-ceo release on ML1:
 
 ```bash
+# First update the persistent checkout used by ceo-schedulerd, then restart it.
+systemctl --user daemon-reload
+systemctl --user restart ceo-schedulerd.service
+
 ceo playbook sync
 ceo playbook scan
 ceo playbook enable local-ci-health
 ceo cron local-ci-health --force
 ```
+
+The runtime update and restart must happen before `scan`: the registry becomes
+live as soon as the scheduler reads it. Scan refuses to replace the live registry
+when an active script is missing or non-executable in the checkout configured by
+the scheduler service. If it refuses, update that checkout, restart the service,
+and scan again. A host with no scheduler definition can still scan during initial
+setup.
 
 The final command is a manual smoke run. Confirm `status: clear` in the alert,
 check the monthly log row, and use `ceo status` to verify the next scheduled fire.
