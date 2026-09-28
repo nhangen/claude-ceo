@@ -66,7 +66,8 @@ MacBook created 40 `com.ceo.*.plist` launchd agents and fired a notification sto
 That per-playbook install backend was **retired** in D1 (#136 / #142 / #144):
 `ceo-schedulerd` became the sole scheduler and scan stopped installing anything.
 Re-verified 2026-06-29 while finalizing the MacBook (MBP-2026) swarm host: scan
-writes only `~/.ceo/registry.json`, leaves `swarm.json` untouched, and the daemon
+wrote only `~/.ceo/registry.json` (before #417 added the drift alert), left
+`swarm.json` untouched, and the daemon
 dispatches only `token-intake` (the one each-scope playbook enabled there). The
 enduring lesson is about **scope, not host**: a non-owner host runs only each-scope
 telemetry, never single-scope scanner tasks.
