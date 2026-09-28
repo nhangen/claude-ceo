@@ -2147,8 +2147,10 @@ _playbook_apply_schedule_overrides() {
 #   any stray ceo-cron.sh / `# CEO Agent` lines) from the user's crontab and
 #   reinstalls the remainder. The native install path is retired (D1) — this
 #   removal capability survives for the migration (F3) that purges leftover
-#   blocks from hosts that ran an older CEO. Returns the scheduler's rc; a clean
-#   crontab with no CEO block is a no-op success.
+#   blocks from hosts that ran an older CEO. Reads and writes
+#   ${CEO_CRONTAB_BIN:-crontab} directly whatever the scheduler backend, since a
+#   leftover block outlives the backend switch. Returns crontab's non-zero rc on
+#   a write failure; a clean crontab with no CEO block is a no-op success.
 _remove_crontab_block() {
   local marker_start="# CEO Agent START"
   local marker_end="# CEO Agent END"
