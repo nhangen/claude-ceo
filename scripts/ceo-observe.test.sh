@@ -15,7 +15,6 @@ test_hit_rate_counts_only_matches() {
   pred='["o/r#7","o/r#8"]'; actual='[{"number":7,"repo":"o/r"}]'
   assert_eq "$(compute_hit_rate "$pred" "$actual")" "1/2" "1 of 2 predicted merged"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_hit_rate_normalizes_owner_prefix() {
@@ -26,7 +25,6 @@ test_hit_rate_normalizes_owner_prefix() {
   actual='[{"number":42,"repo":"awesomemotive/optin-monster-app"}]'
   assert_eq "$(compute_hit_rate "$pred" "$actual")" "1/1" "owner prefix stripped before comparison"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_no_deprioritized_inference() {
@@ -37,7 +35,6 @@ test_no_deprioritized_inference() {
   assert_no_match "$entry" "deprioritized" "never writes deprioritized/absence inference"
   assert_contains "$entry" "2026-06-20" "dated entry appended"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_discretion_scrub_drops_employer_specifics() {
@@ -47,7 +44,6 @@ test_discretion_scrub_drops_employer_specifics() {
   entry=$(cat "$CEO_VAULT/CEO/model/2026-06.md")
   assert_no_match "$entry" "ACME" "employer-specific term scrubbed"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_predicted_block_with_arrow_in_title_not_truncated() {
@@ -58,7 +54,6 @@ test_predicted_block_with_arrow_in_title_not_truncated() {
   assert_contains "$entry" "repo-a#1" "item with --> in title preserved"
   assert_contains "$entry" "repo-b#2" "subsequent item preserved"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_degraded_actuals_yields_na_hit_rate() {
@@ -69,7 +64,6 @@ test_degraded_actuals_yields_na_hit_rate() {
   assert_contains "$entry" "n/a (actuals unavailable)" "degraded actuals yields n/a not 0/1"
   assert_no_match "$entry" "0/1" "no 0/1 on degraded actuals"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_empty_prev_predicted_yields_na_hit_rate() {
@@ -80,7 +74,6 @@ test_empty_prev_predicted_yields_na_hit_rate() {
   assert_contains "$entry" "yesterday hit-rate: n/a" "empty prev-predicted yields n/a not 0/0"
   assert_no_match "$entry" "0/0" "no 0/0 on first run"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_denylist_metachar_is_matched_literally() {
@@ -96,7 +89,6 @@ test_denylist_metachar_is_matched_literally() {
   assert_no_match "$entry" "a\[cme" "metachar term scrubbed"
   assert_contains "$entry" "legit/repo#2" "non-matching item preserved"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_denylist_file_scrubs_matching_term() {
@@ -109,7 +101,6 @@ test_denylist_file_scrubs_matching_term() {
   assert_no_match "$entry" "SecretClient" "denylist file term scrubbed"
   assert_contains "$entry" "public/repo#2" "non-matching item preserved"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_non_matching_denylist_leaves_predictions_intact() {
@@ -122,7 +113,6 @@ test_non_matching_denylist_leaves_predictions_intact() {
   assert_contains "$entry" "visible/repo#1" "first item preserved"
   assert_contains "$entry" "visible/repo#2" "second item preserved"
   teardown
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests
