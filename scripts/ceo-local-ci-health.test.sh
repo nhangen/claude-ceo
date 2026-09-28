@@ -23,8 +23,7 @@ setup() {
   export CEO_LOCAL_CI_DOCKER_BIN="$TEST_HOME/stubs/docker"
   export CEO_LOCAL_CI_SYSTEMCTL_BIN="$TEST_HOME/stubs/systemctl"
   export CEO_LOCAL_CI_CURL_BIN="$TEST_HOME/stubs/curl"
-  CEO_LOCAL_CI_TIMEOUT_BIN=$(command -v timeout)
-  export CEO_LOCAL_CI_TIMEOUT_BIN
+  export CEO_LOCAL_CI_TIMEOUT_BIN="$TEST_HOME/stubs/timeout"
   mkdir -p "$CEO_VAULT/CEO" "$TEST_HOME/stubs"
   touch "$CEO_VAULT/CEO/inbox.md"
   write_config one two
@@ -50,7 +49,18 @@ STUB
 [ -z "${CURL_STUB_FAIL:-}" ] || exit 7
 cat "$API_STUB_FILE"
 STUB
-  chmod +x "$TEST_HOME/stubs/docker" "$TEST_HOME/stubs/systemctl" "$TEST_HOME/stubs/curl"
+  cat > "$TEST_HOME/stubs/timeout" <<'STUB'
+#!/bin/bash
+python3 - "$@" <<'PY'
+import subprocess, sys
+try:
+    result = subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+raise SystemExit(result.returncode)
+PY
+STUB
+  chmod +x "$TEST_HOME/stubs/docker" "$TEST_HOME/stubs/systemctl" "$TEST_HOME/stubs/curl" "$TEST_HOME/stubs/timeout"
   export PATH="$TEST_HOME/stubs:$PATH"
   unset DOCKER_STUB_FAIL SERVICE_STUB_FAIL CURL_STUB_FAIL
 }
