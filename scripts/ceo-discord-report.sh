@@ -51,8 +51,10 @@ _dlog() {
 # Resolve a boolean delivery flag for $TRIGGER from the host-local registry
 # (see _ceo_registry_path), written from playbook frontmatter by
 # `ceo playbook scan`. Echoes `true`, `false`, or `absent`. `absent` covers a
-# missing registry, a missing entry, or an entry that predates the flag field —
-# in all three the caller falls back to the settings.json allow-list. Making the
+# missing registry, a missing entry, an entry that predates the flag field, a
+# registry jq cannot read, an empty registry, and a non-boolean flag value; in
+# every case the caller falls back to the settings.json allow-list, and each
+# failure cause logs its own line, distinct from the steady-state absent line (#485). Making the
 # flag travel with the playbook is what stops a trigger rename from silently
 # orphaning delivery (settings.json is hand-maintained and never synced to names).
 _registry_report_flag() {
@@ -88,9 +90,22 @@ _registry_report_flag() {
     echo absent
     return
   fi
+  # The steady state (an entry without the flag) logs on every run, so a broken
+  # registry must not share its wording or it reads as routine.
   case "$val" in
     true|false) echo "$val" ;;
-    *) echo absent ;;
+    absent)
+      _dlog "registry flag absent for $field, falling back to settings ($reg)"
+      echo absent
+      ;;
+    "")
+      _dlog "registry query produced no output for $field, falling back to settings ($reg)"
+      echo absent
+      ;;
+    *)
+      _dlog "registry flag for $field is not a boolean ($(printf '%s' "$val" | tr '\n' ' ' | head -c 80)), falling back to settings ($reg)"
+      echo absent
+      ;;
   esac
 }
 

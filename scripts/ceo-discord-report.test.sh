@@ -221,6 +221,8 @@ test_registry_flag_enables_report_without_settings_entry() {
 
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "orchestrated brief" \
     "registry discord_report:true must post even when the trigger is absent from settings allow-list"
+  assert_not_contains "$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)" "registry flag absent for discord_report" \
+    "an explicit true is not reported as an absent flag"
 }
 
 test_registry_flag_false_blocks_report_despite_settings() {
@@ -233,6 +235,8 @@ test_registry_flag_false_blocks_report_despite_settings() {
 
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "registry discord_report:false must block delivery even when the trigger is in the settings allow-list"
+  assert_not_contains "$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)" "registry flag absent for discord_report" \
+    "an explicit false is not reported as an absent flag"
 }
 
 test_no_registry_flag_field_falls_back_to_settings() {
@@ -249,14 +253,77 @@ test_no_registry_flag_field_falls_back_to_settings() {
 
   # #424 asked for error lines on the two failure causes, not on the third. A
   # legitimately absent flag is the steady state, so an error line here would
-  # fire on every cron run. Pinned on the two error needles only, which leaves
-  # room for a future informational line on the absent arm.
+  # fire on every cron run. #485 records an informational line on the absent arm
+  # naming the field and path so fallback decisions are auditable without
+  # triggering error needles.
   local log
   log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry flag absent for discord_report, falling back to settings ($HOME/.ceo/registry.json)" \
+    "absent discord_report flag must log informational line naming field and registry"
+  assert_contains "$log" "registry flag absent for discord_prior_day_report, falling back to settings ($HOME/.ceo/registry.json)" \
+    "absent discord_prior_day_report flag must log informational line naming field and registry"
   assert_not_contains "$log" "registry file not found" \
     "a present registry with a legitimately absent flag must not log a not-found error"
   assert_not_contains "$log" "registry jq query failed" \
     "a well-formed registry must not log a jq failure"
+}
+
+test_empty_registry_falls_back_to_settings_and_logs_no_output() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local empty_reg="$TMP/empty-registry.json"
+  : > "$empty_reg"
+
+  printf 'empty reg body' | CEO_REGISTRY_FILE="$empty_reg" "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry query produced no output for discord_report, falling back to settings ($empty_reg)" \
+    "a 0-byte registry must log its own line for discord_report"
+  assert_contains "$log" "registry query produced no output for discord_prior_day_report, falling back to settings ($empty_reg)" \
+    "a 0-byte registry must log its own line for discord_prior_day_report"
+  assert_not_contains "$log" "registry flag absent for" \
+    "a 0-byte registry must not read as the routine absent-flag case"
+  assert_not_contains "$log" "registry file not found" \
+    "a 0-byte registry file exists so it must not log file not found"
+  assert_not_contains "$log" "registry jq query failed" \
+    "jq exits 0 on an empty file so it must not log jq query failed"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "empty reg body" \
+    "a 0-byte registry must still deliver via the settings allow-list"
+}
+
+test_non_boolean_registry_flag_is_named_not_called_absent() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief","discord_report":"yes"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'yes body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry flag for discord_report is not a boolean (yes), falling back to settings" \
+    "a present non-boolean flag must be named with its value"
+  assert_not_contains "$log" "registry flag absent for discord_report" \
+    "a present non-boolean flag is not absent"
+  assert_not_contains "$log" "registry file not found" "the registry exists"
+  assert_not_contains "$log" "registry jq query failed" "the registry parses"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "yes body" \
+    "a non-boolean flag falls back to the settings allow-list and still delivers"
+}
+
+test_multi_document_registry_value_logs_on_one_line() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  # Two concatenated JSON documents make jq print one line per document.
+  printf '{}{}' > "$HOME/.ceo/registry.json"
+
+  printf 'multi body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  assert_contains "$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)" \
+    "registry flag for discord_report is not a boolean (absent absent), falling back to settings" \
+    "a multi-line registry value is logged on one line"
 }
 
 test_registry_path_is_not_hardcoded_in_discord_report() {
