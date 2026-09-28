@@ -615,9 +615,9 @@ if command -v gh >/dev/null 2>&1 && [ -n "$_yday" ]; then
   # of aborting the gather. (Bare `_x=$(cmd); rc=$?` would abort under set -e
   # before $? is ever read.)
   if _ym_raw=$(_CEO_TIMEOUT 30 gh search prs --author "@me" --merged \
-    --json number,title,repository,mergedAt --limit 50 2>"$_ym_err"); then
-    YESTERDAY_MERGED=$(printf '%s' "$_ym_raw" | jq -c --arg d "$_yday" \
-      '[.[] | select(.mergedAt and (.mergedAt | startswith($d))) | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
+    --merged-at "$_yday" --json number,title,repository,closedAt --limit 50 2>"$_ym_err"); then
+    YESTERDAY_MERGED=$(printf '%s' "$_ym_raw" | jq -c \
+      '[.[] | {number, repo: .repository.nameWithOwner, title}]' 2>/dev/null || echo "[]")
   else
     echo "WARN: gh search prs (yesterday-merged) failed: $(head -c 200 "$_ym_err")" >&2
     YESTERDAY_MERGED="[]"

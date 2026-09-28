@@ -57,6 +57,7 @@ Active playbooks shipped with the plugin (live in `docs/playbooks/`; copy into `
 | `cleanup` | weekly | low-stakes-write | claude | Branch / worktree hygiene |
 | `token-intake` | `45 8 * * 1-5` | read | script | Run `ceo-token-intake.sh` — token-scope snapshot to vault |
 | `norx-bookkeeping` | hourly at :15 | high-stakes | script | Run the once-daily NoRx Mercury import and Sheets refresh when due; notify only after the scheduler's third failed attempt |
+| `local-ci-health` | every 5 min | low-stakes-write | script | Check ML1 Docker, the fleet status service, and every configured local runner |
 
 For `runner: claude`, `tier: read` runs a single `claude --print --max-turns 5 --disallowedTools Bash,Write,Edit` call with pre-gathered context injected as `<external-data>` blocks. `tier: low-stakes-write` and above use the three-phase PLAN → FILTER → EXECUTE pipeline; high-stakes actions are written to `CEO/approvals/pending.md` instead of executed — unless FILTER drops them first, as an unsubstituted template token or a meta-directive, in which case they reach neither EXECUTE nor the approvals queue and the drop is recorded in `cron-skips-<host>.log`. A `runner: script` playbook executes its already-approved script directly, including when its notification posture is `high-stakes`.
 
@@ -105,6 +106,114 @@ Inspect a registered playbook:
 ceo playbook list
 ceo playbook info token-intake
 ```
+
+## Local CI on ML1
+
+The local CI installation keeps GitHub and GitLab as the source of triggers, job
+queues, logs, links, and PR checks. Selected jobs route to private self-hosted
+runners on ML1 instead of consuming hosted-runner minutes. A workflow is local
+only when its configured job has the unique runner label written by `local-ci`;
+other jobs remain on their provider runner.
+
+```text
+GitHub or GitLab workflow
+          │ selected job label
+          ▼
+ML1 local-ci runner container ──► provider job log and PR check
+          │
+          ├── local-ci status --table       terminal fleet view
+          ├── local-ci-status.service       status API and browser page
+          └── local-ci-health               five-minute CEO health monitor
+```
+
+All persistent runtime components live on ML1: Docker, the runner containers,
+the local CI configuration and state, the status service, `ceo-schedulerd`, and
+the health monitor. A laptop can be used as an SSH terminal, but it is not a CI
+runner and is not required for scheduled operation.
+
+### Enroll a repository
+
+The canonical application and safety documentation is the
+[`local-ci` README](https://github.com/nhangen/local-ci). The short operational
+flow is:
+
+```bash
+local-ci scan /absolute/path/to/repo
+local-ci doctor <repo>
+local-ci plan <repo>
+local-ci apply <repo> --write-workflows
+local-ci status <repo>
+```
+
+1. Enroll only trusted private repositories whose fork policy cannot send
+   unreviewed code to the runner.
+2. Review the workflow and every action or script it calls, then record the scan
+   digest as `reviewed_sha256` in `~/.config/local-ci/config.toml`.
+3. Select explicit workflow jobs and assign per-repository CPU and memory limits.
+   Four CPUs is the normal starting allocation; the host budget must retain room
+   for Docker, the status services, and other ML1 workloads.
+4. Review `plan`, run `doctor`, then apply. Workflow files change only when
+   `--write-workflows` is present.
+5. Commit the workflow routing diff on the repository's intended branch and run
+   a real passing and failing CI job. Enrollment alone does not prove the job.
+
+Docker is the current execution profile, not a general requirement of
+self-hosted CI. Each GitHub repository gets an official runner inside a bounded
+container with no host bind mounts and no Docker socket. GitLab uses its Docker
+executor. A job that requires a different base image must declare a reviewed,
+pinned image and be drained and reenrolled when that setting changes.
+
+### See CI status
+
+Use the terminal table for a live fleet summary:
+
+```bash
+local-ci status --table
+ceo status | grep local-ci-health
+systemctl --user status local-ci-status.service ceo-schedulerd.service
+```
+
+ML1 serves the browser view at
+[`http://100.102.197.40:8876`](http://100.102.197.40:8876). It shows runner
+availability and the latest provider workflow metadata for every configured
+repository. The page is a fleet view; GitHub or GitLab remains authoritative for
+the full check matrix, logs, artifacts, and merge gate.
+
+### Health monitoring and escalation
+
+`local-ci-health` runs on ML1 every five minutes as an enabled `scope: each`
+CEO playbook. It independently verifies:
+
+- `docker info` can reach the current Docker socket;
+- `local-ci-status.service` is active;
+- the status API responds with a snapshot no more than two minutes old;
+- API counts and repository identities exactly match the current TOML config;
+- every configured container is running with an online runner. A busy runner is
+  healthy.
+
+Every run atomically overwrites
+`CEO/alerts/local-ci-health-ML-1.md` and appends one forensic line to
+`CEO/log/local-ci-health/YYYY-MM.md`. The first failure marks the alert firing.
+If it remains for five minutes, the monitor creates one deduplicated task in
+`CEO/inbox/ML-1.md`. A complete healthy observation closes that task. Missing or
+invalid observations never clear a prior alert, and a checked task is not
+recreated during the same outage.
+
+Routine healthy ticks and unchanged failures are silent. Task creation and
+recovery emit one notification event. The monitor is deliberately read-only: it
+does not restart Docker, services, containers, or runners.
+
+Deploy or refresh the playbook from a reviewed claude-ceo release on ML1:
+
+```bash
+ceo playbook sync
+ceo playbook scan
+ceo playbook enable local-ci-health
+ceo cron local-ci-health --force
+```
+
+The final command is a manual smoke run. Confirm `status: clear` in the alert,
+check the monthly log row, and use `ceo status` to verify the next scheduled fire.
 
 ## Install
 
