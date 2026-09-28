@@ -22,6 +22,7 @@ import {
   CATCHUP_LOOKBACK_FLOOR_MS,
   CATCHUP_LOOKBACK_CAP_MS,
   MAX_SLEEP_MS,
+  FATAL_EXIT_CODE,
   type DaemonDeps,
   type Heartbeat,
 } from "cronbird/core";
@@ -30,6 +31,8 @@ import {
   writeHeartbeatFile,
   writeHeartbeatWithSync,
   writeSyncedHeartbeat,
+  PermanentHeartbeatWriteError,
+  isPermanentLocalWriteError,
 } from "cronbird/cli";
 import { parseRegistry } from "@/registry";
 import { parseEnabled } from "@/enabled";
@@ -160,8 +163,15 @@ async function main(): Promise<void> {
   // writes running/done here; readCompletions reassembles it each tick.
   const runDir = runningDir(home);
   const dDir = doneDir(home);
-  mkdirSync(runDir, { recursive: true });
-  mkdirSync(dDir, { recursive: true });
+  // On a fresh host these are the daemon's first writes under ~/.ceo/schedulerd,
+  // so a permanent fault here must exit 78 like the heartbeat write would (#496).
+  try {
+    mkdirSync(runDir, { recursive: true });
+    mkdirSync(dDir, { recursive: true });
+  } catch (err) {
+    if (isPermanentLocalWriteError(err)) throw new PermanentHeartbeatWriteError(err as NodeJS.ErrnoException);
+    throw err;
+  }
 
   let running = true;
   let wakeEarly: (() => void) | null = null;
@@ -321,10 +331,20 @@ async function main(): Promise<void> {
   log("stopped");
 }
 
+/**
+ * A permanent local-write fault (cronbird's isPermanentLocalWriteError set) exits
+ * FATAL_EXIT_CODE (78, EX_CONFIG); anything else exits 1 (#496). systemd stops on
+ * it via RestartPreventExitStatus=78. launchd has no per-exit-code KeepAlive, so
+ * it keeps respawning (throttled) but logs the exit as EX_CONFIG.
+ */
+export function resolveFatalExitCode(err: unknown): number {
+  return err instanceof PermanentHeartbeatWriteError ? FATAL_EXIT_CODE : 1;
+}
+
 // Only run when invoked directly (not when imported by tests).
 if (import.meta.main) {
   main().catch((err) => {
     process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    process.exit(resolveFatalExitCode(err));
   });
 }

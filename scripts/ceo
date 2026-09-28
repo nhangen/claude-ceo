@@ -37,7 +37,9 @@ _registry_schema_error() {
   local rc="$1"
   case "$rc" in
     1) echo "No registry found. Run: ceo playbook scan" >&2 ;;
-    2) echo "Registry schema_version missing, malformed, or below $CEO_REGISTRY_SCHEMA_VERSION. Run: ceo playbook scan" >&2 ;;
+    2) echo "Registry schema_version below $CEO_REGISTRY_SCHEMA_VERSION (peer host on an older binary). Run: ceo playbook scan" >&2 ;;
+    3) echo "Registry schema_version missing or malformed. Run: ceo playbook scan" >&2 ;;
+    4) echo "Registry path unresolvable: HOME is unset or empty and CEO_REGISTRY_FILE is not set" >&2 ;;
     *) echo "Registry validation failed (rc=$rc)" >&2 ;;
   esac
 }
@@ -198,6 +200,19 @@ _doctor_check_freshness() {
   echo "FRESH=$fresh STALE=$stale"
 }
 
+_doctor_schedulerd_remediation() {
+  local target="$1"
+  echo "    Repoint the agent to the main clone ($target) and reload:"
+  if [ "$(ceo_detect_os)" = "macos" ]; then
+    echo "      launchctl bootout gui/\$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist"
+    echo "      # update paths in ~/Library/LaunchAgents/com.ceo.schedulerd.plist to $target"
+    echo "      launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.ceo.schedulerd.plist"
+  else
+    echo "      # update paths in ~/.config/systemd/user/ceo-schedulerd.service to $target"
+    echo "      systemctl --user daemon-reload && systemctl --user restart ceo-schedulerd.service"
+  fi
+}
+
 cmd_doctor() {
   local ok=0
   local warn=0
@@ -344,6 +359,50 @@ cmd_doctor() {
     fail=$((fail + 1))
   fi
 
+  # Check if the keep-alive daemon agent is configured from the main clone (#501).
+  local _daemon_repo _daemon_rc=0
+  _daemon_repo="$(ceo_scheduler_daemon_repo_path)" || _daemon_rc=$?
+  if [ "$_daemon_rc" -ne 0 ]; then
+    echo "  ! ceo-schedulerd keep-alive definition is present but its repo path could not be read — cannot verify it runs from the main clone"
+    warn=$((warn + 1))
+  elif [ -n "$_daemon_repo" ]; then
+    # Compare physical paths: INSTALL_DIR descends from `readlink -f`, while the
+    # definition holds whatever path was typed, possibly through a symlink.
+    local _cur_main _gcd
+    _cur_main="$(cd "$INSTALL_DIR" && pwd -P)"
+    if _gcd="$(git -C "$INSTALL_DIR" rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_gcd" ]; then
+      _cur_main="$(cd "$INSTALL_DIR" && cd "$_gcd/.." 2>/dev/null && pwd -P || echo "$_cur_main")"
+    fi
+
+    if [ ! -d "$_daemon_repo" ]; then
+      echo "  ✗ ceo-schedulerd agent configured with nonexistent directory: $_daemon_repo"
+      echo "    The daemon will crash-loop."
+      _doctor_schedulerd_remediation "$_cur_main"
+      fail=$((fail + 1))
+    else
+      _daemon_repo="$(cd "$_daemon_repo" 2>/dev/null && pwd -P || printf '%s' "$_daemon_repo")"
+      if [ -f "$_daemon_repo/.git" ]; then
+        local _common_git _main_clone=""
+        _common_git="$(git -C "$_daemon_repo" rev-parse --git-common-dir 2>/dev/null || true)"
+        if [ -n "$_common_git" ]; then
+          _main_clone="$(cd "$_daemon_repo" 2>/dev/null && cd "$_common_git/.." 2>/dev/null && pwd -P || true)"
+        fi
+        local _target_main="${_main_clone:-$_cur_main}"
+        echo "  ✗ ceo-schedulerd agent runs from a feature worktree ($_daemon_repo), not the main clone ($_target_main)"
+        echo "    Removing the worktree breaks the daemon."
+        _doctor_schedulerd_remediation "$_target_main"
+        fail=$((fail + 1))
+      elif [ "$_daemon_repo" != "$_cur_main" ]; then
+        echo "  ✗ ceo-schedulerd agent runs from external directory ($_daemon_repo), expected main clone ($_cur_main)"
+        _doctor_schedulerd_remediation "$_cur_main"
+        fail=$((fail + 1))
+      else
+        echo "  ✓ ceo-schedulerd agent configured from main clone"
+        ok=$((ok + 1))
+      fi
+    fi
+  fi
+
   # plugin
   if claude plugin list 2>/dev/null | grep -q "ceo"; then
     echo "  ✓ CEO plugin installed in Claude Code"
@@ -373,7 +432,7 @@ cmd_doctor() {
     local registry_rc=0
     ceo_registry_validate "$registry_file" || registry_rc=$?
     if [ "$registry_rc" != "0" ]; then
-      echo "  ✗ $(_registry_schema_error "$registry_rc")"
+      echo "  ✗ $(_registry_schema_error "$registry_rc" 2>&1)"
       fail=$((fail + 1))
     else
       local missing_bins=0 bin_total=0
@@ -397,8 +456,9 @@ cmd_doctor() {
     fi
   fi
 
-  # playbook drift — only meaningful when both trees exist
-  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  # playbook drift — only meaningful when both trees exist; reported on
+  # stdout only. The alert file (CEO/alerts/playbook-drift.md) is written solely
+  # by `ceo playbook scan`, on the primary host when primary_host is set (#504).
   if [ ! -d "$CEO_DIR/playbooks" ] || [ ! -d "${CEO_REPO_PLAYBOOK_DIR:-$INSTALL_DIR/docs/playbooks}" ]; then
     echo "  ? Playbook drift check skipped (vault or repo playbooks dir missing)"
     warn=$((warn + 1))
@@ -407,24 +467,9 @@ cmd_doctor() {
   elif cmd_playbook_diff --quiet >/dev/null 2>&1; then
     echo "  ✓ Playbooks in sync (no vault/repo drift)"
     ok=$((ok + 1))
-    [ -f "$alert_file" ] && rm -f "$alert_file"
   else
     echo "  ✗ Playbook drift detected — run: ceo playbook diff"
     fail=$((fail + 1))
-    mkdir -p "$(dirname "$alert_file")"
-    local _since; _since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
-    [ -z "$_since" ] && _since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    {
-      echo "---"
-      echo "status: drift"
-      echo "since: $_since"
-      echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      echo "---"
-      echo ""
-      echo "# Playbook drift"
-      echo ""
-      echo "Vault and repo playbook trees diverged. Run \`ceo playbook diff\` for details."
-    } > "$alert_file"
   fi
 
   # Completed-but-no-output cross-check — for every active runner:script or
@@ -638,10 +683,11 @@ cmd_doctor() {
   # running, or (the morning-report bug) runs but silently stopped delivering to
   # Discord. Complements the daemon-heartbeat check above: that catches the whole
   # daemon dying; this catches one playbook wedged or gated while the daemon lives.
-  local _fresh_out _fr_stale
+  local _fresh_out _fr_stale _fr_state_dir
   # The cooldown stamps moved to the host-local state dir in #394; the dispatcher
   # writes them there, so this reads there.
-  _fresh_out=$(_doctor_check_freshness "$(_ceo_registry_path)" "$(_ceo_state_dir)")
+  _fr_state_dir=$(_ceo_state_dir)
+  _fresh_out=$(_doctor_check_freshness "$registry_file" "$_fr_state_dir")
   # `|| true`: under `set -e` a non-matching grep exits 1 and aborts cmd_doctor
   # before it prints its Result line — so doctor silently truncated on exactly
   # the healthy hosts where there was nothing to report.
@@ -1454,6 +1500,64 @@ cmd_playbook_sync() {
   return 0
 }
 
+# Frontmatter is rendered before anything is written: in `{ helper; printf; } >`
+# the group takes printf's status, so a rejected field installed a body-only
+# alert that the morning scan reports as corrupted.
+_write_playbook_drift_alert() {
+  local alert_file="$1" status="$2" since="$3" now="$4" host="$5" count="$6" body="$7"
+  local fm tmp
+  fm=$(ceo_write_alert_frontmatter --status="$status" --since="$since" \
+    --last-check="$now" --host="$host" --field count="$count") || {
+    echo "ERROR: invalid alert frontmatter for $alert_file" >&2
+    return 1
+  }
+  mkdir -p "$(dirname "$alert_file")"
+  tmp=$(mktemp "${alert_file}.XXXXXX") || {
+    echo "ERROR: mktemp failed for $alert_file" >&2
+    return 1
+  }
+  if ! printf '%s\n%s\n' "$fm" "$body" > "$tmp" || ! mv -f "$tmp" "$alert_file"; then
+    rm -f "$tmp"
+    echo "ERROR: failed to write $alert_file" >&2
+    return 1
+  fi
+}
+
+_validate_scheduler_script_runtime() {
+  local registry="$1"
+  local active_scripts
+  active_scripts=$(printf '%s\n' "$registry" | jq -r \
+    '.playbooks[] | select(.status == "active" and .runner == "script") | [.name, .script] | @tsv')
+  [ -n "$active_scripts" ] || return 0
+
+  local scheduler_repo="" repo_rc=0
+  scheduler_repo=$(ceo_scheduler_daemon_repo_path) || repo_rc=$?
+  if [ "$repo_rc" -eq 2 ]; then
+    echo "ERROR: ceo-schedulerd is configured, but its runtime checkout cannot be resolved." >&2
+    echo "Update the keep-alive definition, reload the daemon, then rerun 'ceo playbook scan'." >&2
+    return 1
+  fi
+  [ -n "$scheduler_repo" ] || return 0
+
+  local name script script_full invalid=0
+  while IFS=$'\t' read -r name script; do
+    [ -n "$name" ] || continue
+    script_full="$scheduler_repo/scripts/$script"
+    if [ ! -f "$script_full" ]; then
+      echo "ERROR: active script playbook '$name' is missing from the scheduler runtime: $script_full" >&2
+      invalid=$((invalid + 1))
+    elif [ ! -x "$script_full" ]; then
+      echo "ERROR: active script playbook '$name' is not executable in the scheduler runtime: $script_full" >&2
+      invalid=$((invalid + 1))
+    fi
+  done <<< "$active_scripts"
+
+  if [ "$invalid" -gt 0 ]; then
+    echo "Update the scheduler runtime and restart ceo-schedulerd before scanning the new registry." >&2
+    return 1
+  fi
+}
+
 cmd_playbook_scan() {
   _wants_help "$@" && { _playbook_sub_usage scan; return 0; }
   # Extract a scalar field from YAML frontmatter without requiring yq.
@@ -1944,6 +2048,16 @@ cmd_playbook_scan() {
   # Apply schedule overrides — registry should reflect effective schedules.
   new_registry=$(_playbook_apply_schedule_overrides "$new_registry")
 
+  # The scheduler dispatches scripts from its own configured checkout, which can
+  # differ from the checkout running this CLI. Refuse the registry write if that
+  # runtime cannot execute every active script entry. Otherwise a scan can make a
+  # playbook runnable before its artifact is deployed, and the first scheduled
+  # tick fails before the playbook can record its own result.
+  if ! _validate_scheduler_script_runtime "$new_registry"; then
+    echo "ERROR: refusing to replace $registry_file with an unrunnable registry." >&2
+    return 1
+  fi
+
   # Surface stale Discord report allow-list entries: a name in settings.json's
   # discord_report_triggers / discord_prior_day_report_triggers that matches no
   # active playbook is almost always a leftover from a rename (the exact drift
@@ -1967,26 +2081,33 @@ cmd_playbook_scan() {
   local alert_file="$CEO_DIR/alerts/playbook-drift.md"
   if [ "$shadowed_drift" -gt 0 ]; then
     echo "  WARN  $shadowed_drift repo playbook(s) shadowed by a DIFFERING vault copy — scan used the vault version, which may be stale. Run 'ceo playbook sync' to reconcile from the repo." >&2
-    if [ "$dry_run" -eq 0 ]; then
-      mkdir -p "$(dirname "$alert_file")"
-      local _drift_since; _drift_since=$(awk '/^since:/ { sub(/^since:[[:space:]]*/, ""); print; exit }' "$alert_file" 2>/dev/null || echo "")
-      [ -z "$_drift_since" ] && _drift_since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      {
-        echo "---"
-        echo "status: drift"
-        echo "count: $shadowed_drift"
-        echo "since: $_drift_since"
-        echo "last_check: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        echo "---"
-        echo ""
-        echo "# Playbook drift"
-        echo ""
-        echo "$shadowed_drift repo playbook(s) shadowed by differing vault copies. Run \`ceo playbook sync\` to reconcile from the repo."
-      } > "$alert_file"
+  fi
+  # The alert tracks shadowed drift only, so it clears on the condition that
+  # raised it. Tree divergence (a vault-only playbook is intentional) stays a
+  # doctor report; with no repo checkout the drift is unknown, so it must not clear.
+  if [ "$dry_run" -eq 0 ] && { [ "$shadowed_drift" -gt 0 ] || { [ -d "$repo_playbook_dir" ] && [ -f "$alert_file" ]; }; }; then
+    # Scan has passed ceo_assert_primary_host, so this host is the primary one
+    # whenever primary_host is set.
+    local _alert_host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null || true)}"
+    if [ -z "$_alert_host" ]; then
+      echo "ERROR: cannot resolve this host's name for $alert_file" >&2
+      return 1
     fi
-  elif [ "$dry_run" -eq 0 ] && [ -f "$alert_file" ]; then
-    if [ -d "$repo_playbook_dir" ] && cmd_playbook_diff --quiet >/dev/null 2>&1; then
-      rm -f "$alert_file"
+    local _now _prior_status _drift_since
+    _now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    _prior_status=$(ceo_read_alert_field "$alert_file" status 2>/dev/null || true)
+    _drift_since=$(ceo_read_alert_field "$alert_file" since 2>/dev/null || true)
+    if [ "$shadowed_drift" -gt 0 ]; then
+      # since marks when the alert entered its current status.
+      [ "$_prior_status" = "clear" ] && _drift_since=""
+      _write_playbook_drift_alert "$alert_file" firing "${_drift_since:-$_now}" "$_now" \
+        "$_alert_host" "$shadowed_drift" \
+        "$(printf '\n# Playbook drift\n\n%s repo playbook(s) shadowed by differing vault copies. Run `ceo playbook sync` to reconcile from the repo.' "$shadowed_drift")" || return 1
+    else
+      [ "$_prior_status" = "clear" ] || _drift_since=""
+      _write_playbook_drift_alert "$alert_file" clear "${_drift_since:-$_now}" "$_now" \
+        "$_alert_host" 0 \
+        "$(printf '\n# Playbook drift\n\nNo repo playbook is shadowed by a differing vault copy.')" || return 1
     fi
   fi
 
@@ -2147,14 +2268,19 @@ _playbook_apply_schedule_overrides() {
 #   any stray ceo-cron.sh / `# CEO Agent` lines) from the user's crontab and
 #   reinstalls the remainder. The native install path is retired (D1) — this
 #   removal capability survives for the migration (F3) that purges leftover
-#   blocks from hosts that ran an older CEO. Returns the scheduler's rc; a clean
-#   crontab with no CEO block is a no-op success.
+#   blocks from hosts that ran an older CEO. Reads and writes
+#   ${CEO_CRONTAB_BIN:-crontab} directly whatever the scheduler backend, since a
+#   leftover block outlives the backend switch. Returns crontab's non-zero rc on
+#   a write failure; a clean crontab with no CEO block is a no-op success.
 _remove_crontab_block() {
   local marker_start="# CEO Agent START"
   local marker_end="# CEO Agent END"
 
+  local crontab_bin="${CEO_CRONTAB_BIN:-crontab}"
+  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
+
   local existing
-  existing=$(ceo_scheduler_list 2>/dev/null || true)
+  existing=$("$crontab_bin" -l 2>/dev/null || true)
 
   # Strip the wrapped block, then any stray CEO-installed lines that escaped it.
   # A CEO cron line always carries the trailing `# ceo:<name>` marker that
@@ -2170,7 +2296,19 @@ _remove_crontab_block() {
     return 0
   fi
 
-  ceo_scheduler_install "$cleaned"
+  local err rc=0
+  if [ -n "$cleaned" ]; then
+    err=$(printf '%s\n' "$cleaned" | "$crontab_bin" - 2>&1) || rc=$?
+  else
+    err=$(printf '' | "$crontab_bin" - 2>&1) || rc=$?
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    echo "ERROR: crontab removal failed (rc=$rc): $err" >&2
+    return "$rc"
+  fi
+
+  return 0
 }
 
 # Validate a 5-field cron expression. Lightweight syntax check — verifies
@@ -2438,7 +2576,8 @@ _run_scheduler_cli() {
     echo "ERROR: scheduler dependencies not installed. Run: (cd $sched_dir && bun install)" >&2
     return 1
   fi
-  _require_registry_current "$(_ceo_registry_path)"
+  local registry_file; registry_file=$(_ceo_registry_path)
+  _require_registry_current "$registry_file"
   ( cd "$sched_dir" && bun run src/status.ts "$sub" "$@" )
 }
 

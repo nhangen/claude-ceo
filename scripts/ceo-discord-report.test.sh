@@ -67,7 +67,6 @@ test_silent_without_report_webhook() {
   printf 'hello' | "$REPORT" morning-brief >/dev/null 2>&1
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "no webhook means no curl call"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_missing_settings_defaults_to_morning_brief_only() {
@@ -76,7 +75,6 @@ test_missing_settings_defaults_to_morning_brief_only() {
 
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "missing settings must still default to morning-brief only"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_uses_dedicated_report_webhook_from_file() {
@@ -87,7 +85,6 @@ test_uses_dedicated_report_webhook_from_file() {
   payload=$(cat "$CURL_CAPTURE_DIR"/payload-*.json)
   assert_contains "$payload" "CEO full report: morning-brief" "first payload must identify report"
   assert_contains "$payload" "full report body" "payload must contain body"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_trigger_allowlist_filters_other_reports() {
@@ -97,7 +94,6 @@ test_trigger_allowlist_filters_other_reports() {
 
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "non-allowlisted trigger must not post"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_splits_large_report() {
@@ -110,12 +106,7 @@ test_splits_large_report() {
 
   local count
   count=$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  if [ "$count" -lt 2 ]; then
-    printf '  FAIL [%s] large report should split into multiple messages; got %s\n' \
-      "$CURRENT_TEST" "$count"
-    _record_assertion_fail
-  fi
+  assert_eq "$([ "$count" -ge 2 ] && echo 1 || echo 0)" "1" "large report should split into multiple messages (got $count)"
 }
 
 _write_prior_report() {
@@ -230,7 +221,8 @@ test_registry_flag_enables_report_without_settings_entry() {
 
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "orchestrated brief" \
     "registry discord_report:true must post even when the trigger is absent from settings allow-list"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)" "registry flag absent for discord_report" \
+    "an explicit true is not reported as an absent flag"
 }
 
 test_registry_flag_false_blocks_report_despite_settings() {
@@ -243,7 +235,8 @@ test_registry_flag_false_blocks_report_despite_settings() {
 
   assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
     "registry discord_report:false must block delivery even when the trigger is in the settings allow-list"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)" "registry flag absent for discord_report" \
+    "an explicit false is not reported as an absent flag"
 }
 
 test_no_registry_flag_field_falls_back_to_settings() {
@@ -257,19 +250,80 @@ test_no_registry_flag_field_falls_back_to_settings() {
 
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "legacy body" \
     "an entry without a discord_report field must fall back to the settings allow-list (backward compat)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 
   # #424 asked for error lines on the two failure causes, not on the third. A
   # legitimately absent flag is the steady state, so an error line here would
-  # fire on every cron run. Pinned on the two error needles only, which leaves
-  # room for a future informational line on the absent arm.
+  # fire on every cron run. #485 records an informational line on the absent arm
+  # naming the field and path so fallback decisions are auditable without
+  # triggering error needles.
   local log
   log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry flag absent for discord_report, falling back to settings ($HOME/.ceo/registry.json)" \
+    "absent discord_report flag must log informational line naming field and registry"
+  assert_contains "$log" "registry flag absent for discord_prior_day_report, falling back to settings ($HOME/.ceo/registry.json)" \
+    "absent discord_prior_day_report flag must log informational line naming field and registry"
   assert_not_contains "$log" "registry file not found" \
     "a present registry with a legitimately absent flag must not log a not-found error"
   assert_not_contains "$log" "registry jq query failed" \
     "a well-formed registry must not log a jq failure"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+}
+
+test_empty_registry_falls_back_to_settings_and_logs_no_output() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  local empty_reg="$TMP/empty-registry.json"
+  : > "$empty_reg"
+
+  printf 'empty reg body' | CEO_REGISTRY_FILE="$empty_reg" "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry query produced no output for discord_report, falling back to settings ($empty_reg)" \
+    "a 0-byte registry must log its own line for discord_report"
+  assert_contains "$log" "registry query produced no output for discord_prior_day_report, falling back to settings ($empty_reg)" \
+    "a 0-byte registry must log its own line for discord_prior_day_report"
+  assert_not_contains "$log" "registry flag absent for" \
+    "a 0-byte registry must not read as the routine absent-flag case"
+  assert_not_contains "$log" "registry file not found" \
+    "a 0-byte registry file exists so it must not log file not found"
+  assert_not_contains "$log" "registry jq query failed" \
+    "jq exits 0 on an empty file so it must not log jq query failed"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "empty reg body" \
+    "a 0-byte registry must still deliver via the settings allow-list"
+}
+
+test_non_boolean_registry_flag_is_named_not_called_absent() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief","discord_report":"yes"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'yes body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry flag for discord_report is not a boolean (yes), falling back to settings" \
+    "a present non-boolean flag must be named with its value"
+  assert_not_contains "$log" "registry flag absent for discord_report" \
+    "a present non-boolean flag is not absent"
+  assert_not_contains "$log" "registry file not found" "the registry exists"
+  assert_not_contains "$log" "registry jq query failed" "the registry parses"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "yes body" \
+    "a non-boolean flag falls back to the settings allow-list and still delivers"
+}
+
+test_multi_document_registry_value_logs_on_one_line() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  # Two concatenated JSON documents make jq print one line per document.
+  printf '{}{}' > "$HOME/.ceo/registry.json"
+
+  printf 'multi body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  assert_contains "$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)" \
+    "registry flag for discord_report is not a boolean (absent absent), falling back to settings" \
+    "a multi-line registry value is logged on one line"
 }
 
 test_registry_path_is_not_hardcoded_in_discord_report() {
@@ -286,7 +340,6 @@ test_registry_path_is_not_hardcoded_in_discord_report() {
 
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "custom brief" \
     "ceo-discord-report.sh must resolve registry via CEO_REGISTRY_FILE override"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # --- #424: registry resolution failures must be visible in the debug log, not
@@ -310,7 +363,6 @@ test_missing_registry_logs_debug_line_naming_path() {
     "the prior-day call site must be distinguishable from the discord_report one"
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "brief body" \
     "a missing registry must still deliver via the settings allow-list"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 test_malformed_registry_logs_jq_failure_debug_line() {
@@ -334,7 +386,6 @@ test_malformed_registry_logs_jq_failure_debug_line() {
     "the failure line must carry jq's own message, not just the fact of failure"
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "brief body" \
     "a malformed registry must still deliver via the settings allow-list"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 4))
 }
 
 # --- #483: a corrupt or empty settings.json must not silently kill delivery for
@@ -421,11 +472,8 @@ test_records_last_deliver_timestamp_on_successful_post() {
   # It must NOT be in the synced vault: whether this machine delivered says
   # nothing about whether another did, and the stamp had no stignore entry at
   # all, so it replicated — one host's delivery marking another's as fresh.
-  if [ -e "$CEO_DIR/log/.last-deliver-morning-brief" ]; then
-    fail_test "the delivery stamp was written into the synced vault"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$([ -e "$CEO_DIR/log/.last-deliver-morning-brief" ] && echo 1 || echo 0)" "0" \
+    "the delivery stamp was written into the synced vault"
 }
 
 test_the_delivery_stamp_lands_where_doctor_reads_it() {
@@ -457,11 +505,8 @@ REG
   # reader finds nothing and is silent. That silence is what shipped.
   local blind
   blind=$( source "$SCRIPT_DIR/ceo" >/dev/null 2>&1; _doctor_check_freshness "$reg" "$CEO_DIR/log" "$future" 2>&1 || true )
-  if echo "$blind" | grep -qF "hasn't DELIVERED"; then
-    fail_test "the arm cannot distinguish a working reader from a blind one"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_not_contains "$blind" "hasn't DELIVERED" \
+    "the arm cannot distinguish a working reader from a blind one"
 }
 
 test_no_last_deliver_when_gated_out() {
@@ -471,7 +516,6 @@ test_no_last_deliver_when_gated_out() {
   printf 'scan body' | "$REPORT" morning-scan >/dev/null 2>&1
   assert_eq "$([ -f "$CEO_DIR/log/.last-deliver-morning-scan" ] && echo yes || echo no)" "no" \
     "a gated-out trigger must NOT record a delivery (so its staleness surfaces)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 # --- #242: non-2xx Discord responses must be observable, not logged as posted ---
@@ -485,7 +529,6 @@ test_non_2xx_not_counted_as_delivered() {
     "a 500 response must not be counted as a delivered chunk"
   assert_no_match "$log" "posted chunks=1" \
     "a dropped chunk must never be logged as posted"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_non_2xx_logs_a_failure_with_status() {
@@ -496,7 +539,6 @@ test_non_2xx_logs_a_failure_with_status() {
   local log; log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)
   assert_contains "$log" "500" \
     "a failed post must log the HTTP status for observability"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_2xx_still_counts_as_delivered() {
@@ -505,7 +547,6 @@ test_2xx_still_counts_as_delivered() {
   local log; log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null)
   assert_contains "$log" "posted chunks=1" \
     "a 2xx response must still count as one delivered chunk"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_last_deliver_not_stamped_on_total_failure() {
@@ -515,7 +556,6 @@ test_last_deliver_not_stamped_on_total_failure() {
   unset CURL_STUB_STATUS
   assert_eq "$([ -f "$CEO_DIR/log/.last-deliver-morning-brief" ] && echo yes || echo no)" "no" \
     "a 100%-failed delivery must NOT bump the .last-deliver freshness stamp (ceo doctor watches it)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_network_failure_logs_single_clean_status() {
@@ -528,7 +568,6 @@ test_network_failure_logs_single_clean_status() {
     "a curl network failure logs the 000 sentinel status"
   assert_no_match "$log" "status=0000" \
     "the status must be a single clean 000, not a doubled 000000 from curl's -w plus the || fallback"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

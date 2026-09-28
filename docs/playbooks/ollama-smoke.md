@@ -24,19 +24,21 @@ The smoke skips a check when its service is unreachable. On the owner host a ski
 
 | `stack` | Meaning | `status` |
 |---|---|---|
-| `present` | Every check ran and passed | `clear` |
+| `present` | Every check ran and passed | `clear` (`firing` if the run was uncapped) |
 | `failing` | At least one check failed | `firing` |
 | `degraded` | Some checks passed, some were skipped | `firing` |
 | `absent` | Every check was skipped | `firing` |
 | `harness-error` | The smoke timed out, exited 2 (missing tool), or printed no summary | `firing` |
 
-The inbox task is appended only on a transition into `firing`, and marked `[done]` only when a previously firing stack comes back `present`. A state file with no readable `status` never touches the inbox.
+A run with no `timeout` or `gtimeout` binary on PATH is uncapped and is `firing` whatever its `stack`, because a hang would hold the global cron lock with no limit. Install coreutils to clear it.
+
+The inbox task is appended only on a transition into `firing`, and marked `[done]` only when a previously firing stack comes back `present` on a capped run. A state file with no readable `status` never touches the inbox.
 
 ## Outputs
 
 | File | Mode | When |
 |---|---|---|
-| `CEO/alerts/ollama-smoke.md` | overwrite | Every run. Frontmatter carries `stack`, `pass_count`, `fail_count`, and `skip_count`; the body carries the smoke output with color codes stripped. |
+| `CEO/alerts/ollama-smoke.md` | overwrite | Every run. Frontmatter carries `stack`, `pass_count`, `fail_count`, `skip_count`, and `timeout_seconds` (the cap, or `none` when uncapped); the body carries the smoke output with color codes stripped, plus a warning line when the run was uncapped. |
 | `CEO/inbox/ollama-smoke.md` | append `- [ ]` line; rewrite it to `[done]` | Append on a transition into `firing`. Rewrite on `firing → clear`. Idempotent. |
 
 The runner outcome is `fired` only when the inbox changed, so a healthy week and a still-firing week are both silent.
