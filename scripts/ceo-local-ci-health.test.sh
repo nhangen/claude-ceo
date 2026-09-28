@@ -136,11 +136,8 @@ test_docker_failure_fires_without_restarting() {
 test_sustained_failure_escalates_once() {
   DOCKER_STUB_FAIL=1 run_monitor
   assert_eq "$(outcome)" "noop" "first failure should stay silent"
-  if [ -s "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md" ]; then
-    fail_test "first failure must not create an inbox task"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$(cat "$CEO_VAULT/CEO/inbox/$CEO_HOSTNAME.md" 2>/dev/null)" "" \
+    "first failure must not create an inbox task"
   DOCKER_STUB_FAIL=1 run_monitor
   assert_eq "$(outcome)" "fired" "sustained escalation should notify"
   DOCKER_STUB_FAIL=1 run_monitor
@@ -231,11 +228,8 @@ STUB
   start=$(date +%s)
   run_monitor
   elapsed=$(( $(date +%s) - start ))
-  if [ "$elapsed" -ge 4 ]; then
-    fail_test "Docker probe exceeded its one-second timeout" "elapsed=${elapsed}s"
-  else
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
-  fi
+  assert_eq "$([ "$elapsed" -lt 4 ] && echo 1 || echo 0)" "1" \
+    "Docker probe must honor its one-second timeout (elapsed=${elapsed}s)"
   assert_eq "$(state_field status)" "firing" "timed-out Docker probe should fire"
 }
 

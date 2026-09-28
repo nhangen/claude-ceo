@@ -439,11 +439,7 @@ _main_clone_under_test() {
 
 _assert_doctor_fails() {
   local rc="$1" msg="$2"
-  if [ "$rc" = "0" ]; then
-    printf '  FAIL [%s] %s\n' "$CURRENT_TEST" "$msg"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "$msg (rc=$rc)"
 }
 
 test_doctor_flags_schedulerd_running_from_feature_worktree() {

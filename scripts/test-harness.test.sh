@@ -628,16 +628,18 @@ test_285_zero_discovered_tests_is_a_failure() {
 
 # --- #513: sibling test suites must not carry manual ASSERTION_COUNT bumps ---
 
-# Any write to ASSERTION_COUNT, in any spelling: `+ N`, `+N`, `++`, `+=`, `let`.
-# A read (`$ASSERTION_COUNT`) is excluded by the `$` in the leading class.
+# The common write spellings of ASSERTION_COUNT: `+ N`, `+N`, `++`, `+=`, `let`.
+# A `$ASSERTION_COUNT` read is excluded by the `$` in the leading class, and an
+# `==` comparison by requiring a non-`=` after the assignment `=`.
 _513_bump_scan() {
-  grep -Hn -E '(^|[^_A-Za-z0-9$])ASSERTION_COUNT[[:space:]]*(=|\+=|-=|\+\+|--)|(\+\+|--)[[:space:]]*ASSERTION_COUNT' "$@" \
+  grep -Hn -E '(^|[^_A-Za-z0-9$])ASSERTION_COUNT[[:space:]]*(=([^=]|$)|\+=|-=|\+\+|--)|(\+\+|--)[[:space:]]*ASSERTION_COUNT' "$@" \
     | grep -v '/test-harness.test.sh:' || true
 }
 
 test_513_no_test_suite_carries_manual_assertion_count_bumps() {
   local matches
-  matches=$(_513_bump_scan "$SCRIPT_DIR"/*.test.sh "$SCRIPT_DIR"/../hooks/*.test.sh)
+  matches=$(_513_bump_scan "$SCRIPT_DIR"/*.test.sh "$SCRIPT_DIR"/../hooks/*.test.sh \
+    "$SCRIPT_DIR"/ceo-cron-test-common.sh)
   assert_eq "$matches" "" "no sibling test suite may carry manual ASSERTION_COUNT bumps"
 }
 
@@ -649,9 +651,12 @@ ASSERTION_COUNT=$((ASSERTION_COUNT+1))
 ((ASSERTION_COUNT += 1))
 let ASSERTION_COUNT++
 echo "$ASSERTION_COUNT assertions"
+(( ASSERTION_COUNT == 0 )) && echo none
 FX
-  assert_eq "$(_513_bump_scan "$TMP/fixture.test.sh" | wc -l | tr -d ' ')" "5" \
-    "the guard must flag all five write spellings and ignore the read"
+  local hits
+  hits=$(_513_bump_scan "$TMP/fixture.test.sh")
+  assert_eq "$(printf '%s\n' "$hits" | cut -d: -f2 | tr '\n' ' ')" "1 2 3 4 5 " \
+    "the guard must flag exactly the five write lines, not the reads on 6 and 7"
 }
 
 run_tests
