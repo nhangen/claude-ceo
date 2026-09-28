@@ -31,9 +31,11 @@
 #                                  double-fire alongside the daemon. Prints one
 #                                  absolute path per line; empty when clean.
 #   ceo_scheduler_daemon_repo_path
-#                                — returns the repository root configured in the
+#                                — prints the repository root configured in the
 #                                  daemon keep-alive agent (com.ceo.schedulerd.plist
-#                                  or ceo-schedulerd.service), or empty if unconfigured.
+#                                  or ceo-schedulerd.service). rc=0 with no output
+#                                  when no definition exists; rc=2 when a definition
+#                                  exists but no repo path could be read from it.
 #
 # Backend selection priority:
 #   1. CEO_SCHEDULER env (explicit override for tests/dev); must be one of the
@@ -43,6 +45,7 @@
 #
 # Env overrides (for tests):
 #   CEO_LAUNCHD_DIR  — directory holding com.ceo.*.plist (default ~/Library/LaunchAgents)
+#   CEO_SYSTEMD_DIR  — directory holding ceo-schedulerd.service (default ~/.config/systemd/user)
 
 _CEO_SCHEDULER_KNOWN="crontab daemon"
 
@@ -198,10 +201,8 @@ ceo_scheduler_crontab_daemon_conflict() {
   printf '%s\n' "$_count"
 }
 
-# Return the repository root path configured in the daemon's keep-alive definition
-# (com.ceo.schedulerd.plist on macOS, ceo-schedulerd.service on Linux/WSL).
-# Returns empty string if no daemon definition exists or if unparseable.
-# Expands %h and ~ to $HOME for systemd paths. Strips /lib/scheduler* suffix.
+# Reads the definition file on disk, not the job launchd/systemd has loaded, so an
+# edited-but-not-reloaded definition reports the new path.
 ceo_scheduler_daemon_repo_path() {
   local dir plist service raw_path=""
   case "$(ceo_detect_os)" in
@@ -209,31 +210,36 @@ ceo_scheduler_daemon_repo_path() {
       dir="${CEO_LAUNCHD_DIR:-$HOME/Library/LaunchAgents}"
       plist="$dir/com.ceo.schedulerd.plist"
       [ -f "$plist" ] || return 0
-      # Extract WorkingDirectory first
-      raw_path="$(awk '/<key>WorkingDirectory<\/key>/ { getline; if ($0 ~ /<string>/) { gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit } }' "$plist" 2>/dev/null || true)"
-      # Fall back to ProgramArguments
+      raw_path="$(awk '
+        /<key>WorkingDirectory<\/key>/ {
+          if ($0 !~ /<string>/) getline
+          if ($0 ~ /<string>/) { sub(/.*<key>WorkingDirectory<\/key>/, ""); sub(/^[^<]*<string>/, ""); sub(/<\/string>.*/, ""); print; exit }
+        }' "$plist" 2>/dev/null || true)"
       if [ -z "$raw_path" ]; then
-        raw_path="$(awk '/<key>ProgramArguments<\/key>/,/<[!]--|<\/array>/ { if ($0 ~ /main\.ts<\/string>/) { gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit } }' "$plist" 2>/dev/null || true)"
+        raw_path="$(awk '/<key>ProgramArguments<\/key>/,/<\/array>/ { if (match($0, /<string>[^<]*main\.ts<\/string>/)) { s = substr($0, RSTART + 8, RLENGTH - 17); print s; exit } }' "$plist" 2>/dev/null || true)"
       fi
       ;;
     wsl|linux)
       dir="${CEO_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
       service="$dir/ceo-schedulerd.service"
       [ -f "$service" ] || return 0
-      raw_path="$(awk -F= '/^WorkingDirectory=/ { sub(/^WorkingDirectory=/, ""); print; exit }' "$service" 2>/dev/null || true)"
+      raw_path="$(awk '/^[[:space:]]*WorkingDirectory[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit }' "$service" 2>/dev/null || true)"
       if [ -z "$raw_path" ]; then
-        raw_path="$(awk '/^ExecStart=/ { for (i=1; i<=NF; i++) { if ($i ~ /main\.ts/) { print $i; exit } } }' "$service" 2>/dev/null || true)"
+        raw_path="$(awk '/^[[:space:]]*ExecStart[[:space:]]*=/ { for (i=1; i<=NF; i++) { if ($i ~ /main\.ts/) { print $i; exit } } }' "$service" 2>/dev/null || true)"
       fi
+      # systemd: a leading "-" on WorkingDirectory means "tolerate missing".
+      raw_path="${raw_path#-}"
+      raw_path="${raw_path#\"}"
+      raw_path="${raw_path%\"}"
       ;;
     *)
       return 0
       ;;
   esac
-  [ -n "$raw_path" ] || return 0
-  # Expand %h and ~ to HOME
+  [ -n "$raw_path" ] || return 2
   raw_path="${raw_path//%h/$HOME}"
   raw_path="${raw_path/#\~/$HOME}"
-  # Strip /lib/scheduler* suffix to get repo root
-  printf '%s\n' "${raw_path%%/lib/scheduler*}"
+  raw_path="${raw_path%/lib/scheduler*}"
+  printf '%s\n' "${raw_path%/}"
 }
 
