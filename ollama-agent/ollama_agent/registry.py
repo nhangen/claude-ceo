@@ -34,7 +34,7 @@ class RegistryError(ValueError):
 
 class TaskSpec:
     def __init__(self, name, runner, model, tier, tools="*", rules=True, skills=False,
-                 min_score=None, eval_task=None, eval_model=None, mcp=None):
+                 min_score=None, eval_task=None, eval_model=None, mcp=None, verify=None):
         self.name = name
         self.runner = runner
         self.model = model
@@ -52,6 +52,7 @@ class TaskSpec:
         self.eval_task = eval_task
         self.eval_model = eval_model
         self.mcp = mcp              # command string to spawn an MCP server, if any (#457)
+        self.verify = verify        # optional shell command that gates completion (#486)
 
 
 def normalize_model(model):
@@ -168,6 +169,10 @@ def _validate(name, entry, where=""):
             # failure fails open on its whole purpose. Require an explicit pin
             # (use eval_task "*" to opt into the cross-task mean).
             raise RegistryError(f"task {name!r}: min_score requires eval_task (use \"*\" for the cross-task mean)")
+    if "verify" in entry and entry["verify"] is not None:
+        verify = entry["verify"]
+        if not isinstance(verify, str) or not verify.strip():
+            raise RegistryError(f"task {name!r}: verify must be a non-empty string, got {verify!r}")
 
 
 def load_registry(source, cwd=None):
@@ -215,7 +220,7 @@ def load_registry(source, cwd=None):
             tools=entry.get("tools", "*"), rules=entry.get("rules", True),
             skills=entry.get("skills", False), min_score=entry.get("min_score"),
             eval_task=entry.get("eval_task"), eval_model=entry.get("eval_model"),
-            mcp=entry.get("mcp"))
+            mcp=entry.get("mcp"), verify=entry.get("verify"))
     return specs
 
 

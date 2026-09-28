@@ -323,6 +323,96 @@ def test_cli_operator_explicit_mcp_overrides_registry_spec(tmp_path, monkeypatch
     assert closed["v"] is True
 
 
+def test_cli_adopts_spec_verify_when_flag_omitted(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        verify_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+            "verify": "pytest -q",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "verify_task"])
+    assert rc == 0
+    assert captured["verify_cmd"] == "pytest -q"
+
+
+def test_cli_operator_explicit_verify_cmd_overrides_registry_spec(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        verify_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+            "verify": "pytest -q",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "verify_task",
+                   "--verify-cmd", "make test"])
+    assert rc == 0
+    assert captured["verify_cmd"] == "make test"
+
+
+def test_cli_task_spec_no_verify_defaults_none(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        plain_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "deterministic",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "plain_task"])
+    assert rc == 0
+    assert captured["verify_cmd"] is None
+
+
+def test_cli_refuses_low_stakes_write_task_without_verify_gate(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        write_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "write_task"])
+    assert rc == 3
+    assert "verify_cmd" not in captured
+    assert "low-stakes-write requires a verify gate" in capsys.readouterr().err
+
+
+def test_cli_low_stakes_write_task_runs_with_operator_verify_cmd(tmp_path, monkeypatch, capsys):
+    captured = {}
+    _stub(monkeypatch, captured)
+    reg = _registry(
+        tmp_path,
+        write_task={
+            "runner": "ollama",
+            "model": "reg-model:7b",
+            "tier": "low-stakes-write",
+        },
+    )
+    rc = cli.main(["--task", "run", "--cwd", str(tmp_path), "--no-rules", "--no-skills",
+                   "--registry", reg, "--task-name", "write_task",
+                   "--verify-cmd", "make test"])
+    assert rc == 0
+    assert captured["verify_cmd"] == "make test"
+
+
 def test_cli_mcp_read_only_hint_logged_and_wired(tmp_path, monkeypatch, capsys):
     captured, closed = {}, {"v": False}
     _stub(monkeypatch, captured)
