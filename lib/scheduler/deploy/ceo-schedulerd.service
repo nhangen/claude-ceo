@@ -46,6 +46,9 @@ Environment=CEO_HOSTNAME=CHANGEME
 # Environment=CEO_CRON_BIN=%h/code/claude-ceo/scripts/ceo-cron.sh
 Restart=always
 RestartSec=10
+# A permanent local-write fault (~/.ceo/schedulerd unwritable or full) exits 78
+# and needs a human, so stop instead of restarting into the same failure (#496).
+RestartPreventExitStatus=78
 # Give SIGTERM time for the loop to finish its current tick and exit cleanly.
 TimeoutStopSec=70
 

@@ -32,6 +32,7 @@ import {
   writeHeartbeatWithSync,
   writeSyncedHeartbeat,
   PermanentHeartbeatWriteError,
+  isPermanentLocalWriteError,
 } from "cronbird/cli";
 import { parseRegistry } from "@/registry";
 import { parseEnabled } from "@/enabled";
@@ -162,8 +163,15 @@ async function main(): Promise<void> {
   // writes running/done here; readCompletions reassembles it each tick.
   const runDir = runningDir(home);
   const dDir = doneDir(home);
-  mkdirSync(runDir, { recursive: true });
-  mkdirSync(dDir, { recursive: true });
+  // On a fresh host these are the daemon's first writes under ~/.ceo/schedulerd,
+  // so a permanent fault here must exit 78 like the heartbeat write would (#496).
+  try {
+    mkdirSync(runDir, { recursive: true });
+    mkdirSync(dDir, { recursive: true });
+  } catch (err) {
+    if (isPermanentLocalWriteError(err)) throw new PermanentHeartbeatWriteError(err as NodeJS.ErrnoException);
+    throw err;
+  }
 
   let running = true;
   let wakeEarly: (() => void) | null = null;
@@ -324,22 +332,14 @@ async function main(): Promise<void> {
 }
 
 /**
- * Maps uncaught errors from the daemon loop to appropriate process exit codes.
- * Permanent heartbeat write failures (EACCES/EROFS/ENOSPC/EISDIR/EPERM) exit
- * with FATAL_EXIT_CODE (78, EX_CONFIG) so launchd/systemd stops crash-looping (#496).
- * Generic/transient errors exit with 1.
+ * A permanent local-write fault (cronbird's isPermanentLocalWriteError set) exits
+ * FATAL_EXIT_CODE (78, EX_CONFIG); anything else exits 1 (#496). systemd stops on
+ * it via RestartPreventExitStatus=78. launchd has no per-exit-code KeepAlive, so
+ * it keeps respawning (throttled) but logs the exit as EX_CONFIG.
  */
 export function resolveFatalExitCode(err: unknown): number {
-  if (
-    err instanceof PermanentHeartbeatWriteError ||
-    (typeof err === "object" && err !== null && (err as { name?: string }).name === "PermanentHeartbeatWriteError")
-  ) {
-    return FATAL_EXIT_CODE;
-  }
-  return 1;
+  return err instanceof PermanentHeartbeatWriteError ? FATAL_EXIT_CODE : 1;
 }
-
-export { main };
 
 // Only run when invoked directly (not when imported by tests).
 if (import.meta.main) {

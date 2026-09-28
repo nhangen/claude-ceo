@@ -11,12 +11,6 @@ describe("resolveFatalExitCode", () => {
   test("returns FATAL_EXIT_CODE (78) for PermanentHeartbeatWriteError instance", () => {
     const err = new PermanentHeartbeatWriteError(Object.assign(new Error("EACCES"), { code: "EACCES" }));
     expect(resolveFatalExitCode(err)).toBe(FATAL_EXIT_CODE);
-    expect(resolveFatalExitCode(err)).toBe(78);
-  });
-
-  test("returns FATAL_EXIT_CODE (78) for duck-typed PermanentHeartbeatWriteError", () => {
-    const duckTyped = { name: "PermanentHeartbeatWriteError", message: "disk read-only" };
-    expect(resolveFatalExitCode(duckTyped)).toBe(FATAL_EXIT_CODE);
   });
 
   test("returns 1 for generic Error", () => {
@@ -37,8 +31,14 @@ describe("resolveFatalExitCode", () => {
   });
 });
 
+// Root ignores mode bits, so the unwritable-directory fixtures cannot fail there.
+const isRoot = process.getuid?.() === 0;
+// Below bun's 5s default test timeout, so a daemon that loops instead of exiting
+// is killed and cleaned up rather than orphaned.
+const KILL_AFTER_MS = 4000;
+
 describe("main entrypoint process exit", () => {
-  const rootDir = join(__dirname, "..");
+  const rootDir = join(import.meta.dir, "..");
 
   interface Fixture {
     root: string;
@@ -48,15 +48,17 @@ describe("main entrypoint process exit", () => {
     cleanup: () => void;
   }
 
-  const createFixture = (): Fixture => {
+  const createFixture = ({ precreateRunState = true } = {}): Fixture => {
     const root = mkdtempSync(join(tmpdir(), "ceo-sched-test-"));
     const home = join(root, "home");
     const vault = join(root, "vault");
     const schedulerdDir = join(home, ".ceo", "schedulerd");
 
-    mkdirSync(join(home, ".ceo"), { recursive: true });
-    mkdirSync(runningDir(home), { recursive: true });
-    mkdirSync(doneDir(home), { recursive: true });
+    mkdirSync(schedulerdDir, { recursive: true });
+    if (precreateRunState) {
+      mkdirSync(runningDir(home), { recursive: true });
+      mkdirSync(doneDir(home), { recursive: true });
+    }
     mkdirSync(join(vault, "CEO"), { recursive: true });
 
     // Minimal valid configs
@@ -80,34 +82,47 @@ describe("main entrypoint process exit", () => {
     };
   };
 
-  test("exits with FATAL_EXIT_CODE (78) when heartbeat path is unwritable", async () => {
+  const runDaemon = async (fix: Fixture) => {
+    const proc = Bun.spawn(["bun", "run", "src/main.ts"], {
+      cwd: rootDir,
+      env: {
+        ...process.env,
+        HOME: fix.home,
+        CEO_VAULT: fix.vault,
+        CEO_HOSTNAME: "testhost",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const killTimeout = setTimeout(() => proc.kill(), KILL_AFTER_MS);
+    const exitCode = await proc.exited;
+    clearTimeout(killTimeout);
+    return { exitCode, stderr: await new Response(proc.stderr).text() };
+  };
+
+  test.skipIf(isRoot)("exits with FATAL_EXIT_CODE (78) when heartbeat path is unwritable", async () => {
+    // The run-state directories survive from an earlier healthy run, so the
+    // heartbeat write is the first write that fails.
     const fix = createFixture();
     try {
-      // Make schedulerd directory non-writable so writing heartbeat.json (and temp file) fails with EACCES.
-      // running and done directories are pre-created, so mkdirSync succeeds.
       chmodSync(fix.schedulerdDir, 0o555);
-
-      const proc = Bun.spawn(["bun", "run", "src/main.ts"], {
-        cwd: rootDir,
-        env: {
-          ...process.env,
-          HOME: fix.home,
-          CEO_VAULT: fix.vault,
-          CEO_HOSTNAME: "testhost",
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-
-      const killTimeout = setTimeout(() => proc.kill(), 10000);
-      const exitCode = await proc.exited;
-      clearTimeout(killTimeout);
-
-      const stderr = await new Response(proc.stderr).text();
+      const { exitCode, stderr } = await runDaemon(fix);
       expect(exitCode).toBe(FATAL_EXIT_CODE);
-      expect(exitCode).toBe(78);
       expect(stderr).toContain("ceo-schedulerd: fatal:");
       expect(stderr).toContain("permanent local heartbeat-write failure");
+    } finally {
+      fix.cleanup();
+    }
+  });
+
+  test.skipIf(isRoot)("exits with FATAL_EXIT_CODE (78) on a fresh host whose schedulerd dir is unwritable", async () => {
+    // No run-state directories yet, so the startup mkdir is the first write that fails.
+    const fix = createFixture({ precreateRunState: false });
+    try {
+      chmodSync(fix.schedulerdDir, 0o555);
+      const { exitCode, stderr } = await runDaemon(fix);
+      expect(exitCode).toBe(FATAL_EXIT_CODE);
+      expect(stderr).toContain("run-state");
     } finally {
       fix.cleanup();
     }
@@ -125,7 +140,7 @@ describe("main entrypoint process exit", () => {
       stderr: "pipe",
     });
 
-    const killTimeout = setTimeout(() => proc.kill(), 10000);
+    const killTimeout = setTimeout(() => proc.kill(), KILL_AFTER_MS);
     const exitCode = await proc.exited;
     clearTimeout(killTimeout);
 
