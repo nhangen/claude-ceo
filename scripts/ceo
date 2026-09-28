@@ -2268,14 +2268,19 @@ _playbook_apply_schedule_overrides() {
 #   any stray ceo-cron.sh / `# CEO Agent` lines) from the user's crontab and
 #   reinstalls the remainder. The native install path is retired (D1) — this
 #   removal capability survives for the migration (F3) that purges leftover
-#   blocks from hosts that ran an older CEO. Returns the scheduler's rc; a clean
-#   crontab with no CEO block is a no-op success.
+#   blocks from hosts that ran an older CEO. Reads and writes
+#   ${CEO_CRONTAB_BIN:-crontab} directly whatever the scheduler backend, since a
+#   leftover block outlives the backend switch. Returns crontab's non-zero rc on
+#   a write failure; a clean crontab with no CEO block is a no-op success.
 _remove_crontab_block() {
   local marker_start="# CEO Agent START"
   local marker_end="# CEO Agent END"
 
+  local crontab_bin="${CEO_CRONTAB_BIN:-crontab}"
+  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
+
   local existing
-  existing=$(ceo_scheduler_list 2>/dev/null || true)
+  existing=$("$crontab_bin" -l 2>/dev/null || true)
 
   # Strip the wrapped block, then any stray CEO-installed lines that escaped it.
   # A CEO cron line always carries the trailing `# ceo:<name>` marker that
@@ -2291,7 +2296,19 @@ _remove_crontab_block() {
     return 0
   fi
 
-  ceo_scheduler_install "$cleaned"
+  local err rc=0
+  if [ -n "$cleaned" ]; then
+    err=$(printf '%s\n' "$cleaned" | "$crontab_bin" - 2>&1) || rc=$?
+  else
+    err=$(printf '' | "$crontab_bin" - 2>&1) || rc=$?
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    echo "ERROR: crontab removal failed (rc=$rc): $err" >&2
+    return "$rc"
+  fi
+
+  return 0
 }
 
 # Validate a 5-field cron expression. Lightweight syntax check — verifies
