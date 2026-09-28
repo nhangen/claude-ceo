@@ -808,14 +808,14 @@ test_doctor_stignore_clean_when_live_file_matches_repo() {
 test_doctor_check_discord_log_writable_unit() {
   # 1. Existing writable file
   touch "$TEST_HOME/w.log"
-  _doctor_check_discord_log_writable "$TEST_HOME/w.log"
-  assert_eq "$?" "0" "existing writable file must return 0"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  local rc_w=0
+  _doctor_check_discord_log_writable "$TEST_HOME/w.log" || rc_w=$?
+  assert_eq "$rc_w" "0" "existing writable file must return 0"
 
   # 2. Non-existent file in writable directory
-  _doctor_check_discord_log_writable "$TEST_HOME/nonexistent.log"
-  assert_eq "$?" "0" "non-existent file in writable dir must return 0"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  local rc_new=0
+  _doctor_check_discord_log_writable "$TEST_HOME/nonexistent.log" || rc_new=$?
+  assert_eq "$rc_new" "0" "non-existent file in writable dir must return 0"
 
   # 3. Existing read-only file (skip when running as root)
   if [ "$(id -u)" != "0" ]; then
@@ -824,7 +824,6 @@ test_doctor_check_discord_log_writable_unit() {
     local rc=0
     _doctor_check_discord_log_writable "$TEST_HOME/ro.log" || rc=$?
     assert_eq "$rc" "1" "read-only file must return 1"
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
   fi
 
   # 4. Directory passed as log file
@@ -832,26 +831,22 @@ test_doctor_check_discord_log_writable_unit() {
   local rc_dir=0
   _doctor_check_discord_log_writable "$TEST_HOME/dir-log" || rc_dir=$?
   assert_eq "$rc_dir" "1" "directory passed as log file must return 1"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 
   # 5. Trailing slash path
   local rc_slash=0
   _doctor_check_discord_log_writable "$TEST_HOME/trailing/" || rc_slash=$?
   assert_eq "$rc_slash" "1" "path with trailing slash must return 1"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 
   # 6. Broken symlink
   ln -s "$TEST_HOME/broken-target" "$TEST_HOME/broken-link"
   local rc_link=0
   _doctor_check_discord_log_writable "$TEST_HOME/broken-link" || rc_link=$?
   assert_eq "$rc_link" "1" "broken symlink must return 1"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 
   # 7. Non-existent parent directory
   local rc_nodir=0
   _doctor_check_discord_log_writable "$TEST_HOME/no-such-dir/file.log" || rc_nodir=$?
   assert_eq "$rc_nodir" "1" "non-existent parent directory must return 1"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_reports_discord_log_writable_clean() {
@@ -859,13 +854,11 @@ test_doctor_reports_discord_log_writable_clean() {
   output=$("$CEO_BIN" doctor 2>&1 || true)
   assert_contains "$output" "discord-report debug log writable ($CEO_DISCORD_REPORT_DEBUG_LOG)" \
     "doctor must report discord-report debug log writable when path is appendable"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_flags_unwritable_discord_log() {
   if [ "$(id -u)" = "0" ]; then
     assert_eq root root "perms test skipped as root"
-    ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
     return
   fi
   local ro_log="$TEST_HOME/unwritable-debug.log"
@@ -879,7 +872,6 @@ test_doctor_flags_unwritable_discord_log() {
     printf '  FAIL [%s] doctor must return non-zero on unwritable discord debug log (got rc=0)\n' "$CURRENT_TEST"
     _record_assertion_fail
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 test_doctor_reports_drift_on_stdout_without_writing_or_deleting_alert_file() {
