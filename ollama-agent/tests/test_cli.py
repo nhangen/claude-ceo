@@ -784,6 +784,7 @@ def test_cli_writes_the_reason_to_a_real_ledger(tmp_path, monkeypatch, capsys):
     assert row["completed"] is False
     assert row["verified"] is False
     assert row["reason"] == "verify-failed"
+    assert row["error_class"] is None
 
 
 def test_cli_logs_prompt_size_and_num_ctx(tmp_path, monkeypatch, capsys):
@@ -905,6 +906,7 @@ def test_cli_surfaces_unparseable_json_error_and_records_crash(
     row = json.loads(ledger.read_text().strip())
     assert row["completed"] is False
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["verified"] is None
     assert row["verify_gated"] is False
     assert row["ollama_input_tokens"] == 45
@@ -935,6 +937,7 @@ def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_pat
     assert row["completed"] is False
     assert row["verified"] is None
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["ollama_input_tokens"] == 50
     assert row["ollama_output_tokens"] == 15
     # 2 turns carrying 1 turn's tokens is the intended reading: on a crash row
@@ -966,6 +969,7 @@ def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, cap
     assert row["completed"] is False
     assert row["verified"] is None
     assert row["reason"] == "killed"
+    assert row["error_class"] == "KeyboardInterrupt"
     assert row["ollama_input_tokens"] == 30
     assert row["ollama_output_tokens"] == 10
     assert row["turns"] == 2
@@ -987,6 +991,7 @@ def test_cli_crashed_run_immediate_records_zero_tokens(tmp_path, monkeypatch, ca
     assert row["verify_gated"] is False
     assert row["verified"] is None
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["ollama_input_tokens"] == 0
     assert row["ollama_output_tokens"] == 0
 
@@ -1017,6 +1022,7 @@ def test_cli_crashed_run_records_a_row_for_a_non_runtimeerror(tmp_path, monkeypa
     assert "agent failed: OSError: connection reset by peer" in capsys.readouterr().err
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["error_class"] == "OSError"
     assert row["ollama_input_tokens"] == 11
     assert row["ollama_output_tokens"] == 22
 
@@ -1043,6 +1049,7 @@ def test_cli_crashed_run_after_a_red_gate_records_verified_false(tmp_path, monke
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["verify_gated"] is True
     assert row["verify_cmd"] == "false"
     assert row["verified"] is False
@@ -1066,6 +1073,7 @@ def test_cli_crashed_run_with_gate_before_eval_records_verify_gated_true_verifie
     assert rc == 1
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "error"
+    assert row["error_class"] == "RuntimeError"
     assert row["verify_gated"] is True
     assert row["verify_cmd"] == "pytest"
     assert row["verified"] is None
@@ -1127,6 +1135,7 @@ def test_cli_sigterm_writes_a_killed_ledger_row(tmp_path):
     assert rc == 130
     row = json.loads(ledger.read_text().strip())
     assert row["reason"] == "killed"
+    assert row["error_class"] == "_Terminated"
     assert row["completed"] is False
     assert row["ollama_input_tokens"] == 77
     assert row["ollama_output_tokens"] == 33
