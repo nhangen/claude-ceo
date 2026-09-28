@@ -30,7 +30,6 @@ PB
   assert_contains "$prompt" "PR data (recently merged):" "default-all: merged-PR line present (#163)"
   assert_contains "$prompt" "Briefing-specific training" "default-all: briefings_training block present"
   assert_contains "$prompt" "Active Domains priority order" "default-all: active_domains block present"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -55,23 +54,10 @@ PB
 
   local prompt
   prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
-  if [[ "$prompt" == *"Pending approvals:"* ]]; then
-    printf '  FAIL [%s] inputs:[] should suppress pending_count line\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [[ "$prompt" == *"Briefing-specific training"* ]]; then
-    printf '  FAIL [%s] inputs:[] should suppress briefings_training block\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [[ "$prompt" == *"PRs requesting review:"* ]]; then
-    printf '  FAIL [%s] inputs:[] should suppress pr_data lines\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  if [[ "$prompt" == *"PR data (recently merged):"* ]]; then
-    printf '  FAIL [%s] inputs:[] should suppress the merged-PR line (#163)\n' "$CURRENT_TEST"
-    _record_assertion_fail
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$prompt" "Pending approvals:" "inputs:[] should suppress pending_count line"
+  assert_not_contains "$prompt" "Briefing-specific training" "inputs:[] should suppress briefings_training block"
+  assert_not_contains "$prompt" "PRs requesting review:" "inputs:[] should suppress pr_data lines"
+  assert_not_contains "$prompt" "PR data (recently merged):" "inputs:[] should suppress the merged-PR line (#163)"
 }
 
 
@@ -97,7 +83,6 @@ PB
   local prompt
   prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
   assert_contains "$prompt" "PR data (recently merged):" "PLAN prompt must carry merged-PR data — reconcile classifies in PLAN (#163)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -137,7 +122,6 @@ PB
     printf '  FAIL [%s] subset: active_domains must be absent\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -162,7 +146,6 @@ PB
   out=$(bash "$CEO_CLI" playbook scan 2>&1)
   assert_contains "$out" "unknown key" "scan must warn on typo'd input key"
   assert_contains "$out" "bogus_key" "warning must name the offending key"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -185,11 +168,7 @@ PB
 
   local out
   out=$(bash "$CEO_CLI" playbook scan 2>&1)
-  if echo "$out" | grep -q "unknown key.*yesterday_merged\|unknown key.*ledger_recent"; then
-    printf '  FAIL [%s] scan must NOT warn on valid morning-flow keys (yesterday_merged, ledger_recent)\n' "$CURRENT_TEST"
-    FAILS=$((FAILS + 1))
-  fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
+  assert_not_contains "$out" "unknown key" "scan must NOT warn on valid morning-flow keys (yesterday_merged, ledger_recent)"
 }
 
 
@@ -219,7 +198,6 @@ PB
   prompt=$(cat "$HOME/claude-stdin.txt" 2>/dev/null)
   assert_contains "$prompt" "Briefing-specific training" "non-array inputs must default to all (briefings present)"
   assert_contains "$prompt" "PRs requesting review:" "non-array inputs must default to all (pr_data present)"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -249,7 +227,6 @@ PB
   file_field=$(jq -r '.playbooks[] | select(.name=="_test-repo-pb") | .file' "$REGISTRY_FILE")
   assert_eq "${file_field:0:1}" "/" "repo playbook .file must be absolute"
   assert_contains "$file_field" "_test-repo-pb.md" "repo playbook .file must point at repo path"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -291,7 +268,6 @@ PB
   status=$(jq -r '.playbooks[] | select(.name=="_test-shadow") | .status' "$REGISTRY_FILE")
   assert_eq "$desc" "Vault override" "vault entry must win on collision"
   assert_eq "$status" "disabled" "vault status must override repo status"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -330,7 +306,6 @@ PB
     printf '  FAIL [%s] repo-internal dup must NOT log SHADOW (no vault override exists)\n' "$CURRENT_TEST"
     FAILS=$((FAILS + 1))
   fi
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -368,7 +343,6 @@ STUB
   local ollama_invoked
   ollama_invoked=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_contains "$ollama_invoked" "glm4" "ollama must be invoked with default model during fallback"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -407,7 +381,6 @@ STUB
   local model
   model=$(cat "$HOME/ollama-invoked-model.txt" 2>/dev/null || echo "")
   assert_eq "$model" "glm4:latest" "fallback must use the runner-default ollama model, not the Claude-tier frontmatter name"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -456,7 +429,6 @@ STUB
   local skip_log
   skip_log=$(_skips_log)
   assert_contains "$skip_log" "AUTH FAILURE" "cron-skips.log must record the auth failure"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -489,7 +461,6 @@ PB
   local report
   report=$(cat "$CEO_DIR/reports/$(date +%Y-%m-%d).md" 2>/dev/null || echo "")
   assert_contains "$report" "skipped: gather-empty" "report must show skipped status"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -531,7 +502,6 @@ EOF
   local content
   content=$(cat "$expected_out" 2>/dev/null || echo "")
   assert_contains "$content" "test-skill output" "runner:skill must capture skill stdout"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -557,7 +527,6 @@ PB
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "Skill script not found" "skips log must record missing skill script"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -585,7 +554,6 @@ PB
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "missing credential(s) MISSING_TEST_VAR" "skips log must record missing credential"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -618,7 +586,6 @@ EOF
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "Skill produced no output file" "skips log must record missing output file failure"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -657,7 +624,6 @@ EOF
   local skips_log
   skips_log=$(_skips_log)
   assert_contains "$skips_log" "Skill produced empty output" "skips log must record empty output failure"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -696,7 +662,6 @@ EOF
   local expected_out
   expected_out="$CEO_DIR/reports/workload/$(date +%Y-%m-%d)-$(hostname -s).md"
   assert_file_exists "$expected_out" "workload-report must produce correct interpolated file"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 
@@ -732,7 +697,6 @@ exit 0
 STUB
   chmod +x "$TEST_HOME/.bun/bin/yq"
   rm -f "$CEO_DIR/playbooks/no-yq-test.md"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 3))
 }
 
 run_tests

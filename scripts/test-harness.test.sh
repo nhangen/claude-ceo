@@ -37,7 +37,10 @@ _run_child() {
   # env -u: TEST_FILTER is meant to select arms in *this* suite, but it is exported
   # into the child too, where it matches none of the child's own test names and
   # every case reports "no tests discovered". That made the filter unusable here.
-  CHILD_OUT=$(env -u TEST_FILTER bash "$TMP/child.sh" 2>&1)
+  # TEST_SKIPS_TMP is exported the same way and the child's run_tests does not
+  # set it before setup, so a child's setup skip would land in this suite's tally.
+  # TEST_FAILS_TMP is stripped defensively, for child code outside run_tests.
+  CHILD_OUT=$(env -u TEST_FILTER -u TEST_SKIPS_TMP -u TEST_FAILS_TMP bash "$TMP/child.sh" 2>&1)
   CHILD_RC=$?
 }
 
@@ -544,6 +547,76 @@ test_x() { assert_eq a a "ok"; FAILS=$((FAILS + 1)); }'
   assert_not_contains "$CHILD_OUT" "NO ASSERTIONS RAN" "and the assertion was seen"
 }
 
+# --- #502: skip_test helper and skipped tests accounting in summary ---
+
+test_502_skip_test_counts_as_assertion_and_prints_skip_marker() {
+  _run_child '
+test_x() { skip_test "no tool available on this host"; }'
+  assert_eq "$CHILD_RC" "0" "a skipped test exits 0"
+  assert_contains "$CHILD_OUT" "  SKIP [test_x] no tool available on this host" \
+    "prints SKIP with test name and reason"
+  assert_not_contains "$CHILD_OUT" "NO ASSERTIONS RAN" \
+    "skip_test counts as an assertion so the no-assertions guard stays quiet"
+  assert_contains "$CHILD_OUT" "All tests passed. (1 tests, 1 skipped)" \
+    "tallied into summary line"
+}
+
+test_502_skip_test_tallies_across_passing_and_skipped_tests() {
+  _run_child '
+test_a() { assert_eq a a "ok"; }
+test_b() { skip_test "skip b"; return 0; }
+test_c() { assert_eq c c "ok"; }
+test_d() { skip_test "skip d"; return 0; }'
+  assert_eq "$CHILD_RC" "0" "mixed passes and skips exit 0"
+  assert_contains "$CHILD_OUT" "All tests passed. (4 tests, 2 skipped)" \
+    "summary line reports test count and skip count"
+}
+
+test_502_two_skips_in_one_test_count_as_one_skipped_test() {
+  _run_child '
+test_x() { skip_test "first"; skip_test "second"; return 0; }'
+  assert_eq "$CHILD_RC" "0" "a doubly skipped test exits 0"
+  assert_contains "$CHILD_OUT" "All tests passed. (1 tests, 1 skipped)" \
+    "skips are counted per test, so M never exceeds N"
+}
+
+test_502_skip_test_in_setup_is_not_reported_as_an_abort() {
+  _run_child '
+setup() { skip_test "env missing"; }
+test_x() { assert_eq a a "ok"; }'
+  assert_eq "$CHILD_RC" "0" "a skip in setup does not fail the run"
+  assert_not_contains "$CHILD_OUT" "aborted or exited with non-zero code" \
+    "skip_test returns 0 outside a test body"
+}
+
+test_502_skip_test_without_a_reason_fails() {
+  _run_child '
+test_x() { skip_test; return 0; }'
+  assert_eq "$CHILD_RC" "1" "a reasonless skip fails the run"
+  assert_contains "$CHILD_OUT" "skip_test called without a reason" "and says why"
+  assert_not_contains "$CHILD_OUT" "skipped)" "and is not tallied as a skip"
+}
+
+test_502_suite_with_zero_skips_summary_line_has_no_skipped_clause() {
+  _run_child '
+test_a() { assert_eq a a "ok"; }'
+  assert_eq "$CHILD_RC" "0" "clean pass exits 0"
+  assert_contains "$CHILD_OUT" "All tests passed. (1 tests)" \
+    "summary line does not mention skipped when skips == 0"
+  assert_not_contains "$CHILD_OUT" "skipped" \
+    "the word skipped does not appear when zero tests skipped"
+}
+
+test_502_failing_suite_with_skips_reports_failed() {
+  _run_child '
+test_a() { skip_test "skip a"; }
+test_b() { assert_eq a b "mismatch"; }'
+  assert_eq "$CHILD_RC" "1" "suite with failure exits 1"
+  assert_contains "$CHILD_OUT" "FAILED: 1" "reports failure count"
+  assert_not_contains "$CHILD_OUT" "All tests passed" \
+    "failed run must not claim all tests passed"
+}
+
 # --- #285: zero discovered tests must not report success ---
 
 test_285_zero_discovered_tests_is_a_failure() {
@@ -551,6 +624,39 @@ test_285_zero_discovered_tests_is_a_failure() {
   assert_eq "$CHILD_RC" "1" "a suite with no test_* functions must fail, not pass"
   assert_contains "$CHILD_OUT" "no tests discovered" "and say why"
   assert_not_contains "$CHILD_OUT" "All tests passed" "never reported as success"
+}
+
+# --- #513: sibling test suites must not carry manual ASSERTION_COUNT bumps ---
+
+# The common write spellings of ASSERTION_COUNT: `+ N`, `+N`, `++`, `+=`, `let`.
+# A `$ASSERTION_COUNT` read is excluded by the `$` in the leading class, and an
+# `==` comparison by requiring a non-`=` after the assignment `=`.
+_513_bump_scan() {
+  grep -Hn -E '(^|[^_A-Za-z0-9$])ASSERTION_COUNT[[:space:]]*(=([^=]|$)|\+=|-=|\+\+|--)|(\+\+|--)[[:space:]]*ASSERTION_COUNT' "$@" \
+    | grep -v '/test-harness.test.sh:' || true
+}
+
+test_513_no_test_suite_carries_manual_assertion_count_bumps() {
+  local matches
+  matches=$(_513_bump_scan "$SCRIPT_DIR"/*.test.sh "$SCRIPT_DIR"/../hooks/*.test.sh \
+    "$SCRIPT_DIR"/ceo-cron-test-common.sh)
+  assert_eq "$matches" "" "no sibling test suite may carry manual ASSERTION_COUNT bumps"
+}
+
+test_513_bump_scan_flags_every_write_spelling_and_no_read() {
+  cat > "$TMP/fixture.test.sh" <<'FX'
+ASSERTION_COUNT=$((ASSERTION_COUNT + 2))
+ASSERTION_COUNT=$((ASSERTION_COUNT+1))
+((ASSERTION_COUNT++))
+((ASSERTION_COUNT += 1))
+let ASSERTION_COUNT++
+echo "$ASSERTION_COUNT assertions"
+(( ASSERTION_COUNT == 0 )) && echo none
+FX
+  local hits
+  hits=$(_513_bump_scan "$TMP/fixture.test.sh")
+  assert_eq "$(printf '%s\n' "$hits" | cut -d: -f2 | tr '\n' ' ')" "1 2 3 4 5 " \
+    "the guard must flag exactly the five write lines, not the reads on 6 and 7"
 }
 
 run_tests

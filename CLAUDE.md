@@ -13,8 +13,9 @@ use the **`ceo` CLI** (the front door), not `cronbird` directly:
   health + artifact checks), `ceo playbook info <name>`.
 - **Create / change:** edit the playbook `.md` (`docs/playbooks/<name>.md`, or the
   synced `$CEO_VAULT/CEO/playbooks/<name>.md`), then `ceo playbook scan`. Scan is
-  host-local and safe on any host: it writes only `~/.ceo/registry.json` and installs
-  nothing. A non-owner host enables only each-scope telemetry playbooks (see the
+  host-local: it writes `~/.ceo/registry.json` and the synced
+  `CEO/alerts/playbook-drift.md` (the sole code path, #504), and installs nothing. With
+  `primary_host` set it refuses on other hosts; unset, every host writes that alert (#557). A non-owner host enables only each-scope telemetry playbooks (see the
   `ceo-swarm-host-scoping` rule in `.claude/rules/`).
 - **Enable / disable per host:** `ceo playbook enable|disable <name>`.
 
