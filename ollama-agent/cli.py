@@ -118,8 +118,8 @@ def _crash_record(reason, run_id, usage_tracker, toolbox, error_class=None):
         # From the tracker, not a hardcoded None, so a gated run whose check went
         # red before it crashed records False rather than reading as ungated.
         # With `verify_gated`, (verify_gated=True, verified=None) distinguishes a run
-        # that died before the gate first ran from one configured with no gate at all
-        # (verify_gated=False). The name is deliberately not `gated`: in this CLI that
+        # that died before the gate completed (never ran, or last timed out) from one
+        # configured with no gate at all (verify_gated=False). The name is deliberately not `gated`: in this CLI that
         # word means the delegation gate behind --ungated, which is unrelated.
         # True is unreachable here: a green gate breaks and returns normally.
         "verified": usage_tracker.get("verified"),
@@ -436,10 +436,12 @@ def main(argv=None):
             print(f"warning: {w}", file=sys.stderr)
         # verify_gated rides alongside verified for the same reason the ledger
         # carries both: verified=None alone cannot say whether a gate was
-        # configured and never reached, or never configured at all.
+        # configured and never reached, or never configured at all. reason
+        # separates a gate that timed out (verify-error) from one never reached.
         print(f"completed={rec['completed']} verified={rec['verified']} "
               f"verify_gated={rec['verify_gated']} turns={rec['turns']} "
-              f"calls={len(rec['calls'])} unknown={rec['unknown_calls']}")
+              f"calls={len(rec['calls'])} unknown={rec['unknown_calls']} "
+              f"reason={rec.get('reason')}")
         print(f"ollama tokens: in={rec['ollama_input_tokens']} out={rec['ollama_output_tokens']}")
         print("--- final message ---")
         print(final.get("content", "(no content)"))

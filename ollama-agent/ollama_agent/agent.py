@@ -79,7 +79,8 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     which are reserved for the model's own tool invocations. A non-zero exit
     feeds the failure back and the loop continues, so the run drives to a green
     gate rather than to the model's own say-so. `verified` is None when no gate
-    is configured, else the last check's pass/fail; the turn cap still bounds
+    is configured or the last check did not complete (a timeout, recorded as
+    `reason: verify-error`), else the last check's pass/fail; the turn cap still bounds
     the loop. An empty or whitespace-only string raises instead of running: ""
     is falsy so the gate would be dropped in silence and the row would read
     verify_gated=False, byte-identical to a deliberate ungated run, while "   "
@@ -99,8 +100,9 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     was configured), "turn-cap" (out of turns; if `verify_gated` is true the
     model never stopped, so the gate never ran — the two fields disambiguate,
     and this is NOT necessarily an ungated run),
-    "verify-failed" (out of turns, gate last observed red), "error" (crashed run),
-    or "killed" (interrupted run).
+    "verify-failed" (out of turns, gate last observed red),
+    "verify-error" (out of turns, gate last observed timing out or failing with returncode=None),
+    "error" (crashed run), or "killed" (interrupted run).
     """
     # cli.py refuses this earlier with a REFUSED line and exit 2, which is the
     # better operator message; keep that one. This is the library-caller backstop,
@@ -114,6 +116,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     completed = False
     verified = None
     verify_gated = bool(verify_cmd)
+    verify_error = False
     reason = None
     turns = 0
     ollama_input_tokens = 0
@@ -162,18 +165,38 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                 res = json.loads(toolbox.run_shell(verify_cmd))
                 if res.get("returncode") == 0:
                     verified = True
+                    verify_error = False
                     completed = True
                     reason = "ok"
                     _track(usage_tracker, "verified", True)
                     break
-                verified = False
-                _track(usage_tracker, "verified", False)
-                feedback = {"role": "user", "content": (
-                    "Verification command `%s` is not passing yet (returncode=%s). "
-                    "Fix the remaining failures and keep going — do not stop until "
-                    "it exits 0.\nstdout:\n%s\nstderr:\n%s" % (
-                        verify_cmd, res.get("returncode"),
-                        res.get("stdout", ""), res.get("stderr", "")))}
+                if res.get("returncode") is None:
+                    # Timeout or harness error: command did not complete cleanly (#487).
+                    verified = None
+                    verify_error = True
+                    _track(usage_tracker, "verified", None)
+                else:
+                    verified = False
+                    verify_error = False
+                    _track(usage_tracker, "verified", False)
+                err_detail = ("\nerror:\n%s" % res["error"]) if res.get("error") else ""
+                if verify_error:
+                    # A timeout is not evidence the code is wrong, but a change that
+                    # hangs the suite also lands here, so the model is told to find
+                    # out which before editing rather than that its code is fine.
+                    instruction = (
+                        "Verification command `%s` did not finish (returncode=None). "
+                        "Either the command is slow or your change makes it hang. "
+                        "Find out which, for example with a narrower check, before "
+                        "changing code to fix a failure you have not seen." % verify_cmd)
+                else:
+                    instruction = (
+                        "Verification command `%s` is not passing yet (returncode=%s). "
+                        "Fix the remaining failures and keep going — do not stop until "
+                        "it exits 0." % (verify_cmd, res.get("returncode")))
+                feedback = {"role": "user", "content": "%s%s\nstdout:\n%s\nstderr:\n%s" % (
+                    instruction, err_detail,
+                    res.get("stdout", ""), res.get("stderr", ""))}
                 transcript.append(feedback)
                 messages.append(feedback)
                 continue
@@ -197,11 +220,18 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
             messages.append(tool_msg)
     if reason is None:
         # Fell out of the while condition rather than breaking, so the cap is
-        # exhausted. `verified is False` means a gate was configured and was
-        # red the last time it ran — which may be several turns back, if the
-        # model kept calling tools afterwards and never stopped again. None
-        # means no gate was configured, so nothing failed: it ran out of turns.
-        reason = "verify-failed" if verified is False else "turn-cap"
+        # exhausted. `verify_error` means the gate last ran and timed out or had
+        # returncode=None (#487). `verified is False` means a gate was configured
+        # and returned non-zero the last time it ran — which may be several turns
+        # back, if the model kept calling tools afterwards and never stopped again.
+        # None with verify_error=False means no gate was configured, or the gate
+        # never ran before the turn cap: it ran out of turns.
+        if verify_error:
+            reason = "verify-error"
+        elif verified is False:
+            reason = "verify-failed"
+        else:
+            reason = "turn-cap"
     return {
         "completed": completed,
         "verified": verified,
