@@ -419,6 +419,10 @@ def main(argv=None):
         print(f"served-by: {what} via {where} (requested {a.model})", file=sys.stderr)
 
     if exit_code != 0:
+        # A context overflow is often why the run crashed, and the success-path
+        # print below is never reached, so surface the warning here too (#489).
+        for w in rec.get("warnings") or []:
+            print(f"warning: {w}", file=sys.stderr)
         return exit_code
 
     if a.json:

@@ -956,8 +956,9 @@ def test_run_agent_returns_verify_gated_from_the_verify_cmd(tmp_path):
 
 def test_run_agent_resets_a_reused_usage_tracker_on_entry(tmp_path):
     # The docstring promises a reused tracker does not double-count and that a
-    # stale `verified` cannot leak forward. Without the entry reset both are false
-    # and nothing else in the suite notices.
+    # stale `verified` or run 1's overflow warnings cannot leak forward into run
+    # 2's crash row (#489). Without the entry reset all of these are false and
+    # nothing else in the suite notices.
     tracker = {}
     first = _script(({"role": "assistant", "content": "done"}, {"input": 4000, "output": 20}))
     rec1 = run_agent("task", "sys", first, ToolBox(cwd=tmp_path), TOOLS,

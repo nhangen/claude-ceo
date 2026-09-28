@@ -949,7 +949,7 @@ def test_cli_crashed_run_writes_error_ledger_row_with_accumulated_tokens(tmp_pat
 
 def test_cli_crashed_run_preserves_overflow_warnings(tmp_path, monkeypatch, capsys):
     # #489: A run that crashes after context overflow must preserve the warning
-    # in the crash ledger row.
+    # in the crash ledger row and show it on stderr.
     ledger = tmp_path / "runs.jsonl"
     monkeypatch.setenv("OLLAMA_AGENT_LEDGER", str(ledger))
 
@@ -974,6 +974,7 @@ def test_cli_crashed_run_preserves_overflow_warnings(tmp_path, monkeypatch, caps
     expected = ("turn 1: prompt used 3800 of 4096 context tokens (>=90%) -- "
                 "output may be truncated")
     assert row["warnings"] == [expected]
+    assert f"warning: {expected}" in capsys.readouterr().err
 
 
 def test_cli_interrupted_run_writes_killed_ledger_row(tmp_path, monkeypatch, capsys):
