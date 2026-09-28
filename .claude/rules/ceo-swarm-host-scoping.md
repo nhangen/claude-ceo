@@ -25,7 +25,9 @@ Two scopes decide where a playbook runs:
 ## The rule
 
 - **`ceo playbook scan` is host-local and safe to run on any host.** Post-D1 it
-  writes only `~/.ceo/registry.json`; it installs **no** launchd/cron, and it does
+  writes `~/.ceo/registry.json` and the synced `CEO/alerts/playbook-drift.md` (the
+  sole code path, #504; with `primary_host` set scan refuses on other hosts, and
+  unset every host writes that alert, #557); it installs **no** launchd/cron, and it does
   **not** write the synced `swarm.json` (that is `ceo swarm doctor` / the
   host/owner-assignment commands). The earlier "scan only on ML-1" prohibition is
   **retired** — both of its hazards (launchd spray, synced-`registry.json`

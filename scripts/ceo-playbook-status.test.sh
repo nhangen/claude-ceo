@@ -298,7 +298,7 @@ PB
   local scan_out scan_err
   scan_out=$(CEO_VAULT="$CEO_VAULT" bash -c "source '$SCRIPT_DIR/ceo-scan.sh'; printf '%b' \"\$ALERTS_FIRING\"" 2>"$TEST_HOME/scan.err")
   scan_err=$(cat "$TEST_HOME/scan.err" 2>/dev/null || echo "")
-  assert_not_contains "$scan_err" "corrupted" "morning scan must not report corrupted alert status on stderr"
+  assert_not_contains "$scan_err" "WARN: ceo-scan" "morning scan must not warn about the alert's status"
   assert_not_contains "$scan_out" "corrupted" "ALERTS_FIRING must not contain corrupted marker"
   assert_contains "$scan_out" "playbook-drift (host=" "ALERTS_FIRING must contain clean firing playbook-drift alert"
 }
@@ -423,9 +423,134 @@ PB
 
   bash "$CEO_CLI" playbook sync >/dev/null 2>&1
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
-  local exists="present"
-  [ ! -f "$alert_file" ] && exists="missing"
-  assert_eq "$exists" "missing" "scan must remove playbook-drift.md when trees are in sync"
+  local content; content=$(cat "$alert_file" 2>/dev/null || echo "")
+  # output-locations.md: an alert is overwritten with status: clear, not deleted.
+  assert_contains "$content" "status: clear" "scan must clear playbook-drift.md when drift resolves"
+  assert_contains "$content" "count: 0" "a cleared alert must carry count: 0"
+  local scan_out
+  scan_out=$(CEO_VAULT="$CEO_VAULT" bash -c "source '$SCRIPT_DIR/ceo-scan.sh'; printf '%b' \"\$ALERTS_FIRING\"" 2>/dev/null)
+  assert_not_contains "$scan_out" "playbook-drift" "a cleared alert must not surface in the morning scan"
+}
+
+test_scan_clears_drift_alert_despite_an_intentional_vault_only_playbook() {
+  # The alert is raised on shadowed drift, so it must clear on that condition,
+  # not on full tree equality: a vault-only playbook would pin it firing (#504).
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-shared.md" << 'PB'
+---
+name: p-shared
+description: repo version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  sed 's/repo version/differing vault version/' "$CEO_REPO_PLAYBOOK_DIR/p-shared.md" \
+    > "$CEO_DIR/playbooks/p-shared.md"
+  sed 's/p-shared/p-vault-only/; s/repo version/local only/' "$CEO_REPO_PLAYBOOK_DIR/p-shared.md" \
+    > "$CEO_DIR/playbooks/p-vault-only.md"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  assert_contains "$(cat "$alert_file" 2>/dev/null)" "status: firing" "precondition: shadowed drift fires"
+
+  cp "$CEO_REPO_PLAYBOOK_DIR/p-shared.md" "$CEO_DIR/playbooks/p-shared.md"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_contains "$(cat "$alert_file" 2>/dev/null)" "status: clear" \
+    "resolved shadowed drift must clear the alert even with a vault-only playbook present"
+}
+
+test_scan_fails_loudly_when_the_drift_alert_cannot_be_written() {
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-ro.md" << 'PB'
+---
+name: p-ro
+description: repo version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  sed 's/repo version/differing vault version/' "$CEO_REPO_PLAYBOOK_DIR/p-ro.md" \
+    > "$CEO_DIR/playbooks/p-ro.md"
+  mkdir -p "$CEO_DIR/alerts"
+  chmod 555 "$CEO_DIR/alerts"
+  local rc=0 err
+  err=$(bash "$CEO_CLI" playbook scan 2>&1 >/dev/null) || rc=$?
+  chmod 755 "$CEO_DIR/alerts"
+  assert_eq "$([ "$rc" != "0" ] && echo 1 || echo 0)" "1" "scan must exit non-zero when the alert cannot be written (rc=$rc)"
+  assert_contains "$err" "ERROR:" "and say why on stderr"
+}
+
+test_scan_without_a_repo_checkout_does_not_clear_a_firing_alert() {
+  # A host with no repo checkout cannot measure shadowed drift, so clearing
+  # there would wipe another host's firing alert.
+  mkdir -p "$CEO_DIR/alerts" "$TEST_HOME/inst"
+  printf -- '---\nstatus: firing\nsince: 2020-01-01T00:00:00Z\nlast_check: 2020-01-01T00:00:00Z\nhost: other\ncount: 1\n---\n' \
+    > "$CEO_DIR/alerts/playbook-drift.md"
+  cp -R "$SCRIPT_DIR" "$TEST_HOME/inst/scripts"
+  ( unset CEO_REPO_PLAYBOOK_DIR; bash "$TEST_HOME/inst/scripts/ceo" playbook scan >/dev/null 2>&1 ) || true
+  assert_contains "$(cat "$CEO_DIR/alerts/playbook-drift.md")" "status: firing" \
+    "scan with no repo playbooks dir must leave a firing alert firing"
+}
+
+test_scan_resets_since_on_each_drift_alert_transition() {
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-tr.md" << 'PB'
+---
+name: p-tr
+description: repo version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  sed 's/repo version/differing vault version/' "$CEO_REPO_PLAYBOOK_DIR/p-tr.md" \
+    > "$CEO_DIR/playbooks/p-tr.md"
+  local alert_file="$CEO_DIR/alerts/playbook-drift.md"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  sed -i.bak 's/^since:.*/since: 2020-01-01T00:00:00Z/' "$alert_file"; rm -f "$alert_file.bak"
+
+  cp "$CEO_REPO_PLAYBOOK_DIR/p-tr.md" "$CEO_DIR/playbooks/p-tr.md"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_contains "$(cat "$alert_file")" "status: clear" "precondition: resolved drift clears"
+  assert_not_contains "$(cat "$alert_file")" "since: 2020-01-01" "firing to clear must restart since"
+  sed -i.bak 's/^since:.*/since: 2020-01-01T00:00:00Z/' "$alert_file"; rm -f "$alert_file.bak"
+
+  sed 's/repo version/differing vault version/' "$CEO_REPO_PLAYBOOK_DIR/p-tr.md" \
+    > "$CEO_DIR/playbooks/p-tr.md"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_contains "$(cat "$alert_file")" "status: firing" "precondition: new drift fires"
+  assert_not_contains "$(cat "$alert_file")" "since: 2020-01-01" "clear to firing must restart since"
+}
+
+test_scan_dry_run_and_no_drift_write_no_alert() {
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  assert_eq "$([ -e "$CEO_DIR/alerts/playbook-drift.md" ] && echo present || echo absent)" "absent" \
+    "no drift and no prior alert must not create a clear alert"
+  cat > "$CEO_REPO_PLAYBOOK_DIR/p-dry.md" << 'PB'
+---
+name: p-dry
+description: repo version
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  sed 's/repo version/differing vault version/' "$CEO_REPO_PLAYBOOK_DIR/p-dry.md" \
+    > "$CEO_DIR/playbooks/p-dry.md"
+  bash "$CEO_CLI" playbook scan --dry-run >/dev/null 2>&1 || true
+  assert_eq "$([ -e "$CEO_DIR/alerts/playbook-drift.md" ] && echo present || echo absent)" "absent" \
+    "a dry run must not write the alert"
 }
 
 run_tests
