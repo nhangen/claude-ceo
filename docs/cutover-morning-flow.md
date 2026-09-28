@@ -9,9 +9,11 @@ actions that must run on ML-1.
 
 - Branch `nh/feat/ceo-morning-flow` is merged to master.
 - You are on ML-1 (check: `hostname` must be ML-1).
-- Per `ceo-scan-only-on-ml1`: `ceo playbook scan` installs host-local launchd
-  agents and rewrites the synced `CEO/registry.json`. Never run it on the
-  MacBook or any other host.
+- Per `.claude/rules/ceo-swarm-host-scoping.md`: `morning` is single-scope and owned
+  by ML-1 (the `swarm.json` owners map), so it dispatches only there. `ceo playbook
+  scan` installs no launchd/cron; it writes `~/.ceo/registry.json` and the synced
+  `CEO/alerts/playbook-drift.md`, and refuses on any host other than `primary_host`
+  when that is set in `CEO/settings.json`.
 
 ## Step 1: Run `ceo playbook scan` on ML-1
 
@@ -19,8 +21,9 @@ actions that must run on ML-1.
 ceo playbook scan
 ```
 
-This regenerates `~/.ceo/registry.json` from frontmatter and registers the
-`morning` schedule via ceo-schedulerd. The four legacy playbooks
+This regenerates `~/.ceo/registry.json` from frontmatter; ceo-schedulerd reads
+the registry and schedules `morning` (confirm the daemon is alive with
+`ceo doctor`). The four legacy playbooks
 (`morning-scan`, `morning-brief`, `pending-drip`, `pr-triage`) have
 `status: disabled` in their frontmatter and will be de-scheduled automatically.
 

@@ -6,11 +6,16 @@ validated at parse time AND gated at dispatch, and an unknown value is rejected,
 never defaulted (enum-config-typo-fallback: a `runner: scrpt` typo must fail
 loudly, not silently fall through to a default path). A high-stakes task can
 never be delegated to a local model regardless of what the entry says.
+Every name in a `tools` allowlist is checked the same way: an unknown name is
+rejected at parse time, not dropped at dispatch. An empty list is the registry's
+spelling of a zero-tool run (the CLI's --no-tools), which cron cannot pass.
 """
 import json
 import math
 from pathlib import Path
 import sys
+
+from .tools import TOOLS
 
 RUNNERS = {"ollama"}                       # who may execute a registered task
 # Ordered low→high stakes; the order is used verbatim in the "known: …" diagnostic.
@@ -19,6 +24,7 @@ TIERS = ["deterministic", "low-stakes-write", "high-stakes"]
 # (billing, credentials, multi-tenant writes, anything irreversible) is never
 # delegated — it stays with a human or a trusted (non-local) agent.
 DELEGABLE_TIERS = {"deterministic", "low-stakes-write"}
+BUILTIN_TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
 
 
 class RegistryError(ValueError):
@@ -105,20 +111,55 @@ def _validate(name, entry, where=""):
     if entry["tier"] not in TIERS:
         raise RegistryError(
             f"task {name!r}: unknown tier {entry['tier']!r} (known: {TIERS})")
+    if "mcp" in entry and entry["mcp"] is not None:
+        mcp = entry["mcp"]
+        if not isinstance(mcp, str) or not mcp.strip():
+            raise RegistryError(f"task {name!r}: mcp must be a non-empty string, got {mcp!r}")
+    if entry.get("skills") is not None and not isinstance(entry["skills"], bool):
+        raise RegistryError(f"task {name!r}: skills must be true or false, got {entry['skills']!r}")
     tools = entry.get("tools", "*")
     if tools != "*" and not isinstance(tools, list):
         raise RegistryError(f"task {name!r}: tools must be \"*\" or a list, got {type(tools).__name__}")
-    if isinstance(tools, list) and "write_file" in tools and "edit_file" not in tools:
-        # Advisory, not a refusal: the task still runs correctly without edit_file,
-        # it just rewrites whole files where a surgical edit would do. Printed the
-        # way every other soft signal in the bridge is (cli.py's stale-score and
-        # unknown-tool warnings) rather than via warnings.warn, which an external
-        # PYTHONWARNINGS can silence and which fires only once per process.
-        print(
-            f"warning: {where}task {name!r}: 'tools' contains 'write_file' without "
-            "'edit_file' — allow edit_file so surgical edits avoid full file rewrites",
-            file=sys.stderr,
-        )
+    if isinstance(tools, list):
+        known = set(BUILTIN_TOOL_NAMES)
+        if entry.get("skills") is True:
+            known.add("use_skill")
+        has_mcp = entry.get("mcp") is not None
+        if entry.get("skills") is True and "use_skill" not in tools:
+            # The catalog would advertise use_skill while dispatch refuses it, and the
+            # refusal would be recorded as a model hallucination rather than a config error.
+            raise RegistryError(
+                f"task {name!r}: 'skills: true' requires 'use_skill' in the tools allowlist")
+        for t in tools:
+            if not isinstance(t, str):
+                raise RegistryError(f"task {name!r}: tool names must be strings, got {type(t).__name__}")
+            if t == "use_skill" and entry.get("skills") is not True:
+                raise RegistryError(f"task {name!r}: tool 'use_skill' requires 'skills: true'")
+            if t.startswith("mcp__"):
+                if not has_mcp:
+                    raise RegistryError(
+                        f"task {name!r}: unknown tool {t!r} (MCP tool declared but task has no 'mcp' server configured; known: {sorted(known)})")
+                if t == "mcp__":
+                    raise RegistryError(
+                        f"task {name!r}: invalid MCP tool name {t!r} (must have a suffix after 'mcp__')")
+            elif t not in known:
+                # MCP tools are always bridged as mcp__<name> (mcp_tools_to_ollama), so a
+                # bare name that is not a builtin can never match at dispatch.
+                raise RegistryError(
+                    f"task {name!r}: unknown tool {t!r} (known: {sorted(known)}; "
+                    "MCP tools use the mcp__<name> form)")
+
+        if "write_file" in tools and "edit_file" not in tools:
+            # Advisory, not a refusal: the task still runs correctly without edit_file,
+            # it just rewrites whole files where a surgical edit would do. Printed the
+            # way every other soft signal in the bridge is (cli.py's stale-score and
+            # unknown-tool warnings) rather than via warnings.warn, which an external
+            # PYTHONWARNINGS can silence and which fires only once per process.
+            print(
+                f"warning: {where}task {name!r}: 'tools' contains 'write_file' without "
+                "'edit_file' — allow edit_file so surgical edits avoid full file rewrites",
+                file=sys.stderr,
+            )
     if "min_score" in entry and entry["min_score"] is not None:
         ms = entry["min_score"]
         if isinstance(ms, bool) or not isinstance(ms, (int, float)):
@@ -128,33 +169,49 @@ def _validate(name, entry, where=""):
             # failure fails open on its whole purpose. Require an explicit pin
             # (use eval_task "*" to opt into the cross-task mean).
             raise RegistryError(f"task {name!r}: min_score requires eval_task (use \"*\" for the cross-task mean)")
-    if "mcp" in entry and entry["mcp"] is not None:
-        mcp = entry["mcp"]
-        if not isinstance(mcp, str) or not mcp.strip():
-            raise RegistryError(f"task {name!r}: mcp must be a non-empty string, got {mcp!r}")
     if "verify" in entry and entry["verify"] is not None:
         verify = entry["verify"]
         if not isinstance(verify, str) or not verify.strip():
             raise RegistryError(f"task {name!r}: verify must be a non-empty string, got {verify!r}")
 
 
-def load_registry(source):
+def load_registry(source, cwd=None):
     """`source` is a path, a JSON string, or a dict shaped {"tasks": {name: {...}}}.
     Every entry is validated; the first invalid entry raises RegistryError (a bad
-    registry is a configuration error, surfaced, not a quietly-skipped task)."""
+    registry is a configuration error, surfaced, not a quietly-skipped task).
+
+    Relative paths are resolved against `cwd` (defaulting to the process cwd).
+    """
     where = ""
     if isinstance(source, dict):
         data = source
     else:
-        # A diagnostic that names only the task leaves the reader hunting for the
-        # file that declared it; say which registry when the source is one.
-        if Path(str(source)).exists():
-            where = f"{source}: "
-            text = Path(source).read_text()
+        src_str = str(source).strip()
+        if src_str.startswith("{"):
+            data = json.loads(src_str)
         else:
-            text = str(source)
-        data = json.loads(text)
-    tasks = data.get("tasks", {})
+            p = Path(src_str)
+            if p.is_absolute():
+                candidate, searched = p, ""
+            else:
+                resolved_cwd = Path(cwd if cwd is not None else ".").resolve()
+                candidate, searched = resolved_cwd / p, f" (resolved against cwd {resolved_cwd})"
+            if not candidate.is_file():
+                raise RegistryError(f"registry path not found or not a file: {source}{searched}")
+            # A diagnostic that names only the task leaves the reader hunting for the
+            # file that declared it; say which registry when the source is one.
+            where = f"{candidate}: "
+            try:
+                data = json.loads(candidate.read_text())
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise RegistryError(f"registry {candidate}: invalid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise RegistryError(f"{where}registry must be a JSON object, got {type(data).__name__}")
+    if "tasks" not in data:
+        raise RegistryError(f"{where}registry has no 'tasks' key")
+    tasks = data["tasks"]
+    if not isinstance(tasks, dict):
+        raise RegistryError(f"{where}registry 'tasks' must be an object, got {type(tasks).__name__}")
     specs = {}
     for name, entry in tasks.items():
         _validate(name, entry, where)

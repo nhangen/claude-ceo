@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -410,3 +411,192 @@ def test_load_rejects_empty_verify_string():
         load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "low-stakes-write", "verify": "   "}))
     with pytest.raises(RegistryError, match="verify must be a non-empty string"):
         load_registry(_reg(x={"runner": "ollama", "model": "m", "tier": "low-stakes-write", "verify": ""}))
+
+
+def test_load_registry_resolves_relative_path_against_cwd(tmp_path):
+    """#510: A relative registry path resolves against the supplied cwd."""
+    reg = tmp_path / "custom_reg.json"
+    reg.write_text(json.dumps({"tasks": {"t": {"runner": "ollama", "model": "m", "tier": "deterministic"}}}))
+    specs = load_registry("custom_reg.json", cwd=tmp_path)
+    assert "t" in specs
+    assert specs["t"].tier == "deterministic"
+
+
+def test_load_registry_missing_path_raises_registry_error(tmp_path):
+    """#510: An argument that looks like a path and does not exist raises RegistryError, not JSONDecodeError."""
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("missing.json", cwd=tmp_path)
+    assert str(exc_info.value) == (
+        f"registry path not found or not a file: missing.json (resolved against cwd {tmp_path.resolve()})")
+
+
+def test_load_registry_missing_path_defaults_to_process_cwd(tmp_path, monkeypatch):
+    """#510: When cwd=None, the error names the process cwd, resolved."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("missing.json")
+    assert str(exc_info.value) == (
+        f"registry path not found or not a file: missing.json (resolved against cwd {tmp_path.resolve()})")
+
+
+def test_load_registry_missing_absolute_path_claims_no_resolution(tmp_path):
+    missing = tmp_path / "absent.json"
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry(str(missing), cwd="/somewhere/else")
+    assert str(exc_info.value) == f"registry path not found or not a file: {missing}"
+
+
+def test_load_registry_directory_path_raises_registry_error(tmp_path):
+    """#510: Passing a directory path raises RegistryError rather than crashing with IsADirectoryError."""
+    (tmp_path / "somedir").mkdir()
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("somedir", cwd=tmp_path)
+    assert str(exc_info.value) == (
+        f"registry path not found or not a file: somedir (resolved against cwd {tmp_path.resolve()})")
+
+
+def test_load_registry_inline_json_with_leading_whitespace():
+    assert load_registry('  {"tasks": {}}') == {}
+
+
+@pytest.mark.parametrize("content", ["", '{"tasks": {"t": '])
+def test_load_registry_empty_or_truncated_file_names_the_file(tmp_path, content):
+    f = tmp_path / "reg.json"
+    f.write_text(content)
+    with pytest.raises(RegistryError, match=rf"registry {re.escape(str(f))}: invalid JSON"):
+        load_registry("reg.json", cwd=tmp_path)
+
+
+def test_load_registry_non_utf8_file_names_the_file(tmp_path):
+    f = tmp_path / "reg.json"
+    f.write_bytes(b'{"tasks": {"\xff": {}}}')
+    with pytest.raises(RegistryError, match=rf"registry {re.escape(str(f))}: invalid JSON"):
+        load_registry("reg.json", cwd=tmp_path)
+
+
+def test_load_registry_path_with_surrounding_whitespace_resolves(tmp_path):
+    (tmp_path / "reg.json").write_text('{"tasks": {}}')
+    assert load_registry("  reg.json\n", cwd=tmp_path) == {}
+
+
+@pytest.mark.parametrize("content,msg", [
+    ("[]", "registry must be a JSON object, got list"),
+    ('{"tasks": []}', "registry 'tasks' must be an object, got list"),
+    ('{"task": {}}', "registry has no 'tasks' key"),
+])
+def test_load_registry_malformed_shape_is_a_registry_error(tmp_path, content, msg):
+    f = tmp_path / "reg.json"
+    f.write_text(content)
+    with pytest.raises(RegistryError) as exc_info:
+        load_registry("reg.json", cwd=tmp_path)
+    assert str(exc_info.value) == f"{f}: {msg}"
+
+
+def test_load_registry_warning_names_the_resolved_file(tmp_path, capsys):
+    f = tmp_path / "reg.json"
+    f.write_text(json.dumps({"tasks": {"t": {"runner": "ollama", "model": "m", "tier": "deterministic",
+                                             "tools": ["write_file"]}}}))
+    load_registry("reg.json", cwd=tmp_path)
+    assert f"warning: {f}: task 't'" in capsys.readouterr().err
+
+
+def test_tools_rejects_non_string_elements():
+    for bad in (123, None, {}, [1]):
+        with pytest.raises(RegistryError, match="tool names must be strings"):
+            load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "tools": ["read_file", bad]}))
+
+
+def test_tools_rejects_unknown_tool_names():
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool 'edit_fil'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read_file", "edit_fil", "write_file"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool 'read-file'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read-file", "git"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool ''"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": [""]}))
+
+
+def test_tools_skills_use_skill_gated_by_skills_flag():
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "skills": True, "tools": ["read_file", "use_skill"]}))
+    assert specs["t"].tools == ["read_file", "use_skill"]
+
+    with pytest.raises(RegistryError, match=r"task 't': tool 'use_skill' requires 'skills: true'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "skills": False, "tools": ["read_file", "use_skill"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': tool 'use_skill' requires 'skills: true'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read_file", "use_skill"]}))
+
+
+def test_tools_mcp_names_gated_by_mcp_declaration():
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "mcp": "node server.js", "tools": ["read_file", "mcp__query"]}))
+    assert specs["t"].tools == ["read_file", "mcp__query"]
+
+    with pytest.raises(RegistryError, match=r"task 't': unknown tool 'mcp__query' \(MCP tool declared but task has no 'mcp' server configured"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["read_file", "mcp__query"]}))
+
+    with pytest.raises(RegistryError, match=r"task 't': invalid MCP tool name 'mcp__'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "mcp": "node server.js", "tools": ["read_file", "mcp__"]}))
+
+
+def test_tools_mcp_task_still_rejects_bare_unknown_names():
+    # MCP tools are bridged as mcp__<name>, so a bare name on an MCP task is a typo
+    # or a raw MCP name; neither can match at dispatch.
+    for bad in ("edit_fil", "echo"):
+        with pytest.raises(RegistryError, match=rf"task 't': unknown tool '{bad}'"):
+            load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "mcp": "node server.js",
+                                  "tools": ["read_file", bad, "mcp__query"]}))
+
+
+def test_tools_bad_mcp_type_reports_the_mcp_error_not_the_tool_error():
+    for tools in (["mcp__query"], ["edit_fil"], ["mcp__"]):
+        with pytest.raises(RegistryError, match="mcp must be a non-empty string, got 123"):
+            load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "mcp": 123, "tools": tools}))
+
+
+def test_skills_must_be_a_bool():
+    for bad in ("yes", 1):
+        with pytest.raises(RegistryError, match="skills must be true or false"):
+            load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "skills": bad, "tools": ["read_file"]}))
+
+
+def test_skills_null_means_absent():
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "skills": None, "tools": ["read_file"]}))
+    assert specs["t"].tools == ["read_file"]
+
+
+def test_empty_tools_list_is_the_zero_tool_mode():
+    # cron cannot pass --no-tools, so [] is how a registry task asks for no tools.
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "tools": []}))
+    assert specs["t"].tools == []
+
+
+def test_tools_unknown_name_does_not_emit_pairing_warning(capsys):
+    with pytest.raises(RegistryError, match=r"unknown tool 'write_fil'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "tools": ["write_fil"]}))
+    assert "without 'edit_file'" not in capsys.readouterr().err
+
+
+def test_skills_true_requires_use_skill_in_a_tools_list():
+    with pytest.raises(RegistryError, match="'skills: true' requires 'use_skill'"):
+        load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                              "skills": True, "tools": ["read_file"]}))
+    specs = load_registry(_reg(t={"runner": "ollama", "model": "m", "tier": "deterministic",
+                                  "skills": True, "tools": "*"}))
+    assert specs["t"].tools == "*"

@@ -19,7 +19,6 @@ test_raw_digest_helper_emits_signals_when_synthesis_empty() {
   out=$(ceo_morning_raw_digest)
   assert_not_contains "$out" "Sprint Y" "retired sprint item not in digest"
   assert_contains "$out" "Write spec" "digest includes Top 3"
-  ASSERTION_COUNT=$((ASSERTION_COUNT + 1))
 }
 
 run_tests

@@ -258,16 +258,17 @@ RAW_LOG="$LOG_DIR/cron-raw-$RUNS_LOG_HOST.log"
 _state() {
   local path rc=0
   path=$(_ceo_state_migrate "$1") || rc=$?
-  case "$rc" in
-    2) mkdir -p "$LOG_DIR" 2>/dev/null || true
-       echo "$(date): ERROR — cannot create the host-local state dir for $1 ($path); ${TRIGGER:-<sweep>} NOT dispatched" \
-         >> "$SKIPS_LOG" 2>/dev/null || true
-       echo "ERROR: cannot create the host-local state directory for $1" >&2
-       exit 1 ;;
-    1) mkdir -p "$LOG_DIR" 2>/dev/null || true
-       echo "$(date): WARN — could not migrate legacy state $1 out of the vault; ${TRIGGER:-<sweep>} continues with fresh state (a cooldown or failure streak may have reset)" \
-         >> "$SKIPS_LOG" 2>/dev/null || true ;;
-  esac
+  if [ "$rc" -eq 2 ] || [ -z "$path" ]; then
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    echo "$(date): ERROR — cannot create or resolve the host-local state dir for $1 (${path:-unresolved}); ${TRIGGER:-<sweep>} NOT dispatched" \
+      >> "$SKIPS_LOG" 2>/dev/null || true
+    echo "ERROR: cannot create or resolve the host-local state directory for $1" >&2
+    exit 1
+  elif [ "$rc" -eq 1 ]; then
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    echo "$(date): WARN — could not migrate legacy state $1 out of the vault; ${TRIGGER:-<sweep>} continues with fresh state (a cooldown or failure streak may have reset)" \
+      >> "$SKIPS_LOG" 2>/dev/null || true
+  fi
   printf '%s\n' "$path"
 }
 LAST_RUN_FILE=$(_state ".last-run-${TRIGGER}")
@@ -1396,6 +1397,11 @@ case "$REGISTRY_RC" in
     echo "$(date): FATAL — registry.json schema_version unreadable/malformed after retry (corrupt registry or persistent sync issue). Run: ceo playbook scan" >> "$SKIPS_LOG"
     _record_failure "registry.json schema_version unreadable/malformed after retry"
     _v "FATAL: registry.json unreadable. Run: ceo playbook scan"
+    exit 1 ;;
+  *)
+    echo "$(date): FATAL — registry validation returned unexpected rc=$REGISTRY_RC" >> "$SKIPS_LOG"
+    _record_failure "registry validation returned unexpected rc=$REGISTRY_RC"
+    _v "FATAL: registry validation rc=$REGISTRY_RC"
     exit 1 ;;
 esac
 
