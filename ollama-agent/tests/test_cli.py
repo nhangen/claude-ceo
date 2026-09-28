@@ -1262,17 +1262,18 @@ def test_cli_read_only_hint_must_be_literal_true(tmp_path, monkeypatch, capsys):
     assert "(1 read-only)" in capsys.readouterr().err
 
 
-def test_cli_relative_registry_path_resolves_against_cwd(tmp_path, monkeypatch):
+def test_cli_relative_registry_path_resolves_against_cwd(tmp_path, monkeypatch, capsys):
     """#510: A relative --registry argument resolves against --cwd."""
     reg = tmp_path / "custom.json"
-    reg.write_text(json.dumps({"tasks": {"work": {"runner": "ollama", "model": "m", "tier": "deterministic"}}}))
+    reg.write_text(json.dumps({"tasks": {"work": {"runner": "ollama", "model": "rel-reg:3b",
+                                                  "tier": "deterministic"}}}))
     captured = {}
     _stub(monkeypatch, captured)
     rc = cli.main(["--task", "do work", "--cwd", str(tmp_path),
                    "--registry", "custom.json", "--task-name", "work",
                    "--no-rules", "--no-skills"])
     assert rc == 0
-    assert captured["system"] is not None
+    assert "model=rel-reg:3b" in capsys.readouterr().err
 
 
 def test_cli_missing_relative_registry_path_surfaces_path_not_found_not_json_error(tmp_path, capsys):
@@ -1281,8 +1282,16 @@ def test_cli_missing_relative_registry_path_surfaces_path_not_found_not_json_err
                    "--registry", "missing.json", "--task-name", "work"])
     assert rc == 2
     err = capsys.readouterr().err
-    assert f"registry error: registry path not found: missing.json (resolved against cwd {tmp_path.resolve()})" in err
+    assert ("registry error: registry path not found or not a file: missing.json "
+            f"(resolved against cwd {tmp_path.resolve()})") in err
     assert "Expecting value" not in err
+
+
+def test_cli_registry_default_cwd_names_the_resolved_process_cwd(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["--task", "do work", "--registry", "missing.json", "--task-name", "work"])
+    assert rc == 2
+    assert f"(resolved against cwd {tmp_path.resolve()})" in capsys.readouterr().err
 
 
 def test_cli_no_tools_flag_sets_empty_allowed_tools_on_toolbox(tmp_path, monkeypatch):

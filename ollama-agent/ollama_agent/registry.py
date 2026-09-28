@@ -183,17 +183,30 @@ def load_registry(source, cwd=None):
     else:
         src_str = str(source).strip()
         if src_str.startswith("{"):
-            data = json.loads(str(source))
+            data = json.loads(src_str)
         else:
-            resolved_cwd = Path(cwd).resolve() if cwd is not None else Path.cwd()
-            p = Path(source)
-            candidate = p if p.is_absolute() else (resolved_cwd / p)
-            if candidate.is_file():
-                where = f"{source}: "
-                data = json.loads(candidate.read_text())
+            p = Path(src_str)
+            if p.is_absolute():
+                candidate, searched = p, ""
             else:
-                raise RegistryError(f"registry path not found: {source} (resolved against cwd {resolved_cwd})")
-    tasks = data.get("tasks", {})
+                resolved_cwd = Path(cwd if cwd is not None else ".").resolve()
+                candidate, searched = resolved_cwd / p, f" (resolved against cwd {resolved_cwd})"
+            if not candidate.is_file():
+                raise RegistryError(f"registry path not found or not a file: {source}{searched}")
+            # A diagnostic that names only the task leaves the reader hunting for the
+            # file that declared it; say which registry when the source is one.
+            where = f"{candidate}: "
+            try:
+                data = json.loads(candidate.read_text())
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise RegistryError(f"registry {candidate}: invalid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise RegistryError(f"{where}registry must be a JSON object, got {type(data).__name__}")
+    if "tasks" not in data:
+        raise RegistryError(f"{where}registry has no 'tasks' key")
+    tasks = data["tasks"]
+    if not isinstance(tasks, dict):
+        raise RegistryError(f"{where}registry 'tasks' must be an object, got {type(tasks).__name__}")
     specs = {}
     for name, entry in tasks.items():
         _validate(name, entry, where)

@@ -433,10 +433,9 @@ test_runner_ollama_agent_no_mcp_omits_mcp_flag() {
   assert_not_contains "$(cat "$HOME/agent-argv.txt")" "--mcp" "--mcp must be absent from cron dispatch argv for task without mcp"
 }
 
-
 test_runner_ollama_agent_relative_registry_resolved_by_real_cli() {
   # #510: Dispatches with a relative registry path to real cli.py (CEO_OLLAMA_AGENT_CMD unset).
-  # 1. Missing relative registry: cli.py reports "registry path not found: ... (resolved against cwd ...)"
+  # 1. Missing relative registry: cli.py reports "registry path not found or not a file: ... (resolved against cwd ...)"
   #    and not JSONDecodeError ("Expecting value").
   cat > "$CEO_DIR/playbooks/agent-rel-miss.md" << 'PB'
 ---
@@ -457,9 +456,10 @@ PB
   local rc_miss=0
   bash "$CRON" agent-rel-miss >/dev/null 2>&1 || rc_miss=$?
   assert_eq "$rc_miss" "1" "missing relative registry causes cron failure"
-  local stderr_content="$(_stderr_log)"
-  assert_contains "$stderr_content" "registry path not found: non-existent-relative-reg.json" "stderr names missing relative registry path"
-  assert_contains "$stderr_content" "$CEO_DIR" "stderr includes resolved cwd directory"
+  local stderr_content
+  stderr_content="$(_stderr_log)"
+  assert_contains "$stderr_content" "registry path not found or not a file: non-existent-relative-reg.json" "stderr names missing relative registry path"
+  assert_contains "$stderr_content" "(resolved against cwd $(cd "$CEO_DIR" && pwd -P))" "stderr names the resolved cwd directory"
   assert_not_contains "$stderr_content" "Expecting value" "stderr must not report cryptic JSON decode error"
 
   # 2. Present relative registry: cli.py resolves bridge-registry.json against $CEO_DIR.
@@ -494,5 +494,3 @@ PB
 }
 
 run_tests
-
-
