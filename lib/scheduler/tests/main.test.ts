@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { FATAL_EXIT_CODE } from "cronbird/core";
 import { PermanentHeartbeatWriteError } from "cronbird/cli";
-import { resolveFatalExitCode, trackCompletion } from "@/main";
+import { recordFatalInSyncedHeartbeat, resolveFatalExitCode, trackCompletion } from "@/main";
 import { runningDir, doneDir } from "@/runtime";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -110,6 +110,9 @@ describe("main entrypoint process exit", () => {
       expect(exitCode).toBe(FATAL_EXIT_CODE);
       expect(stderr).toContain("ceo-schedulerd: fatal:");
       expect(stderr).toContain("permanent local heartbeat-write failure");
+      // #562: a peer's owners-health reads this to reach the operator.
+      const synced = JSON.parse(readFileSync(join(fix.vault, "CEO", "heartbeats", "testhost.json"), "utf8"));
+      expect(synced.fatal.code).toBe("EACCES");
     } finally {
       fix.cleanup();
     }
@@ -213,5 +216,68 @@ describe("trackCompletion", () => {
     }
     expect(unhandled).toEqual([]);
     expect(h.calls.filter((c) => c === "clear")).toHaveLength(2);
+  });
+});
+
+describe("recordFatalInSyncedHeartbeat", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-fatal-hb-"));
+    return { dir, path: join(dir, "CEO", "heartbeats", "mac.json") };
+  };
+  const now = new Date("2026-09-29T02:00:00.000Z");
+
+  test("keeps the last good ts and records the fault", () => {
+    const { dir, path } = setup();
+    try {
+      mkdirSync(join(dir, "CEO", "heartbeats"), { recursive: true });
+      writeFileSync(path, JSON.stringify({ host: "mac", ts: "2026-09-29T01:00:00.000Z" }));
+      expect(recordFatalInSyncedHeartbeat(path, "mac", "EACCES", now)).toBe("written");
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+        host: "mac",
+        ts: "2026-09-29T01:00:00.000Z",
+        fatal: { code: "EACCES", since: "2026-09-29T02:00:00.000Z" },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not rewrite an unchanged code, so the respawn loop does not churn sync", () => {
+    const { dir, path } = setup();
+    try {
+      recordFatalInSyncedHeartbeat(path, "mac", "ENOSPC", now);
+      const before = readFileSync(path, "utf8");
+      const later = new Date("2026-09-29T02:00:10.000Z");
+      expect(recordFatalInSyncedHeartbeat(path, "mac", "ENOSPC", later)).toBe("unchanged");
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a new code replaces the old one and keeps the ts", () => {
+    const { dir, path } = setup();
+    try {
+      mkdirSync(join(dir, "CEO", "heartbeats"), { recursive: true });
+      writeFileSync(path, JSON.stringify({ host: "mac", ts: "2026-09-29T01:00:00.000Z", fatal: { code: "ENOSPC", since: "x" } }));
+      recordFatalInSyncedHeartbeat(path, "mac", "EROFS", now);
+      const hb = JSON.parse(readFileSync(path, "utf8"));
+      expect(hb.fatal.code).toBe("EROFS");
+      expect(hb.ts).toBe("2026-09-29T01:00:00.000Z");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("with no prior heartbeat it records the fault with a null ts", () => {
+    const { dir, path } = setup();
+    try {
+      recordFatalInSyncedHeartbeat(path, "mac", "EACCES", now);
+      const hb = JSON.parse(readFileSync(path, "utf8"));
+      expect(hb.ts).toBeNull();
+      expect(hb.fatal.code).toBe("EACCES");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

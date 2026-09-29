@@ -275,6 +275,99 @@ _inbox_count() {
   grep -c -F "$marker" "$file"
 }
 
+_owners_health_scheduled() {
+  env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="${OH_NOW:-}" PATH="$PATH" \
+    bash "$CEO_CLI" swarm owners-health --scheduled
+}
+
+# A heartbeat the daemon marked on its way out with a permanent-fault exit (#562).
+_write_fatal_heartbeat() {
+  local host="$1" iso="$2" code="$3"
+  mkdir -p "$TEST_VAULT/CEO/heartbeats"
+  jq -n --arg h "$host" --arg ts "$iso" --arg c "$code" \
+    '{host: $h, ts: $ts, fatal: {code: $c, since: $ts}}' > "$TEST_VAULT/CEO/heartbeats/$host.json"
+}
+
+_alert_status() {
+  awk -F': ' '/^status: /{print $2; exit}' "$TEST_VAULT/CEO/alerts/owners-health-checker.md" 2>/dev/null
+}
+
+test_owners_health_fatal_peer_escalates_even_when_it_owns_nothing() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" EACCES
+  local out rc=0
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || rc=$?
+  assert_contains "$out" "mac ceo-schedulerd stopped on a permanent local-write fault (EACCES)" \
+    "a fatal peer is reported although it owns no single-scope playbook"
+  assert_eq "$(_inbox_count '<!-- schedulerd-fatal:mac -->')" "1" "a fatal peer escalates to the inbox"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" "a fatal peer fails the manual health gate"
+}
+
+test_owners_health_ignores_its_own_fatal_heartbeat() {
+  _seed_owners '{"schema_version":1,"hosts":["checker"],"owners":{}}'
+  _write_fatal_heartbeat checker "$(_iso_at_offset 60)" EROFS
+  local out
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || true
+  assert_not_contains "$out" "permanent local-write fault" "a host does not report its own heartbeat"
+  assert_eq "$(_inbox_count 'schedulerd-fatal')" "0" "no inbox line for self"
+}
+
+test_owners_health_scheduled_keeps_plain_staleness_out_of_the_inbox() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{"norx":"mac"}}'
+  _write_heartbeat_iso mac "$(_iso_at_offset 14400)"
+  local out rc=0
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled 2>&1) || rc=$?
+  assert_eq "$rc" "0" "the scheduled run exits 0 on a stale owner"
+  assert_contains "$out" "owner mac stale" "the stale owner is still reported"
+  assert_eq "$(_inbox_count '<!-- owner-staleness:mac -->')" "0" "a sleeping laptop does not page the inbox"
+  assert_eq "$(_alert_status)" "firing" "the alert file records the stale owner"
+}
+
+test_owners_health_scheduled_escalates_a_fatal_peer_once() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{"norx":"mac"}}'
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" ENOSPC
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count '<!-- schedulerd-fatal:mac -->')" "1" "a fatal peer reaches the inbox once across runs"
+  assert_eq "$(_alert_status)" "firing" "the alert file is firing"
+}
+
+test_owners_health_scheduled_does_not_consume_a_manual_transition() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{"norx":"mac"}}'
+  _write_heartbeat_iso mac "$(_iso_at_offset 14400)"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count '<!-- owner-staleness:mac -->')" "1" "a manual run still alerts after a scheduled run saw the stale owner"
+}
+
+test_owners_health_scheduled_clears_when_healthy() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{"norx":"mac"}}'
+  _write_heartbeat_iso mac "$(_iso_at_offset 60)"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_eq "$(_alert_status)" "clear" "a fresh owner and no fatal peer is clear"
+}
+
+test_owners_health_playbook_script_runs_the_scheduled_mode() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{"norx":"mac"}}'
+  _write_heartbeat_iso mac "$(_iso_at_offset 14400)"
+  local rc=0
+  env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" PATH="$PATH" \
+    bash "$(dirname "$CEO_CLI")/ceo-owners-health.sh" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "the playbook script exits 0 on a stale owner"
+  assert_eq "$(_alert_status)" "firing" "the playbook script writes the alert file"
+  assert_eq "$(_inbox_count '<!-- owner-staleness:mac -->')" "0" "the playbook script keeps staleness out of the inbox"
+}
+
+test_owners_health_fatal_code_is_sanitized_before_the_inbox() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" 'x]] <!-- evil'
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count 'fault (unknown)')" "1" "a code that is not errno-shaped is replaced"
+  assert_eq "$(_inbox_count 'evil')" "0" "the raw code never reaches the synced inbox"
+}
+
 test_owners_health_fresh_owner_healthy_no_inbox() {
   _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
   _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"   # 1 minute old → fresh
@@ -426,7 +519,7 @@ test_owners_health_rejects_arguments() {
   local rc=0 out
   out=$(OH_NOW="$OH_REF_EPOCH" _owners_health_args --bogus 2>&1) || rc=$?
   assert_eq "$rc" "1" "an argument to owners-health must be rejected"
-  assert_contains "$out" "takes no arguments" "the rejection must say why"
+  assert_contains "$out" "takes only --scheduled" "the rejection must say why"
   assert_eq "$(_inbox_count 'owner-staleness:ml-1')" "0" \
     "a rejected argument must not fall through to the check"
 }
