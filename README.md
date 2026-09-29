@@ -428,6 +428,7 @@ Unknown playbook names and invalid cron syntax warn to stderr and are ignored â€
 | `DAILY_NOTE_TOP3`, `DAILY_NOTE_TASKS` | `Daily/<date>.md` |
 | `BRIEFINGS_TRAINING` | `CEO/training/briefings.md` |
 | `ACTIVE_DOMAINS_CONTENT` | dated `Profile/goals.md` â†’ `## Active Domains`; stale or invalid context is withheld |
+| `CEO_PROFILE_CONTEXT_VERSION` | `1` only when `ACTIVE_DOMAINS_CONTENT` holds current domains, unset otherwise; exported for `runner: skill` children (weekly-synthesis), not injected into the prompt |
 | `PENDING_ASK_QUESTIONS` | `Pending.md` lines containing `[ask]` (top 20) |
 | `BLESSINGS_TODAY` | `CEO/cache/blessings-today.md` |
 | `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (morning-scan only) |

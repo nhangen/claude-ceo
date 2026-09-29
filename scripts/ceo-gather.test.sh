@@ -159,6 +159,40 @@ test_pending_items_preflight_prefers_work_present_over_degraded() {
     "pending questions present outrank a degraded file gather — there is work either way"
 }
 
+# The weekly memo (llm-tools#827) treats context as current only when
+# CEO_PROFILE_CONTEXT_VERSION=1 is set, so the version must follow the parser's
+# verdict: set for current domains, unset when they are withheld.
+_write_goals() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n\n## Active Domains\n\n- Test domain\n' "$1" \
+    > "$CEO_VAULT/Profile/goals.md"
+}
+
+test_current_profile_context_exports_version_1() {
+  _write_goals "$(date +%Y-%m-%d)"
+  local out
+  out=$( set +eu
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}|EXPORTED=$(env | grep -c '^CEO_PROFILE_CONTEXT_VERSION=1$')"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
+  )
+  assert_contains "$out" "VERSION=1|EXPORTED=1" "current canonical domains must export version 1"
+  assert_contains "$out" "Test domain" "the content is the canonical section"
+}
+
+test_withheld_profile_context_does_not_export_version() {
+  _write_goals "2000-01-01"
+  local out
+  out=$( set +eu
+    export CEO_PROFILE_CONTEXT_VERSION=1
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
+  )
+  assert_contains "$out" "VERSION=unset" "stale domains must not claim version 1, even when the caller's env had it"
+  assert_contains "$out" "Active domains unavailable" "the withheld message still reaches the prompt"
+}
+
 # Legacy Profile.md cannot affect canonical context or the pending queue.
 test_legacy_profile_does_not_degrade_the_pending_queue() {
   echo "## Active Domains" > "$CEO_VAULT/Profile.md"
