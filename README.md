@@ -427,7 +427,7 @@ Unknown playbook names and invalid cron syntax warn to stderr and are ignored �
 | `TODAY_LOG_SUMMARY`, `YESTERDAY_LOG_SUMMARY` | `CEO/log/<date>.md` |
 | `DAILY_NOTE_TOP3`, `DAILY_NOTE_TASKS` | `Daily/<date>.md` |
 | `BRIEFINGS_TRAINING` | `CEO/training/briefings.md` |
-| `ACTIVE_DOMAINS_CONTENT` | `Profile.md` → `## Active Domains` |
+| `ACTIVE_DOMAINS_CONTENT` | dated `Profile/goals.md` → `## Active Domains`; stale or invalid context is withheld |
 | `PENDING_ASK_QUESTIONS` | `Pending.md` lines containing `[ask]` (top 20) |
 | `BLESSINGS_TODAY` | `CEO/cache/blessings-today.md` |
 | `VAULT_CHANGES_BY_DOMAIN`, etc. | `ceo-scan.sh` (morning-scan only) |

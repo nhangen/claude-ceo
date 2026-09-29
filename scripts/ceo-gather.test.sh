@@ -159,10 +159,8 @@ test_pending_items_preflight_prefers_work_present_over_degraded() {
     "pending questions present outrank a degraded file gather — there is work either way"
 }
 
-# Sibling to test_a_merged_search_failure_does_not_degrade_the_review_queue:
-# an unreadable Profile.md degrades the file gather overall, but says nothing
-# about the pending questions queue.
-test_a_profile_failure_does_not_degrade_the_pending_queue() {
+# Legacy Profile.md cannot affect canonical context or the pending queue.
+test_legacy_profile_does_not_degrade_the_pending_queue() {
   echo "## Active Domains" > "$CEO_VAULT/Profile.md"
   chmod 000 "$CEO_VAULT/Profile.md"
   local out
@@ -172,8 +170,8 @@ test_a_profile_failure_does_not_degrade_the_pending_queue() {
     ceo_pending_items_preflight >/dev/null; rc=$?
     echo "FILE_DEGRADED=${FILE_GATHER_DEGRADED}|RC=$rc"
   )
-  assert_contains "$out" "FILE_DEGRADED=1" "an unreadable Profile.md must degrade the file gather overall"
-  assert_contains "$out" "RC=1" "but the pending preflight must still answer a trustworthy empty, not cannot-tell"
+  assert_contains "$out" "FILE_DEGRADED=0" "legacy Profile.md must not control canonical context"
+  assert_contains "$out" "RC=1" "the pending preflight remains a trustworthy empty"
 }
 
 test_an_unreadable_pending_file_normalizes_counts_and_degrades() {
