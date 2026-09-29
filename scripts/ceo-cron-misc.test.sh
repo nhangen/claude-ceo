@@ -194,6 +194,47 @@ SH
   assert_eq "$got_artifact" "playbook-id-skill" "skill runner must export CEO_RUNNER_ARTIFACT=<skill name> for the Discord embed"
 }
 
+# weekly-synthesis (llm-tools#827) reads the profile context from its own
+# environment, so the gather's exports must survive into the runner:skill child.
+test_runner_skill_child_sees_current_profile_context() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n\n## Active Domains\n\n- Propagated domain\n' "$(date +%Y-%m-%d)" \
+    > "$CEO_VAULT/Profile/goals.md"
+  cat > "$CEO_DIR/playbooks/profile-context-skill.md" << 'PB'
+---
+name: profile-context-skill
+description: Verifies the profile context reaches the skill runner
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: profile-context-skill
+out_pattern: CEO/reports/profile-context-skill/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/profile-context-skill/scripts"
+  cat > "$HOME/.claude/skills/profile-context-skill/scripts/run-report.sh" << SH
+#!/bin/bash
+printf '%s' "\${CEO_PROFILE_CONTEXT_VERSION:-UNSET}" > "$TEST_HOME/profile-version-from-skill.txt"
+printf '%s' "\${ACTIVE_DOMAINS_CONTENT:-UNSET}" > "$TEST_HOME/profile-content-from-skill.txt"
+while [[ "\$#" -gt 0 ]]; do
+  case \$1 in --out) out_dir="\$2"; shift ;; esac
+  shift
+done
+echo "skill stub" > "\$out_dir/report.md"
+SH
+  chmod +x "$HOME/.claude/skills/profile-context-skill/scripts/run-report.sh"
+
+  bash "$CRON" profile-context-skill >/dev/null 2>&1 || true
+  local got_version got_content
+  got_version=$(cat "$TEST_HOME/profile-version-from-skill.txt" 2>/dev/null || echo "MISSING")
+  got_content=$(cat "$TEST_HOME/profile-content-from-skill.txt" 2>/dev/null || echo "MISSING")
+  assert_eq "$got_version" "1" "skill child must see CEO_PROFILE_CONTEXT_VERSION=1 for current domains"
+  assert_contains "$got_content" "Propagated domain" "skill child must see the canonical Active Domains content"
+}
+
 
 test_runner_skill_abort_is_recorded_and_releases_the_lock() {
   # runner:skill used to install its own `trap 'rm -rf "$TMP_DIR"' EXIT`, which
