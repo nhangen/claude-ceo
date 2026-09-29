@@ -175,23 +175,43 @@ describe("trackCompletion", () => {
     expect(h.calls).toEqual(["clear", "log:completion tracking failed for job: wait failed", "write:1"]);
   });
 
-  test("a completion write that fails twice settles, clears, and logs both failures", async () => {
+  test("a failed write of a known exit code logs that code and does not record exit 1", async () => {
+    const h = harness();
+    let attempts = 0;
+    const flaky = (code: number) => {
+      attempts += 1;
+      if (attempts === 1) enospc();
+      h.calls.push(`write:${code}`);
+    };
+    await trackCompletion("job", Promise.resolve(0), flaky, h.clearRunning, h.log);
+    expect(h.calls).toEqual(["log:could not record exit 0 for job: ENOSPC: no space left on device", "clear"]);
+  });
+
+  test("a wait failure whose fallback write also fails settles, clears, and logs both", async () => {
+    const h = harness();
+    await trackCompletion("job", Promise.reject(new Error("wait failed")), enospc, h.clearRunning, h.log);
+    expect(h.calls).toEqual([
+      "clear",
+      "log:completion tracking failed for job: wait failed",
+      "log:could not record the failed completion for job: ENOSPC: no space left on device",
+    ]);
+  });
+
+  test("a voided call whose writes throw raises no unhandled rejection", async () => {
     const h = harness();
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", onUnhandled);
     try {
-      await trackCompletion("job", Promise.resolve(0), enospc, h.clearRunning, h.log);
-      await new Promise((r) => setTimeout(r, 10));
+      // Voided, as the dispatch site calls it: a rejection here is only
+      // observable through the unhandledRejection event.
+      void trackCompletion("job", Promise.resolve(0), enospc, h.clearRunning, h.log);
+      void trackCompletion("job", Promise.reject(new Error("wait failed")), enospc, h.clearRunning, h.log);
+      await new Promise((r) => setTimeout(r, 20));
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
     expect(unhandled).toEqual([]);
-    expect(h.calls).toEqual([
-      "clear",
-      "clear",
-      "log:completion tracking failed for job: ENOSPC: no space left on device",
-      "log:could not record the failed completion for job: ENOSPC: no space left on device",
-    ]);
+    expect(h.calls.filter((c) => c === "clear")).toHaveLength(2);
   });
 });

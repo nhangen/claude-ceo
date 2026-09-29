@@ -262,7 +262,7 @@ async function main(): Promise<void> {
         );
       } catch (err) {
         clearRunning(); // spawn failed at start — don't leave a phantom in-flight marker
-        log(`dispatch failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+        log(`dispatch failed for ${name}: ${errText(err)}`);
       }
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
@@ -329,10 +329,11 @@ async function main(): Promise<void> {
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
- * Settles on every path, including a completion write that throws twice (ENOSPC
- * or EROFS between ticks), so the voided promise never becomes an unhandled
- * rejection that kills the daemon with exit 1 (#563). The run marker is cleared
- * first so an unrecordable run can never wedge the queue.
+ * Settles on every path, including completion writes that throw (ENOSPC or
+ * EROFS between ticks), so the voided promise never becomes an unhandled
+ * rejection that kills the daemon with exit 1 (#563). The run marker is always
+ * cleared. A failed write of a known exit code is logged with that code rather
+ * than recorded as exit 1, since cronbird would re-run a job that succeeded.
  */
 export async function trackCompletion(
   name: string,
@@ -341,13 +342,9 @@ export async function trackCompletion(
   clearRunning: () => void,
   log: (msg: string) => void,
 ): Promise<void> {
+  let exitCode: number;
   try {
-    const exitCode = await exited;
-    try {
-      writeCompletion(exitCode);
-    } finally {
-      clearRunning();
-    }
+    exitCode = await exited;
   } catch (err) {
     clearRunning();
     log(`completion tracking failed for ${name}: ${errText(err)}`);
@@ -356,6 +353,14 @@ export async function trackCompletion(
     } catch (writeErr) {
       log(`could not record the failed completion for ${name}: ${errText(writeErr)}`);
     }
+    return;
+  }
+  try {
+    writeCompletion(exitCode);
+  } catch (writeErr) {
+    log(`could not record exit ${exitCode} for ${name}: ${errText(writeErr)}`);
+  } finally {
+    clearRunning();
   }
 }
 
@@ -372,7 +377,7 @@ export function resolveFatalExitCode(err: unknown): number {
 // Only run when invoked directly (not when imported by tests).
 if (import.meta.main) {
   main().catch((err) => {
-    process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${errText(err)}\n`);
     process.exit(resolveFatalExitCode(err));
   });
 }
