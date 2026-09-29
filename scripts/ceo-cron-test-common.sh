@@ -197,7 +197,7 @@ _FIXTURE_NEWLINE=$'\n'
 # leaving an untracked executable in a tracked directory, one `git add -A` from
 # a commit (test-writes-stay-in-the-fixture). teardown runs on all of those; a
 # test body's last line does not. An interrupt is covered too, but by a separate
-# mechanism -- run_tests traps INT/TERM and calls teardown, which it did not
+# mechanism -- run_tests traps INT/TERM/HUP and calls teardown, which it did not
 # before this change, so the two have to hold together.
 #
 # It also protects the -P 4 reasoning in .github/workflows/test.yml, which rests

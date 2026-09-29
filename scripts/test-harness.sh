@@ -236,7 +236,9 @@ run_tests() {
   # loop's own teardown is mid-flight — cannot re-enter this handler. A
   # second pass through a teardown that has already unset its saved HOME
   # aborts under `set -u` before reaching the exit, costing the status.
-  trap 'trap - INT TERM; type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM
+  # HUP is what a closing terminal or agent session sends the shells it started;
+  # untrapped, it left a fixture behind in scripts/ (#571).
+  trap 'trap - INT TERM HUP; type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM HUP
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue
