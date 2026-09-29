@@ -39,6 +39,8 @@ while [ "$#" -gt 0 ]; do
       shift
       printf '%s' "$1" > "$out"
       ;;
+    # Beside the capture dir, not in it: payload numbering counts its entries.
+    http*) printf '%s\n' "$1" >> "$CURL_CAPTURE_DIR.urls" ;;
   esac
   shift || true
 done
@@ -512,19 +514,68 @@ test_corrupt_secrets_logs_jq_failure_not_unresolved() {
     "nothing is posted without a webhook"
 }
 
-test_secrets_jq_error_masks_quoted_strings() {
-  echo '"https://FAKE-EXAMPLE.invalid/not-a-webhook"' > "$CEO_SECRETS_FILE"
+test_secrets_jq_error_masks_the_value_it_prints() {
+  echo '{"discord_report_webhook":{"url":"https://FAKE-EXAMPLE.invalid/not-a-webhook"}}' > "$CEO_SECRETS_FILE"
   mkdir -p "$HOME/.ceo"
   echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
 
-  printf 'string secrets body' | "$REPORT" morning-brief >/dev/null 2>&1
+  printf 'object secrets body' | "$REPORT" morning-brief >/dev/null 2>&1
 
   local log
   log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
-  assert_contains "$log" 'Cannot index string with string "…"' \
-    "quoted strings in the jq message are masked"
-  assert_not_contains "$log" 'discord_report_webhook"' \
-    "no quoted value from the secrets query reaches the log"
+  assert_contains "$log" "secrets jq query failed ($CEO_SECRETS_FILE)" \
+    "a non-string webhook value fails the query instead of becoming the URL"
+  assert_contains "$log" 'and object (' \
+    "the log carries jq's type error"
+  assert_not_contains "$log" 'FAKE-EXAMPLE' \
+    "the value jq printed does not reach the log"
+  assert_not_contains "$log" '"htt' \
+    "a value jq truncated mid-string is masked too"
+  assert_eq "$(ls "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "nothing is posted to a non-string webhook"
+}
+
+test_empty_secrets_logs_no_output_not_unresolved() {
+  printf '  \n' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'empty secrets body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "secrets jq query produced no output ($CEO_SECRETS_FILE), bailing 0" \
+    "an empty secrets.json is reported as empty"
+  assert_not_contains "$log" "report webhook unresolved" \
+    "an empty file is not reported as a missing key"
+}
+
+test_secrets_without_the_key_logs_unresolved() {
+  echo '{}' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'no key body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "report webhook unresolved, bailing 0" \
+    "a valid secrets.json without the key is a missing webhook"
+  assert_not_contains "$log" "secrets jq query" \
+    "a missing key is not reported as a jq failure"
+}
+
+test_secrets_with_a_string_webhook_still_posts() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'string webhook body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "string webhook body" \
+    "a string webhook still delivers"
+  assert_eq "$(sort -u "$CURL_CAPTURE_DIR.urls" 2>/dev/null)" "http://127.0.0.1/reports" \
+    "the v: prefix is stripped before the URL is used"
 }
 
 test_records_last_deliver_timestamp_on_successful_post() {
