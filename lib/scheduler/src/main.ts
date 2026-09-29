@@ -382,7 +382,9 @@ export function resolveFatalExitCode(err: unknown): number {
  * heartbeats are separate paths, so this usually still lands. The last good `ts`
  * is kept, so the respawn loop never makes the host look alive, and an unchanged
  * code is not rewritten, so the loop does not churn Syncthing. The next healthy
- * heartbeat overwrites the whole file and drops the field.
+ * heartbeat overwrites the whole file and drops the field. The {host, ts} shape
+ * and the tmp-then-rename write mirror cronbird's writeSyncedHeartbeat; keep
+ * them in step if that format changes.
  */
 export function recordFatalInSyncedHeartbeat(
   path: string,

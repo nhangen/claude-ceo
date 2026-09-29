@@ -277,7 +277,7 @@ ceo playbook enable <name>        # run an each-scope playbook on THIS host
 ceo playbook disable <name>       # stop it on THIS host
 ceo playbook assign <name> <host> # set the owner of a single-scope playbook
 ceo swarm doctor [--fix]          # detect/heal swarm.json sync-conflict copies
-ceo swarm owners-health           # flag single-scope owners whose heartbeat is stale (offline)
+ceo swarm owners-health           # flag stale single-scope owners and peers whose scheduler reported fatal
 ```
 
 Scheduling is owned by the `ceo-schedulerd` daemon (native crontab install is retired); its run predicate (`selectRunnable`, from the [cronbird](https://github.com/nhangen/cronbird) engine) is exactly the intersection above.

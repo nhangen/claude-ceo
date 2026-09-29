@@ -34,7 +34,7 @@ Two scopes decide where a playbook runs:
   rewrite) no longer exist.
 - **A non-owner host enables only each-scope telemetry playbooks.** On any host
   that is not the owner (e.g. the MacBook), `ceo playbook enable` **only** the
-  each-scope telemetry playbooks (today: `token-intake`). Never enable a
+  each-scope telemetry and health playbooks (today: `token-intake` and `owners-health`). Never enable a
   single-scope scanner task there — it belongs to its owner (ML-1) and, being
   single-scope, will not fire on a non-owner host anyway.
 - **ML-1 remains the owner of all single-scope playbooks.** Editing/registering a

@@ -93,7 +93,7 @@ On each host:
 ```bash
 ceo doctor                # deps, vault, scheduler daemon, auth
 ceo swarm doctor          # detect swarm.json sync-conflict copies (--fix to heal)
-ceo swarm owners-health   # flag single-scope owners whose heartbeat has gone stale
+ceo swarm owners-health   # flag stale single-scope owners and any peer whose scheduler reported a fatal fault
 ```
 
-`ceo swarm doctor` exits non-zero if any `swarm.sync-conflict-*.json` copy exists; `--fix` merges them back (`hosts` union, owners live-wins-per-key, max `schema_version`) and removes the copies. `ceo swarm owners-health` flags single-scope playbooks whose owner host's synced heartbeat is stale (host presumed offline → those playbooks run nowhere) and exits non-zero when any owner is stale.
+`ceo swarm doctor` exits non-zero if any `swarm.sync-conflict-*.json` copy exists; `--fix` merges them back (`hosts` union, owners live-wins-per-key, max `schema_version`) and removes the copies. `ceo swarm owners-health` flags single-scope playbooks whose owner host's synced heartbeat is stale (host presumed offline → those playbooks run nowhere) and any peer, owner or not, whose `ceo-schedulerd` marked its heartbeat `fatal` on a permanent local-write fault (#562), and exits non-zero when either is found. The `owners-health` playbook runs it every 15 minutes with `--scheduled`; enable it on each host with `ceo playbook enable owners-health`.

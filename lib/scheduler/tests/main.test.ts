@@ -118,6 +118,20 @@ describe("main entrypoint process exit", () => {
     }
   });
 
+  test.skipIf(isRoot)("still exits 78 when the synced heartbeat cannot be marked either", async () => {
+    const fix = createFixture();
+    try {
+      chmodSync(fix.schedulerdDir, 0o555);
+      // A file where the heartbeats directory should be makes the mark fail too.
+      writeFileSync(join(fix.vault, "CEO", "heartbeats"), "");
+      const { exitCode, stderr } = await runDaemon(fix);
+      expect(exitCode).toBe(FATAL_EXIT_CODE);
+      expect(stderr).toContain("could not mark the synced heartbeat fatal");
+    } finally {
+      fix.cleanup();
+    }
+  });
+
   test.skipIf(isRoot)("exits with FATAL_EXIT_CODE (78) on a fresh host whose schedulerd dir is unwritable", async () => {
     // No run-state directories yet, so the startup mkdir is the first write that fails.
     const fix = createFixture({ precreateRunState: false });
@@ -255,15 +269,13 @@ describe("recordFatalInSyncedHeartbeat", () => {
     }
   });
 
-  test("a new code replaces the old one and keeps the ts", () => {
+  test("a new code replaces the old one", () => {
     const { dir, path } = setup();
     try {
       mkdirSync(join(dir, "CEO", "heartbeats"), { recursive: true });
       writeFileSync(path, JSON.stringify({ host: "mac", ts: "2026-09-29T01:00:00.000Z", fatal: { code: "ENOSPC", since: "x" } }));
       recordFatalInSyncedHeartbeat(path, "mac", "EROFS", now);
-      const hb = JSON.parse(readFileSync(path, "utf8"));
-      expect(hb.fatal.code).toBe("EROFS");
-      expect(hb.ts).toBe("2026-09-29T01:00:00.000Z");
+      expect(JSON.parse(readFileSync(path, "utf8")).fatal).toEqual({ code: "EROFS", since: "2026-09-29T02:00:00.000Z" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

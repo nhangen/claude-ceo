@@ -360,6 +360,79 @@ test_owners_health_playbook_script_runs_the_scheduled_mode() {
   assert_eq "$(_inbox_count '<!-- owner-staleness:mac -->')" "0" "the playbook script keeps staleness out of the inbox"
 }
 
+test_owners_health_fatal_does_not_realert_after_check_off_until_it_recovers() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  local inbox="$TEST_VAULT/CEO/inbox/checker.md"
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" ENOSPC
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  sed -i.bak 's/^- \[ \]/- [x]/' "$inbox" && rm -f "$inbox.bak"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_eq "$(grep -c '^- \[ \].*schedulerd-fatal:mac' "$inbox")" "0" \
+    "a still-fatal peer does not re-alert after the line is checked off"
+  _write_heartbeat_iso mac "$(_iso_at_offset 60)"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" ENOSPC
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_eq "$(grep -c '^- \[ \].*schedulerd-fatal:mac' "$inbox")" "1" \
+    "a peer that recovers and goes fatal again re-alerts"
+}
+
+test_owners_health_scheduled_checks_fatal_without_a_swarm_json() {
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" EACCES
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "a missing swarm.json is not a check failure"
+  assert_eq "$(_inbox_count '<!-- schedulerd-fatal:mac -->')" "1" "a fatal peer still escalates without swarm.json"
+  assert_eq "$(_alert_status)" "firing" "the alert file is still written"
+}
+
+test_owners_health_ignores_a_sync_conflict_copy() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  _write_heartbeat_iso mac "$(_iso_at_offset 60)"
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" EACCES
+  mv "$TEST_VAULT/CEO/heartbeats/mac.json" "$TEST_VAULT/CEO/heartbeats/mac.sync-conflict-20260929-010000-ABCDEFG.json"
+  _write_heartbeat_iso mac "$(_iso_at_offset 60)"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count 'schedulerd-fatal')" "0" "a conflict copy is not a peer"
+  assert_eq "$(_alert_status)" "clear" "a conflict copy does not keep the alert firing"
+}
+
+test_owners_health_alert_since_marks_the_last_transition() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{"norx":"mac"}}'
+  local alert="$TEST_VAULT/CEO/alerts/owners-health-checker.md"
+  _write_heartbeat_iso mac "$(_iso_at_offset 14400)"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  sed -i.bak 's/^since: .*/since: 2000-01-01T00:00:00Z/' "$alert" && rm -f "$alert.bak"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_contains "$(cat "$alert")" "since: 2000-01-01T00:00:00Z" "since is kept while the status is unchanged"
+  _write_heartbeat_iso mac "$(_iso_at_offset 60)"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_not_contains "$(cat "$alert")" "since: 2000-01-01T00:00:00Z" "since moves when the status changes"
+  assert_eq "$(_alert_status)" "clear" "the alert clears on recovery"
+}
+
+test_owners_health_fatal_since_is_sanitized_before_the_alert() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  mkdir -p "$TEST_VAULT/CEO/heartbeats"
+  echo '{"host":"mac","ts":"2026-06-13T11:59:00Z","fatal":{"code":"EACCES","since":"x <!-- evil"}}' \
+    > "$TEST_VAULT/CEO/heartbeats/mac.json"
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || true
+  assert_not_contains "$(cat "$TEST_VAULT/CEO/alerts/owners-health-checker.md")" "evil" \
+    "a since that is not a timestamp never reaches the synced alert"
+}
+
+test_owners_health_scheduled_reports_its_outcome() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  local outcome="$TEST_HOME/outcome"
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" EACCES
+  env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" CEO_RUNNER_OUTCOME_FILE="$outcome" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" PATH="$PATH" bash "$CEO_CLI" swarm owners-health --scheduled >/dev/null 2>&1 || true
+  assert_eq "$(cat "$outcome")" "fired" "a run that escalated reports fired"
+  env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" CEO_RUNNER_OUTCOME_FILE="$outcome" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" PATH="$PATH" bash "$CEO_CLI" swarm owners-health --scheduled >/dev/null 2>&1 || true
+  assert_eq "$(cat "$outcome")" "noop" "a run with nothing new reports noop"
+}
+
 test_owners_health_fatal_code_is_sanitized_before_the_inbox() {
   _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
   _write_fatal_heartbeat mac "$(_iso_at_offset 60)" 'x]] <!-- evil'

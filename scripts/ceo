@@ -1138,7 +1138,8 @@ _parse_iso8601_to_epoch() {
 #   It also reads every peer's heartbeat, owner or not, for a .fatal field: a
 #   daemon that hit a permanent local-write fault marks it before exiting 78,
 #   and launchd then respawns it forever (#562). That is a crash loop, not a
-#   sleeping laptop, so it escalates to the inbox at once.
+#   sleeping laptop, so it escalates to the inbox at once. This runs before, and
+#   regardless of, swarm.json, which only the owner check needs.
 #
 #   --scheduled is the owners-health playbook's mode. It runs every 15 minutes
 #   on each host, so plain owner staleness (a laptop asleep overnight) goes only
@@ -1157,16 +1158,6 @@ cmd_swarm_owners_health() {
   : "${CEO_VAULT:?CEO_VAULT must be set before ceo swarm owners-health}"
   : "${HOME:?HOME must be set before ceo swarm owners-health}"
 
-  local swarm_file; swarm_file=$(_swarm_path) || return 1
-  if [ ! -f "$swarm_file" ]; then
-    echo "swarm owners-health: no swarm.json at $swarm_file (nothing to check)."
-    return 0
-  fi
-  if ! jq -e . "$swarm_file" >/dev/null 2>&1; then
-    echo "ERROR: $swarm_file is malformed JSON; cannot read owners." >&2
-    return 1
-  fi
-
   # Testing seam: CEO_SWARM_NOW_EPOCH pins "now" for deterministic staleness.
   # An empty/non-numeric value falls through to the real clock.
   local now_epoch="${CEO_SWARM_NOW_EPOCH:-}"
@@ -1177,19 +1168,22 @@ cmd_swarm_owners_health() {
   local hb_dir="$CEO_VAULT/CEO/heartbeats"
   local state_file="$HOME/.ceo/owner-staleness-state.json"
   [ "$scheduled" -eq 1 ] && state_file="$HOME/.ceo/owners-health-scheduled-state.json"
+  # Trimmed like the daemon's resolveHost, so the self-skip matches the name
+  # the daemon gave its own heartbeat file.
   local self_host="${CEO_HOSTNAME:-$(hostname -s 2>/dev/null)}"
+  self_host="${self_host#"${self_host%%[![:space:]]*}"}"
+  self_host="${self_host%"${self_host##*[![:space:]]}"}"
   : "${self_host:?cannot determine this host for the owners-health inbox}"
   local inbox_dir="$CEO_VAULT/CEO/inbox"
   local inbox_file="$inbox_dir/$self_host.md"
 
-  mkdir -p "$(dirname "$state_file")"
   local prior_state="{}"
   if [ -f "$state_file" ] && jq -e . "$state_file" >/dev/null 2>&1; then
     prior_state=$(jq -c . "$state_file")
   fi
 
   local new_state="{}"
-  local any_stale=0 any_fatal=0 report=""
+  local any_stale=0 any_fatal=0 check_error=0 escalated=0 report=""
 
   # Appends <task> to this host's inbox unless an UNCHECKED line carrying
   # <marker> is already there. The state file is host-local but inbox/<host>.md
@@ -1207,6 +1201,7 @@ cmd_swarm_owners_health() {
       echo "ERROR: swarm owners-health: failed to append to $inbox_file" >&2
       return 1
     }
+    escalated=1
   }
 
   local hb peer code since line
@@ -1214,6 +1209,11 @@ cmd_swarm_owners_health() {
     [ -f "$hb" ] || continue
     peer=$(basename "$hb" .json)
     [ "$peer" = "$self_host" ] && continue
+    # A Syncthing conflict copy is a stale snapshot no daemon will overwrite,
+    # so reading it as a peer would alert forever on a host that has healed.
+    case "$peer" in *.sync-conflict-*) continue ;; esac
+    # The name lands in a synced inbox line; accept only a host-shaped segment.
+    case "$peer" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
     code=$(jq -r 'if (.fatal | type) == "object" then (.fatal.code // "unknown" | tostring) else empty end' "$hb" 2>/dev/null) || code=""
     [ -n "$code" ] || continue
     # The code lands in a synced inbox line; keep it to an errno-shaped token.
@@ -1231,14 +1231,25 @@ cmd_swarm_owners_health() {
     fi
   done
 
-  # Distinct owner hosts and, for each, the sorted list of playbooks it owns.
-  local owner_hosts
-  owner_hosts=$(jq -r '(.owners // {}) | to_entries[] | select(.value | type == "string") | .value' \
-    "$swarm_file" | sort -u)
-
-  if [ -z "$owner_hosts" ]; then
-    line="swarm owners-health: no single-scope owners assigned (nothing to check)."
+  local swarm_file owner_hosts=""
+  if ! swarm_file=$(_swarm_path); then
+    check_error=1
+  elif [ ! -f "$swarm_file" ]; then
+    line="swarm owners-health: no swarm.json at $swarm_file (owner check skipped)."
     echo "$line"; report+="$line"$'\n'
+  elif ! jq -e . "$swarm_file" >/dev/null 2>&1; then
+    echo "ERROR: $swarm_file is malformed JSON; cannot read owners." >&2
+    line="  ✗ $swarm_file is malformed JSON; owner check skipped"
+    report+="$line"$'\n'
+    check_error=1
+  else
+    # Distinct owner hosts and, for each, the sorted list of playbooks it owns.
+    owner_hosts=$(jq -r '(.owners // {}) | to_entries[] | select(.value | type == "string") | .value' \
+      "$swarm_file" | sort -u)
+    if [ -z "$owner_hosts" ]; then
+      line="swarm owners-health: no single-scope owners assigned (nothing to check)."
+      echo "$line"; report+="$line"$'\n'
+    fi
   fi
 
   local host
@@ -1295,8 +1306,15 @@ cmd_swarm_owners_health() {
     fi
   done <<<"$owner_hosts"
 
+  # The alert file goes first: it is the playbook's declared artifact, so it
+  # should reflect this run even when the state write below fails.
+  if [ "$scheduled" -eq 1 ]; then
+    _owners_health_write_alert "$self_host" "$(( any_stale || any_fatal || check_error ))" "$report" || return 1
+  fi
+
   # Atomic state write: only the currently-stale set survives, so a recovered
   # host drops out of state and a later re-stale re-alerts as a fresh transition.
+  mkdir -p "$(dirname "$state_file")"
   local state_tmp
   state_tmp=$(mktemp "$state_file.XXXXXX") || {
     echo "ERROR: swarm owners-health: mktemp failed for $state_file" >&2
@@ -1309,9 +1327,19 @@ cmd_swarm_owners_health() {
   fi
 
   if [ "$scheduled" -eq 1 ]; then
-    _owners_health_write_alert "$self_host" "$(( any_stale || any_fatal ))" "$report" || return 1
+    # Tells ceo-cron whether this tick did anything, so a quiet check every 15
+    # minutes is not a success notice under notify_events: all.
+    if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
+      if [ "$escalated" -eq 1 ]; then
+        printf 'fired' > "$CEO_RUNNER_OUTCOME_FILE"
+      else
+        printf 'noop' > "$CEO_RUNNER_OUTCOME_FILE"
+      fi
+    fi
+    [ "$check_error" -eq 1 ] && return 1
     return 0
   fi
+  [ "$check_error" -eq 1 ] && return 1
   [ "$any_stale" -eq 1 ] && return 1
   [ "$any_fatal" -eq 1 ] && return 1
   return 0
@@ -1322,23 +1350,27 @@ cmd_swarm_owners_health() {
 #   is carried over while the status is unchanged, so it marks the transition.
 _owners_health_write_alert() {
   local self="$1" firing="$2" report="$3"
-  local alerts_dir="$CEO_VAULT/CEO/alerts"
-  local alert_file="$alerts_dir/owners-health-$self.md"
+  local alert_file="$CEO_VAULT/CEO/alerts/owners-health-$self.md"
   local status="clear"; [ "$firing" -eq 1 ] && status="firing"
   local now; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  local since="$now"
-  if [ -f "$alert_file" ]; then
-    local prev_status prev_since
-    prev_status=$(awk -F': ' '/^status: /{print $2; exit}' "$alert_file")
-    prev_since=$(awk -F': ' '/^since: /{print $2; exit}' "$alert_file")
-    [ "$prev_status" = "$status" ] && [ -n "$prev_since" ] && since="$prev_since"
+  local since="$now" prev_status prev_since
+  if prev_status=$(ceo_read_alert_field "$alert_file" status) && [ "$prev_status" = "$status" ] \
+    && prev_since=$(ceo_read_alert_field "$alert_file" since) && [ -n "$prev_since" ]; then
+    since="$prev_since"
   fi
-  mkdir -p "$alerts_dir" || return 1
-  local tmp; tmp=$(mktemp "$alert_file.XXXXXX") || return 1
-  if ! {
-    printf -- '---\nstatus: %s\nsince: %s\nlast_check: %s\n---\n\n' "$status" "$since" "$now"
-    printf '# Owners health (checked from %s)\n\n%s' "$self" "$report"
-  } > "$tmp" || ! mv -f "$tmp" "$alert_file"; then
+  local fm tmp
+  fm=$(ceo_write_alert_frontmatter --status="$status" --since="$since" \
+    --last-check="$now" --host="$self") || {
+    echo "ERROR: invalid alert frontmatter for $alert_file" >&2
+    return 1
+  }
+  mkdir -p "$(dirname "$alert_file")" || return 1
+  tmp=$(mktemp "$alert_file.XXXXXX") || {
+    echo "ERROR: mktemp failed for $alert_file" >&2
+    return 1
+  }
+  if ! printf '%s\n\n# Owners health (checked from %s)\n\n%s' "$fm" "$self" "$report" > "$tmp" \
+    || ! mv -f "$tmp" "$alert_file"; then
     rm -f "$tmp"
     echo "ERROR: swarm owners-health: failed to write $alert_file" >&2
     return 1
