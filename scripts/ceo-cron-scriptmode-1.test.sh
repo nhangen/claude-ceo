@@ -124,7 +124,8 @@ _child_abort_leaves_no_fixture() {  # $1=label  $2=abort statement
   # executable survives an abort must not itself write one and clean it up on a
   # line an abort would skip.
   _fixture_script "$child"
-  local out; out=$(bash "$child" 2>&1)
+  # Unset so a filtered parent run does not filter out the child's test_x.
+  local out; out=$(env -u TEST_FILTER bash "$child" 2>&1)
   rm -f "$child"
   assert_contains "$out" "FAILED:" \
     "$label: the child suite actually ran and reported its deliberate failure"
@@ -152,7 +153,9 @@ test_a_body_ending_on_a_failing_assertion_still_has_its_fixture_swept() {
 # the child inherits it, so `kill -INT` on a `&`-launched suite does nothing and
 # this arm passed with the trap removed. SIGTERM is not ignored, and it is also
 # the realistic signal — a CI cancel or a supervisor stop, not someone's Ctrl-C.
-test_a_signalled_run_still_has_its_fixture_swept() {
+# HUP is the other realistic one: a closing terminal or agent session (#571).
+_signalled_run_leaves_no_fixture() {
+  local sig="$1"
   local probe="$SCRIPT_DIR/abort-signal-test.sh"
   rm -f "$probe"
   local child="$SCRIPT_DIR/interrupt-child-probe.sh"
@@ -172,21 +175,29 @@ test_a_signalled_run_still_has_its_fixture_swept() {
   # by construction, so it is the likeliest file in the repo to be caught by a
   # Ctrl-C — and it sits in the tracked directory.
   _fixture_script "$child"
-  bash "$child" >"$TEST_HOME/interrupt-out" 2>&1 &
+  env -u TEST_FILTER bash "$child" >"$TEST_HOME/interrupt-out" 2>&1 &
   local child_pid=$!
   local waited=0
   while [ "$waited" -lt 100 ] && ! grep -q READY "$TEST_HOME/interrupt-out" 2>/dev/null; do
     sleep 0.1; waited=$((waited + 1))
   done
-  kill -TERM "$child_pid" 2>/dev/null || true
+  kill -"$sig" "$child_pid" 2>/dev/null || true
   wait "$child_pid" 2>/dev/null || true
   rm -f "$child"
 
   assert_contains "$(cat "$TEST_HOME/interrupt-out" 2>/dev/null || echo "")" "READY" \
     "the child reached the body before being signalled"
   assert_eq "$(test -f "$probe" && echo present || echo gone)" "gone" \
-    "a signalled run still reaches teardown"
+    "a $sig-signalled run still reaches teardown"
   rm -f "$probe"
+}
+
+test_a_signalled_run_still_has_its_fixture_swept() {
+  _signalled_run_leaves_no_fixture TERM
+}
+
+test_a_hung_up_run_still_has_its_fixture_swept() {
+  _signalled_run_leaves_no_fixture HUP
 }
 
 

@@ -230,13 +230,15 @@ run_tests() {
   # up there stays behind — for the ceo-cron suites that is an executable in the
   # tracked scripts/ directory (#380), which is the leak teardown exists to
   # prevent. Ctrl-C during a slow suite is not an exotic event. `type` is
-  # re-checked because the trap outlives any one arm, and 130 is the
-  # conventional SIGINT status the caller would have seen anyway.
-  # `trap - INT TERM` first, so a second signal — or one arriving while the
+  # re-checked because the trap outlives any one arm. Every trapped signal
+  # exits 130; no caller distinguishes 129/130/143.
+  # `trap - INT TERM HUP` first, so a second signal — or one arriving while the
   # loop's own teardown is mid-flight — cannot re-enter this handler. A
   # second pass through a teardown that has already unset its saved HOME
   # aborts under `set -u` before reaching the exit, costing the status.
-  trap 'trap - INT TERM; type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM
+  # HUP is what a closing terminal or agent session sends the shells it started;
+  # untrapped, it left a fixture behind in scripts/ (#571).
+  trap 'trap - INT TERM HUP; type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM HUP
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue
