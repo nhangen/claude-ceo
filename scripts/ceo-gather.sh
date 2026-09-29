@@ -560,30 +560,26 @@ _gather_safe_read() {
 export BRIEFINGS_TRAINING
 BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 
-# --- Profile.md Active Domains (extract section, not whole file) ---
-# Profile.md may contain personal context; we want only the priority-ordering
-# section. If the section header isn't present, skip rather than dumping the
-# whole file.
-PROFILE_FILE="$VAULT/Profile.md"
-if [ -f "$PROFILE_FILE" ]; then
+# --- Current profile context (Profile/goals.md, else Profile.md) ---
+# The weekly-synthesis memo treats CEO_PROFILE_CONTEXT_VERSION=1 as "these are
+# the current roles" (llm-tools#827), so export it only when the reader printed
+# dated, in-window content. A stale, undated, or unreadable Profile leaves it
+# unset and the memo prints its unavailable warning; the reader's withheld
+# message still goes into ACTIVE_DOMAINS_CONTENT for the prompt.
 export ACTIVE_DOMAINS_CONTENT
-# Capture, then truncate — piping sed into `head -c` SIGPIPEs sed once the section
-# exceeds the cap, which pipefail turns into an aborted run (#293). Here-string
-# rather than ${var:0:n} to keep head's byte semantics; the cap is a byte budget.
-# sed returns 0 when the range simply doesn't match, so a non-zero status here is a
-# real read error and is recorded rather than silently read as "no section".
-_active_domains_rc=0
-_active_domains_raw=$(sed -n '/^##* *Active Domains/,/^## /p' "$PROFILE_FILE" 2>/dev/null) || _active_domains_rc=$?
-if [ "$_active_domains_rc" -ne 0 ]; then
-  echo "WARN: sed on $PROFILE_FILE failed (rc=$_active_domains_rc)" >&2
-  _file_gather_mark_degraded "file-read-failed:$PROFILE_FILE:rc=$_active_domains_rc"
-  _active_domains_raw=""
-fi
-ACTIVE_DOMAINS_CONTENT=$(head -c "$GATHER_MAX_FILE" <<< "$_active_domains_raw")
-unset _active_domains_raw
-else
-  export ACTIVE_DOMAINS_CONTENT=""
-fi
+unset CEO_PROFILE_CONTEXT_VERSION
+_profile_rc=0
+ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_rc=$?
+case "$_profile_rc" in
+  0) export CEO_PROFILE_CONTEXT_VERSION=1 ;;
+  1) ;;
+  *)
+    echo "WARN: profile context reader failed (rc=$_profile_rc)" >&2
+    _file_gather_mark_degraded "profile-context-failed:rc=$_profile_rc"
+    [ -n "$ACTIVE_DOMAINS_CONTENT" ] || ACTIVE_DOMAINS_CONTENT="Active domains unavailable: context reader failed. Do not infer current roles or priorities."
+    ;;
+esac
+unset _profile_rc
 
 # --- Pending.md outstanding questions (top entries only) ---
 # Pre-extract unchecked items so Claude doesn't need to read the full file.

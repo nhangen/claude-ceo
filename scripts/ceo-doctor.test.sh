@@ -950,4 +950,21 @@ EOF
     "doctor must not remove preexisting playbook-drift.md alert file"
 }
 
+test_doctor_warns_on_stale_profile_context() {
+  printf -- '---\nactive_domains_as_of: 2020-01-01\n---\n## Active Domains\n- PRIVATE DOMAIN\n' > "$CEO_VAULT/Profile.md"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "⚠ profile context: Profile.md active_domains_as_of 2020-01-01" \
+    "doctor must warn when Active Domains are older than the reader's window"
+  assert_not_contains "$output" "PRIVATE DOMAIN" "doctor never prints domain content"
+}
+
+test_doctor_passes_current_profile_context() {
+  printf -- '---\nactive_domains_as_of: %s\n---\n## Active Domains\n- x\n' "$(date +%F)" > "$CEO_VAULT/Profile.md"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "✓ profile context: Profile.md active_domains_as_of" \
+    "a current, dated Profile reads as healthy"
+}
+
 run_tests

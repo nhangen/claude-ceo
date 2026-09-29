@@ -750,6 +750,18 @@ cmd_doctor() {
     ok=$(( ok + 1 ))
   fi
 
+  # Stale Active Domains make every weekly memo run "context: unavailable"
+  # (llm-tools#827). Surfaced here rather than by a new automated vault writer.
+  local _pc_out _pc_rc=0
+  _pc_out=$(python3 "$(dirname "${BASH_SOURCE[0]}")/ceo-profile-context.py" --doctor "$CEO_VAULT" "$(date +%F)" 2>&1) || _pc_rc=$?
+  if [ "$_pc_rc" -eq 0 ]; then
+    echo "  ✓ profile context: $_pc_out"
+    ok=$(( ok + 1 ))
+  else
+    echo "  ⚠ profile context: $_pc_out"
+    warn=$(( warn + 1 ))
+  fi
+
   echo ""
   echo "Result: $ok ok, $warn warnings, $fail failures"
   [ "$fail" -gt 0 ] && return 1

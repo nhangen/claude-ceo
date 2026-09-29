@@ -162,21 +162,22 @@ test_unreadable_pending_marks_degraded() {
     "an IO error must never be reported as a quiet day (#293 review)"
 }
 
-# Sibling site: Profile.md's Active Domains section past the byte cap must
-# truncate rather than abort. Note GATHER_MAX_FILE is set unconditionally inside
-# the gather, so the cap here is its value (10000), not anything a caller sets.
-test_oversized_active_domains_does_not_abort() {
-  { echo "## Active Domains"
+# Sibling site: an Active Domains section past the byte cap must not abort the
+# gather, and must be withheld whole rather than truncated into partial truth.
+test_oversized_active_domains_are_withheld_without_aborting() {
+  { printf -- '---\nactive_domains_as_of: %s\n---\n' "$(date +%F)"; echo "## Active Domains"
     for i in $(seq 1 2000); do echo "- domain $i with padding to exceed the byte cap"; done
     echo "## Next Section"; } > "$CEO_VAULT/Profile.md"
 
   local out; out=$(_run_gather_strict ACTIVE_DOMAINS_CONTENT)
   assert_contains "$out" "RC=0" \
     "an oversized Active Domains section must not abort the gather (#293)"
-  # Without this the test passes with the content empty, so a broken sed pattern
-  # would sail through.
-  assert_contains "$out" "FIRST=## Active Domains" \
-    "the section must actually be captured, not silently emptied"
+  assert_contains "$out" "FIRST=Source: Profile.md" \
+    "the diagnostic must identify the source"
+  local content
+  content=$(set +eu; source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1; printf '%s' "$ACTIVE_DOMAINS_CONTENT")
+  assert_contains "$content" "exceeds 10000 bytes" "oversized section needs review"
+  assert_not_contains "$content" "domain 1 with padding" "partial domains must not leak"
 }
 
 # The ledger glob: dir present but holding no .md leaves the glob literal, ls
