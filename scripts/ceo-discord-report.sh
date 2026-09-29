@@ -183,7 +183,25 @@ esac
 SECRETS_FILE="${CEO_SECRETS_FILE:-$HOME/.config/claude-ceo/secrets.json}"
 WEBHOOK="${CEO_DISCORD_REPORT_WEBHOOK:-}"
 if [ -z "$WEBHOOK" ] && [ -f "$SECRETS_FILE" ]; then
-  WEBHOOK=$(jq -r '.discord_report_webhook // ""' "$SECRETS_FILE" 2>/dev/null || echo "")
+  secrets_errf=$(mktemp)
+  secrets_rc=0
+  # The "v:" prefix makes a parseable document always print something, so an
+  # empty or whitespace-only file is told apart from a missing key, and a
+  # non-string value fails the concatenation instead of becoming the URL.
+  WEBHOOK=$(jq -r '"v:" + (.discord_report_webhook // "")' "$SECRETS_FILE" 2>"$secrets_errf") || secrets_rc=$?
+  if [ "$secrets_rc" -ne 0 ]; then
+    # Quoted strings are masked, including one jq truncated mid-value: this
+    # file holds the webhook URL, and jq's type errors print the value.
+    _dlog "secrets jq query failed ($SECRETS_FILE): $(head -1 "$secrets_errf" | sed -e 's/"[^"]*"/"…"/g' -e 's/"[^"]*$/"…/'), bailing 0"
+    rm -f "$secrets_errf"
+    exit 0
+  fi
+  rm -f "$secrets_errf"
+  if [ -z "$WEBHOOK" ]; then
+    _dlog "secrets jq query produced no output ($SECRETS_FILE), bailing 0"
+    exit 0
+  fi
+  WEBHOOK="${WEBHOOK#v:}"
 fi
 [ -n "$WEBHOOK" ] || {
   _dlog "report webhook unresolved, bailing 0"
