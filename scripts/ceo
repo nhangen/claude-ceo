@@ -200,6 +200,29 @@ _doctor_check_freshness() {
   echo "FRESH=$fresh STALE=$stale"
 }
 
+# Check if discord-report debug log is appendable/writable (#484).
+# ceo-discord-report.sh directs diagnostic logs to CEO_DISCORD_REPORT_DEBUG_LOG
+# (default: /tmp/ceo-discord-report-debug.log) with `>> "$log" 2>/dev/null || true`.
+# If unwritable (root-owned, read-only dir, broken symlink, trailing slash),
+# all diagnostic lines are silently dropped.
+_doctor_check_discord_log_writable() {
+  local log="$1"
+  case "$log" in */) return 1 ;; esac
+  if [ -L "$log" ] && [ ! -e "$log" ]; then
+    return 1
+  fi
+  # A character device such as /dev/null is how an operator turns the log off.
+  if [ -c "$log" ]; then
+    [ -w "$log" ]
+  elif [ -e "$log" ]; then
+    [ -f "$log" ] && [ -w "$log" ]
+  else
+    local dir; dir="$(dirname "$log")"
+    # Creating an entry needs search (x) on the parent as well as write.
+    [ -d "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]
+  fi
+}
+
 _doctor_schedulerd_remediation() {
   local target="$1"
   echo "    Repoint the agent to the main clone ($target) and reload:"
@@ -698,6 +721,21 @@ cmd_doctor() {
   else
     echo "  ✓ playbook freshness: no scheduled playbook has silently stopped running or delivering"
     ok=$(( ok + 1 ))
+  fi
+
+  # discord-report debug log writability (#484)
+  local _dr_log="${CEO_DISCORD_REPORT_DEBUG_LOG:-/tmp/ceo-discord-report-debug.log}"
+  if [ "$_dr_log" = "/dev/null" ]; then
+    echo "  ✓ discord-report debug log disabled (/dev/null)"
+    ok=$(( ok + 1 ))
+  elif _doctor_check_discord_log_writable "$_dr_log"; then
+    echo "  ✓ discord-report debug log writable ($_dr_log)"
+    ok=$(( ok + 1 ))
+  else
+    # Lost debug lines do not stop delivery (_dlog ends in `|| true`), so warn.
+    echo "  ⚠ discord-report debug log is not writable: $_dr_log"
+    echo "    fix: set CEO_DISCORD_REPORT_DEBUG_LOG to a writable path, or fix ownership (a root-owned file from an earlier sudo run is the usual cause)"
+    warn=$(( warn + 1 ))
   fi
 
   local _sti_out _sti_missing _sti_repo

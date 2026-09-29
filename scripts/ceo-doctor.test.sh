@@ -11,6 +11,16 @@ CEO_BIN="$SCRIPT_DIR/ceo"
 
 source "$SCRIPT_DIR/test-harness.sh"
 
+_load_ceo_helpers() {
+  export CEO_LIB_ONLY=1
+  set +u
+  # shellcheck disable=SC1090,SC1091
+  source "$CEO_BIN"
+  set +e +u
+  unset CEO_LIB_ONLY
+}
+_load_ceo_helpers
+
 setup() {
   TEST_HOME=$(mktemp -d)
   PATH_BACKUP="$PATH"
@@ -23,6 +33,8 @@ setup() {
   export CEO_STATE_DIR="$TEST_HOME/.ceo/state"
   mkdir -p "$CEO_STATE_DIR"
   export CEO_HOSTNAME="testhost"
+  # Isolate discord-report debug log inside the test fixture (#484)
+  export CEO_DISCORD_REPORT_DEBUG_LOG="$TEST_HOME/discord-debug.log"
   # The generated registry is host-local now ($HOME/.ceo/registry.json), not in
   # the synced vault — doctor reads it from there.
   REGISTRY_FILE="$HOME/.ceo/registry.json"
@@ -98,11 +110,12 @@ EOF
 }
 
 teardown() {
+  chmod -R u+rwX "$TEST_HOME" 2>/dev/null || true
   rm -rf "$TEST_HOME"
   export PATH="$PATH_BACKUP"
   export HOME="$HOME_BACKUP"
   unset TEST_HOME PATH_BACKUP HOME_BACKUP CEO_VAULT CEO_DIR CEO_STATE_DIR CEO_HOSTNAME CEO_PLUTIL_BIN
-  unset CEO_SCHEDULER CEO_LAUNCHD_DIR CEO_CRONTAB_BIN CEO_SYSTEMCTL_BIN
+  unset CEO_SCHEDULER CEO_LAUNCHD_DIR CEO_CRONTAB_BIN CEO_SYSTEMCTL_BIN CEO_DISCORD_REPORT_DEBUG_LOG
 }
 
 # Since #397 the dispatcher writes cron-runs-<host>.log, and doctor reads the
@@ -788,6 +801,108 @@ test_doctor_stignore_clean_when_live_file_matches_repo() {
   else
     skip_test "repo shared.stignore not reachable from the test bin path"
   fi
+}
+
+# --- #484: check discord-report debug log writability in ceo doctor ---
+
+test_doctor_check_discord_log_writable_unit() {
+  # 1. Existing writable file
+  touch "$TEST_HOME/w.log"
+  local rc_w=0
+  _doctor_check_discord_log_writable "$TEST_HOME/w.log" || rc_w=$?
+  assert_eq "$rc_w" "0" "existing writable file must return 0"
+
+  # 2. Non-existent file in writable directory
+  local rc_new=0
+  _doctor_check_discord_log_writable "$TEST_HOME/nonexistent.log" || rc_new=$?
+  assert_eq "$rc_new" "0" "non-existent file in writable dir must return 0"
+
+  # 3. Existing read-only file (skip when running as root)
+  if [ "$(id -u)" != "0" ]; then
+    touch "$TEST_HOME/ro.log"
+    chmod -w "$TEST_HOME/ro.log"
+    local rc=0
+    _doctor_check_discord_log_writable "$TEST_HOME/ro.log" || rc=$?
+    assert_eq "$rc" "1" "read-only file must return 1"
+  fi
+
+  # 4. Directory passed as log file
+  mkdir "$TEST_HOME/dir-log"
+  local rc_dir=0
+  _doctor_check_discord_log_writable "$TEST_HOME/dir-log" || rc_dir=$?
+  assert_eq "$rc_dir" "1" "directory passed as log file must return 1"
+
+  # 5. Trailing slash path
+  local rc_slash=0
+  _doctor_check_discord_log_writable "$TEST_HOME/trailing/" || rc_slash=$?
+  assert_eq "$rc_slash" "1" "path with trailing slash must return 1"
+
+  # 6. Broken symlink
+  ln -s "$TEST_HOME/broken-target" "$TEST_HOME/broken-link"
+  local rc_link=0
+  _doctor_check_discord_log_writable "$TEST_HOME/broken-link" || rc_link=$?
+  assert_eq "$rc_link" "1" "broken symlink must return 1"
+
+  # 7. Non-existent parent directory
+  local rc_nodir=0
+  _doctor_check_discord_log_writable "$TEST_HOME/no-such-dir/file.log" || rc_nodir=$?
+  assert_eq "$rc_nodir" "1" "non-existent parent directory must return 1"
+
+  # 8. Valid symlink to a writable file
+  touch "$TEST_HOME/real.log"
+  ln -s "$TEST_HOME/real.log" "$TEST_HOME/good-link"
+  local rc_goodlink=0
+  _doctor_check_discord_log_writable "$TEST_HOME/good-link" || rc_goodlink=$?
+  assert_eq "$rc_goodlink" "0" "symlink to a writable file must return 0"
+
+  # 9. /dev/null, the conventional way to turn a debug log off
+  local rc_null=0
+  _doctor_check_discord_log_writable /dev/null || rc_null=$?
+  assert_eq "$rc_null" "0" "/dev/null must return 0"
+
+  # 10-11. New file under a read-only, or writable-but-unsearchable, parent
+  if [ "$(id -u)" != "0" ]; then
+    mkdir "$TEST_HOME/rodir" "$TEST_HOME/noxdir"
+    chmod 500 "$TEST_HOME/rodir"
+    chmod 600 "$TEST_HOME/noxdir"
+    local rc_rodir=0 rc_noxdir=0
+    _doctor_check_discord_log_writable "$TEST_HOME/rodir/x.log" || rc_rodir=$?
+    _doctor_check_discord_log_writable "$TEST_HOME/noxdir/x.log" || rc_noxdir=$?
+    assert_eq "$rc_rodir" "1" "new file under a read-only parent must return 1"
+    assert_eq "$rc_noxdir" "1" "new file under an unsearchable parent must return 1"
+  fi
+}
+
+test_doctor_reports_discord_log_writable_clean() {
+  local output
+  output=$("$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "discord-report debug log writable ($CEO_DISCORD_REPORT_DEBUG_LOG)" \
+    "doctor must report discord-report debug log writable when path is appendable"
+}
+
+test_doctor_flags_unwritable_discord_log() {
+  if [ "$(id -u)" = "0" ]; then
+    assert_eq root root "perms test skipped as root"
+    return
+  fi
+  local ro_log="$TEST_HOME/unwritable-debug.log"
+  touch "$ro_log"
+  chmod -w "$ro_log"
+  local output rc=0
+  output=$(CEO_DISCORD_REPORT_DEBUG_LOG="$ro_log" "$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "⚠ discord-report debug log is not writable: $ro_log" \
+    "doctor must warn on an unwritable discord-report debug log"
+  assert_contains "$output" "fix: set CEO_DISCORD_REPORT_DEBUG_LOG to a writable path, or fix ownership" \
+    "doctor must say how to fix an unwritable discord-report debug log"
+  # Losing debug lines does not stop delivery, so it warns rather than fails.
+  assert_eq "$rc" "0" "an unwritable debug log alone must not fail doctor"
+}
+
+test_doctor_reports_discord_log_disabled_for_dev_null() {
+  local output
+  output=$(CEO_DISCORD_REPORT_DEBUG_LOG=/dev/null "$CEO_BIN" doctor 2>&1 || true)
+  assert_contains "$output" "✓ discord-report debug log disabled (/dev/null)" \
+    "doctor must report /dev/null as a deliberately disabled debug log"
 }
 
 test_doctor_reports_drift_on_stdout_without_writing_or_deleting_alert_file() {
