@@ -1363,6 +1363,7 @@ test_report_passes_content_on_stdin_not_argv() {
 
   local sandbox; sandbox=$(mktemp -d)
   cp "$SCRIPT_DIR"/*.sh "$sandbox/" 2>/dev/null
+  cp "$SCRIPT_DIR/ceo-profile-context.py" "$sandbox/"
   cat > "$sandbox/ceo-report.sh" << STUB
 #!/bin/bash
 printf '%s' "\$#" > "$sandbox/argc"

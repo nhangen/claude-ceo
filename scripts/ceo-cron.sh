@@ -2159,7 +2159,7 @@ $(_escape_tag "$BRIEFINGS_TRAINING")
   if _inputs_includes active_domains; then
     ACTIVE_DOMAINS_BLOCK="
 <external-data>
-Canonical Active Domains (Profile/goals.md):
+Active Domains priority order (canonical Profile/goals.md):
 $(_escape_tag "$ACTIVE_DOMAINS_CONTENT")
 </external-data>"
   fi

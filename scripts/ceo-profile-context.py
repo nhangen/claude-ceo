@@ -32,10 +32,13 @@ def render(vault, today):
     age = (today - as_of).days
     if age < 0 or age > MAX_AGE_DAYS:
         return unavailable("canonical active domains are stale as of " + as_of.isoformat())
-    section = re.search(r"^## Active Domains\s*$\n(.*?)(?=^## |\Z)", content, re.MULTILINE | re.DOTALL)
+    section = re.search(r"^## Active Domains(?:\s*\([^\n]*\))?\s*$\n(.*?)(?=^## |\Z)", content, re.MULTILINE | re.DOTALL)
     if not section or not section.group(1).strip():
         return unavailable("canonical Profile/goals.md has no Active Domains section")
-    return "Canonical active domains (Profile/goals.md; as of " + as_of.isoformat() + "):\n" + section.group(1).strip()[:10000] + "\n"
+    domains = section.group(1).strip()
+    if len(domains.encode()) > 10000:
+        return unavailable("canonical Active Domains section exceeds the report context limit")
+    return "Canonical active domains (Profile/goals.md; as of " + as_of.isoformat() + "):\n" + domains + "\n"
 
 
 def main():

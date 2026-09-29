@@ -172,8 +172,8 @@ test_oversized_active_domains_does_not_abort() {
   local out; out=$(_run_gather_strict ACTIVE_DOMAINS_CONTENT)
   assert_contains "$out" "RC=0" \
     "an oversized Active Domains section must not abort the gather (#293)"
-  assert_contains "$out" "FIRST=Canonical active domains" \
-    "the section must actually be captured, not silently emptied"
+  assert_contains "$out" "FIRST=Active domains unavailable" \
+    "an oversized canonical section must be withheld rather than partially injected"
 }
 
 # The ledger glob: dir present but holding no .md leaves the glob literal, ls

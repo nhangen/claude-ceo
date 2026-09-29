@@ -21,7 +21,7 @@ class ProfileContextTests(unittest.TestCase):
         return result.stdout
 
     def test_current_dated_domains_are_reported(self):
-        output = self.render("---\nactive_domains_as_of: 2026-09-20\n---\n## Active Domains\nCurrent Research\n## Private\nignore\n")
+        output = self.render("---\nactive_domains_as_of: 2026-09-20\n---\n## Active Domains (priority)\nCurrent Research\n## Private\nignore\n")
         self.assertIn("Current Research", output)
         self.assertNotIn("ignore", output)
 
