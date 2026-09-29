@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { FATAL_EXIT_CODE } from "cronbird/core";
 import { PermanentHeartbeatWriteError } from "cronbird/cli";
-import { resolveFatalExitCode } from "@/main";
+import { resolveFatalExitCode, trackCompletion } from "@/main";
 import { runningDir, doneDir } from "@/runtime";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -147,5 +147,51 @@ describe("main entrypoint process exit", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(1);
     expect(stderr).toContain("must be set before starting ceo-schedulerd");
+  });
+});
+
+describe("trackCompletion", () => {
+  const harness = () => {
+    const calls: string[] = [];
+    return {
+      calls,
+      clearRunning: () => calls.push("clear"),
+      log: (msg: string) => calls.push(`log:${msg}`),
+    };
+  };
+  const enospc = () => {
+    throw new Error("ENOSPC: no space left on device");
+  };
+
+  test("records the exit code and clears the marker", async () => {
+    const h = harness();
+    await trackCompletion("job", Promise.resolve(0), (code) => h.calls.push(`write:${code}`), h.clearRunning, h.log);
+    expect(h.calls).toEqual(["write:0", "clear"]);
+  });
+
+  test("a failed exit wait records exit 1 and logs why", async () => {
+    const h = harness();
+    await trackCompletion("job", Promise.reject(new Error("wait failed")), (code) => h.calls.push(`write:${code}`), h.clearRunning, h.log);
+    expect(h.calls).toEqual(["clear", "log:completion tracking failed for job: wait failed", "write:1"]);
+  });
+
+  test("a completion write that fails twice settles, clears, and logs both failures", async () => {
+    const h = harness();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await trackCompletion("job", Promise.resolve(0), enospc, h.clearRunning, h.log);
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    expect(h.calls).toEqual([
+      "clear",
+      "clear",
+      "log:completion tracking failed for job: ENOSPC: no space left on device",
+      "log:could not record the failed completion for job: ENOSPC: no space left on device",
+    ]);
   });
 });
