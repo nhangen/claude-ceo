@@ -109,9 +109,12 @@ _registry_report_flag() {
   esac
 }
 
+# Resolve $TRIGGER's membership in a settings.json allow-list. Echoes 1, 0,
+# unset (no settings.json), or error (jq failed, printed nothing, or printed
+# anything but one boolean); each error cause logs its own line (#483).
 _settings_report_flag() {
   local key="$1"
-  local settings_file="${SETTINGS_FILE:-${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/settings.json}"
+  local settings_file="$SETTINGS_FILE"
   if [ ! -f "$settings_file" ]; then
     echo unset
     return
@@ -123,12 +126,12 @@ _settings_report_flag() {
     '((.[$key] // ["morning-brief"]) | (index($trig) != null))' \
     "$settings_file" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
-    _dlog "settings jq query failed for $key ($settings_file): $(head -1 "$errf")"
+    _dlog "settings jq query failed for $key ($settings_file): $(head -1 "$errf"), falling back to default allow-list"
     echo error
     return
   fi
   if [ -z "$out" ]; then
-    _dlog "settings jq query produced no output for $key ($settings_file)"
+    _dlog "settings jq query produced no output for $key ($settings_file), falling back to default allow-list"
     echo error
     return
   fi
@@ -136,7 +139,7 @@ _settings_report_flag() {
     true)  echo 1 ;;
     false) echo 0 ;;
     *)
-      _dlog "settings jq query produced unexpected output for $key ($settings_file): $out"
+      _dlog "settings jq query produced unexpected output for $key ($settings_file): $(printf '%s' "$out" | tr '\n' ' ' | head -c 80), falling back to default allow-list"
       echo error
       ;;
   esac
@@ -164,6 +167,9 @@ case "$report_flag" in
       1) enabled=1 ;;
       0) enabled=0 ;;
       unset|error|*)
+        # error takes unset's default on purpose: a corrupt or mid-write
+        # settings.json must not silently stop morning-brief (#483), and cannot
+        # be trusted to enable any other trigger.
         [ "$TRIGGER" = "morning-brief" ] && enabled=1 || enabled=0
         ;;
     esac
@@ -288,6 +294,7 @@ case "$prior_flag" in
       1) prior_enabled=1 ;;
       0) prior_enabled=0 ;;
       unset|error|*)
+        # Same fallback as the main gate (#483).
         [ "$TRIGGER" = "morning-brief" ] && prior_enabled=1 || prior_enabled=0
         ;;
     esac
