@@ -162,20 +162,17 @@ test_unreadable_pending_marks_degraded() {
     "an IO error must never be reported as a quiet day (#293 review)"
 }
 
-# Sibling site: Profile.md's Active Domains section past the byte cap must
-# truncate rather than abort. Note GATHER_MAX_FILE is set unconditionally inside
-# the gather, so the cap here is its value (10000), not anything a caller sets.
+# The canonical section is bounded before prompt injection.
 test_oversized_active_domains_does_not_abort() {
-  { echo "## Active Domains"
+  mkdir -p "$CEO_VAULT/Profile"
+  { printf '%s\n' '---' 'active_domains_as_of: 2026-09-28' '---' '## Active Domains'
     for i in $(seq 1 2000); do echo "- domain $i with padding to exceed the byte cap"; done
-    echo "## Next Section"; } > "$CEO_VAULT/Profile.md"
+    echo "## Next Section"; } > "$CEO_VAULT/Profile/goals.md"
 
   local out; out=$(_run_gather_strict ACTIVE_DOMAINS_CONTENT)
   assert_contains "$out" "RC=0" \
     "an oversized Active Domains section must not abort the gather (#293)"
-  # Without this the test passes with the content empty, so a broken sed pattern
-  # would sail through.
-  assert_contains "$out" "FIRST=## Active Domains" \
+  assert_contains "$out" "FIRST=Canonical active domains" \
     "the section must actually be captured, not silently emptied"
 }
 

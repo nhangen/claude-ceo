@@ -699,4 +699,18 @@ STUB
   rm -f "$CEO_DIR/playbooks/no-yq-test.md"
 }
 
+test_morning_uses_current_canonical_domains_without_legacy_fallback() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf '## Active Domains\nLegacy Employer\n' > "$CEO_VAULT/Profile.md"
+  printf -- '---\nactive_domains_as_of: %s\n---\n## Active Domains\nCurrent Research\n## Private\nDO NOT INJECT\n' "$(date +%F)" > "$CEO_VAULT/Profile/goals.md"
+  cp "$SCRIPT_DIR/../docs/playbooks/morning.md" "$CEO_DIR/playbooks/morning.md"
+  _stub_claude_capture_stdin
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  CEO_FORCE=1 bash "$CRON" morning >/dev/null 2>&1
+  local prompt; prompt=$(cat "$HOME/claude-stdin.txt")
+  assert_contains "$prompt" "Current Research" "current canonical domains reach the morning prompt"
+  assert_not_contains "$prompt" "Legacy Employer" "legacy Profile.md domains never reach the morning prompt"
+  assert_not_contains "$prompt" "DO NOT INJECT" "non-domain profile sections stay private"
+}
+
 run_tests
