@@ -253,21 +253,16 @@ async function main(): Promise<void> {
         // Record completion so cronbird's queue advances (the MAX_CONCURRENT=1
         // gate drains the next job only once this one is observed done). Runs on
         // the daemon's own event loop, so it never races readCompletions.
-        void proc.exited
-          .then((exitCode) => {
-            writeFileSync(`${dDir}/${name}`, JSON.stringify(completionRecord(startedTs, Date.now(), exitCode)));
-            clearRunning();
-          })
-          .catch((err) => {
-            // Exit tracking itself failed: record a failure and clear the marker
-            // so an unobservable run can never wedge the queue.
-            writeFileSync(`${dDir}/${name}`, JSON.stringify(completionRecord(startedTs, Date.now(), 1)));
-            clearRunning();
-            log(`completion tracking failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
-          });
+        void trackCompletion(
+          name,
+          proc.exited,
+          (exitCode) => writeFileSync(`${dDir}/${name}`, JSON.stringify(completionRecord(startedTs, Date.now(), exitCode))),
+          clearRunning,
+          log,
+        );
       } catch (err) {
         clearRunning(); // spawn failed at start — don't leave a phantom in-flight marker
-        log(`dispatch failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+        log(`dispatch failed for ${name}: ${errText(err)}`);
       }
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
@@ -331,6 +326,44 @@ async function main(): Promise<void> {
   log("stopped");
 }
 
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Settles on every path, including completion writes that throw (ENOSPC or
+ * EROFS between ticks), so the voided promise never becomes an unhandled
+ * rejection that kills the daemon with exit 1 (#563). The run marker is always
+ * cleared. A failed write of a known exit code is logged with that code rather
+ * than recorded as exit 1, since cronbird would re-run a job that succeeded.
+ */
+export async function trackCompletion(
+  name: string,
+  exited: Promise<number>,
+  writeCompletion: (exitCode: number) => void,
+  clearRunning: () => void,
+  log: (msg: string) => void,
+): Promise<void> {
+  let exitCode: number;
+  try {
+    exitCode = await exited;
+  } catch (err) {
+    clearRunning();
+    log(`completion tracking failed for ${name}: ${errText(err)}`);
+    try {
+      writeCompletion(1);
+    } catch (writeErr) {
+      log(`could not record the failed completion for ${name}: ${errText(writeErr)}`);
+    }
+    return;
+  }
+  try {
+    writeCompletion(exitCode);
+  } catch (writeErr) {
+    log(`could not record exit ${exitCode} for ${name}: ${errText(writeErr)}`);
+  } finally {
+    clearRunning();
+  }
+}
+
 /**
  * A permanent local-write fault (cronbird's isPermanentLocalWriteError set) exits
  * FATAL_EXIT_CODE (78, EX_CONFIG); anything else exits 1 (#496). systemd stops on
@@ -344,7 +377,7 @@ export function resolveFatalExitCode(err: unknown): number {
 // Only run when invoked directly (not when imported by tests).
 if (import.meta.main) {
   main().catch((err) => {
-    process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${errText(err)}\n`);
     process.exit(resolveFatalExitCode(err));
   });
 }

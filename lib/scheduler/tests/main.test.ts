@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { FATAL_EXIT_CODE } from "cronbird/core";
 import { PermanentHeartbeatWriteError } from "cronbird/cli";
-import { resolveFatalExitCode } from "@/main";
+import { resolveFatalExitCode, trackCompletion } from "@/main";
 import { runningDir, doneDir } from "@/runtime";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -147,5 +147,71 @@ describe("main entrypoint process exit", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(1);
     expect(stderr).toContain("must be set before starting ceo-schedulerd");
+  });
+});
+
+describe("trackCompletion", () => {
+  const harness = () => {
+    const calls: string[] = [];
+    return {
+      calls,
+      clearRunning: () => calls.push("clear"),
+      log: (msg: string) => calls.push(`log:${msg}`),
+    };
+  };
+  const enospc = () => {
+    throw new Error("ENOSPC: no space left on device");
+  };
+
+  test("records the exit code and clears the marker", async () => {
+    const h = harness();
+    await trackCompletion("job", Promise.resolve(0), (code) => h.calls.push(`write:${code}`), h.clearRunning, h.log);
+    expect(h.calls).toEqual(["write:0", "clear"]);
+  });
+
+  test("a failed exit wait records exit 1 and logs why", async () => {
+    const h = harness();
+    await trackCompletion("job", Promise.reject(new Error("wait failed")), (code) => h.calls.push(`write:${code}`), h.clearRunning, h.log);
+    expect(h.calls).toEqual(["clear", "log:completion tracking failed for job: wait failed", "write:1"]);
+  });
+
+  test("a failed write of a known exit code logs that code and does not record exit 1", async () => {
+    const h = harness();
+    let attempts = 0;
+    const flaky = (code: number) => {
+      attempts += 1;
+      if (attempts === 1) enospc();
+      h.calls.push(`write:${code}`);
+    };
+    await trackCompletion("job", Promise.resolve(0), flaky, h.clearRunning, h.log);
+    expect(h.calls).toEqual(["log:could not record exit 0 for job: ENOSPC: no space left on device", "clear"]);
+  });
+
+  test("a wait failure whose fallback write also fails settles, clears, and logs both", async () => {
+    const h = harness();
+    await trackCompletion("job", Promise.reject(new Error("wait failed")), enospc, h.clearRunning, h.log);
+    expect(h.calls).toEqual([
+      "clear",
+      "log:completion tracking failed for job: wait failed",
+      "log:could not record the failed completion for job: ENOSPC: no space left on device",
+    ]);
+  });
+
+  test("a voided call whose writes throw raises no unhandled rejection", async () => {
+    const h = harness();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // Voided, as the dispatch site calls it: a rejection here is only
+      // observable through the unhandledRejection event.
+      void trackCompletion("job", Promise.resolve(0), enospc, h.clearRunning, h.log);
+      void trackCompletion("job", Promise.reject(new Error("wait failed")), enospc, h.clearRunning, h.log);
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    expect(h.calls.filter((c) => c === "clear")).toHaveLength(2);
   });
 });
