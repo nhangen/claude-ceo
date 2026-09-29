@@ -124,7 +124,8 @@ _child_abort_leaves_no_fixture() {  # $1=label  $2=abort statement
   # executable survives an abort must not itself write one and clean it up on a
   # line an abort would skip.
   _fixture_script "$child"
-  local out; out=$(bash "$child" 2>&1)
+  # Unset so a filtered parent run does not filter out the child's test_x.
+  local out; out=$(env -u TEST_FILTER bash "$child" 2>&1)
   rm -f "$child"
   assert_contains "$out" "FAILED:" \
     "$label: the child suite actually ran and reported its deliberate failure"
@@ -174,7 +175,7 @@ _signalled_run_leaves_no_fixture() {
   # by construction, so it is the likeliest file in the repo to be caught by a
   # Ctrl-C — and it sits in the tracked directory.
   _fixture_script "$child"
-  bash "$child" >"$TEST_HOME/interrupt-out" 2>&1 &
+  env -u TEST_FILTER bash "$child" >"$TEST_HOME/interrupt-out" 2>&1 &
   local child_pid=$!
   local waited=0
   while [ "$waited" -lt 100 ] && ! grep -q READY "$TEST_HOME/interrupt-out" 2>/dev/null; do
