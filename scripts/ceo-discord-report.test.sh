@@ -388,6 +388,111 @@ test_malformed_registry_logs_jq_failure_debug_line() {
     "a malformed registry must still deliver via the settings allow-list"
 }
 
+# --- #483: a corrupt or empty settings.json must not silently kill delivery for
+# default-enabled triggers, and must record the jq error in the debug log. ---
+
+test_corrupt_settings_logs_jq_failure_and_falls_back_to_default() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+  echo "not-valid-json{{{" > "$CEO_DIR/settings.json"
+  export TODAY="2026-06-15"
+  _write_prior_report "2026-06-14" "PRIOR_DAY_BODY_MARKER"
+
+  printf 'corrupt settings body' | "$REPORT" morning-brief >/dev/null 2>&1
+  unset TODAY
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "settings jq query failed for discord_report_triggers ($CEO_DIR/settings.json)" \
+    "corrupt settings.json must log jq query failure for discord_report_triggers"
+  assert_contains "$log" "settings jq query failed for discord_prior_day_report_triggers ($CEO_DIR/settings.json)" \
+    "corrupt settings.json must log jq query failure for discord_prior_day_report_triggers"
+  assert_contains "$log" "settings jq query failed for discord_report_triggers ($CEO_DIR/settings.json): jq: parse error" \
+    "the settings failure line must carry jq's own parse error message"
+  assert_contains "$log" "falling back to default allow-list" \
+    "the settings failure line must name the fallback it takes"
+  assert_not_contains "$log" "trigger not enabled for full report delivery" \
+    "morning-brief must not claim to be disabled when settings is corrupt"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "corrupt settings body" \
+    "morning-brief must still deliver via default fallback when settings is corrupt"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "PRIOR_DAY_BODY_MARKER" \
+    "the prior-day append must also take the default fallback for morning-brief"
+}
+
+test_corrupt_settings_does_not_enable_prior_day_for_non_default_trigger() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  # Registry opts custom-brief into the main report but says nothing about the
+  # prior-day append, so that decision falls to the (corrupt) settings.json.
+  echo '{"playbooks":[{"name":"custom-brief","discord_report":true}]}' > "$HOME/.ceo/registry.json"
+  echo "not-valid-json{{{" > "$CEO_DIR/settings.json"
+  export TODAY="2026-06-15"
+  _write_prior_report "2026-06-14" "PRIOR_DAY_BODY_MARKER"
+
+  printf 'custom body' | "$REPORT" custom-brief >/dev/null 2>&1
+  unset TODAY
+
+  local all
+  all=$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)
+  assert_contains "$all" "custom body" "the registry-enabled main report still posts"
+  assert_not_contains "$all" "PRIOR_DAY_BODY_MARKER" \
+    "a corrupt settings.json must not enable the prior-day append for a non-default trigger"
+}
+
+test_multi_document_settings_logs_unexpected_output_on_one_line() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+  # Two concatenated documents make jq print one boolean per document.
+  printf '{"discord_report_triggers":[]}{"discord_report_triggers":[]}' > "$CEO_DIR/settings.json"
+
+  printf 'multi settings body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "settings jq query produced unexpected output for discord_report_triggers ($CEO_DIR/settings.json): false false, falling back to default allow-list" \
+    "multi-document settings output is logged on one line with the fallback named"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "multi settings body" \
+    "an undecidable settings.json takes the default fallback for morning-brief"
+}
+
+test_corrupt_settings_does_not_enable_non_default_trigger() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"custom-brief"}]}' > "$HOME/.ceo/registry.json"
+  echo "not-valid-json{{{" > "$CEO_DIR/settings.json"
+
+  printf 'custom body' | "$REPORT" custom-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "settings jq query failed for discord_report_triggers ($CEO_DIR/settings.json)" \
+    "corrupt settings.json must log query failure even for non-default trigger"
+  assert_contains "$log" "trigger not enabled for full report delivery" \
+    "corrupt settings must not fail open to arbitrary non-default triggers"
+  assert_eq "$([ -f "$CURL_CAPTURE_DIR"/payload-0.json ] && echo yes || echo no)" "no" \
+    "non-default trigger must not post when settings is corrupt"
+}
+
+test_empty_settings_logs_no_output_and_falls_back_to_default() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+  : > "$CEO_DIR/settings.json"
+
+  printf 'empty settings body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "settings jq query produced no output for discord_report_triggers ($CEO_DIR/settings.json), falling back to default allow-list" \
+    "empty settings.json must log no-output message for discord_report_triggers"
+  assert_contains "$log" "settings jq query produced no output for discord_prior_day_report_triggers ($CEO_DIR/settings.json)" \
+    "empty settings.json must log no-output message for discord_prior_day_report_triggers"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "empty settings body" \
+    "morning-brief must still deliver via default fallback when settings is empty"
+}
+
 test_records_last_deliver_timestamp_on_successful_post() {
   # The signal `ceo doctor` watches: a successful delivery writes a per-trigger
   # timestamp. Its ABSENCE/staleness is how the watchdog detects a report that
