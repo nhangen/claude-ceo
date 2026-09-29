@@ -563,6 +563,13 @@ BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 # --- Canonical dated Active Domains ---
 export ACTIVE_DOMAINS_CONTENT
 ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY")
+# weekly-synthesis (llm-tools#827) treats context as current only under version 1.
+# The withheld message is non-empty too, so key the version off the parser's
+# success line rather than on content being present.
+unset CEO_PROFILE_CONTEXT_VERSION
+case "$ACTIVE_DOMAINS_CONTENT" in
+  "Canonical active domains ("*) export CEO_PROFILE_CONTEXT_VERSION=1 ;;
+esac
 
 # --- Pending.md outstanding questions (top entries only) ---
 # Pre-extract unchecked items so Claude doesn't need to read the full file.
