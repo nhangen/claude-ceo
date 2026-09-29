@@ -183,7 +183,17 @@ esac
 SECRETS_FILE="${CEO_SECRETS_FILE:-$HOME/.config/claude-ceo/secrets.json}"
 WEBHOOK="${CEO_DISCORD_REPORT_WEBHOOK:-}"
 if [ -z "$WEBHOOK" ] && [ -f "$SECRETS_FILE" ]; then
-  WEBHOOK=$(jq -r '.discord_report_webhook // ""' "$SECRETS_FILE" 2>/dev/null || echo "")
+  secrets_errf=$(mktemp)
+  secrets_rc=0
+  WEBHOOK=$(jq -r '.discord_report_webhook // ""' "$SECRETS_FILE" 2>"$secrets_errf") || secrets_rc=$?
+  if [ "$secrets_rc" -ne 0 ]; then
+    # Quoted strings are masked: this file holds the webhook URL, and a jq
+    # message is not guaranteed to leave values out.
+    _dlog "secrets jq query failed ($SECRETS_FILE): $(head -1 "$secrets_errf" | sed 's/"[^"]*"/"…"/g'), bailing 0"
+    rm -f "$secrets_errf"
+    exit 0
+  fi
+  rm -f "$secrets_errf"
 fi
 [ -n "$WEBHOOK" ] || {
   _dlog "report webhook unresolved, bailing 0"

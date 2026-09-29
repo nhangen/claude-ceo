@@ -493,6 +493,40 @@ test_empty_settings_logs_no_output_and_falls_back_to_default() {
     "morning-brief must still deliver via default fallback when settings is empty"
 }
 
+test_corrupt_secrets_logs_jq_failure_not_unresolved() {
+  printf '{"discord_report_webhook":' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+
+  local rc=0
+  printf 'corrupt secrets body' | "$REPORT" morning-brief >/dev/null 2>&1 || rc=$?
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_eq "$rc" "0" "a corrupt secrets.json still exits 0"
+  assert_contains "$log" "secrets jq query failed ($CEO_SECRETS_FILE): jq: parse error" \
+    "a corrupt secrets.json logs the jq parse error"
+  assert_not_contains "$log" "report webhook unresolved" \
+    "a parse failure is not reported as a missing webhook"
+  assert_eq "$(ls "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "nothing is posted without a webhook"
+}
+
+test_secrets_jq_error_masks_quoted_strings() {
+  echo '"https://FAKE-EXAMPLE.invalid/not-a-webhook"' > "$CEO_SECRETS_FILE"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'string secrets body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" 'Cannot index string with string "…"' \
+    "quoted strings in the jq message are masked"
+  assert_not_contains "$log" 'discord_report_webhook"' \
+    "no quoted value from the secrets query reaches the log"
+}
+
 test_records_last_deliver_timestamp_on_successful_post() {
   # The signal `ceo doctor` watches: a successful delivery writes a per-trigger
   # timestamp. Its ABSENCE/staleness is how the watchdog detects a report that
