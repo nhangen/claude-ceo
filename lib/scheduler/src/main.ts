@@ -13,7 +13,8 @@
  * Schedules evaluate in the host's local timezone (the matcher is created with
  * no timezone, matching `new Date()`); registry schedules carry no per-entry tz.
  */
-import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { hostname } from "node:os";
 import {
   createMatcher,
@@ -374,10 +375,50 @@ export function resolveFatalExitCode(err: unknown): number {
   return err instanceof PermanentHeartbeatWriteError ? FATAL_EXIT_CODE : 1;
 }
 
+/**
+ * Marks this host's synced heartbeat with the fault a permanent-write exit hit,
+ * so a peer's owners-health reaches the operator: launchd respawns an exit-78
+ * daemon forever and only the unified log says why (#562). The local and synced
+ * heartbeats are separate paths, so this usually still lands. The last good `ts`
+ * is kept, so the respawn loop never makes the host look alive, and an unchanged
+ * code is not rewritten, so the loop does not churn Syncthing. The next healthy
+ * heartbeat overwrites the whole file and drops the field. The {host, ts} shape
+ * and the tmp-then-rename write mirror cronbird's writeSyncedHeartbeat; keep
+ * them in step if that format changes.
+ */
+export function recordFatalInSyncedHeartbeat(
+  path: string,
+  host: string,
+  code: string,
+  now: Date,
+): "written" | "unchanged" {
+  let prevTs: string | null = null;
+  try {
+    const prev = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof prev?.ts === "string") prevTs = prev.ts;
+    if (prev?.fatal?.code === code) return "unchanged";
+  } catch {
+    // No prior heartbeat, or an unreadable one: record the fault with no ts.
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ host, ts: prevTs, fatal: { code, since: now.toISOString() } }, null, 2));
+  renameSync(tmp, path);
+  return "written";
+}
+
 // Only run when invoked directly (not when imported by tests).
 if (import.meta.main) {
   main().catch((err) => {
     process.stderr.write(`[${nowStamp()}] ceo-schedulerd: fatal: ${errText(err)}\n`);
+    if (err instanceof PermanentHeartbeatWriteError) {
+      try {
+        const { syncedHeartbeatPath: path, host } = resolveAdapterConfig(process.env as Record<string, string | undefined>);
+        recordFatalInSyncedHeartbeat(path, host, err.code || "unknown", new Date());
+      } catch (markErr) {
+        process.stderr.write(`[${nowStamp()}] ceo-schedulerd: could not mark the synced heartbeat fatal: ${errText(markErr)}\n`);
+      }
+    }
     process.exit(resolveFatalExitCode(err));
   });
 }
