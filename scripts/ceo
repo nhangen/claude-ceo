@@ -1214,6 +1214,16 @@ cmd_swarm_owners_health() {
     case "$peer" in *.sync-conflict-*) continue ;; esac
     # The name lands in a synced inbox line; accept only a host-shaped segment.
     case "$peer" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    if ! jq -e . "$hb" >/dev/null 2>&1; then
+      check_error=1
+      line="  ✗ $peer heartbeat is unreadable JSON"
+      echo "$line"; report+="$line"$'\n'
+      if [ "$(jq -r --arg k "fatal:$peer" '.[$k] // "fresh"' <<<"$prior_state")" = "stale" ]; then
+        new_state=$(jq -c --arg k "fatal:$peer" '.[$k] = "stale"' <<<"$new_state")
+        any_fatal=1
+      fi
+      continue
+    fi
     code=$(jq -r 'if (.fatal | type) == "object" then (.fatal.code // "unknown" | tostring) else empty end' "$hb" 2>/dev/null) || code=""
     [ -n "$code" ] || continue
     # The code lands in a synced inbox line; keep it to an errno-shaped token.
