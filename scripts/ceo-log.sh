@@ -40,31 +40,39 @@ echo ""
 sed -n '/^## /,$p' "$LOG_FILE"  # Skip frontmatter and heading, start at first ## entry
 echo ""
 
+# Helper to count matches without grep -c failing under set -euo pipefail
+# or appending a second zero under || echo 0 (#600).
+_count_matches() {
+  local pattern="$1" file="$2" count
+  count=$(grep -c "$pattern" "$file" 2>/dev/null || true)
+  printf '%s' "${count:-0}"
+}
+
 # Summary stats
-TOTAL=$(grep -c "^\*\*Status:\*\*" "$LOG_FILE" 2>/dev/null || echo 0)
-COMPLETED=$(grep -c "^\*\*Status:\*\* completed" "$LOG_FILE" 2>/dev/null || echo 0)
-FAILED=$(grep -c "^\*\*Status:\*\* failed" "$LOG_FILE" 2>/dev/null || echo 0)
-PARTIAL=$(grep -c "^\*\*Status:\*\* partial" "$LOG_FILE" 2>/dev/null || echo 0)
+TOTAL=$(_count_matches "^\*\*Status:\*\*" "$LOG_FILE")
+COMPLETED=$(_count_matches "^\*\*Status:\*\* completed" "$LOG_FILE")
+FAILED=$(_count_matches "^\*\*Status:\*\* failed" "$LOG_FILE")
+PARTIAL=$(_count_matches "^\*\*Status:\*\* partial" "$LOG_FILE")
 
 echo "---"
 echo "**Summary:** $TOTAL actions ($COMPLETED completed, $FAILED failed, $PARTIAL partial)"
 
 # Check for audibles
-AUDIBLES=$(grep -c "^\*\*Audibles:\*\*" "$LOG_FILE" 2>/dev/null || echo 0)
+AUDIBLES=$(_count_matches "^\*\*Audibles:\*\*" "$LOG_FILE")
 if [ "$AUDIBLES" -gt 0 ]; then
   echo "**Audibles:** $AUDIBLES logged"
 fi
 
 # Check for errors
-ERRORS=$(grep -c "^\*\*Errors:\*\*" "$LOG_FILE" 2>/dev/null || echo 0)
-ERROR_NONE=$(grep -c "^\*\*Errors:\*\*$\|^\- none" "$LOG_FILE" 2>/dev/null || echo 0)
+ERRORS=$(_count_matches "^\*\*Errors:\*\*" "$LOG_FILE")
+ERROR_NONE=$(_count_matches "^\*\*Errors:\*\*$\|^\- none" "$LOG_FILE")
 REAL_ERRORS=$((ERRORS - ERROR_NONE))
 if [ "$REAL_ERRORS" -gt 0 ]; then
   echo "**Errors:** $REAL_ERRORS entries with errors"
 fi
 
 # Check for delegations
-DELEGATIONS=$(grep -c "^\*\*Delegations:\*\*" "$LOG_FILE" 2>/dev/null || echo 0)
+DELEGATIONS=$(_count_matches "^\*\*Delegations:\*\*" "$LOG_FILE")
 if [ "$DELEGATIONS" -gt 0 ]; then
   echo "**Delegations:** $DELEGATIONS logged"
 fi
