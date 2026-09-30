@@ -90,6 +90,8 @@ test_log_calculates_all_stats_correctly() {
 
 ## Entry 3
 **Status:** failed
+**Proposals:**
+- none
 **Errors:**
 - disk failed
 
@@ -101,15 +103,20 @@ test_log_calculates_all_stats_correctly() {
 **Delegations:**
 - delegation 2
 
+## Entry 5
+**Status:** failed
+**Errors:**
+- none of the nodes responded
+
 EOF
 
   local out rc=0
   out=$(bash "$CEO_LOG" today 2>&1) || rc=$?
 
   assert_eq "$rc" "0" "ceo-log.sh must exit 0 on mixed-status log"
-  assert_contains "$out" "**Summary:** 4 actions (2 completed, 1 failed, 1 partial)" "summary counts all statuses"
+  assert_contains "$out" "**Summary:** 5 actions (2 completed, 2 failed, 1 partial)" "summary counts all statuses"
   assert_contains "$out" "**Audibles:** 2 logged" "audibles counted correctly"
-  assert_contains "$out" "**Errors:** 2 entries with errors" "real errors counted correctly (3 total minus 1 none)"
+  assert_contains "$out" "**Errors:** 3 entries with errors" "real errors counted correctly including error text containing none"
   assert_contains "$out" "**Delegations:** 2 logged" "delegations counted correctly"
 }
 

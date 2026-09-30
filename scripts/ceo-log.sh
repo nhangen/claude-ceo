@@ -64,11 +64,21 @@ if [ "$AUDIBLES" -gt 0 ]; then
 fi
 
 # Check for errors
-ERRORS=$(_count_matches "^\*\*Errors:\*\*" "$LOG_FILE")
-ERROR_NONE=$(_count_matches "^\*\*Errors:\*\*$\|^\- none" "$LOG_FILE")
-REAL_ERRORS=$((ERRORS - ERROR_NONE))
-if [ "$REAL_ERRORS" -gt 0 ]; then
-  echo "**Errors:** $REAL_ERRORS entries with errors"
+ERRORS=$(awk '
+/^\*\*Errors:\*\*/ {
+  if ($0 ~ /^\*\*Errors:\*\*[[:space:]]*$/) {
+    if ((getline line) > 0) {
+      if (line !~ /^[[:space:]]*-?[[:space:]]*none[[:space:]]*$/) count++
+    }
+  } else if ($0 !~ /\*\*Errors:\*\*[[:space:]]*-?[[:space:]]*none[[:space:]]*$/) {
+    count++
+  }
+}
+END { print count+0 }
+' "$LOG_FILE" 2>/dev/null || true)
+ERRORS=${ERRORS:-0}
+if [ "$ERRORS" -gt 0 ]; then
+  echo "**Errors:** $ERRORS entries with errors"
 fi
 
 # Check for delegations
