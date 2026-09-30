@@ -1615,7 +1615,10 @@ if [ "$TRIGGER" = "morning-scan" ] && [[ "${CEO_GATHER_STATUS:-ok}" == "failed" 
   CEO_GATHER_REASONS="Primary data empty, but vault changes present"
 fi
 
-# Record degraded gather status (partial/failed/empty) for runners that consume gather context (#593).
+# --- Gather status (shared across runners) ---
+# Log a non-ok gather for every runner that may read its output through the
+# environment (#593). Script runners read none of it and run every few minutes, so
+# a WARN per run would only push real errors out of cron-failure-digest's window.
 if [ "$RUNNER" != "script" ] && [ "${CEO_GATHER_STATUS:-ok}" != "ok" ]; then
   echo "$(date) [$TRIGGER] WARN — Gather phase $CEO_GATHER_STATUS: $CEO_GATHER_REASONS" >> "$SKIPS_LOG"
   _v "WARN: Gather phase $CEO_GATHER_STATUS — $CEO_GATHER_REASONS"

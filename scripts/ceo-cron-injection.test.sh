@@ -457,6 +457,7 @@ PB
   local skip_log
   skip_log=$(_skips_log)
   assert_contains "$skip_log" "Gather phase empty" "cron-skips.log must mention gather phase empty"
+  assert_eq "$(grep -c 'Gather phase' <<< "$skip_log")" "1" "the read-tier skip must log the gather status once, not twice"
   
   local report
   report=$(cat "$CEO_DIR/reports/$(date +%Y-%m-%d).md" 2>/dev/null || echo "")
@@ -504,6 +505,8 @@ EOF
   assert_contains "$content" "test-skill output" "runner:skill must capture skill stdout"
 }
 
+# #593's case: a profile-context reader crash degrades the gather while other data is
+# present, so the status is partial, and a runner:skill playbook must still log it.
 test_runner_skill_records_degraded_gather_status_in_skips_log() {
   cat > "$CEO_DIR/playbooks/skill-degraded-gather.md" << 'PB'
 ---
@@ -520,36 +523,51 @@ PB
   "$CEO_CLI" playbook scan >/dev/null
 
   mkdir -p "$HOME/.claude/skills/test-skill/scripts"
-  cat > "$HOME/.claude/skills/test-skill/scripts/run-report.sh" << 'EOF'
-#!/bin/bash
-while [[ "$#" -gt 0 ]]; do
-  case $1 in
-    --out) out_dir="$2"; shift ;;
-  esac
-  shift
-done
-echo "test-skill degraded gather output" > "$out_dir/report.md"
-EOF
+  printf '#!/bin/bash\nwhile [ "$#" -gt 0 ]; do [ "$1" = --out ] && out_dir="$2"; shift; done\necho ok > "$out_dir/report.md"\n' \
+    > "$HOME/.claude/skills/test-skill/scripts/run-report.sh"
   chmod +x "$HOME/.claude/skills/test-skill/scripts/run-report.sh"
 
-  # Force gather phase to be degraded (empty) by emptying pending tasks
-  : > "$CEO_DIR/approvals/pending.md"
+  # ceo-config.sh puts ~/.bun/bin first on PATH, so the stub goes where the other stubs live.
+  local stub="$TEST_HOME/.bun/bin/python3"
+  printf '#!/bin/sh\ncase "$1" in *ceo-profile-context.py) exit 1 ;; esac\nexec /usr/bin/python3 "$@"\n' > "$stub"
+  chmod +x "$stub"
 
   local rc=0
   PATH=/usr/bin:/bin bash "$CRON" skill-degraded-gather >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "0" "runner:skill must exit 0 on success even when gather is degraded (#593)"
+  rm -f "$stub"
+  assert_eq "$rc" "0" "runner:skill must still run when gather is degraded (#593)"
 
   local skip_log
   skip_log=$(_skips_log)
-  assert_contains "$skip_log" "WARN — Gather phase empty:" \
-    "skips log must record degraded gather status for runner:skill playbooks (#593)"
+  assert_contains "$skip_log" "WARN — Gather phase partial:" \
+    "skips log must record a partial gather for runner:skill playbooks (#593)"
+  assert_contains "$skip_log" "profile-context-reader-failed" "the recorded reason names the failed source"
+  assert_eq "$(grep -c 'Gather phase' <<< "$skip_log")" "1" "a degraded gather is logged once per run"
+}
 
-  local expected_out
-  expected_out="$CEO_DIR/reports/test/$(date +%Y-%m-%d)-$(hostname -s).md"
-  assert_file_exists "$expected_out" "runner:skill must write output report even when gather is degraded"
-  local content
-  content=$(cat "$expected_out" 2>/dev/null || echo "")
-  assert_contains "$content" "test-skill degraded gather output" "report must contain skill output"
+# Script runners are excluded: they don't read gather output, and at a 5-10 minute
+# cadence a WARN per run would push real errors out of cron-failure-digest's window.
+test_runner_script_does_not_log_degraded_gather_status() {
+  cat > "$CEO_DIR/playbooks/script-degraded-gather.md" << 'PB'
+---
+name: script-degraded-gather
+description: script runner under a degraded gather
+trigger: cron
+status: active
+tier: read
+runner: script
+script: no-such-script-for-593.sh
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+  : > "$CEO_DIR/approvals/pending.md"
+
+  bash "$CRON" script-degraded-gather >/dev/null 2>&1 || true
+
+  local skip_log
+  skip_log=$(_skips_log)
+  assert_contains "$skip_log" "Script not found" "the run must reach the script dispatch"
+  assert_not_contains "$skip_log" "Gather phase" "a script runner must not log the gather status"
 }
 
 
