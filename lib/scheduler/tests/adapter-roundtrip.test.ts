@@ -28,6 +28,7 @@ describe("CEO adapter round-trip (byte-identical to pre-extraction)", () => {
     expect(c.heartbeatPath).toBe("/home/u/.ceo/schedulerd/heartbeat.json");
     expect(c.swarmPath).toBe("/vault/CEO/swarm.json");
     expect(c.syncedHeartbeatPath).toBe("/vault/CEO/heartbeats/ml-1.json");
+    expect(c.schedulerdAlertPath).toBe("/vault/CEO/alerts/schedulerd-ml-1.md");
     expect(c.dispatchArgv("morning-scan")).toEqual(["ceo-cron.sh", "morning-scan", "--scheduled"]);
     expect(c.host).toBe("ml-1");
     expect(c.launchdLabel).toBe("com.ceo.schedulerd");
