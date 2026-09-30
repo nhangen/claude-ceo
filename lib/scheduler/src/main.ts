@@ -128,11 +128,14 @@ function readIfExists(path: string): string {
  * running marker mid-scan) is skipped — fail-safe, matching cronbird's torn-read
  * contract for `readCompletions`.
  */
-function readStateDir(dir: string): Record<string, string> {
+export function readStateDir(dir: string): Record<string, string> {
   if (!existsSync(dir)) return {};
   const out: Record<string, string> = {};
   for (const name of readdirSync(dir)) {
     if (!isSafeSegment(name)) continue; // defensive: never read a name we'd refuse to write
+    // A tempfile left by a daemon that died between write and rename is not a
+    // record; read as one it would be a phantom completion or in-flight job.
+    if (name.includes(ATOMIC_TMP_INFIX)) continue;
     try {
       out[name] = readFileSync(`${dir}/${name}`, "utf8");
     } catch {
@@ -301,24 +304,25 @@ export function createClearRunning(runMarker: string, log: (msg: string) => void
   };
 }
 
+export const ATOMIC_TMP_INFIX = ".tmp.";
+
 /**
- * Writes a completion record atomically via a same-directory tempfile + rename.
- * An ENOSPC/IO fault mid-write will fail without truncating or corrupting
- * an existing done record, preserving cronbird's cooldown evaluation (#586).
- * Any torn tempfile is cleaned up on failure before rethrowing.
+ * Replaces `dest` via a same-directory tempfile + rename, so an ENOSPC/IO fault
+ * mid-write leaves the previous contents in place rather than a truncated file.
+ * Both run-state writers need that: a torn done record loses cronbird's cooldown,
+ * and a torn running marker parses as "not running" and reopens the
+ * MAX_CONCURRENT=1 gate while the child is still alive (#586). Any torn tempfile
+ * is removed before rethrowing. `rawWrite` is the seam tests fail at.
  */
-export function writeDoneRecordAtomic(
-  dDir: string,
-  name: string,
-  startedTs: number,
-  endedTs: number,
-  exitCode: number,
+export function writeFileAtomic(
+  dest: string,
+  body: string,
+  rawWrite: (path: string, content: string) => void = writeFileSync,
 ): void {
-  const dest = `${dDir}/${name}`;
   const rand = Math.random().toString(36).slice(2, 8);
-  const tmp = `${dest}.tmp.${process.pid}.${Date.now()}.${rand}`;
+  const tmp = `${dest}${ATOMIC_TMP_INFIX}${process.pid}.${Date.now()}.${rand}`;
   try {
-    writeFileSync(tmp, JSON.stringify(completionRecord(startedTs, endedTs, exitCode)));
+    rawWrite(tmp, body);
     renameSync(tmp, dest);
   } catch (err) {
     try {
@@ -330,6 +334,17 @@ export function writeDoneRecordAtomic(
   }
 }
 
+export function writeDoneRecordAtomic(
+  dDir: string,
+  name: string,
+  startedTs: number,
+  endedTs: number,
+  exitCode: number,
+  rawWrite?: (path: string, content: string) => void,
+): void {
+  writeFileAtomic(`${dDir}/${name}`, JSON.stringify(completionRecord(startedTs, endedTs, exitCode)), rawWrite);
+}
+
 export interface JobDispatcherDeps {
   runDir: string;
   dDir: string;
@@ -338,8 +353,7 @@ export interface JobDispatcherDeps {
   dispatchArgv: (name: string) => string[];
   log: (msg: string) => void;
   spawn?: typeof Bun.spawn;
-  writeRunningMarker?: (path: string, content: string) => void;
-  writeDoneRecord?: typeof writeDoneRecordAtomic;
+  rawWrite?: (path: string, content: string) => void;
   now?: () => number;
 }
 
@@ -352,10 +366,10 @@ export function createJobDispatcher(deps: JobDispatcherDeps): (name: string) => 
     dispatchArgv,
     log,
     spawn = Bun.spawn,
-    writeRunningMarker = writeFileSync,
-    writeDoneRecord = writeDoneRecordAtomic,
+    rawWrite = writeFileSync,
     now = Date.now,
   } = deps;
+  const writeRunningMarker = (path: string, content: string) => writeFileAtomic(path, content, rawWrite);
 
   return (name: string) => {
     // Bun.spawn throws synchronously on e.g. ENOENT (cronBin not on PATH).
@@ -396,7 +410,7 @@ export function createJobDispatcher(deps: JobDispatcherDeps): (name: string) => 
       void trackCompletion(
         name,
         proc.exited,
-        (exitCode) => writeDoneRecord(dDir, name, startedTs, now(), exitCode),
+        (exitCode) => writeDoneRecordAtomic(dDir, name, startedTs, now(), exitCode, rawWrite),
         clearRunning,
         log,
       );

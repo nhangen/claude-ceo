@@ -4,6 +4,7 @@ import { PermanentHeartbeatWriteError } from "cronbird/cli";
 import {
   createClearRunning,
   createJobDispatcher,
+  readStateDir,
   recordFatalInSyncedHeartbeat,
   resolveFatalExitCode,
   SchedulerDispatchContext,
@@ -302,6 +303,19 @@ describe("recordFatalInSyncedHeartbeat", () => {
   });
 });
 
+describe("readStateDir", () => {
+  test("skips a tempfile left by a daemon that died between write and rename", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-state-dir-"));
+    try {
+      writeFileSync(join(dir, "real-job"), "1000 4242");
+      writeFileSync(join(dir, "real-job.tmp.4242.1700000000000.abc123"), "1000 4242");
+      expect(readStateDir(dir)).toEqual({ "real-job": "1000 4242" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("writeDoneRecordAtomic", () => {
   const setup = () => {
     const dir = mkdtempSync(join(tmpdir(), "ceo-done-atomic-"));
@@ -319,26 +333,20 @@ describe("writeDoneRecordAtomic", () => {
     }
   });
 
-  test("leaves existing done record intact when write fails mid-flight", () => {
+  test("leaves existing done record intact when the write fails mid-flight", () => {
     const { dir, cleanup } = setup();
     try {
       const dest = join(dir, "my-job");
-      writeFileSync(dest, JSON.stringify({ startedTs: 500, endedTs: 600, exitCode: 0 }));
-
-      // Make directory unwritable to force temp write failure
-      chmodSync(dir, 0o555);
-      expect(() => writeDoneRecordAtomic(dir, "my-job", 1000, 2000, 1)).toThrow();
-
-      // Restore permissions before reading / asserting
-      chmodSync(dir, 0o755);
-      const intact = JSON.parse(readFileSync(dest, "utf8"));
-      expect(intact).toEqual({ startedTs: 500, endedTs: 600, exitCode: 0 });
+      writeFileSync(dest, JSON.stringify({ ts: 600, durationMs: 100, exitCode: 0 }));
+      // Real ENOSPC/EIO: bytes are partly written before the fault.
+      const tornWrite = (path: string, content: string) => {
+        writeFileSync(path, content.slice(0, 5));
+        throw new Error("EIO: i/o error, write");
+      };
+      expect(() => writeDoneRecordAtomic(dir, "my-job", 1000, 2000, 1, tornWrite)).toThrow("EIO");
+      expect(JSON.parse(readFileSync(dest, "utf8"))).toEqual({ ts: 600, durationMs: 100, exitCode: 0 });
+      expect(readdirSync(dir)).toEqual(["my-job"]);
     } finally {
-      try {
-        chmodSync(dir, 0o755);
-      } catch {
-        // ignore
-      }
       cleanup();
     }
   });
@@ -433,29 +441,25 @@ describe("createJobDispatcher", () => {
     };
   };
 
-  test("tracks completion and does NOT log 'dispatch failed' when PID rewrite throws", async () => {
-    const { root, runDir, dDir, vault, cleanup } = setup();
+  const waitFor = async (cond: () => boolean) => {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  };
+
+  test("a torn PID rewrite keeps the in-flight marker and still tracks completion", async () => {
+    const { runDir, dDir, vault, cleanup } = setup();
     try {
       const logs: string[] = [];
-      const context = new SchedulerDispatchContext();
-      let writeCount = 0;
       let exitResolve: (code: number) => void;
       const exitedPromise = new Promise<number>((r) => {
         exitResolve = r;
       });
-
       const mockSpawn = () =>
-        ({
-          pid: 99999,
-          unref: () => {},
-          exited: exitedPromise,
-        }) as unknown as ReturnType<typeof Bun.spawn>;
-
-      const mockWriteRunningMarker = (path: string, content: string) => {
-        writeCount += 1;
-        if (writeCount === 2) {
-          // Fail on the PID rewrite after spawn
-          throw new Error("ENOSPC: no space left on device");
+        ({ pid: 99999, unref: () => {}, exited: exitedPromise }) as unknown as ReturnType<typeof Bun.spawn>;
+      // Fails only the PID rewrite, after truncating and partly writing, as ENOSPC/EIO do.
+      const rawWrite = (path: string, content: string) => {
+        if (content.includes("99999")) {
+          writeFileSync(path, content.slice(0, 2));
+          throw new Error("EIO: i/o error, write");
         }
         writeFileSync(path, content);
       };
@@ -464,48 +468,72 @@ describe("createJobDispatcher", () => {
         runDir,
         dDir,
         vault,
-        dispatchContext: context,
+        dispatchContext: new SchedulerDispatchContext(),
         dispatchArgv: (name) => ["fake-bin", name],
         log: (m) => logs.push(m),
         spawn: mockSpawn,
-        writeRunningMarker: mockWriteRunningMarker,
+        rawWrite,
         now: () => 1000,
       });
 
       dispatch("test-job");
 
-      // Verify PID rewrite failure was logged, but "dispatch failed" was NOT
       expect(logs.some((l) => l.includes("could not record PID 99999"))).toBe(true);
       expect(logs.some((l) => l.includes("dispatch failed"))).toBe(false);
-      expect(logs.some((l) => l.includes("dispatched test-job"))).toBe(true);
-
-      // Verify the running marker still exists on disk with startedTs (not cleared by PID failure)
       const markerPath = join(runDir, "test-job");
-      expect(existsSync(markerPath)).toBe(true);
+      // Still parses as in flight, so the MAX_CONCURRENT=1 gate stays shut.
       expect(readFileSync(markerPath, "utf8")).toBe("1000");
+      expect(Object.keys(readStateDir(runDir))).toEqual(["test-job"]);
 
-      // Now resolve the child process exit
       exitResolve!(0);
-      await new Promise((r) => setTimeout(r, 20));
-
-      // Done record was written
       const donePath = join(dDir, "test-job");
-      expect(existsSync(donePath)).toBe(true);
-      expect(JSON.parse(readFileSync(donePath, "utf8"))).toEqual({
-        ts: 1000,
-        durationMs: 0,
-        exitCode: 0,
-      });
-
-      // Running marker was cleared
+      await waitFor(() => !existsSync(markerPath));
+      expect(JSON.parse(readFileSync(donePath, "utf8"))).toEqual({ ts: 1000, durationMs: 0, exitCode: 0 });
       expect(existsSync(markerPath)).toBe(false);
     } finally {
       cleanup();
     }
   });
 
+  test("a torn completion write leaves the previous done record in place", async () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const donePath = join(dDir, "test-job");
+      writeFileSync(donePath, JSON.stringify({ ts: 500, durationMs: 10, exitCode: 0 }));
+      const rawWrite = (path: string, content: string) => {
+        if (content.includes("exitCode")) {
+          writeFileSync(path, content.slice(0, 3));
+          throw new Error("ENOSPC: no space left on device, write");
+        }
+        writeFileSync(path, content);
+      };
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: new SchedulerDispatchContext(),
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: () =>
+          ({ pid: 4242, unref: () => {}, exited: Promise.resolve(3) }) as unknown as ReturnType<typeof Bun.spawn>,
+        rawWrite,
+        now: () => 1000,
+      });
+
+      dispatch("test-job");
+      await waitFor(() => !existsSync(join(runDir, "test-job")));
+
+      expect(JSON.parse(readFileSync(donePath, "utf8"))).toEqual({ ts: 500, durationMs: 10, exitCode: 0 });
+      expect(readdirSync(dDir)).toEqual(["test-job"]);
+      expect(logs.some((l) => l.includes("could not record exit 3 for test-job"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("clears running marker and logs 'dispatch failed' when spawn fails synchronously", () => {
-    const { root, runDir, dDir, vault, cleanup } = setup();
+    const { runDir, dDir, vault, cleanup } = setup();
     try {
       const logs: string[] = [];
       const context = new SchedulerDispatchContext();
