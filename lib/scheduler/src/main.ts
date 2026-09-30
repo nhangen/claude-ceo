@@ -157,7 +157,7 @@ async function main(): Promise<void> {
   const home = requireEnv("HOME");
   const cfg = resolveAdapterConfig(process.env as Record<string, string | undefined>);
 
-  const { registryPath: regPath, heartbeatPath: hbPath, swarmPath: swPath, syncedHeartbeatPath: syncedHbPath, host } = cfg;
+  const { registryPath: regPath, heartbeatPath: hbPath, swarmPath: swPath, syncedHeartbeatPath: syncedHbPath, schedulerdAlertPath: alertPath, host } = cfg;
   const enPath = enabledPath(home);
   const setPath = settingsPath(vault);
   // Dispatch-completion state (cronbird #9 queue): the dispatch wrapper below
@@ -268,11 +268,18 @@ async function main(): Promise<void> {
     },
     readHeartbeat: () => readHeartbeatFile(hbPath),
     writeHeartbeat: (hb) =>
-      dispatchContext.persist(hb, () => writeHeartbeatWithSync(hb, {
-        writeLocal: (h) => writeHeartbeatFile(hbPath, h),
-        writeSynced: () => writeSyncedHeartbeat(syncedHbPath, host),
-        log,
-      })),
+      dispatchContext.persist(hb, () => {
+        writeHeartbeatWithSync(hb, {
+          writeLocal: (h) => writeHeartbeatFile(hbPath, h),
+          writeSynced: () => writeSyncedHeartbeat(syncedHbPath, host),
+          log,
+        });
+        try {
+          clearSchedulerdAlert(alertPath, host, new Date());
+        } catch (alertErr) {
+          log(`could not clear schedulerd alert: ${errText(alertErr)}`);
+        }
+      }),
     log,
     host,
     matcher,
@@ -407,6 +414,96 @@ export function recordFatalInSyncedHeartbeat(
   return "written";
 }
 
+/**
+ * Reads a frontmatter field from YAML-frontmatter markdown content.
+ * Restricts matching to between the opening and closing `---` markers.
+ */
+export function parseAlertField(content: string, field: string): string | null {
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const fmBody = fmMatch?.[1];
+  if (!fmBody) return null;
+  const match = fmBody.match(new RegExp(`^${field}:[ \t]*(.*)$`, "m"));
+  const value = match?.[1];
+  return value !== undefined ? value.trim() : null;
+}
+
+export function formatSchedulerdAlert(
+  host: string,
+  status: "firing" | "clear",
+  since: string,
+  lastCheck: string,
+  code?: string,
+): string {
+  const lines = [
+    "---",
+    `status: ${status}`,
+    `since: ${since}`,
+    `last_check: ${lastCheck}`,
+    `host: ${host}`,
+  ];
+  if (status === "firing" && code) {
+    lines.push(`code: ${code}`);
+  }
+  lines.push("---", "", `# Scheduler Alert — ${host}`, "");
+  if (status === "firing") {
+    lines.push(`ceo-schedulerd stopped on a permanent local-write fault (code: ${code || "unknown"}).`);
+  } else {
+    lines.push("ceo-schedulerd is running normally.");
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+/**
+ * Writes CEO/alerts/schedulerd-<host>.md on fatal exit (status: firing).
+ * If the alert is already firing, returns "unchanged" without rewriting to prevent
+ * Syncthing churn during a launchd respawn loop (#589).
+ */
+export function recordFatalSchedulerdAlert(
+  path: string,
+  host: string,
+  code: string,
+  now: Date,
+): "written" | "unchanged" {
+  try {
+    const prev = readFileSync(path, "utf8");
+    if (parseAlertField(prev, "status") === "firing") return "unchanged";
+  } catch {
+    // No prior alert file or unreadable: record the fault.
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const iso = now.toISOString();
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, formatSchedulerdAlert(host, "firing", iso, iso, code), "utf8");
+  renameSync(tmp, path);
+  return "written";
+}
+
+/**
+ * Resets CEO/alerts/schedulerd-<host>.md to status: clear once the daemon
+ * has verified its local and synced heartbeats are healthy (#589).
+ * If the file does not exist or is already clear, returns "unchanged".
+ */
+export function clearSchedulerdAlert(
+  path: string,
+  host: string,
+  now: Date,
+): "written" | "unchanged" {
+  try {
+    const prev = readFileSync(path, "utf8");
+    if (parseAlertField(prev, "status") === "clear") return "unchanged";
+  } catch {
+    // No prior alert file: nothing to clear.
+    return "unchanged";
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const iso = now.toISOString();
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, formatSchedulerdAlert(host, "clear", iso, iso), "utf8");
+  renameSync(tmp, path);
+  return "written";
+}
+
 // Only run when invoked directly (not when imported by tests).
 if (import.meta.main) {
   main().catch((err) => {
@@ -417,6 +514,12 @@ if (import.meta.main) {
         recordFatalInSyncedHeartbeat(path, host, err.code || "unknown", new Date());
       } catch (markErr) {
         process.stderr.write(`[${nowStamp()}] ceo-schedulerd: could not mark the synced heartbeat fatal: ${errText(markErr)}\n`);
+      }
+      try {
+        const { schedulerdAlertPath: alertPath, host } = resolveAdapterConfig(process.env as Record<string, string | undefined>);
+        recordFatalSchedulerdAlert(alertPath, host, err.code || "unknown", new Date());
+      } catch (alertErr) {
+        process.stderr.write(`[${nowStamp()}] ceo-schedulerd: could not write fallback alert: ${errText(alertErr)}\n`);
       }
     }
     process.exit(resolveFatalExitCode(err));
