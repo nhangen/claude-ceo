@@ -1609,6 +1609,21 @@ _normalize_tier() {
   esac
 }
 
+# Override failed/empty status if vault changes exist (for morning-scan)
+if [ "$TRIGGER" = "morning-scan" ] && [[ "${CEO_GATHER_STATUS:-ok}" == "failed" || "${CEO_GATHER_STATUS:-ok}" == "empty" ]] && [ "${VAULT_CHANGES_COUNT:-0}" -gt 0 ]; then
+  CEO_GATHER_STATUS="partial"
+  CEO_GATHER_REASONS="Primary data empty, but vault changes present"
+fi
+
+# --- Gather status (shared across runners) ---
+# Log a non-ok gather for every runner that may read its output through the
+# environment (#593). Script runners read none of it and run every few minutes, so
+# a WARN per run would only push real errors out of cron-failure-digest's window.
+if [ "$RUNNER" != "script" ] && [ "${CEO_GATHER_STATUS:-ok}" != "ok" ]; then
+  echo "$(date) [$TRIGGER] WARN — Gather phase $CEO_GATHER_STATUS: $CEO_GATHER_REASONS" >> "$SKIPS_LOG"
+  _v "WARN: Gather phase $CEO_GATHER_STATUS — $CEO_GATHER_REASONS"
+fi
+
 # --- Ollama-agent (bridge) runner: tool-using local agent on a bounded task ---
 # Distinct from the raw read-only `ollama`/`ollama-think` runners: this shells to
 # the ollama-agent bridge (cli.py), which runs a governed tool-using loop. The
@@ -2106,16 +2121,7 @@ if [ "$TIER" = "read" ]; then
   _v "Read-tier playbook — single call (no plan/filter phases)"
   _v "Using model: $MODEL"
 
-  # Override failed/empty status if vault changes exist (for morning-scan)
-  if [[ "${CEO_GATHER_STATUS:-ok}" == "failed" || "${CEO_GATHER_STATUS:-ok}" == "empty" ]] && [ "${VAULT_CHANGES_COUNT:-0}" -gt 0 ]; then
-    CEO_GATHER_STATUS="partial"
-    CEO_GATHER_REASONS="Primary data empty, but vault changes present"
-  fi
-
   if [ "${CEO_GATHER_STATUS:-ok}" != "ok" ]; then
-    echo "$(date) [$TRIGGER] WARN — Gather phase $CEO_GATHER_STATUS: $CEO_GATHER_REASONS" >> "$SKIPS_LOG"
-    _v "WARN: Gather phase $CEO_GATHER_STATUS — $CEO_GATHER_REASONS"
-    
     if [ "$CEO_GATHER_STATUS" = "failed" ] || [ "$CEO_GATHER_STATUS" = "empty" ]; then
       _v "SKIPPED (gather phase $CEO_GATHER_STATUS)"
       _report action "$TRIGGER" "**Status:** skipped: gather-$CEO_GATHER_STATUS
