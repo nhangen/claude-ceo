@@ -562,7 +562,14 @@ BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
 
 # --- Canonical dated Active Domains ---
 export ACTIVE_DOMAINS_CONTENT
-ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY")
+# ceo-cron.sh sources this under set -e, so a reader crash (python3 missing, or an
+# exception the parser does not catch) would abort every playbook's tick (#578).
+_profile_context_rc=0
+ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_context_rc=$?
+if [ "$_profile_context_rc" -ne 0 ]; then
+  ACTIVE_DOMAINS_CONTENT="Active domains unavailable: context reader failed (rc=$_profile_context_rc). Do not infer current roles or priorities from history."
+  _file_gather_mark_degraded "profile-context-reader-failed:rc=$_profile_context_rc"
+fi
 # weekly-synthesis (llm-tools#827) treats context as current only under version 1.
 # The withheld message is non-empty too, so key the version off the parser's
 # success line rather than on content being present.

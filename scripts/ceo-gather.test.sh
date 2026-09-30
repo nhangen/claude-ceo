@@ -193,6 +193,29 @@ test_withheld_profile_context_does_not_export_version() {
   assert_contains "$out" "Active domains unavailable" "the withheld message still reaches the prompt"
 }
 
+# A crashed context reader (python3 missing, or an exception the parser does not
+# catch) must degrade the gather, not abort it: ceo-cron.sh sources this under
+# set -e, so an unguarded failure stops every cron playbook (#578).
+test_crashed_profile_context_reader_degrades_instead_of_aborting() {
+  _write_goals "$(date +%Y-%m-%d)"
+  local stub; stub="$TMP/py-stub"
+  mkdir -p "$stub"
+  printf '#!/bin/sh\ncase "$1" in *ceo-profile-context.py) exit 127 ;; esac\nexec %s "$@"\n' "$(command -v python3)" > "$stub/python3"
+  chmod +x "$stub/python3"
+  local out
+  out=$( set -euo pipefail
+    export CEO_PROFILE_CONTEXT_VERSION=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1" "a crashed reader must finish the gather, unset the version, and mark it degraded"
+  assert_contains "$out" "context reader failed" "the prompt says the context reader failed"
+  assert_contains "$out" "profile-context-reader-failed:rc=127" "the degraded reason carries the exit status"
+}
+
 # Legacy Profile.md cannot affect canonical context or the pending queue.
 test_legacy_profile_does_not_degrade_the_pending_queue() {
   echo "## Active Domains" > "$CEO_VAULT/Profile.md"
