@@ -482,4 +482,61 @@ test_gather_parses_prs_present() {
   assert_contains "$out" "AUTHORED_COUNT=1" "authored count must reflect parsed PRs"
 }
 
+test_delegation_counts_do_not_abort_under_set_euo_pipefail() {
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/CEO/delegations"
+  cat > "$CEO_VAULT/CEO/delegations/delegation-1.md" << 'EOF'
+---
+status: completed
+---
+EOF
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED=$DELEGATION_COMPLETED|IN_PROGRESS=$DELEGATION_IN_PROGRESS|FAILED=$DELEGATION_FAILED"
+  )
+  assert_contains "$out" "COMPLETED=1|IN_PROGRESS=0|FAILED=0" \
+    "gather must not abort under set -euo pipefail when a status has 0 matches (#592)"
+}
+
+test_today_log_summary_zero_matches_does_not_double_zero() {
+  _write_gh_stub '[]'
+  local today; today=$(date +%Y-%m-%d)
+  mkdir -p "$CEO_VAULT/CEO/log"
+  cat > "$CEO_VAULT/CEO/log/$today.md" << 'EOF'
+# Daily Log
+Just some notes with no status lines.
+EOF
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "SUMMARY=$TODAY_LOG_SUMMARY"
+  )
+  assert_contains "$out" "SUMMARY=actions:0 completed:0 failed:0" \
+    "zero status matches must yield 0, not 0\n0 (#592)"
+  assert_not_contains "$out" $'\n0' \
+    "today log summary must not contain newline-separated zeros"
+}
+
+test_today_log_summary_mixed_counts() {
+  _write_gh_stub '[]'
+  local today; today=$(date +%Y-%m-%d)
+  mkdir -p "$CEO_VAULT/CEO/log"
+  cat > "$CEO_VAULT/CEO/log/$today.md" << 'EOF'
+**Status:** completed
+**Status:** completed
+**Status:** failed
+EOF
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "SUMMARY=$TODAY_LOG_SUMMARY"
+  )
+  assert_contains "$out" "SUMMARY=actions:3 completed:2 failed:1" \
+    "mixed status matches must count accurately (#592)"
+}
+
 run_tests

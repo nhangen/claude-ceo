@@ -464,9 +464,12 @@ PR_MERGED_COUNT=$(echo "$PR_MERGED" | jq 'if type=="array" then length else 0 en
 TODAY_LOG="$LOG_DIR/$TODAY.md"
 if [ -f "$TODAY_LOG" ]; then
   export TODAY_LOG_EXISTS=true
-  TOTAL=$(grep -c "^\*\*Status:\*\*" "$TODAY_LOG" 2>/dev/null || echo 0)
-  COMPLETED=$(grep -c "^\*\*Status:\*\* completed" "$TODAY_LOG" 2>/dev/null || echo 0)
-  FAILED=$(grep -c "^\*\*Status:\*\* failed" "$TODAY_LOG" 2>/dev/null || echo 0)
+  TOTAL=$(grep -c "^\*\*Status:\*\*" "$TODAY_LOG" 2>/dev/null || true)
+  [ -n "$TOTAL" ] || TOTAL=0
+  COMPLETED=$(grep -c "^\*\*Status:\*\* completed" "$TODAY_LOG" 2>/dev/null || true)
+  [ -n "$COMPLETED" ] || COMPLETED=0
+  FAILED=$(grep -c "^\*\*Status:\*\* failed" "$TODAY_LOG" 2>/dev/null || true)
+  [ -n "$FAILED" ] || FAILED=0
   export TODAY_LOG_SUMMARY="actions:$TOTAL completed:$COMPLETED failed:$FAILED"
 else
   export TODAY_LOG_EXISTS=false
@@ -501,11 +504,11 @@ if [ -d "$CEO_DIR/delegations" ]; then
   RECENT_DELEGATIONS=$(find "$CEO_DIR/delegations" -name "*.md" -not -name ".gitkeep" -mtime -7 2>/dev/null)
   if [ -n "$RECENT_DELEGATIONS" ]; then
 export DELEGATION_COMPLETED
-DELEGATION_COMPLETED=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: completed" 2>/dev/null | wc -l | xargs)
+DELEGATION_COMPLETED=$(echo "$RECENT_DELEGATIONS" | { xargs grep -l "^status: completed" 2>/dev/null || true; } | wc -l | xargs)
 export DELEGATION_IN_PROGRESS
-DELEGATION_IN_PROGRESS=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: in-progress" 2>/dev/null | wc -l | xargs)
+DELEGATION_IN_PROGRESS=$(echo "$RECENT_DELEGATIONS" | { xargs grep -l "^status: in-progress" 2>/dev/null || true; } | wc -l | xargs)
 export DELEGATION_FAILED
-DELEGATION_FAILED=$(echo "$RECENT_DELEGATIONS" | xargs grep -l "^status: failed" 2>/dev/null | wc -l | xargs)
+DELEGATION_FAILED=$(echo "$RECENT_DELEGATIONS" | { xargs grep -l "^status: failed" 2>/dev/null || true; } | wc -l | xargs)
   else
     export DELEGATION_COMPLETED=0
     export DELEGATION_IN_PROGRESS=0
