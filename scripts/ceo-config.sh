@@ -108,6 +108,10 @@ ceo_load_config() {
 # (e.g. `ceo playbook scan`'s ollama probe) can share the same shim.
 # ---------------------------------------------------------------------------
 ceo_resolve_timeout_bin() {
+  if [ "${CEO_TIMEOUT_BIN+set}" = "set" ]; then
+    export CEO_TIMEOUT_BIN
+    return 0
+  fi
   if command -v timeout &>/dev/null; then
     CEO_TIMEOUT_BIN="timeout"
   elif command -v gtimeout &>/dev/null; then

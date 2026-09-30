@@ -67,9 +67,20 @@ $1"
 
 # Portable timeout shim — reuse the library helper instead of duplicating it.
 # CEO_TIMEOUT_BIN is set to "timeout" / "gtimeout" / "" by ceo_resolve_timeout_bin.
+# When no coreutils timeout is on PATH (e.g. stock macOS), fall back to python3
+# so stalled mount protection is preserved instead of silently running unbounded.
 ceo_resolve_timeout_bin
 if [ -n "$CEO_TIMEOUT_BIN" ]; then
   _CEO_TIMEOUT() { "$CEO_TIMEOUT_BIN" "$@"; }
+elif command -v python3 &>/dev/null; then
+  _CEO_TIMEOUT() {
+    local secs="$1"; shift
+    python3 -c 'import subprocess, sys
+try:
+    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)' "$secs" "$@"
+  }
 else
   _CEO_TIMEOUT() { shift; "$@"; }
 fi

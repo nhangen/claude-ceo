@@ -578,4 +578,29 @@ test_stalled_briefings_training_read_times_out_and_degrades() {
     "the degraded reason records timeout rc 124"
 }
 
+test_timeout_fallback_to_python3_when_no_timeout_bin_on_path() {
+  _write_gh_stub '[]'
+  local stub; stub="$TMP/head-stub-timeout-py"
+  mkdir -p "$stub"
+  local real_head; real_head="$(type -P head)"
+  printf '#!/bin/sh\ncase "$*" in *"briefings.md"*) sleep 2; exit 0 ;; esac\nexec "%s" "$@"\n' "$real_head" > "$stub/head"
+  chmod +x "$stub/head"
+  mkdir -p "$CEO_VAULT/CEO/training"
+  echo "briefing training content" > "$CEO_VAULT/CEO/training/briefings.md"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    export CEO_TIMEOUT_BIN=""
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|BRIEFINGS=${BRIEFINGS_TRAINING}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|BRIEFINGS=|DEGRADED=1" \
+    "python3 timeout fallback must enforce timeout and mark degraded (#594)"
+  assert_contains "$out" "briefings-training-read-failed:rc=124" \
+    "the degraded reason records timeout rc 124 under python3 fallback"
+}
+
 run_tests
