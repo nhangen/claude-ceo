@@ -567,9 +567,11 @@ export ACTIVE_DOMAINS_CONTENT
 _profile_context_rc=0
 ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_context_rc=$?
 if [ "$_profile_context_rc" -ne 0 ]; then
+  echo "WARN: ceo-profile-context.py failed (rc=$_profile_context_rc)" >&2
   ACTIVE_DOMAINS_CONTENT="Active domains unavailable: context reader failed (rc=$_profile_context_rc). Do not infer current roles or priorities from history."
   _file_gather_mark_degraded "profile-context-reader-failed:rc=$_profile_context_rc"
 fi
+unset _profile_context_rc
 # weekly-synthesis (llm-tools#827) treats context as current only under version 1.
 # The withheld message is non-empty too, so key the version off the parser's
 # success line rather than on content being present.
