@@ -128,11 +128,14 @@ function readIfExists(path: string): string {
  * running marker mid-scan) is skipped — fail-safe, matching cronbird's torn-read
  * contract for `readCompletions`.
  */
-function readStateDir(dir: string): Record<string, string> {
+export function readStateDir(dir: string): Record<string, string> {
   if (!existsSync(dir)) return {};
   const out: Record<string, string> = {};
   for (const name of readdirSync(dir)) {
     if (!isSafeSegment(name)) continue; // defensive: never read a name we'd refuse to write
+    // A tempfile left by a daemon that died between write and rename is not a
+    // record; read as one it would be a phantom completion or in-flight job.
+    if (name.includes(ATOMIC_TMP_INFIX)) continue;
     try {
       out[name] = readFileSync(`${dir}/${name}`, "utf8");
     } catch {
@@ -211,61 +214,14 @@ async function main(): Promise<void> {
     loadRegistry: () => parseRegistry(readFileSync(regPath, "utf8")),
     loadEnabled: () => parseEnabled(readIfExists(enPath)),
     loadTopology: () => parseSwarm(readIfExists(swPath)),
-    dispatch: (name) => {
-      // Bun.spawn throws synchronously on e.g. ENOENT (cronBin not on PATH).
-      // Swallow + log so one bad dispatch can't crash-loop the daemon; the
-      // guard is already persisted, so this playbook is simply skipped this
-      // minute and fires again at its next slot.
-      // A job name is used as a run-state filename; refuse anything that isn't a
-      // single safe path segment rather than write outside the run-state dir.
-      if (!isSafeSegment(name)) {
-        log(`refusing to dispatch unsafe job name: ${JSON.stringify(name)}`);
-        return;
-      }
-      const dispatchEnv = dispatchContext.envFor(name, process.env);
-      if (dispatchEnv === null) {
-        log(`refusing to dispatch ${name}: persisted retry attempt is missing or invalid`);
-        return;
-      }
-      const startedTs = Date.now();
-      const runMarker = `${runDir}/${name}`;
-      const clearRunning = () => {
-        try {
-          rmSync(runMarker, { force: true });
-        } catch {
-          // already gone
-        }
-      };
-      try {
-        // Mark in-flight BEFORE spawn so a completion can never race ahead of it.
-        writeFileSync(runMarker, runningMarker(startedTs));
-        const proc = Bun.spawn(cfg.dispatchArgv(name), {
-          env: { ...dispatchEnv, CEO_VAULT: vault },
-          stdout: "ignore",
-          stderr: "ignore",
-          stdin: "ignore",
-        });
-        proc.unref();
-        // Rewrite with the PID now that it's known, so a crashed daemon's orphaned
-        // marker is dropped by liveness (dead PID) instead of stalling the queue
-        // for RUN_STATE_STALE_MS.
-        writeFileSync(runMarker, runningMarker(startedTs, proc.pid));
-        log(`dispatched ${name}`);
-        // Record completion so cronbird's queue advances (the MAX_CONCURRENT=1
-        // gate drains the next job only once this one is observed done). Runs on
-        // the daemon's own event loop, so it never races readCompletions.
-        void trackCompletion(
-          name,
-          proc.exited,
-          (exitCode) => writeFileSync(`${dDir}/${name}`, JSON.stringify(completionRecord(startedTs, Date.now(), exitCode))),
-          clearRunning,
-          log,
-        );
-      } catch (err) {
-        clearRunning(); // spawn failed at start — don't leave a phantom in-flight marker
-        log(`dispatch failed for ${name}: ${errText(err)}`);
-      }
-    },
+    dispatch: createJobDispatcher({
+      runDir,
+      dDir,
+      vault,
+      dispatchContext,
+      dispatchArgv: cfg.dispatchArgv,
+      log,
+    }),
     readHeartbeat: () => readHeartbeatFile(hbPath),
     writeHeartbeat: (hb) =>
       dispatchContext.persist(hb, () => writeHeartbeatWithSync(hb, {
@@ -328,6 +284,153 @@ async function main(): Promise<void> {
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Removes the running marker file for a job.
+ * rmSync with force: true suppresses ENOENT; any non-ENOENT error (EACCES, EROFS)
+ * is logged so operators know if permissions or read-only filesystems prevented
+ * marker removal (#586).
+ */
+export function createClearRunning(runMarker: string, log: (msg: string) => void): () => void {
+  return () => {
+    try {
+      rmSync(runMarker, { force: true });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT") {
+        log(`failed to clear running marker ${runMarker}: ${errText(err)}`);
+      }
+    }
+  };
+}
+
+export const ATOMIC_TMP_INFIX = ".tmp.";
+
+/**
+ * Replaces `dest` via a same-directory tempfile + rename, so an ENOSPC/IO fault
+ * mid-write leaves the previous contents in place rather than a truncated file.
+ * Both run-state writers need that: a torn done record loses cronbird's cooldown,
+ * and a torn running marker parses as "not running" and reopens the
+ * MAX_CONCURRENT=1 gate while the child is still alive (#586). Any torn tempfile
+ * is removed before rethrowing. `rawWrite` is the seam tests fail at.
+ */
+export function writeFileAtomic(
+  dest: string,
+  body: string,
+  rawWrite: (path: string, content: string) => void = writeFileSync,
+): void {
+  const rand = Math.random().toString(36).slice(2, 8);
+  const tmp = `${dest}${ATOMIC_TMP_INFIX}${process.pid}.${Date.now()}.${rand}`;
+  try {
+    rawWrite(tmp, body);
+    renameSync(tmp, dest);
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // ignore secondary error on cleanup
+    }
+    throw err;
+  }
+}
+
+export function writeDoneRecordAtomic(
+  dDir: string,
+  name: string,
+  startedTs: number,
+  endedTs: number,
+  exitCode: number,
+  rawWrite?: (path: string, content: string) => void,
+): void {
+  writeFileAtomic(`${dDir}/${name}`, JSON.stringify(completionRecord(startedTs, endedTs, exitCode)), rawWrite);
+}
+
+export interface JobDispatcherDeps {
+  runDir: string;
+  dDir: string;
+  vault: string;
+  dispatchContext: SchedulerDispatchContext;
+  dispatchArgv: (name: string) => string[];
+  log: (msg: string) => void;
+  spawn?: typeof Bun.spawn;
+  rawWrite?: (path: string, content: string) => void;
+  now?: () => number;
+}
+
+export function createJobDispatcher(deps: JobDispatcherDeps): (name: string) => void {
+  const {
+    runDir,
+    dDir,
+    vault,
+    dispatchContext,
+    dispatchArgv,
+    log,
+    spawn = Bun.spawn,
+    rawWrite = writeFileSync,
+    now = Date.now,
+  } = deps;
+  const writeRunningMarker = (path: string, content: string) => writeFileAtomic(path, content, rawWrite);
+
+  return (name: string) => {
+    // Bun.spawn throws synchronously on e.g. ENOENT (cronBin not on PATH).
+    // Swallow + log so one bad dispatch can't crash-loop the daemon; the
+    // guard is already persisted, so this playbook is simply skipped this
+    // minute and fires again at its next slot.
+    // A job name is used as a run-state filename; refuse anything that isn't a
+    // single safe path segment rather than write outside the run-state dir.
+    if (!isSafeSegment(name)) {
+      log(`refusing to dispatch unsafe job name: ${JSON.stringify(name)}`);
+      return;
+    }
+    const dispatchEnv = dispatchContext.envFor(name, process.env);
+    if (dispatchEnv === null) {
+      log(`refusing to dispatch ${name}: persisted retry attempt is missing or invalid`);
+      return;
+    }
+    const startedTs = now();
+    const runMarker = `${runDir}/${name}`;
+    const clearRunning = createClearRunning(runMarker, log);
+
+    try {
+      // Mark in-flight BEFORE spawn so a completion can never race ahead of it.
+      writeRunningMarker(runMarker, runningMarker(startedTs));
+      const proc = spawn(dispatchArgv(name), {
+        env: { ...dispatchEnv, CEO_VAULT: vault },
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+      });
+      proc.unref();
+
+      // Record completion so cronbird's queue advances (the MAX_CONCURRENT=1
+      // gate drains the next job only once this one is observed done). Runs on
+      // the daemon's own event loop, so it never races readCompletions.
+      // Attached immediately after spawn/unref so a PID-rewrite failure never leaves
+      // the running child untracked (#586).
+      void trackCompletion(
+        name,
+        proc.exited,
+        (exitCode) => writeDoneRecordAtomic(dDir, name, startedTs, now(), exitCode, rawWrite),
+        clearRunning,
+        log,
+      );
+
+      // Rewrite with the PID now that it's known, so a crashed daemon's orphaned
+      // marker is dropped by liveness (dead PID) instead of stalling the queue
+      // for RUN_STATE_STALE_MS. Isolated in its own try/catch so a write failure
+      // here does not clear the run marker or drop completion tracking (#586).
+      try {
+        writeRunningMarker(runMarker, runningMarker(startedTs, proc.pid));
+      } catch (pidErr) {
+        log(`could not record PID ${proc.pid} in ${runMarker}: ${errText(pidErr)}`);
+      }
+      log(`dispatched ${name}`);
+    } catch (err) {
+      clearRunning(); // spawn failed at start — don't leave a phantom in-flight marker
+      log(`dispatch failed for ${name}: ${errText(err)}`);
+    }
+  };
+}
 
 /**
  * Settles on every path, including completion writes that throw (ENOSPC or
