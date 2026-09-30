@@ -473,12 +473,25 @@ export PR_MERGED_COUNT
 PR_MERGED_COUNT=$(echo "$PR_MERGED" | jq 'if type=="array" then length else 0 end' 2>/dev/null || echo 0)
 
 # --- Today's log ---
+# grep -c prints a count and exits 1 on zero matches, so only a non-numeric result
+# (grep exit 2, a read error) is a failure; the pending counts above use the same split.
+_gather_count_today_log() {
+  local _var="$1" _out _rc=0
+  _out=$(grep -c "$2" "$TODAY_LOG" 2>/dev/null) || _rc=$?
+  case "$_out" in
+    ''|*[!0-9]*)
+      _file_gather_mark_degraded "file-read-failed:$TODAY_LOG:today-log-$3:rc=$_rc"
+      _out=0
+      ;;
+  esac
+  printf -v "$_var" '%s' "$_out"
+}
 TODAY_LOG="$LOG_DIR/$TODAY.md"
 if [ -f "$TODAY_LOG" ]; then
   export TODAY_LOG_EXISTS=true
-  TOTAL=$(grep -c "^\*\*Status:\*\*" "$TODAY_LOG" 2>/dev/null || echo 0)
-  COMPLETED=$(grep -c "^\*\*Status:\*\* completed" "$TODAY_LOG" 2>/dev/null || echo 0)
-  FAILED=$(grep -c "^\*\*Status:\*\* failed" "$TODAY_LOG" 2>/dev/null || echo 0)
+  _gather_count_today_log TOTAL "^\*\*Status:\*\*" actions
+  _gather_count_today_log COMPLETED "^\*\*Status:\*\* completed" completed
+  _gather_count_today_log FAILED "^\*\*Status:\*\* failed" failed
   export TODAY_LOG_SUMMARY="actions:$TOTAL completed:$COMPLETED failed:$FAILED"
 else
   export TODAY_LOG_EXISTS=false
@@ -509,30 +522,33 @@ else
 fi
 
 # --- Delegations (last 7 days) ---
-if [ -d "$CEO_DIR/delegations" ]; then
-  _delegations_rc=0
-  RECENT_DELEGATIONS=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR/delegations" -name "*.md" -not -name ".gitkeep" -mtime -7 2>/dev/null) || _delegations_rc=$?
-  if [ "$_delegations_rc" -ne 0 ]; then
-    _file_gather_mark_degraded "delegations-find-failed:rc=$_delegations_rc"
-    RECENT_DELEGATIONS=""
-  fi
-  unset _delegations_rc
-  if [ -n "$RECENT_DELEGATIONS" ]; then
-export DELEGATION_COMPLETED
-DELEGATION_COMPLETED=$(echo "$RECENT_DELEGATIONS" | { xargs grep -l "^status: completed" 2>/dev/null || true; } | wc -l | xargs)
-export DELEGATION_IN_PROGRESS
-DELEGATION_IN_PROGRESS=$(echo "$RECENT_DELEGATIONS" | { xargs grep -l "^status: in-progress" 2>/dev/null || true; } | wc -l | xargs)
-export DELEGATION_FAILED
-DELEGATION_FAILED=$(echo "$RECENT_DELEGATIONS" | { xargs grep -l "^status: failed" 2>/dev/null || true; } | wc -l | xargs)
+# The file list is read line by line so a name with a space stays one path. grep -l
+# exits 1 when nothing matches and 2 when a file can't be read; only 2 degrades.
+_gather_count_delegations() {
+  local _var="$1" _out _rc=0
+  _out=$(grep -l "^status: $2" -- "${_DELEGATION_FILES[@]}" 2>/dev/null) || _rc=$?
+  [ "$_rc" -le 1 ] || _file_gather_mark_degraded "file-read-failed:$CEO_DIR/delegations:$2:rc=$_rc"
+  if [ -n "$_out" ]; then
+    printf -v "$_var" '%s' "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')"
   else
-    export DELEGATION_COMPLETED=0
-    export DELEGATION_IN_PROGRESS=0
-    export DELEGATION_FAILED=0
+    printf -v "$_var" '%s' 0
   fi
-else
-  export DELEGATION_COMPLETED=0
-  export DELEGATION_IN_PROGRESS=0
-  export DELEGATION_FAILED=0
+}
+export DELEGATION_COMPLETED=0 DELEGATION_IN_PROGRESS=0 DELEGATION_FAILED=0
+if [ -d "$CEO_DIR/delegations" ]; then
+  _DELEGATION_FILES=()
+  _find_rc=0
+  _find_out=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR/delegations" -name "*.md" -not -name ".gitkeep" -mtime -7 2>/dev/null) || _find_rc=$?
+  [ "$_find_rc" -eq 0 ] || _file_gather_mark_degraded "file-read-failed:$CEO_DIR/delegations:find:rc=$_find_rc"
+  while IFS= read -r _f; do
+    [ -n "$_f" ] && _DELEGATION_FILES+=("$_f")
+  done <<< "$_find_out"
+  if [ "${#_DELEGATION_FILES[@]}" -gt 0 ]; then
+    _gather_count_delegations DELEGATION_COMPLETED completed
+    _gather_count_delegations DELEGATION_IN_PROGRESS in-progress
+    _gather_count_delegations DELEGATION_FAILED failed
+  fi
+  unset _DELEGATION_FILES _find_rc _find_out _f
 fi
 
 # --- Sync conflicts ---
