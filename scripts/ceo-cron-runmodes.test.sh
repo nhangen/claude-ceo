@@ -296,6 +296,65 @@ STUB
 }
 
 
+# Verify that when safe or high-stakes action count is zero, grep -c does not
+# produce double zeros (0\n0) under set -euo pipefail (#600).
+test_dry_run_zero_count_actions_format_clean_single_line() {
+  cat > "$CEO_DIR/playbooks/dr-zero-safe.md" << 'PB'
+---
+name: dr-zero-safe
+description: dry-run zero safe fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | high-stakes | deploy the thing | gh deploy"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local out="$TEST_HOME/cron-zero-safe.log"
+  CEO_VERBOSE=1 bash "$CRON" dr-zero-safe --dry-run > "$out" 2>&1 || true
+
+  local pf; pf=$(_preview_file dr-zero-safe)
+  assert_file_exists "$pf" "preview file should exist"
+  assert_contains "$(cat "$pf" 2>/dev/null)" "Would EXECUTE 0 safe action(s)" "preview must cleanly state 0 safe actions without double-zero"
+  assert_not_contains "$(cat "$pf" 2>/dev/null)" "Would EXECUTE 0 0 safe action(s)" "preview must not have 0 0"
+  assert_contains "$(cat "$out")" "Safe actions: 0 | High-stakes (deferred): 1" "verbose output must format 0 safe actions on a single line"
+
+  cat > "$CEO_DIR/playbooks/dr-zero-high.md" << 'PB'
+---
+name: dr-zero-high
+description: dry-run zero high fixture
+trigger: cron
+schedule: "0 9 * * *"
+model: sonnet
+preflight: none
+tier: high-stakes
+status: active
+---
+PB
+  cat > "$HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+cat >/dev/null
+echo "ACTION: 1 | read | check status | n/a"
+STUB
+  chmod +x "$HOME/.bun/bin/claude"
+
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local out2="$TEST_HOME/cron-zero-high.log"
+  CEO_VERBOSE=1 bash "$CRON" dr-zero-high --dry-run > "$out2" 2>&1 || true
+
+  assert_contains "$(cat "$out2")" "Safe actions: 1 | High-stakes (deferred): 0" "verbose output must format 0 high-stakes actions on a single line"
+}
+
+
 test_high_stakes_filtering_ignores_placeholder_and_directive_actions() {
   cat > "$CEO_DIR/playbooks/hs-filter.md" << 'PB'
 ---

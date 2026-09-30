@@ -2556,8 +2556,8 @@ HIGH_STAKES=$(echo "$ALL_ACTIONS" | grep "| high-stakes |" || true)
 RAW_ACTION_COUNT=$(printf '%s' "$RAW_ACTIONS" | grep -c "^ACTION:" || true)
 KEPT_ACTION_COUNT=$(printf '%s' "$ALL_ACTIONS" | grep -c "^ACTION:" || true)
 DROPPED_ACTIONS=$((RAW_ACTION_COUNT - KEPT_ACTION_COUNT))
-SAFE_COUNT=$(echo "$SAFE_ACTIONS" | grep -c "^ACTION:" 2>/dev/null || echo 0)
-HIGH_COUNT=$(echo "$HIGH_STAKES" | grep -c "^ACTION:" 2>/dev/null || echo 0)
+SAFE_COUNT=$(echo "$SAFE_ACTIONS" | grep -c "^ACTION:" 2>/dev/null || true); [ -n "$SAFE_COUNT" ] || SAFE_COUNT=0
+HIGH_COUNT=$(echo "$HIGH_STAKES" | grep -c "^ACTION:" 2>/dev/null || true); [ -n "$HIGH_COUNT" ] || HIGH_COUNT=0
 _v "  Safe actions: $SAFE_COUNT | High-stakes (deferred): $HIGH_COUNT"
 
 # Write high-stakes proposals to pending.md
