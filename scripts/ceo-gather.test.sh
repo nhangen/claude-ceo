@@ -500,6 +500,62 @@ EOF
     "gather must not abort under set -euo pipefail when a status has 0 matches (#592)"
 }
 
+# Every status needs a zero-match case, and a name with a space must count as one file.
+test_delegation_counts_cover_each_status_and_spaced_names() {
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/CEO/delegations"
+  printf -- '---\nstatus: failed\n---\n' > "$CEO_VAULT/CEO/delegations/my delegation.md"
+  printf -- '---\nstatus: pending\n---\n' > "$CEO_VAULT/CEO/delegations/other.md"
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED=$DELEGATION_COMPLETED|IN_PROGRESS=$DELEGATION_IN_PROGRESS|FAILED=$DELEGATION_FAILED|DEGRADED=$FILE_GATHER_DEGRADED"
+  )
+  assert_contains "$out" "COMPLETED=0|IN_PROGRESS=0|FAILED=1|DEGRADED=0" \
+    "zero-match statuses count 0 and a spaced filename counts once"
+}
+
+# grep exits 1 on no match and 2 on a read error; only the read error degrades.
+test_unreadable_delegation_file_degrades_the_gather() {
+  [ "$(id -u)" -eq 0 ] && { assert_eq 0 0 "skipped as root"; return; }
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/CEO/delegations"
+  printf -- '---\nstatus: failed\n---\n' > "$CEO_VAULT/CEO/delegations/a.md"
+  printf -- '---\nstatus: failed\n---\n' > "$CEO_VAULT/CEO/delegations/b.md"
+  chmod 000 "$CEO_VAULT/CEO/delegations/b.md"
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "FAILED=$DELEGATION_FAILED|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  chmod 644 "$CEO_VAULT/CEO/delegations/b.md"
+  assert_contains "$out" "DEGRADED=1" "an unreadable delegation file must degrade the gather"
+  assert_contains "$out" "delegations:failed:rc=2" "the reason names the status and grep's exit"
+}
+
+test_unreadable_today_log_degrades_the_gather() {
+  [ "$(id -u)" -eq 0 ] && { assert_eq 0 0 "skipped as root"; return; }
+  _write_gh_stub '[]'
+  local today; today=$(date +%Y-%m-%d)
+  mkdir -p "$CEO_VAULT/CEO/log"
+  printf '**Status:** completed\n' > "$CEO_VAULT/CEO/log/$today.md"
+  chmod 000 "$CEO_VAULT/CEO/log/$today.md"
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "SUMMARY=$TODAY_LOG_SUMMARY|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  chmod 644 "$CEO_VAULT/CEO/log/$today.md"
+  assert_contains "$out" "SUMMARY=actions:0 completed:0 failed:0|DEGRADED=1" \
+    "an unreadable today log must degrade rather than read as a quiet day"
+  assert_contains "$out" "today-log-actions:rc=2" "the reason names the field and grep's exit"
+}
+
 test_today_log_summary_zero_matches_does_not_double_zero() {
   _write_gh_stub '[]'
   local today; today=$(date +%Y-%m-%d)
