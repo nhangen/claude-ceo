@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { FATAL_EXIT_CODE } from "cronbird/core";
 import { PermanentHeartbeatWriteError } from "cronbird/cli";
-import { recordFatalInSyncedHeartbeat, resolveFatalExitCode, trackCompletion } from "@/main";
+import {
+  createClearRunning,
+  createJobDispatcher,
+  recordFatalInSyncedHeartbeat,
+  resolveFatalExitCode,
+  SchedulerDispatchContext,
+  trackCompletion,
+  writeDoneRecordAtomic,
+} from "@/main";
 import { runningDir, doneDir } from "@/runtime";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -290,6 +298,237 @@ describe("recordFatalInSyncedHeartbeat", () => {
       expect(hb.fatal.code).toBe("EACCES");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("writeDoneRecordAtomic", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-done-atomic-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  test("writes a valid completion record atomically", () => {
+    const { dir, cleanup } = setup();
+    try {
+      writeDoneRecordAtomic(dir, "my-job", 1000, 2000, 0);
+      const record = JSON.parse(readFileSync(join(dir, "my-job"), "utf8"));
+      expect(record).toEqual({ ts: 2000, durationMs: 1000, exitCode: 0 });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("leaves existing done record intact when write fails mid-flight", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const dest = join(dir, "my-job");
+      writeFileSync(dest, JSON.stringify({ startedTs: 500, endedTs: 600, exitCode: 0 }));
+
+      // Make directory unwritable to force temp write failure
+      chmodSync(dir, 0o555);
+      expect(() => writeDoneRecordAtomic(dir, "my-job", 1000, 2000, 1)).toThrow();
+
+      // Restore permissions before reading / asserting
+      chmodSync(dir, 0o755);
+      const intact = JSON.parse(readFileSync(dest, "utf8"));
+      expect(intact).toEqual({ startedTs: 500, endedTs: 600, exitCode: 0 });
+    } finally {
+      try {
+        chmodSync(dir, 0o755);
+      } catch {
+        // ignore
+      }
+      cleanup();
+    }
+  });
+
+  test("cleans up torn tempfile if rename fails", () => {
+    const { dir, cleanup } = setup();
+    try {
+      // Create a directory where the dest file would be to cause rename to throw EISDIR
+      mkdirSync(join(dir, "is-dir"), { recursive: true });
+      expect(() => writeDoneRecordAtomic(dir, "is-dir", 1000, 2000, 0)).toThrow();
+
+      // Ensure no dangling .tmp files remain in dir
+      const entries = readdirSync(dir);
+      expect(entries).toEqual(["is-dir"]);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("createClearRunning", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-clearrun-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  test("removes running marker cleanly without logging", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const marker = join(dir, "job");
+      writeFileSync(marker, "12345");
+      const logs: string[] = [];
+      const clear = createClearRunning(marker, (m) => logs.push(m));
+      clear();
+      expect(existsSync(marker)).toBe(false);
+      expect(logs).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("ignores ENOENT silently when marker does not exist", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const marker = join(dir, "nonexistent");
+      const logs: string[] = [];
+      const clear = createClearRunning(marker, (m) => logs.push(m));
+      clear();
+      expect(logs).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test.skipIf(isRoot)("logs when removal fails with non-ENOENT (e.g. EACCES)", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const marker = join(dir, "job");
+      writeFileSync(marker, "12345");
+      chmodSync(dir, 0o555);
+      const logs: string[] = [];
+      const clear = createClearRunning(marker, (m) => logs.push(m));
+      clear();
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toContain("failed to clear running marker");
+    } finally {
+      try {
+        chmodSync(dir, 0o755);
+      } catch {
+        // ignore
+      }
+      cleanup();
+    }
+  });
+});
+
+describe("createJobDispatcher", () => {
+  const setup = () => {
+    const root = mkdtempSync(join(tmpdir(), "ceo-dispatch-test-"));
+    const runDir = join(root, "running");
+    const dDir = join(root, "done");
+    const vault = join(root, "vault");
+    mkdirSync(runDir, { recursive: true });
+    mkdirSync(dDir, { recursive: true });
+    mkdirSync(vault, { recursive: true });
+    return {
+      root,
+      runDir,
+      dDir,
+      vault,
+      cleanup: () => rmSync(root, { recursive: true, force: true }),
+    };
+  };
+
+  test("tracks completion and does NOT log 'dispatch failed' when PID rewrite throws", async () => {
+    const { root, runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const context = new SchedulerDispatchContext();
+      let writeCount = 0;
+      let exitResolve: (code: number) => void;
+      const exitedPromise = new Promise<number>((r) => {
+        exitResolve = r;
+      });
+
+      const mockSpawn = () =>
+        ({
+          pid: 99999,
+          unref: () => {},
+          exited: exitedPromise,
+        }) as unknown as ReturnType<typeof Bun.spawn>;
+
+      const mockWriteRunningMarker = (path: string, content: string) => {
+        writeCount += 1;
+        if (writeCount === 2) {
+          // Fail on the PID rewrite after spawn
+          throw new Error("ENOSPC: no space left on device");
+        }
+        writeFileSync(path, content);
+      };
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: context,
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+        writeRunningMarker: mockWriteRunningMarker,
+        now: () => 1000,
+      });
+
+      dispatch("test-job");
+
+      // Verify PID rewrite failure was logged, but "dispatch failed" was NOT
+      expect(logs.some((l) => l.includes("could not record PID 99999"))).toBe(true);
+      expect(logs.some((l) => l.includes("dispatch failed"))).toBe(false);
+      expect(logs.some((l) => l.includes("dispatched test-job"))).toBe(true);
+
+      // Verify the running marker still exists on disk with startedTs (not cleared by PID failure)
+      const markerPath = join(runDir, "test-job");
+      expect(existsSync(markerPath)).toBe(true);
+      expect(readFileSync(markerPath, "utf8")).toBe("1000");
+
+      // Now resolve the child process exit
+      exitResolve!(0);
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Done record was written
+      const donePath = join(dDir, "test-job");
+      expect(existsSync(donePath)).toBe(true);
+      expect(JSON.parse(readFileSync(donePath, "utf8"))).toEqual({
+        ts: 1000,
+        durationMs: 0,
+        exitCode: 0,
+      });
+
+      // Running marker was cleared
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("clears running marker and logs 'dispatch failed' when spawn fails synchronously", () => {
+    const { root, runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const context = new SchedulerDispatchContext();
+      const mockSpawn = () => {
+        throw new Error("ENOENT: binary not found");
+      };
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: context,
+        dispatchArgv: (name) => ["nonexistent", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+      });
+
+      dispatch("failed-job");
+
+      expect(logs.some((l) => l.includes("dispatch failed for failed-job: ENOENT: binary not found"))).toBe(true);
+      expect(existsSync(join(runDir, "failed-job"))).toBe(false);
+    } finally {
+      cleanup();
     }
   });
 });
