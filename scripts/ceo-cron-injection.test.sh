@@ -504,6 +504,54 @@ EOF
   assert_contains "$content" "test-skill output" "runner:skill must capture skill stdout"
 }
 
+test_runner_skill_records_degraded_gather_status_in_skips_log() {
+  cat > "$CEO_DIR/playbooks/skill-degraded-gather.md" << 'PB'
+---
+name: skill-degraded-gather
+description: skill executes when gather is degraded
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: test-skill
+out_pattern: CEO/reports/test/${TODAY}-${HOSTNAME}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/test-skill/scripts"
+  cat > "$HOME/.claude/skills/test-skill/scripts/run-report.sh" << 'EOF'
+#!/bin/bash
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --out) out_dir="$2"; shift ;;
+  esac
+  shift
+done
+echo "test-skill degraded gather output" > "$out_dir/report.md"
+EOF
+  chmod +x "$HOME/.claude/skills/test-skill/scripts/run-report.sh"
+
+  # Force gather phase to be degraded (empty) by emptying pending tasks
+  : > "$CEO_DIR/approvals/pending.md"
+
+  local rc=0
+  PATH=/usr/bin:/bin bash "$CRON" skill-degraded-gather >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "runner:skill must exit 0 on success even when gather is degraded (#593)"
+
+  local skip_log
+  skip_log=$(_skips_log)
+  assert_contains "$skip_log" "WARN — Gather phase empty:" \
+    "skips log must record degraded gather status for runner:skill playbooks (#593)"
+
+  local expected_out
+  expected_out="$CEO_DIR/reports/test/$(date +%Y-%m-%d)-$(hostname -s).md"
+  assert_file_exists "$expected_out" "runner:skill must write output report even when gather is degraded"
+  local content
+  content=$(cat "$expected_out" 2>/dev/null || echo "")
+  assert_contains "$content" "test-skill degraded gather output" "report must contain skill output"
+}
+
 
 test_runner_skill_missing_skill_records_failure() {
   cat > "$CEO_DIR/playbooks/skill-missing.md" << 'PB'
