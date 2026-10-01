@@ -1204,7 +1204,7 @@ cmd_swarm_owners_health() {
     escalated=1
   }
 
-  local hb peer code since line
+  local hb peer code since line was_fatal
   for hb in "$hb_dir"/*.json; do
     [ -f "$hb" ] || continue
     peer=$(basename "$hb" .json)
@@ -1214,11 +1214,14 @@ cmd_swarm_owners_health() {
     case "$peer" in *.sync-conflict-*) continue ;; esac
     # The name lands in a synced inbox line; accept only a host-shaped segment.
     case "$peer" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-    if ! jq -e . "$hb" >/dev/null 2>&1; then
+    was_fatal=$(jq -r --arg k "fatal:$peer" '.[$k] // "fresh"' <<<"$prior_state")
+    # Anything but an object can't be read for .fatal, so it can't show a recovery
+    # either: carry a known fatal state rather than dropping it.
+    if ! jq -e 'type == "object"' "$hb" >/dev/null 2>&1; then
       check_error=1
-      line="  ✗ $peer heartbeat is unreadable JSON"
+      line="  ✗ $peer heartbeat is not a readable JSON object"
       echo "$line"; report+="$line"$'\n'
-      if [ "$(jq -r --arg k "fatal:$peer" '.[$k] // "fresh"' <<<"$prior_state")" = "stale" ]; then
+      if [ "$was_fatal" = "stale" ]; then
         new_state=$(jq -c --arg k "fatal:$peer" '.[$k] = "stale"' <<<"$new_state")
         any_fatal=1
       fi
@@ -1234,7 +1237,7 @@ cmd_swarm_owners_health() {
     new_state=$(jq -c --arg k "fatal:$peer" '.[$k] = "stale"' <<<"$new_state")
     line="  ✗ $peer ceo-schedulerd stopped on a permanent local-write fault ($code) since $since"
     echo "$line"; report+="$line"$'\n'
-    if [ "$(jq -r --arg k "fatal:$peer" '.[$k] // "fresh"' <<<"$prior_state")" != "stale" ]; then
+    if [ "$was_fatal" != "stale" ]; then
       _owners_health_escalate "<!-- schedulerd-fatal:$peer -->" \
         "- [ ] $peer ceo-schedulerd is crash-looping on a permanent local-write fault ($code) — fix ~/.ceo/schedulerd on $peer and restart it <!-- schedulerd-fatal:$peer -->" \
         || return 1
