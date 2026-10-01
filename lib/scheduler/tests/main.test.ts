@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { FATAL_EXIT_CODE } from "cronbird/core";
 import { PermanentHeartbeatWriteError } from "cronbird/cli";
-import { recordFatalInSyncedHeartbeat, resolveFatalExitCode, trackCompletion } from "@/main";
+import {
+  createClearRunning,
+  createJobDispatcher,
+  readStateDir,
+  recordFatalInSyncedHeartbeat,
+  resolveFatalExitCode,
+  SchedulerDispatchContext,
+  trackCompletion,
+  writeDoneRecordAtomic,
+} from "@/main";
 import { runningDir, doneDir } from "@/runtime";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -292,6 +301,264 @@ describe("recordFatalInSyncedHeartbeat", () => {
       expect(hb.fatal.code).toBe("EACCES");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readStateDir", () => {
+  test("skips a tempfile left by a daemon that died between write and rename", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-state-dir-"));
+    try {
+      writeFileSync(join(dir, "real-job"), "1000 4242");
+      writeFileSync(join(dir, "real-job.tmp.4242.1700000000000.abc123"), "1000 4242");
+      expect(readStateDir(dir)).toEqual({ "real-job": "1000 4242" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("writeDoneRecordAtomic", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-done-atomic-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  test("writes a valid completion record atomically", () => {
+    const { dir, cleanup } = setup();
+    try {
+      writeDoneRecordAtomic(dir, "my-job", 1000, 2000, 0);
+      const record = JSON.parse(readFileSync(join(dir, "my-job"), "utf8"));
+      expect(record).toEqual({ ts: 2000, durationMs: 1000, exitCode: 0 });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("leaves existing done record intact when the write fails mid-flight", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const dest = join(dir, "my-job");
+      writeFileSync(dest, JSON.stringify({ ts: 600, durationMs: 100, exitCode: 0 }));
+      // Real ENOSPC/EIO: bytes are partly written before the fault.
+      const tornWrite = (path: string, content: string) => {
+        writeFileSync(path, content.slice(0, 5));
+        throw new Error("EIO: i/o error, write");
+      };
+      expect(() => writeDoneRecordAtomic(dir, "my-job", 1000, 2000, 1, tornWrite)).toThrow("EIO");
+      expect(JSON.parse(readFileSync(dest, "utf8"))).toEqual({ ts: 600, durationMs: 100, exitCode: 0 });
+      expect(readdirSync(dir)).toEqual(["my-job"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("cleans up torn tempfile if rename fails", () => {
+    const { dir, cleanup } = setup();
+    try {
+      // Create a directory where the dest file would be to cause rename to throw EISDIR
+      mkdirSync(join(dir, "is-dir"), { recursive: true });
+      expect(() => writeDoneRecordAtomic(dir, "is-dir", 1000, 2000, 0)).toThrow();
+
+      // Ensure no dangling .tmp files remain in dir
+      const entries = readdirSync(dir);
+      expect(entries).toEqual(["is-dir"]);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("createClearRunning", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-clearrun-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  test("removes running marker cleanly without logging", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const marker = join(dir, "job");
+      writeFileSync(marker, "12345");
+      const logs: string[] = [];
+      const clear = createClearRunning(marker, (m) => logs.push(m));
+      clear();
+      expect(existsSync(marker)).toBe(false);
+      expect(logs).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("ignores ENOENT silently when marker does not exist", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const marker = join(dir, "nonexistent");
+      const logs: string[] = [];
+      const clear = createClearRunning(marker, (m) => logs.push(m));
+      clear();
+      expect(logs).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test.skipIf(isRoot)("logs when removal fails with non-ENOENT (e.g. EACCES)", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const marker = join(dir, "job");
+      writeFileSync(marker, "12345");
+      chmodSync(dir, 0o555);
+      const logs: string[] = [];
+      const clear = createClearRunning(marker, (m) => logs.push(m));
+      clear();
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toContain("failed to clear running marker");
+    } finally {
+      try {
+        chmodSync(dir, 0o755);
+      } catch {
+        // ignore
+      }
+      cleanup();
+    }
+  });
+});
+
+describe("createJobDispatcher", () => {
+  const setup = () => {
+    const root = mkdtempSync(join(tmpdir(), "ceo-dispatch-test-"));
+    const runDir = join(root, "running");
+    const dDir = join(root, "done");
+    const vault = join(root, "vault");
+    mkdirSync(runDir, { recursive: true });
+    mkdirSync(dDir, { recursive: true });
+    mkdirSync(vault, { recursive: true });
+    return {
+      root,
+      runDir,
+      dDir,
+      vault,
+      cleanup: () => rmSync(root, { recursive: true, force: true }),
+    };
+  };
+
+  const waitFor = async (cond: () => boolean) => {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  };
+
+  test("a torn PID rewrite keeps the in-flight marker and still tracks completion", async () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      let exitResolve: (code: number) => void;
+      const exitedPromise = new Promise<number>((r) => {
+        exitResolve = r;
+      });
+      const mockSpawn = () =>
+        ({ pid: 99999, unref: () => {}, exited: exitedPromise }) as unknown as ReturnType<typeof Bun.spawn>;
+      // Fails only the PID rewrite, after truncating and partly writing, as ENOSPC/EIO do.
+      const rawWrite = (path: string, content: string) => {
+        if (content.includes("99999")) {
+          writeFileSync(path, content.slice(0, 2));
+          throw new Error("EIO: i/o error, write");
+        }
+        writeFileSync(path, content);
+      };
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: new SchedulerDispatchContext(),
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+        rawWrite,
+        now: () => 1000,
+      });
+
+      dispatch("test-job");
+
+      expect(logs.some((l) => l.includes("could not record PID 99999"))).toBe(true);
+      expect(logs.some((l) => l.includes("dispatch failed"))).toBe(false);
+      const markerPath = join(runDir, "test-job");
+      // Still parses as in flight, so the MAX_CONCURRENT=1 gate stays shut.
+      expect(readFileSync(markerPath, "utf8")).toBe("1000");
+      expect(Object.keys(readStateDir(runDir))).toEqual(["test-job"]);
+
+      exitResolve!(0);
+      const donePath = join(dDir, "test-job");
+      await waitFor(() => !existsSync(markerPath));
+      expect(JSON.parse(readFileSync(donePath, "utf8"))).toEqual({ ts: 1000, durationMs: 0, exitCode: 0 });
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("a torn completion write leaves the previous done record in place", async () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const donePath = join(dDir, "test-job");
+      writeFileSync(donePath, JSON.stringify({ ts: 500, durationMs: 10, exitCode: 0 }));
+      const rawWrite = (path: string, content: string) => {
+        if (content.includes("exitCode")) {
+          writeFileSync(path, content.slice(0, 3));
+          throw new Error("ENOSPC: no space left on device, write");
+        }
+        writeFileSync(path, content);
+      };
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: new SchedulerDispatchContext(),
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: () =>
+          ({ pid: 4242, unref: () => {}, exited: Promise.resolve(3) }) as unknown as ReturnType<typeof Bun.spawn>,
+        rawWrite,
+        now: () => 1000,
+      });
+
+      dispatch("test-job");
+      await waitFor(() => !existsSync(join(runDir, "test-job")));
+
+      expect(JSON.parse(readFileSync(donePath, "utf8"))).toEqual({ ts: 500, durationMs: 10, exitCode: 0 });
+      expect(readdirSync(dDir)).toEqual(["test-job"]);
+      expect(logs.some((l) => l.includes("could not record exit 3 for test-job"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("clears running marker and logs 'dispatch failed' when spawn fails synchronously", () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const context = new SchedulerDispatchContext();
+      const mockSpawn = () => {
+        throw new Error("ENOENT: binary not found");
+      };
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: context,
+        dispatchArgv: (name) => ["nonexistent", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+      });
+
+      dispatch("failed-job");
+
+      expect(logs.some((l) => l.includes("dispatch failed for failed-job: ENOENT: binary not found"))).toBe(true);
+      expect(existsSync(join(runDir, "failed-job"))).toBe(false);
+    } finally {
+      cleanup();
     }
   });
 });
