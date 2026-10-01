@@ -3,6 +3,7 @@ import { FATAL_EXIT_CODE } from "cronbird/core";
 import { PermanentHeartbeatWriteError } from "cronbird/cli";
 import {
   clearSchedulerdAlert,
+  clearSchedulerdAlertOrLog,
   createClearRunning,
   createJobDispatcher,
   formatSchedulerdAlert,
@@ -215,6 +216,9 @@ describe("main entrypoint process exit", () => {
       expect(stderr).toContain("run-state");
       const synced = JSON.parse(readFileSync(join(fix.vault, "CEO", "heartbeats", "testhost.json"), "utf8"));
       expect(synced.fatal.code).toBe("EACCES");
+      const alert = readFileSync(join(fix.vault, "CEO", "alerts", "schedulerd-testhost.md"), "utf8");
+      expect(parseAlertField(alert, "status")).toBe("firing");
+      expect(parseAlertField(alert, "code")).toBe("EACCES");
     } finally {
       fix.cleanup();
     }
@@ -389,6 +393,7 @@ describe("schedulerd alert file handling", () => {
       "",
       "status: clear",
       "host: otherhost",
+      "code: EBODY",
     ].join("\n");
 
     expect(parseAlertField(doc, "status")).toBe("firing");
@@ -396,6 +401,7 @@ describe("schedulerd alert file handling", () => {
     expect(parseAlertField(doc, "last_check")).toBe("2026-09-30T14:00:00.000Z");
     expect(parseAlertField(doc, "host")).toBe("mac");
     expect(parseAlertField(doc, "nonexistent")).toBeNull();
+    expect(parseAlertField(doc, "code")).toBeNull();
     expect(parseAlertField("no frontmatter here", "status")).toBeNull();
   });
 
@@ -423,6 +429,30 @@ describe("schedulerd alert file handling", () => {
       const later = new Date("2026-09-30T14:00:10.000Z");
       expect(recordFatalSchedulerdAlert(path, "mac", "EACCES", later)).toBe("unchanged");
       expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("recordFatalSchedulerdAlert rewrites a firing alert when the code changes", () => {
+    const { dir, path } = setup();
+    try {
+      recordFatalSchedulerdAlert(path, "mac", "EACCES", now);
+      expect(recordFatalSchedulerdAlert(path, "mac", "ENOSPC", new Date("2026-09-30T14:05:00.000Z"))).toBe("written");
+      expect(parseAlertField(readFileSync(path, "utf8"), "code")).toBe("ENOSPC");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an unreadable alert is logged on the heartbeat path, never thrown", () => {
+    const { dir, path } = setup();
+    try {
+      mkdirSync(path, { recursive: true }); // reading a directory fails with EISDIR, not ENOENT
+      expect(() => clearSchedulerdAlert(path, "mac", now)).toThrow();
+      const logs: string[] = [];
+      expect(() => clearSchedulerdAlertOrLog(path, "mac", now, (m) => logs.push(m))).not.toThrow();
+      expect(logs.some((l) => l.startsWith("could not clear schedulerd alert:"))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

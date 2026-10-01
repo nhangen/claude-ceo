@@ -230,11 +230,7 @@ async function main(): Promise<void> {
           writeSynced: () => writeSyncedHeartbeat(syncedHbPath, host),
           log,
         });
-        try {
-          clearSchedulerdAlert(alertPath, host, new Date());
-        } catch (alertErr) {
-          log(`could not clear schedulerd alert: ${errText(alertErr)}`);
-        }
+        clearSchedulerdAlertOrLog(alertPath, host, new Date(), log);
       }),
     log,
     host,
@@ -559,8 +555,9 @@ export function formatSchedulerdAlert(
 
 /**
  * Writes CEO/alerts/schedulerd-<host>.md on fatal exit (status: firing).
- * If the alert is already firing, returns "unchanged" without rewriting to prevent
- * Syncthing churn during a launchd respawn loop (#589).
+ * If the alert is already firing with the same code, returns "unchanged" without
+ * rewriting to prevent Syncthing churn during a launchd respawn loop (#589). A new
+ * code is rewritten so the alert agrees with the synced heartbeat.
  */
 export function recordFatalSchedulerdAlert(
   path: string,
@@ -570,7 +567,7 @@ export function recordFatalSchedulerdAlert(
 ): "written" | "unchanged" {
   try {
     const prev = readFileSync(path, "utf8");
-    if (parseAlertField(prev, "status") === "firing") return "unchanged";
+    if (parseAlertField(prev, "status") === "firing" && parseAlertField(prev, "code") === code) return "unchanged";
   } catch {
     // No prior alert file or unreadable: record the fault.
   }
@@ -583,9 +580,11 @@ export function recordFatalSchedulerdAlert(
 }
 
 /**
- * Resets CEO/alerts/schedulerd-<host>.md to status: clear once the daemon
- * has verified its local and synced heartbeats are healthy (#589).
- * If the file does not exist or is already clear, returns "unchanged".
+ * Resets CEO/alerts/schedulerd-<host>.md to status: clear after a successful
+ * local heartbeat write (#589). The synced write's failure is logged but not
+ * propagated by cronbird, so clear does not imply the synced heartbeat is fresh.
+ * A missing file or one already clear returns "unchanged"; any other read
+ * error is thrown so the caller can log it rather than leave the alert firing.
  */
 export function clearSchedulerdAlert(
   path: string,
@@ -595,9 +594,9 @@ export function clearSchedulerdAlert(
   try {
     const prev = readFileSync(path, "utf8");
     if (parseAlertField(prev, "status") === "clear") return "unchanged";
-  } catch {
-    // No prior alert file: nothing to clear.
-    return "unchanged";
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return "unchanged";
+    throw err;
   }
   mkdirSync(dirname(path), { recursive: true });
   const iso = now.toISOString();
@@ -605,6 +604,24 @@ export function clearSchedulerdAlert(
   writeFileSync(tmp, formatSchedulerdAlert(host, "clear", iso, iso), "utf8");
   renameSync(tmp, path);
   return "written";
+}
+
+/**
+ * Clears the alert from the heartbeat path without letting a failure escape:
+ * a throw there would skip the retry-state retain and take down a daemon whose
+ * local heartbeat is healthy.
+ */
+export function clearSchedulerdAlertOrLog(
+  path: string,
+  host: string,
+  now: Date,
+  log: (msg: string) => void,
+): void {
+  try {
+    clearSchedulerdAlert(path, host, now);
+  } catch (err) {
+    log(`could not clear schedulerd alert: ${errText(err)}`);
+  }
 }
 
 // Only run when invoked directly (not when imported by tests).
