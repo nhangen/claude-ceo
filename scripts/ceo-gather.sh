@@ -65,12 +65,33 @@ $1"
   fi
 }
 
+# Portable timeout shim — reuse the library helper instead of duplicating it.
+# CEO_TIMEOUT_BIN is set to "timeout" / "gtimeout" / "" by ceo_resolve_timeout_bin.
+# When no coreutils timeout is on PATH (e.g. stock macOS), fall back to python3
+# so stalled mount protection is preserved instead of silently running unbounded.
+ceo_resolve_timeout_bin
+if [ -n "$CEO_TIMEOUT_BIN" ]; then
+  _CEO_TIMEOUT() { "$CEO_TIMEOUT_BIN" "$@"; }
+elif command -v python3 &>/dev/null; then
+  _CEO_TIMEOUT() {
+    local secs="$1"; shift
+    python3 -c 'import subprocess, sys
+try:
+    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)' "$secs" "$@"
+  }
+else
+  _CEO_TIMEOUT() { shift; "$@"; }
+fi
+: "${CEO_VAULT_TIMEOUT:=10}"
+
 # --- Pending approvals ---
 PENDING_FILE="$CEO_DIR/approvals/pending.md"
 if [ -f "$PENDING_FILE" ]; then
   export PENDING_COUNT
   _pcount_rc=0
-  PENDING_COUNT=$(grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null) || _pcount_rc=$?
+  PENDING_COUNT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null) || _pcount_rc=$?
   case "$PENDING_COUNT" in
     ''|*[!0-9]*)
       _file_gather_mark_degraded "file-read-failed:$PENDING_FILE:pending-count:rc=$_pcount_rc"
@@ -79,7 +100,7 @@ if [ -f "$PENDING_FILE" ]; then
   esac
   export APPROVED_COUNT
   _acount_rc=0
-  APPROVED_COUNT=$(grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null) || _acount_rc=$?
+  APPROVED_COUNT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" grep -c "^- \[x\]" "$PENDING_FILE" 2>/dev/null) || _acount_rc=$?
   case "$APPROVED_COUNT" in
     ''|*[!0-9]*)
       _file_gather_mark_degraded "file-read-failed:$PENDING_FILE:approved-count:rc=$_acount_rc"
@@ -90,15 +111,6 @@ if [ -f "$PENDING_FILE" ]; then
 else
   export PENDING_COUNT=0
   export APPROVED_COUNT=0
-fi
-
-# Portable timeout shim — reuse the library helper instead of duplicating it.
-# CEO_TIMEOUT_BIN is set to "timeout" / "gtimeout" / "" by ceo_resolve_timeout_bin.
-ceo_resolve_timeout_bin
-if [ -n "$CEO_TIMEOUT_BIN" ]; then
-  _CEO_TIMEOUT() { "$CEO_TIMEOUT_BIN" "$@"; }
-else
-  _CEO_TIMEOUT() { shift; "$@"; }
 fi
 
 # --- GitHub PRs (global search per configured account) ---
@@ -526,7 +538,7 @@ export DELEGATION_COMPLETED=0 DELEGATION_IN_PROGRESS=0 DELEGATION_FAILED=0
 if [ -d "$CEO_DIR/delegations" ]; then
   _DELEGATION_FILES=()
   _find_rc=0
-  _find_out=$(find "$CEO_DIR/delegations" -name "*.md" -not -name ".gitkeep" -mtime -7 2>/dev/null) || _find_rc=$?
+  _find_out=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR/delegations" -name "*.md" -not -name ".gitkeep" -mtime -7 2>/dev/null) || _find_rc=$?
   [ "$_find_rc" -eq 0 ] || _file_gather_mark_degraded "file-read-failed:$CEO_DIR/delegations:find:rc=$_find_rc"
   while IFS= read -r _f; do
     [ -n "$_f" ] && _DELEGATION_FILES+=("$_f")
@@ -575,19 +587,25 @@ GATHER_MAX_FILE=10000
 _gather_safe_read() {
   local file="$1"
   if [ -f "$file" ]; then
-    head -c "$GATHER_MAX_FILE" "$file"
+    _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" head -c "$GATHER_MAX_FILE" "$file" 2>/dev/null
   fi
 }
 
 export BRIEFINGS_TRAINING
-BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md")
+_btr_rc=0
+BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md") || _btr_rc=$?
+if [ "$_btr_rc" -ne 0 ]; then
+  _file_gather_mark_degraded "briefings-training-read-failed:rc=$_btr_rc"
+  BRIEFINGS_TRAINING=""
+fi
+unset _btr_rc
 
 # --- Canonical dated Active Domains ---
 export ACTIVE_DOMAINS_CONTENT
 # ceo-cron.sh sources this under set -e, so a reader crash (python3 missing, or an
 # exception the parser does not catch) would abort every playbook's tick (#578).
 _profile_context_rc=0
-ACTIVE_DOMAINS_CONTENT=$(python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_context_rc=$?
+ACTIVE_DOMAINS_CONTENT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_context_rc=$?
 if [ "$_profile_context_rc" -ne 0 ]; then
   echo "WARN: ceo-profile-context.py failed (rc=$_profile_context_rc)" >&2
   ACTIVE_DOMAINS_CONTENT="Active domains unavailable: context reader failed (rc=$_profile_context_rc). Do not infer current roles or priorities from history."
