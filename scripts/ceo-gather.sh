@@ -65,13 +65,14 @@ $1"
   fi
 }
 
-# Portable timeout shim — reuse the library helper instead of duplicating it.
-# CEO_TIMEOUT_BIN is set to "timeout" / "gtimeout" / "" by ceo_resolve_timeout_bin.
-# When no coreutils timeout is on PATH (e.g. stock macOS), fall back to python3
-# so stalled mount protection is preserved instead of silently running unbounded.
+# Timeout shim for vault and network reads (#594). The binary comes from the
+# library resolver; unlike it, gather falls back to python3 when neither timeout
+# nor gtimeout is on PATH (stock macOS), since a stalled mount would otherwise
+# hang the tick. CEO_GATHER_TIMEOUT_BIN overrides the binary for this script only.
 ceo_resolve_timeout_bin
-if [ -n "$CEO_TIMEOUT_BIN" ]; then
-  _CEO_TIMEOUT() { "$CEO_TIMEOUT_BIN" "$@"; }
+_gather_timeout_bin="${CEO_GATHER_TIMEOUT_BIN-$CEO_TIMEOUT_BIN}"
+if [ -n "$_gather_timeout_bin" ]; then
+  _CEO_TIMEOUT() { "$_gather_timeout_bin" "$@"; }
 elif command -v python3 &>/dev/null; then
   _CEO_TIMEOUT() {
     local secs="$1"; shift
@@ -82,6 +83,7 @@ except subprocess.TimeoutExpired:
     sys.exit(124)' "$secs" "$@"
   }
 else
+  echo "WARN: no timeout, gtimeout, or python3 on PATH; vault reads are unbounded" >&2
   _CEO_TIMEOUT() { shift; "$@"; }
 fi
 : "${CEO_VAULT_TIMEOUT:=10}"
@@ -526,7 +528,7 @@ fi
 # exits 1 when nothing matches and 2 when a file can't be read; only 2 degrades.
 _gather_count_delegations() {
   local _var="$1" _out _rc=0
-  _out=$(grep -l "^status: $2" -- "${_DELEGATION_FILES[@]}" 2>/dev/null) || _rc=$?
+  _out=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" grep -l "^status: $2" -- "${_DELEGATION_FILES[@]}" 2>/dev/null) || _rc=$?
   [ "$_rc" -le 1 ] || _file_gather_mark_degraded "file-read-failed:$CEO_DIR/delegations:$2:rc=$_rc"
   if [ -n "$_out" ]; then
     printf -v "$_var" '%s' "$(printf '%s\n' "$_out" | wc -l | tr -d ' ')"
@@ -595,7 +597,8 @@ export BRIEFINGS_TRAINING
 _btr_rc=0
 BRIEFINGS_TRAINING=$(_gather_safe_read "$CEO_DIR/training/briefings.md") || _btr_rc=$?
 if [ "$_btr_rc" -ne 0 ]; then
-  _file_gather_mark_degraded "briefings-training-read-failed:rc=$_btr_rc"
+  echo "WARN: reading $CEO_DIR/training/briefings.md failed (rc=$_btr_rc)" >&2
+  _file_gather_mark_degraded "file-read-failed:$CEO_DIR/training/briefings.md:read:rc=$_btr_rc"
   BRIEFINGS_TRAINING=""
 fi
 unset _btr_rc
