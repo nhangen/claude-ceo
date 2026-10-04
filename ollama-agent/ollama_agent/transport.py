@@ -228,8 +228,46 @@ def parse_chat_response(status, body, provenance=None):
     return data["message"], usage
 
 
+def parse_openai_chat_response(status, body, provenance=None):
+    if status != 200:
+        raise RuntimeError(f"openai HTTP {status}: {_error_excerpt(body)}")
+    data = json.loads(body)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"openai 200 with non-object response: {_error_excerpt(body)}")
+    _note(provenance, "model_served", data.get("model"))
+    error = data.get("error")
+    if error:
+        detail = error.get("message") if isinstance(error, dict) else str(error)
+        raise RuntimeError(f"openai error: {_error_excerpt(detail or str(error))}")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise RuntimeError(f"openai 200 with no assistant message: {_error_excerpt(body)}")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise RuntimeError(f"openai 200 with no assistant message: {_error_excerpt(body)}")
+    usage_data = data.get("usage") or {}
+    if not isinstance(usage_data, dict):
+        raise RuntimeError(f"openai 200 with invalid usage: {_error_excerpt(body)}")
+    try:
+        usage = {
+            "input": int(usage_data.get("prompt_tokens") or 0),
+            "output": int(usage_data.get("completion_tokens") or 0),
+        }
+    except (TypeError, ValueError) as e:
+        raise RuntimeError(
+            f"openai 200 with non-numeric token counts: {_error_excerpt(body)}"
+        ) from e
+    return message, usage
+
+
+def _transport_endpoint(host, api_format):
+    base = host if "://" in host else f"http://{host}"
+    suffix = "/api/chat" if api_format == "ollama" else "/chat/completions"
+    return base.rstrip("/") + suffix
+
+
 def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, timeout=600,
-                     think=None, provenance=None):
+                     think=None, provenance=None, api_format="ollama"):
     """Return a transport(messages, tools) -> (assistant message dict, usage dict).
 
     Raises RuntimeError on any failure, naming the model and, where it helps,
@@ -255,21 +293,27 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
     reads it after the run, so the transport's (message, usage) contract is
     unchanged and every existing stub keeps working.
     """
-    url = f"http://{host}/api/chat"
+    if api_format not in {"ollama", "openai"}:
+        raise ValueError(
+            f"unsupported API format {api_format!r}; expected 'ollama' or 'openai'"
+        )
+    url = _transport_endpoint(host, api_format)
+    parse_response = parse_chat_response if api_format == "ollama" else parse_openai_chat_response
 
     def transport(messages, tools):
-        body = {
-            "model": model,
-            "messages": messages,
-            "tools": tools,
-            "stream": False,
-            "options": {"temperature": temperature, "num_ctx": num_ctx},
-        }
+        body = {"model": model, "messages": messages, "tools": tools, "stream": False}
+        if api_format == "ollama":
+            body["options"] = {"temperature": temperature, "num_ctx": num_ctx}
+        else:
+            body["temperature"] = temperature
         # Omitted entirely when None. Sending "think": null asks older daemons to parse
         # a field they do not know, and the default has to stay byte-identical to what
         # shipped before this parameter existed.
         if think is not None:
-            body["think"] = think
+            if api_format == "ollama":
+                body["think"] = think
+            else:
+                body["chat_template_kwargs"] = {"enable_thinking": think}
         payload = json.dumps(body).encode()
         req = urllib.request.Request(url, data=payload,
                                      headers={"Content-Type": "application/json"})
@@ -295,7 +339,7 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     _note_headers(provenance, getattr(resp, "headers", None))
-                    message, usage = parse_chat_response(
+                    message, usage = parse_response(
                         resp.status, resp.read().decode(errors="replace"),
                         provenance=provenance)
                     # U+FFFD in the parsed message means content was altered
@@ -332,7 +376,7 @@ def ollama_transport(model, host=DEFAULT_HOST, temperature=0.7, num_ctx=16384, t
                                 f"ollama HTTP {e.code} for model {model}; "
                                 f"error body unreadable: {read_err}"
                             ) from read_err
-                        return parse_chat_response(e.code, detail, provenance=provenance)
+                        return parse_response(e.code, detail, provenance=provenance)
                     # The endpoint that just 503'd. Without this a flaky backend
                     # that fails twice before a healthy one answers is invisible,
                     # which is exactly the "which machine" question this records.

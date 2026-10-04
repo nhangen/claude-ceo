@@ -482,6 +482,153 @@ test_gather_parses_prs_present() {
   assert_contains "$out" "AUTHORED_COUNT=1" "authored count must reflect parsed PRs"
 }
 
+test_stalled_profile_context_reader_times_out_and_marks_gather_degraded() {
+  _write_goals "$(date +%Y-%m-%d)"
+  local stub; stub="$TMP/py-stub-timeout"
+  mkdir -p "$stub"
+  local real_python3; real_python3="$(type -P python3)"
+  printf '#!/bin/sh\ncase "$1" in *ceo-profile-context.py) sleep 2; exit 0 ;; esac\nexec "%s" "$@"\n' "$real_python3" > "$stub/python3"
+  chmod +x "$stub/python3"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_PROFILE_CONTEXT_VERSION=1
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+    echo "STATUS=$CEO_GATHER_STATUS"
+  )
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1" \
+    "a timed-out reader must finish the gather, unset version, and mark degraded (#594)"
+  assert_contains "$out" "profile-context-reader-failed:rc=124" \
+    "the degraded reason carries timeout rc 124"
+  assert_not_contains "$out" "STATUS=ok" \
+    "a timed-out gather must not roll up as ok"
+}
+
+test_stalled_pending_approvals_read_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  local stub; stub="$TMP/grep-stub-timeout"
+  mkdir -p "$stub"
+  local real_grep; real_grep="$(type -P grep)"
+  printf '#!/bin/sh\ncase "$*" in *"approvals/pending.md"*) sleep 2; exit 0 ;; esac\nexec "%s" "$@"\n' "$real_grep" > "$stub/grep"
+  chmod +x "$stub/grep"
+  echo "- [ ] test" > "$CEO_VAULT/CEO/approvals/pending.md"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|PENDING_COUNT=$PENDING_COUNT|APPROVED_COUNT=$APPROVED_COUNT|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|PENDING_COUNT=0|APPROVED_COUNT=0|DEGRADED=1" \
+    "timed-out pending grep must set counts to 0 and mark degraded (#594)"
+  assert_contains "$out" "pending-count:rc=124" \
+    "the degraded reason records timeout rc 124"
+  assert_contains "$out" "approved-count:rc=124" "the approved count times out too"
+}
+
+test_stalled_delegations_find_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  local stub; stub="$TMP/find-stub-timeout"
+  mkdir -p "$stub"
+  local real_find; real_find="$(type -P find)"
+  printf '#!/bin/sh\ncase "$*" in *"delegations"*) sleep 2; exit 0 ;; esac\nexec "%s" "$@"\n' "$real_find" > "$stub/find"
+  chmod +x "$stub/find"
+  mkdir -p "$CEO_VAULT/CEO/delegations"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|DELEGATION_COMPLETED=$DELEGATION_COMPLETED|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|DELEGATION_COMPLETED=0|DEGRADED=1" \
+    "timed-out delegations find must set counts to 0 and mark degraded (#594)"
+  assert_contains "$out" "delegations:find:rc=124" \
+    "the degraded reason records timeout rc 124"
+}
+
+test_stalled_delegation_status_read_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  local stub; stub="$TMP/grep-stub-timeout"
+  mkdir -p "$stub"
+  local real_grep; real_grep="$(type -P grep)"
+  printf '#!/bin/sh\ncase "$*" in *"^status: "*) sleep 2; exit 0 ;; esac\nexec "%s" "$@"\n' "$real_grep" > "$stub/grep"
+  chmod +x "$stub/grep"
+  mkdir -p "$CEO_VAULT/CEO/delegations"
+  printf -- '---\nstatus: failed\n---\n' > "$CEO_VAULT/CEO/delegations/a.md"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|FAILED=$DELEGATION_FAILED|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|FAILED=0|DEGRADED=1" \
+    "a delegation file that stalls on read must time out and degrade, not hang the tick (#594)"
+  assert_contains "$out" "delegations:failed:rc=124" "the reason names the status and the timeout"
+}
+
+test_stalled_briefings_training_read_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  local stub; stub="$TMP/head-stub-timeout"
+  mkdir -p "$stub"
+  local real_head; real_head="$(type -P head)"
+  printf '#!/bin/sh\ncase "$*" in *"briefings.md"*) sleep 2; exit 0 ;; esac\nexec "%s" "$@"\n' "$real_head" > "$stub/head"
+  chmod +x "$stub/head"
+  mkdir -p "$CEO_VAULT/CEO/training"
+  echo "briefing training content" > "$CEO_VAULT/CEO/training/briefings.md"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|BRIEFINGS=${BRIEFINGS_TRAINING}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|BRIEFINGS=|DEGRADED=1" \
+    "timed-out briefings read must leave training empty without aborting under set -euo pipefail (#594)"
+  assert_contains "$out" "briefings.md:read:rc=124" \
+    "the degraded reason records timeout rc 124"
+}
+
+test_timeout_fallback_to_python3_when_no_timeout_bin_on_path() {
+  _write_gh_stub '[]'
+  local stub; stub="$TMP/head-stub-timeout-py"
+  mkdir -p "$stub"
+  local real_head; real_head="$(type -P head)"
+  printf '#!/bin/sh\ncase "$*" in *"briefings.md"*) sleep 2; exit 0 ;; esac\nexec "%s" "$@"\n' "$real_head" > "$stub/head"
+  chmod +x "$stub/head"
+  mkdir -p "$CEO_VAULT/CEO/training"
+  echo "briefing training content" > "$CEO_VAULT/CEO/training/briefings.md"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    export CEO_GATHER_TIMEOUT_BIN=""
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|BRIEFINGS=${BRIEFINGS_TRAINING}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+    type _CEO_TIMEOUT | grep -q "python3 -c" && echo "PYBRANCH=yes"
+  )
+  assert_contains "$out" "PYBRANCH=yes" "the shim must be the python3 fallback, not a timeout binary on PATH"
+  assert_contains "$out" "COMPLETED|BRIEFINGS=|DEGRADED=1" \
+    "python3 timeout fallback must enforce timeout and mark degraded (#594)"
+  assert_contains "$out" "briefings.md:read:rc=124" \
+    "the degraded reason records timeout rc 124 under python3 fallback"
+}
+
 test_delegation_counts_do_not_abort_under_set_euo_pipefail() {
   _write_gh_stub '[]'
   mkdir -p "$CEO_VAULT/CEO/delegations"

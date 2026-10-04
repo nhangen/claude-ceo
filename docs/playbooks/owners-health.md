@@ -25,6 +25,7 @@ Shell-only playbook. Runs `ceo swarm owners-health --scheduled` every 15 minutes
 | File | Mode | When |
 |---|---|---|
 | `CEO/alerts/owners-health-{HOST}.md` | overwrite | Every run. Frontmatter `status` (`firing` or `clear`), `since` (the last status change), and `last_check`. The body lists fatal peers and each single-scope owner's freshness. |
+| `CEO/alerts/schedulerd-{HOST}.md` | overwrite (written by the daemon, not this playbook) | Written by `ceo-schedulerd` on fatal exit (`status: firing`); reset to `status: clear` on the next healthy start (#589). Provides single-host fallback visibility so the morning scan surfaces the failure even if no peer is watching. |
 | `CEO/inbox/{HOST}.md` | append one `- [ ]` line | Only when a peer's heartbeat first reports `fatal`. Deduped by the `<!-- schedulerd-fatal:<peer> -->` marker, so it doesn't repeat while the line is unchecked. |
 
 A stale owner, which is usually a laptop asleep overnight, goes to the alert file only, never the inbox. The manual `ceo swarm owners-health` still escalates a stale owner after 3 hours. The two modes keep separate state files, so a scheduled run never uses up the transition a manual run would alert on.
@@ -46,7 +47,7 @@ Disable on one host with `ceo playbook disable owners-health`. Disable everywher
 
 ## Known gaps
 
-- A single-host install gets nothing: the only daemon is the one that died, so nothing dispatches the check. A daemon-written fallback alert is tracked separately.
+- A single-host install has no peer to dispatch the owners-health check. The fallback alert at `CEO/alerts/schedulerd-<host>.md` (#589) lets the morning scan surface an exit-78 permanent fault. A daemon crash-looping on any other exit (a transient I/O error, a registry parse error) still writes no alert there.
 - If every host is down, nobody is watching.
 - If the disk holding the vault is also full, the daemon can't write `fatal`, and the failure is logged only to the daemon's stderr (`/tmp/ceo-schedulerd.err.log` under launchd). A peer then sees a stale heartbeat only if the failed host owns a single-scope playbook, and that goes to the alert file, not the inbox. A host that owns nothing produces no signal at all.
 - A stale owner never reaches the inbox from this playbook. Run `ceo swarm owners-health` by hand, or read the alert file.

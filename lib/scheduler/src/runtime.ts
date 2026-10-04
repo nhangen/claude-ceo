@@ -156,6 +156,15 @@ export function syncedHeartbeatPath(vault: string, host: string): string {
   return `${vault}/CEO/heartbeats/${host}.json`;
 }
 
+/**
+ * Fallback alert written on fatal daemon exit (FATAL_EXIT_CODE / 78) so a
+ * single-host install surfaces the failure through the morning scan even with
+ * no peer to run owners-health (#589). Reset to clear on healthy start.
+ */
+export function schedulerdAlertPath(vault: string, host: string): string {
+  return `${vault}/CEO/alerts/schedulerd-${host}.md`;
+}
+
 export function resolveHost(env: { CEO_HOSTNAME?: string }, osHost: string): string {
   const override = env.CEO_HOSTNAME?.trim();
   return override ? override : osHost;
@@ -169,6 +178,7 @@ export interface AdapterConfig {
   heartbeatPath: string;
   swarmPath: string;
   syncedHeartbeatPath: string;
+  schedulerdAlertPath: string;
   /** Returns the argv for one scheduled dispatch given the playbook name. */
   dispatchArgv(name: string): string[];
   host: string;
@@ -197,6 +207,7 @@ export function resolveAdapterConfig(env: {
     heartbeatPath: heartbeatPath(home),
     swarmPath: swarmPath(vault),
     syncedHeartbeatPath: syncedHeartbeatPath(vault, host),
+    schedulerdAlertPath: schedulerdAlertPath(vault, host),
     dispatchArgv: (name: string) => dispatchArgv(cronBin, name),
     host,
     launchdLabel: LAUNCHD_LABEL,

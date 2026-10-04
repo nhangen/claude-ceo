@@ -26,6 +26,7 @@ import {
   runningDir,
   runningMarker,
   runStateDir,
+  schedulerdAlertPath,
   swarmPath,
   syncedHeartbeatPath,
 } from "@/runtime";
@@ -49,6 +50,10 @@ describe("path resolution", () => {
 
   test("syncedHeartbeatPath is in the synced vault, namespaced by host", () => {
     expect(syncedHeartbeatPath("/vault", "ml-1")).toBe("/vault/CEO/heartbeats/ml-1.json");
+  });
+
+  test("schedulerdAlertPath is in the synced vault alerts dir, namespaced by host", () => {
+    expect(schedulerdAlertPath("/vault", "ml-1")).toBe("/vault/CEO/alerts/schedulerd-ml-1.md");
   });
 });
 

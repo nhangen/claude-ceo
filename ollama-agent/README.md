@@ -24,7 +24,8 @@ python ollama-agent/cli.py --task "summarize the README in 3 bullets" \
   --model gpt-oss:20b --cwd /path/to/repo --ungated
 ```
 
-Flags: `--model`, `--cwd` (the directory tools operate in), `--host`, `--temperature`,
+Flags: `--model`, `--cwd` (the directory tools operate in), `--host`, `--api-format`
+(`ollama` by default, or `openai` for an OpenAI-compatible `/v1` base), `--temperature`,
 `--num-ctx`, `--turn-cap`, `--shell-timeout`, `--json` (full record), `--system` (override the system prompt),
 `--ungated` (opt into an ad-hoc, ungated run — required unless `--task-name` selects a gated registered task).
 

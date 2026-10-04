@@ -2,10 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { FATAL_EXIT_CODE } from "cronbird/core";
 import { PermanentHeartbeatWriteError } from "cronbird/cli";
 import {
+  clearSchedulerdAlert,
+  clearSchedulerdAlertOrLog,
   createClearRunning,
   createJobDispatcher,
+  formatSchedulerdAlert,
+  parseAlertField,
   readStateDir,
   recordFatalInSyncedHeartbeat,
+  recordFatalSchedulerdAlert,
   resolveFatalExitCode,
   SchedulerDispatchContext,
   trackCompletion,
@@ -109,7 +114,7 @@ describe("main entrypoint process exit", () => {
     return { exitCode, stderr: await new Response(proc.stderr).text() };
   };
 
-  test.skipIf(isRoot)("exits with FATAL_EXIT_CODE (78) when heartbeat path is unwritable", async () => {
+  test.skipIf(isRoot)("exits with FATAL_EXIT_CODE (78) when heartbeat path is unwritable, writes firing alert, and clears on restart", async () => {
     // The run-state directories survive from an earlier healthy run, so the
     // heartbeat write is the first write that fails.
     const fix = createFixture();
@@ -122,6 +127,45 @@ describe("main entrypoint process exit", () => {
       // #562: a peer's owners-health reads this to reach the operator.
       const synced = JSON.parse(readFileSync(join(fix.vault, "CEO", "heartbeats", "testhost.json"), "utf8"));
       expect(synced.fatal.code).toBe("EACCES");
+      // #589: single-host fallback alert in CEO/alerts/schedulerd-<host>.md
+      const alertPath = join(fix.vault, "CEO", "alerts", "schedulerd-testhost.md");
+      const alertContent = readFileSync(alertPath, "utf8");
+      expect(parseAlertField(alertContent, "status")).toBe("firing");
+      expect(parseAlertField(alertContent, "host")).toBe("testhost");
+      expect(parseAlertField(alertContent, "code")).toBe("EACCES");
+
+      // Fix the fault and restart daemon: alert must transition to clear (#589).
+      chmodSync(fix.schedulerdDir, 0o755);
+      const child = Bun.spawn(["bun", "run", "src/main.ts"], {
+        cwd: rootDir,
+        env: {
+          ...process.env,
+          HOME: fix.home,
+          CEO_VAULT: fix.vault,
+          CEO_HOSTNAME: "testhost",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      try {
+        let cleared = false;
+        for (let i = 0; i < 50; i++) {
+          await Bun.sleep(20);
+          try {
+            const updated = readFileSync(alertPath, "utf8");
+            if (parseAlertField(updated, "status") === "clear") {
+              cleared = true;
+              break;
+            }
+          } catch {
+            // retry until heartbeat completes
+          }
+        }
+        expect(cleared).toBe(true);
+      } finally {
+        child.kill();
+        await child.exited;
+      }
     } finally {
       fix.cleanup();
     }
@@ -136,6 +180,27 @@ describe("main entrypoint process exit", () => {
       const { exitCode, stderr } = await runDaemon(fix);
       expect(exitCode).toBe(FATAL_EXIT_CODE);
       expect(stderr).toContain("could not mark the synced heartbeat fatal");
+      // Alert write can still succeed independently
+      const alertPath = join(fix.vault, "CEO", "alerts", "schedulerd-testhost.md");
+      const alertContent = readFileSync(alertPath, "utf8");
+      expect(parseAlertField(alertContent, "status")).toBe("firing");
+    } finally {
+      fix.cleanup();
+    }
+  });
+
+  test.skipIf(isRoot)("still exits 78 when the fallback alert cannot be written either", async () => {
+    const fix = createFixture();
+    try {
+      chmodSync(fix.schedulerdDir, 0o555);
+      // A file where the alerts directory should be makes the alert write fail too.
+      writeFileSync(join(fix.vault, "CEO", "alerts"), "");
+      const { exitCode, stderr } = await runDaemon(fix);
+      expect(exitCode).toBe(FATAL_EXIT_CODE);
+      expect(stderr).toContain("could not write fallback alert");
+      // Synced heartbeat mark can still succeed independently
+      const synced = JSON.parse(readFileSync(join(fix.vault, "CEO", "heartbeats", "testhost.json"), "utf8"));
+      expect(synced.fatal.code).toBe("EACCES");
     } finally {
       fix.cleanup();
     }
@@ -149,6 +214,11 @@ describe("main entrypoint process exit", () => {
       const { exitCode, stderr } = await runDaemon(fix);
       expect(exitCode).toBe(FATAL_EXIT_CODE);
       expect(stderr).toContain("run-state");
+      const synced = JSON.parse(readFileSync(join(fix.vault, "CEO", "heartbeats", "testhost.json"), "utf8"));
+      expect(synced.fatal.code).toBe("EACCES");
+      const alert = readFileSync(join(fix.vault, "CEO", "alerts", "schedulerd-testhost.md"), "utf8");
+      expect(parseAlertField(alert, "status")).toBe("firing");
+      expect(parseAlertField(alert, "code")).toBe("EACCES");
     } finally {
       fix.cleanup();
     }
@@ -297,6 +367,144 @@ describe("recordFatalInSyncedHeartbeat", () => {
       const hb = JSON.parse(readFileSync(path, "utf8"));
       expect(hb.ts).toBeNull();
       expect(hb.fatal.code).toBe("EACCES");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("schedulerd alert file handling", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-sched-alert-"));
+    return { dir, path: join(dir, "CEO", "alerts", "schedulerd-mac.md") };
+  };
+  const now = new Date("2026-09-30T14:00:00.000Z");
+
+  test("parseAlertField extracts frontmatter fields and ignores body text", () => {
+    const doc = [
+      "---",
+      "status: firing",
+      "since: 2026-09-30T13:00:00.000Z\r",
+      "last_check: 2026-09-30T14:00:00.000Z",
+      "host: mac",
+      "---",
+      "",
+      "# Body with misleading keys",
+      "",
+      "status: clear",
+      "host: otherhost",
+      "code: EBODY",
+    ].join("\n");
+
+    expect(parseAlertField(doc, "status")).toBe("firing");
+    expect(parseAlertField(doc, "since")).toBe("2026-09-30T13:00:00.000Z");
+    expect(parseAlertField(doc, "last_check")).toBe("2026-09-30T14:00:00.000Z");
+    expect(parseAlertField(doc, "host")).toBe("mac");
+    expect(parseAlertField(doc, "nonexistent")).toBeNull();
+    expect(parseAlertField(doc, "code")).toBeNull();
+    expect(parseAlertField("no frontmatter here", "status")).toBeNull();
+  });
+
+  test("recordFatalSchedulerdAlert writes firing alert when absent", () => {
+    const { dir, path } = setup();
+    try {
+      expect(recordFatalSchedulerdAlert(path, "mac", "EACCES", now)).toBe("written");
+      const content = readFileSync(path, "utf8");
+      expect(parseAlertField(content, "status")).toBe("firing");
+      expect(parseAlertField(content, "since")).toBe("2026-09-30T14:00:00.000Z");
+      expect(parseAlertField(content, "last_check")).toBe("2026-09-30T14:00:00.000Z");
+      expect(parseAlertField(content, "host")).toBe("mac");
+      expect(parseAlertField(content, "code")).toBe("EACCES");
+      expect(content).toContain("permanent local-write fault (code: EACCES)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("recordFatalSchedulerdAlert does not rewrite if already firing (churn prevention)", () => {
+    const { dir, path } = setup();
+    try {
+      expect(recordFatalSchedulerdAlert(path, "mac", "EACCES", now)).toBe("written");
+      const before = readFileSync(path, "utf8");
+      const later = new Date("2026-09-30T14:00:10.000Z");
+      expect(recordFatalSchedulerdAlert(path, "mac", "EACCES", later)).toBe("unchanged");
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("recordFatalSchedulerdAlert rewrites a firing alert when the code changes", () => {
+    const { dir, path } = setup();
+    try {
+      recordFatalSchedulerdAlert(path, "mac", "EACCES", now);
+      expect(recordFatalSchedulerdAlert(path, "mac", "ENOSPC", new Date("2026-09-30T14:05:00.000Z"))).toBe("written");
+      expect(parseAlertField(readFileSync(path, "utf8"), "code")).toBe("ENOSPC");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an unreadable alert is logged on the heartbeat path, never thrown", () => {
+    const { dir, path } = setup();
+    try {
+      mkdirSync(path, { recursive: true }); // reading a directory fails with EISDIR, not ENOENT
+      expect(() => clearSchedulerdAlert(path, "mac", now)).toThrow();
+      const logs: string[] = [];
+      expect(() => clearSchedulerdAlertOrLog(path, "mac", now, (m) => logs.push(m))).not.toThrow();
+      expect(logs.some((l) => l.startsWith("could not clear schedulerd alert:"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("recordFatalSchedulerdAlert overwrites if status was clear", () => {
+    const { dir, path } = setup();
+    try {
+      mkdirSync(join(dir, "CEO", "alerts"), { recursive: true });
+      writeFileSync(path, formatSchedulerdAlert("mac", "clear", "2026-09-30T13:00:00.000Z", "2026-09-30T13:00:00.000Z"));
+      expect(recordFatalSchedulerdAlert(path, "mac", "EROFS", now)).toBe("written");
+      const content = readFileSync(path, "utf8");
+      expect(parseAlertField(content, "status")).toBe("firing");
+      expect(parseAlertField(content, "code")).toBe("EROFS");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("clearSchedulerdAlert does nothing if file does not exist (no phantom creation)", () => {
+    const { dir, path } = setup();
+    try {
+      expect(clearSchedulerdAlert(path, "mac", now)).toBe("unchanged");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("clearSchedulerdAlert does nothing if file is already clear (churn prevention)", () => {
+    const { dir, path } = setup();
+    try {
+      mkdirSync(join(dir, "CEO", "alerts"), { recursive: true });
+      writeFileSync(path, formatSchedulerdAlert("mac", "clear", "2026-09-30T13:00:00.000Z", "2026-09-30T13:00:00.000Z"));
+      const before = readFileSync(path, "utf8");
+      expect(clearSchedulerdAlert(path, "mac", now)).toBe("unchanged");
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("clearSchedulerdAlert transitions from firing to clear", () => {
+    const { dir, path } = setup();
+    try {
+      recordFatalSchedulerdAlert(path, "mac", "EACCES", now);
+      const clearTime = new Date("2026-09-30T14:15:00.000Z");
+      expect(clearSchedulerdAlert(path, "mac", clearTime)).toBe("written");
+      const content = readFileSync(path, "utf8");
+      expect(parseAlertField(content, "status")).toBe("clear");
+      expect(parseAlertField(content, "since")).toBe("2026-09-30T14:15:00.000Z");
+      expect(parseAlertField(content, "host")).toBe("mac");
+      expect(content).toContain("running normally");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
