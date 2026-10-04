@@ -178,6 +178,8 @@ def main(argv=None):
     p.add_argument("--cwd", default=".", help="Working directory the tools operate in.")
     p.add_argument("--system", default=DEFAULT_SYSTEM)
     p.add_argument("--host", default="127.0.0.1:11434")
+    p.add_argument("--api-format", choices=("ollama", "openai"), default="ollama",
+                   help="Chat API format exposed by --host (default: ollama).")
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--num-ctx", type=int, default=16384)
     # A thinking model can spend an entire turn reasoning and never reach an answer. On
@@ -398,7 +400,7 @@ def main(argv=None):
     provenance = {}
     transport = ollama_transport(a.model, host=a.host, temperature=a.temperature,
                                  num_ctx=a.num_ctx, timeout=a.timeout, think=a.think,
-                                 provenance=provenance)
+                                 provenance=provenance, api_format=a.api_format)
     tools_chars = len(json.dumps(tools)) if tools else 0
     prompt_chars = len(system) + len(a.task) + tools_chars
     print(f"prompt (turn 1 estimate): {prompt_chars} chars (system={len(system)}, task={len(a.task)}, tools={tools_chars}) | num_ctx={a.num_ctx}",
