@@ -11,7 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ollama_agent import ToolBox, TOOLS, run_agent  # noqa: E402
 from ollama_agent.agent import _normalize_args, _tool_calls_from_content  # noqa: E402
 from ollama_agent.tools import _clip, MAX_OUTPUT, MAX_READ  # noqa: E402
-from ollama_agent.transport import ollama_transport, parse_chat_response  # noqa: E402
+from ollama_agent.transport import (  # noqa: E402
+    ollama_transport,
+    parse_chat_response,
+    parse_openai_chat_response,
+)
 
 
 # --- real tools ---
@@ -195,6 +199,20 @@ def test_loop_dispatches_tools_then_finishes(tmp_path):
     assert rec["turns"] == 2
     assert (tmp_path / "f.txt").read_text() == "hi"
     assert rec["unknown_calls"] == []
+
+
+def test_loop_returns_openai_tool_call_id(tmp_path):
+    transport = _script(
+        {"role": "assistant", "tool_calls": [
+            {"id": "call_123", "type": "function", "function": {
+                "name": "write_file",
+                "arguments": '{"path":"f.txt","content":"hi"}',
+            }}]},
+        {"role": "assistant", "content": "done"},
+    )
+    rec = run_agent("write a file", "sys", transport, ToolBox(cwd=tmp_path), TOOLS)
+    assert rec["transcript"][3]["tool_call_id"] == "call_123"
+    assert rec["transcript"][3]["name"] == "write_file"
 
 
 def test_verify_cmd_none_is_prior_behavior(tmp_path):
@@ -421,6 +439,123 @@ def test_transport_success(monkeypatch):
     msg, usage = t.ollama_transport("m")([{"role": "user", "content": "hi"}], [])
     assert msg["content"] == "ok"
     assert usage == {"input": 7, "output": 11}
+
+
+def test_openai_transport_uses_chat_completions_and_parses_usage(monkeypatch):
+    import ollama_agent.transport as t
+    seen = {}
+
+    def respond(req, timeout):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode())
+        return _FakeResp(200, json.dumps({
+            "model": "qwen3.8:27b-v100-64k",
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+                }],
+            }}],
+            "usage": {"prompt_tokens": 29, "completion_tokens": 7},
+        }))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+    msg, usage = t.ollama_transport(
+        "local-long-v100",
+        host="router:40114/olla/openai/v1",
+        api_format="openai",
+        think=False,
+    )([{"role": "user", "content": "inspect"}], TOOLS)
+
+    assert seen["url"] == "http://router:40114/olla/openai/v1/chat/completions"
+    assert seen["body"]["model"] == "local-long-v100"
+    assert seen["body"]["tools"] == TOOLS
+    assert seen["body"]["temperature"] == 0.7
+    assert "options" not in seen["body"]
+    assert "think" not in seen["body"]
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert msg["tool_calls"][0]["id"] == "call_123"
+    assert usage == {"input": 29, "output": 7}
+
+
+def test_openai_transport_completes_tool_loop_with_matching_call_id(monkeypatch, tmp_path):
+    import ollama_agent.transport as t
+    requests = []
+    responses = iter([
+        {
+            "model": "qwen3.8:27b-v100-64k",
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_write_1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": '{"path":"result.txt","content":"OK\\n"}',
+                    },
+                }],
+            }}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 8},
+        },
+        {
+            "model": "qwen3.8:27b-v100-64k",
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 32, "completion_tokens": 2},
+        },
+    ])
+
+    def respond(req, timeout):
+        requests.append(json.loads(req.data.decode()))
+        return _FakeResp(200, json.dumps(next(responses)))
+
+    monkeypatch.setattr(t.urllib.request, "urlopen", respond)
+    transport = t.ollama_transport(
+        "local-long-v100",
+        host="router:40114/olla/openai/v1",
+        api_format="openai",
+    )
+    rec = run_agent(
+        "write result.txt",
+        "sys",
+        transport,
+        ToolBox(cwd=tmp_path),
+        TOOLS,
+    )
+
+    assert rec["completed"] is True
+    assert rec["turns"] == 2
+    assert rec["ollama_input_tokens"] == 52
+    assert rec["ollama_output_tokens"] == 10
+    assert (tmp_path / "result.txt").read_text() == "OK\n"
+    second_messages = requests[1]["messages"]
+    assert second_messages[-2]["tool_calls"][0]["id"] == "call_write_1"
+    assert second_messages[-1] == {
+        "role": "tool",
+        "content": json.dumps({"path": str(tmp_path / "result.txt"), "bytes": 3}),
+        "tool_call_id": "call_write_1",
+        "name": "write_file",
+    }
+
+
+def test_parse_openai_chat_response_rejects_missing_choice():
+    with pytest.raises(RuntimeError, match="openai 200 with no assistant message"):
+        parse_openai_chat_response(200, json.dumps({"choices": []}))
+
+
+def test_transport_rejects_unknown_protocol_before_request(monkeypatch):
+    import ollama_agent.transport as t
+
+    monkeypatch.setattr(
+        t.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("request sent")),
+    )
+    with pytest.raises(ValueError, match="unsupported API format 'opena1'"):
+        t.ollama_transport("m", api_format="opena1")
 
 
 def _captured_payload(monkeypatch, **kwargs):

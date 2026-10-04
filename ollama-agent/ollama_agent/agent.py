@@ -216,6 +216,10 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                 args = _normalize_args(fn_obj.get("arguments"))
                 result = toolbox.dispatch(fn, args)
             tool_msg = {"role": "tool", "content": result}
+            if isinstance(c.get("id"), str) and c["id"]:
+                tool_msg["tool_call_id"] = c["id"]
+                if isinstance(fn, str) and fn:
+                    tool_msg["name"] = fn
             transcript.append(tool_msg)
             messages.append(tool_msg)
     if reason is None:
