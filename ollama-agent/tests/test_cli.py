@@ -24,7 +24,11 @@ def _fixture_rules(tmp_path):
 def _stub(monkeypatch, captured):
     # Replace the network pieces so main() runs offline; capture the system prompt
     # run_agent receives so the test can assert what rule text was injected.
-    monkeypatch.setattr(cli, "ollama_transport", lambda *a, **k: (lambda m, t: {"role": "assistant", "content": "ok"}))
+    def fake_transport(*args, **kwargs):
+        captured["transport_args"] = args
+        captured["transport_kwargs"] = kwargs
+        return lambda m, t: {"role": "assistant", "content": "ok"}
+    monkeypatch.setattr(cli, "ollama_transport", fake_transport)
 
     def fake_run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                        verify_cmd=None, usage_tracker=None, num_ctx=None):
@@ -75,6 +79,17 @@ def test_cli_injects_matching_rule(tmp_path, monkeypatch, capsys):
     assert "no-commit-tmp-logs" in captured["system"]
     err = capsys.readouterr().err
     assert "matched 1" in err and "no-commit-tmp-logs" in err
+
+
+def test_cli_passes_explicit_openai_protocol_to_transport(tmp_path, monkeypatch):
+    captured = {}
+    _stub(monkeypatch, captured)
+    rc = cli.main([
+        "--ungated", "--task", "inspect", "--cwd", str(tmp_path),
+        "--no-rules", "--no-skills", "--api-format", "openai",
+    ])
+    assert rc == 0
+    assert captured["transport_kwargs"]["api_format"] == "openai"
 
 
 def test_cli_human_output_prints_summary_and_final_message(tmp_path, monkeypatch, capsys):

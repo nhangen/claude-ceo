@@ -441,6 +441,90 @@ test_owners_health_fatal_code_is_sanitized_before_the_inbox() {
   assert_eq "$(_inbox_count 'evil')" "0" "the raw code never reaches the synced inbox"
 }
 
+test_owners_health_unreadable_heartbeat_carries_fatal_state_and_reports() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" EACCES
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count '<!-- schedulerd-fatal:mac -->')" "1" "fatal peer escalates to inbox on first run"
+
+  sed -i.bak 's/^- \[ \] /- [x] /' "$TEST_VAULT/CEO/inbox/checker.md" && rm -f "$TEST_VAULT/CEO/inbox/checker.md.bak"
+
+  echo '{"host":"mac", "ts":' > "$TEST_VAULT/CEO/heartbeats/mac.json"
+  local out rc=0
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || rc=$?
+  assert_contains "$out" "mac heartbeat is not a readable JSON object" "reports unreadable heartbeat"
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" "unreadable heartbeat is an error"
+
+  local state
+  state=$(cat "$TEST_HOME/.ceo/owner-staleness-state.json")
+  assert_eq "$(jq -r '."fatal:mac"' <<<"$state")" "stale" "fatal:mac is carried over in state across unreadable read"
+
+  # Now peer heartbeat is readable and still fatal
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" EACCES
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count '<!-- schedulerd-fatal:mac -->')" "1" "does not re-escalate to inbox when heartbeat becomes readable again"
+}
+
+# Without a prior fatal the unreadable read must not invent one: a recorded
+# "stale" would suppress the escalation when the peer really does go fatal.
+test_owners_health_unreadable_heartbeat_without_prior_fatal_carries_nothing() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  mkdir -p "$TEST_VAULT/CEO/heartbeats"
+  echo '{"host":"mac", "ts":' > "$TEST_VAULT/CEO/heartbeats/mac.json"
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || rc=$?
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" "an unreadable heartbeat alone is a check error"
+  assert_eq "$(jq -r '."fatal:mac" // "absent"' "$TEST_HOME/.ceo/owner-staleness-state.json")" "absent" \
+    "no fatal state is recorded for a peer never seen fatal"
+  assert_eq "$(_inbox_count 'schedulerd-fatal')" "0" "an unreadable heartbeat is not escalated as a fatal"
+
+  _write_fatal_heartbeat mac "$(_iso_at_offset 60)" EACCES
+  OH_NOW="$OH_REF_EPOCH" _owners_health >/dev/null 2>&1 || true
+  assert_eq "$(_inbox_count '<!-- schedulerd-fatal:mac -->')" "1" "a later real fatal still escalates"
+}
+
+test_owners_health_scheduled_fires_on_an_unreadable_peer_heartbeat() {
+  mkdir -p "$TEST_VAULT/CEO/heartbeats"
+  echo '[1]' > "$TEST_VAULT/CEO/heartbeats/mac.json"
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || rc=$?
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" "the scheduled run fails on an unreadable peer"
+  assert_eq "$(_alert_status)" "firing" "the alert fires"
+  assert_contains "$(cat "$TEST_VAULT/CEO/alerts/owners-health-checker.md")" "mac heartbeat is not a readable JSON object" \
+    "the alert names the peer; a top-level array is not a readable heartbeat"
+}
+
+test_owners_health_scheduled_fails_when_the_alert_write_fails() {
+  _seed_owners '{"schema_version":1,"hosts":["checker"],"owners":{}}'
+  # Make CEO/alerts a regular file instead of a directory to cause alert write failure
+  rm -rf "$TEST_VAULT/CEO/alerts"
+  touch "$TEST_VAULT/CEO/alerts"
+  local rc=0
+  OH_NOW="$OH_REF_EPOCH" _owners_health_scheduled >/dev/null 2>&1 || rc=$?
+  assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
+    "scheduled run must exit non-zero when writing the alert fails"
+}
+
+test_owners_health_ignores_non_object_fatal() {
+  _seed_owners '{"schema_version":1,"hosts":["checker","mac"],"owners":{}}'
+  mkdir -p "$TEST_VAULT/CEO/heartbeats"
+
+  # Non-object fatal: string "EACCES"
+  echo '{"host":"mac","ts":"'"$(_iso_at_offset 60)"'","fatal":"EACCES"}' > "$TEST_VAULT/CEO/heartbeats/mac.json"
+  local out rc=0
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || rc=$?
+  assert_not_contains "$out" "permanent local-write fault" "string fatal is ignored"
+  assert_eq "$(_inbox_count 'schedulerd-fatal')" "0" "string fatal does not write inbox line"
+  assert_eq "$rc" "0" "string fatal exits 0 (healthy)"
+
+  rc=0
+  echo '{"host":"mac","ts":"'"$(_iso_at_offset 60)"'","fatal":null}' > "$TEST_VAULT/CEO/heartbeats/mac.json"
+  out=$(OH_NOW="$OH_REF_EPOCH" _owners_health 2>&1) || rc=$?
+  assert_not_contains "$out" "permanent local-write fault" "null fatal is ignored"
+  assert_eq "$(_inbox_count 'schedulerd-fatal')" "0" "null fatal does not write inbox line"
+  assert_eq "$rc" "0" "null fatal exits 0 (healthy)"
+}
+
 test_owners_health_fresh_owner_healthy_no_inbox() {
   _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
   _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"   # 1 minute old → fresh

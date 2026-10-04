@@ -149,6 +149,8 @@ describe("main entrypoint process exit", () => {
       const { exitCode, stderr } = await runDaemon(fix);
       expect(exitCode).toBe(FATAL_EXIT_CODE);
       expect(stderr).toContain("run-state");
+      const synced = JSON.parse(readFileSync(join(fix.vault, "CEO", "heartbeats", "testhost.json"), "utf8"));
+      expect(synced.fatal.code).toBe("EACCES");
     } finally {
       fix.cleanup();
     }
