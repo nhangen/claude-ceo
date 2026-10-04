@@ -40,12 +40,16 @@ echo ""
 sed -n '/^## /,$p' "$LOG_FILE"  # Skip frontmatter and heading, start at first ## entry
 echo ""
 
-# Helper to count matches without grep -c failing under set -euo pipefail
-# or appending a second zero under || echo 0 (#600).
+# grep -c prints 0 and exits 1 on no match, so "|| echo 0" appended a second
+# zero (#600). Exit 2 is a read error: abort rather than report it as 0.
 _count_matches() {
-  local pattern="$1" file="$2" count
-  count=$(grep -c "$pattern" "$file" 2>/dev/null || true)
-  printf '%s' "${count:-0}"
+  local count rc=0
+  count=$(grep -c "$1" "$2") || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "ceo-log: could not read $2 (grep rc=$rc)" >&2
+    return 2
+  fi
+  printf '%s' "$count"
 }
 
 # Summary stats
@@ -64,19 +68,36 @@ if [ "$AUDIBLES" -gt 0 ]; then
 fi
 
 # Check for errors
+# The writer templates ask the model for "- {any errors, or 'none'}", so an
+# Errors section holding a none variant ("None.", "no errors") is not an error.
 ERRORS=$(awk '
+function is_none(s,   q) {
+  q = sprintf("%c%c", 34, 39)
+  s = tolower(s)
+  sub(/^[[:space:]]*-?[[:space:]]*/, "", s)
+  gsub("[" q "]", "", s)
+  sub(/[[:space:]]*[.!]*[[:space:]]*$/, "", s)
+  return s == "none" || s == "no errors" || s == "no error"
+}
 /^\*\*Errors:\*\*/ {
-  if ($0 ~ /^\*\*Errors:\*\*[[:space:]]*$/) {
-    if ((getline line) > 0) {
-      if (line !~ /^[[:space:]]*-?[[:space:]]*none[[:space:]]*$/) count++
-    }
-  } else if ($0 !~ /\*\*Errors:\*\*[[:space:]]*-?[[:space:]]*none[[:space:]]*$/) {
-    count++
+  rest = $0
+  sub(/^\*\*Errors:\*\*/, "", rest)
+  if (rest ~ /^[[:space:]]*$/) {
+    pending = 1
+  } else {
+    pending = 0
+    if (!is_none(rest)) count++
   }
+  next
+}
+pending && /^[[:space:]]*$/ { next }
+pending && /^(\*\*[^*]+:\*\*|#+ )/ { pending = 0; next }
+pending {
+  pending = 0
+  if (!is_none($0)) count++
 }
 END { print count+0 }
-' "$LOG_FILE" 2>/dev/null || true)
-ERRORS=${ERRORS:-0}
+' "$LOG_FILE")
 if [ "$ERRORS" -gt 0 ]; then
   echo "**Errors:** $ERRORS entries with errors"
 fi

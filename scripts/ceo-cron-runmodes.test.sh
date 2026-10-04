@@ -295,9 +295,6 @@ STUB
   assert_contains "$(cat "$pf" 2>/dev/null)" "check the status" "preview must list the safe action that would execute"
 }
 
-
-# Verify that when safe or high-stakes action count is zero, grep -c does not
-# produce double zeros (0\n0) under set -euo pipefail (#600).
 test_dry_run_zero_count_actions_format_clean_single_line() {
   cat > "$CEO_DIR/playbooks/dr-zero-safe.md" << 'PB'
 ---
@@ -325,7 +322,7 @@ STUB
   local pf; pf=$(_preview_file dr-zero-safe)
   assert_file_exists "$pf" "preview file should exist"
   assert_contains "$(cat "$pf" 2>/dev/null)" "Would EXECUTE 0 safe action(s)" "preview must cleanly state 0 safe actions without double-zero"
-  assert_not_contains "$(cat "$pf" 2>/dev/null)" "Would EXECUTE 0 0 safe action(s)" "preview must not have 0 0"
+  assert_not_contains "$(cat "$pf" 2>/dev/null)" $'Would EXECUTE 0\n0' "preview must not split the count across two lines"
   assert_contains "$(cat "$out")" "Safe actions: 0 | High-stakes (deferred): 1" "verbose output must format 0 safe actions on a single line"
 
   cat > "$CEO_DIR/playbooks/dr-zero-high.md" << 'PB'
@@ -352,8 +349,8 @@ STUB
   CEO_VERBOSE=1 bash "$CRON" dr-zero-high --dry-run > "$out2" 2>&1 || true
 
   assert_contains "$(cat "$out2")" "Safe actions: 1 | High-stakes (deferred): 0" "verbose output must format 0 high-stakes actions on a single line"
+  assert_not_contains "$(cat "$out2")" $'High-stakes (deferred): 0\n0' "high-stakes count must not be followed by a second zero line"
 }
-
 
 test_high_stakes_filtering_ignores_placeholder_and_directive_actions() {
   cat > "$CEO_DIR/playbooks/hs-filter.md" << 'PB'
