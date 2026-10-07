@@ -270,7 +270,7 @@ test_repick_survives_oversized_blessings_file() {
   assert_contains "$out" "Repicked" "repick must still print its confirmation"
 
   local picks
-  picks=$(grep -c '^- ' "$CEO_DIR/cache/blessings-today.md" 2>/dev/null || echo 0)
+  picks=$(grep -c '^- ' "$CEO_DIR/cache/blessings-today.md" 2>/dev/null || true)
   assert_eq "$picks" "3" "cache must hold exactly 3 picks"
 }
 
