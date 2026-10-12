@@ -1,5 +1,7 @@
 # claude-ceo
 
+The draft `fleet-readiness` script playbook calls the llm-tools role-aware checker every four hours when activated and assigned. It retains verified failures until the same check positively passes, reports unknown evidence separately, and notifies only changed failures/unknowns/recoveries after a silent first baseline. See `docs/playbooks/fleet-readiness.md` for outputs and the live owner-host installation gate. No parallel scheduler or machine roster is introduced; `local-ci-health`, `disk-monitor`, `owners-health` and `ollama-smoke` retain their existing responsibilities.
+
 **Autonomous CEO agent for Claude Code. Reads your Obsidian vault, dispatches specialized subagents, runs scheduled playbooks, and gates writes by authority tier.**
 
 ## Why
