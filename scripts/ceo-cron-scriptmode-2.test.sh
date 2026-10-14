@@ -1207,7 +1207,7 @@ test_pending_drip_rerun_is_idempotent() {
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
 
   local count
-  count=$(grep -c -F "<!-- pending-drip:" "$CEO_DIR/inbox/testhost.md" 2>/dev/null || echo 0)
+  count=$(grep -c -F "<!-- pending-drip:" "$CEO_DIR/inbox/testhost.md" 2>/dev/null || true)
   assert_eq "$count" "1" "same-day pending-drip rerun must not append duplicate inbox item"
 }
 
@@ -1222,7 +1222,7 @@ test_pending_drip_append_preserves_task_start_after_missing_newline() {
   CEO_HOSTNAME=testhost CEO_FORCE=1 bash "$CRON" pending-drip >/dev/null 2>&1 || true
 
   local task_count
-  task_count=$(grep -c '^- \[ \] Review pending drip' "$CEO_DIR/inbox/testhost.md" 2>/dev/null || echo 0)
+  task_count=$(grep -c '^- \[ \] Review pending drip' "$CEO_DIR/inbox/testhost.md" 2>/dev/null || true)
   assert_eq "$task_count" "1" "pending-drip append must start on a new line"
 }
 

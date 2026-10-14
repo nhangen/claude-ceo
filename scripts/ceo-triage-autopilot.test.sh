@@ -57,11 +57,11 @@ PY
 export CEO_RUNNER_OUTCOME_FILE="$WORK/outcome"
 export STUB_CURRENT="nhangen/a#2"
 bash "$SCRIPT" >/dev/null 2>&1 || fail "run 1 exited non-zero"
-[ "$(grep -cF 'triage-surface:nhangen/a#2' "$INBOX" 2>/dev/null || echo 0)" -eq 1 ] || fail "run 1: expected 1 inbox line"
+[ "$(grep -cF 'triage-surface:nhangen/a#2' "$INBOX" 2>/dev/null || true)" -eq 1 ] || fail "run 1: expected 1 inbox line"
 grep -q '^status: firing' "$STATE" || fail "run 1: not firing"
 [ "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" = "fired" ] || fail "run 1 (firing) must write 'fired' outcome (#173)"
 bash "$SCRIPT" >/dev/null 2>&1 || fail "run 2 exited non-zero"
-[ "$(grep -cF 'triage-surface:nhangen/a#2' "$INBOX" 2>/dev/null || echo 0)" -eq 1 ] || fail "run 2: duplicate line"
+[ "$(grep -cF 'triage-surface:nhangen/a#2' "$INBOX" 2>/dev/null || true)" -eq 1 ] || fail "run 2: duplicate line"
 grep -q '^status: clear' "$STATE" || fail "run 2: not clear (real consume should have emptied events)"
 [ "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" = "noop" ] || fail "run 2 (clear) must write 'noop' outcome (#173)"
 
@@ -72,7 +72,7 @@ bash "$SCRIPT" >/dev/null 2>&1 || fail "run with unwritable inbox should still e
 chmod u+w "$INBOX"
 grep -qx "nhangen/a#3" "$STUB_MARK_FILE" 2>/dev/null && fail "append failed but #3 was consumed (atomicity broken)"
 bash "$SCRIPT" >/dev/null 2>&1 || fail "retry run exited non-zero"
-[ "$(grep -cF 'triage-surface:nhangen/a#3' "$INBOX" 2>/dev/null || echo 0)" -eq 1 ] || fail "retry: #3 not appended after inbox writable again (event was lost)"
+[ "$(grep -cF 'triage-surface:nhangen/a#3' "$INBOX" 2>/dev/null || true)" -eq 1 ] || fail "retry: #3 not appended after inbox writable again (event was lost)"
 
 # --- 3. Updater incomplete (exit 1): recorded, and consume is skipped ---
 rm -f "$STUB_MARK_FILE"; : > "$INBOX"
