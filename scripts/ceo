@@ -1204,7 +1204,7 @@ cmd_swarm_owners_health() {
     escalated=1
   }
 
-  local hb peer code since line was_fatal
+  local hb peer code since line was_fatal fatal_type
   for hb in "$hb_dir"/*.json; do
     [ -f "$hb" ] || continue
     peer=$(basename "$hb" .json)
@@ -1220,6 +1220,17 @@ cmd_swarm_owners_health() {
     if ! jq -e 'type == "object"' "$hb" >/dev/null 2>&1; then
       check_error=1
       line="  ✗ $peer heartbeat is not a readable JSON object"
+      echo "$line"; report+="$line"$'\n'
+      if [ "$was_fatal" = "stale" ]; then
+        new_state=$(jq -c --arg k "fatal:$peer" '.[$k] = "stale"' <<<"$new_state")
+        any_fatal=1
+      fi
+      continue
+    fi
+    fatal_type=$(jq -r '.fatal | type' "$hb" 2>/dev/null) || fatal_type="null"
+    if [ "$fatal_type" != "object" ] && [ "$fatal_type" != "null" ]; then
+      check_error=1
+      line="  ⚠ $peer heartbeat .fatal is not an object"
       echo "$line"; report+="$line"$'\n'
       if [ "$was_fatal" = "stale" ]; then
         new_state=$(jq -c --arg k "fatal:$peer" '.[$k] = "stale"' <<<"$new_state")
