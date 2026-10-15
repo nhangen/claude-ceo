@@ -45,7 +45,9 @@ class ReporterTests(unittest.TestCase):
         evidence = {"llm-tools": {"completed_at": completed.isoformat(), "age_seconds": 7 * 86400}}
         self.assertEqual(self.run_report({"local-ci:workflow:llm-tools": "pass"}, workflow_evidence=evidence).returncode, 0)
         self.assertEqual(self.state()["workflow_evidence"], evidence)
-        self.assertEqual(json.loads(self.latest.read_text())["workflow_evidence"], evidence)
+        latest = json.loads(self.latest.read_text())
+        self.assertEqual(latest["workflow_evidence"], evidence)
+        self.assertEqual(latest["publication_id"], self.state()["publication_id"])
 
     def test_workflow_evidence_must_match_roster_and_check(self):
         completed = datetime.datetime.now(datetime.timezone.utc)
@@ -113,7 +115,7 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(self.run_report({"api": "pass"}).returncode, 1)
         self.assertEqual((self.latest.read_text(), alert.read_text()), before)
 
-    def test_persistent_failure_at_every_write_cannot_publish_recovery(self):
+    def test_persistent_failure_cannot_commit_recovery(self):
         spec = importlib.util.spec_from_file_location("reporter", ROOT / "ceo-fleet-readiness-report.py")
         reporter = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(reporter)
@@ -122,6 +124,7 @@ class ReporterTests(unittest.TestCase):
                 self.run_report({"api": "fail"})
                 alert = self.root / "CEO/alerts/fleet-readiness-test.md"
                 before = alert.read_text()
+                before_state = self.state()
                 stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 report = {"schema_version": 1, "read_only": True, "checked_at": stamp, "status": "pass", "failures": [], "unknown": [], "machines": [{"id": "mac", "checks": {"api": "pass"}}]}
                 real_write = reporter.atomic_write
@@ -139,6 +142,9 @@ class ReporterTests(unittest.TestCase):
                         reporter.publish(report, json.loads(self.registry.read_text()), self.root, "test", self.outcome)
                 self.assertEqual(alert.read_text(), before)
                 self.assertEqual(self.state()["active_failures"], ["mac:api"])
+                latest = json.loads(self.latest.read_text())
+                self.assertEqual(self.state()["publication_id"], before_state["publication_id"])
+                self.assertFalse(latest["status"] == "pass" and latest["publication_id"] == self.state()["publication_id"])
 
 
 if __name__ == "__main__":

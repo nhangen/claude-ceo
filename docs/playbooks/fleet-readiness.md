@@ -18,8 +18,8 @@ Calls the deterministic llm-tools checker. Primary assignments and probe require
 
 ## Outputs
 
-- `CEO/reports/fleet-readiness-<host>.json`: non-authoritative latest raw observation, marked `authoritative: false`; may record an observation whose later publication failed.
-- `CEO/alerts/fleet-readiness-<host>.md`: the single authoritative decision record, with current verified failures, explicit unknown checks and embedded sanitized JSON state. Published atomically last, after history, observation and notification-outcome writes succeed.
+- `CEO/reports/fleet-readiness-<host>.json`: non-authoritative latest raw observation, marked `authoritative: false`; may record an observation whose later publication failed. Consumers must require its `publication_id` to match the authoritative alert state before using it.
+- `CEO/alerts/fleet-readiness-<host>.md`: the single authoritative decision record, with current verified failures, explicit unknown checks, a publication commit marker and embedded sanitized JSON state. Published atomically last, after history, observation and notification-outcome writes succeed.
 - `CEO/log/fleet-readiness/YYYY-MM.md`: append-only sanitized run summaries.
 - `CEO/reports/fleet-readiness-<host>-discord.json`: last acknowledged finding fingerprint, Discord message/channel IDs and timestamp; never a webhook URL.
 - `CEO/reports/fleet-readiness-<host>-discord-attempt.json`: last bounded delivery attempt. A matching acknowledgment is authoritative for delivery; an attempt alone proves nothing.

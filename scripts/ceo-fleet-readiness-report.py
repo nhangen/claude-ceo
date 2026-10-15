@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -93,6 +94,7 @@ def validate(report, registry):
 def publish(report, registry, vault, host, outcome):
     evidence, workflow_evidence = validate(report, registry)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    publication_id = uuid.uuid4().hex
     root = vault / "CEO"
     latest = root / "reports" / ("fleet-readiness-" + host + ".json")
     alert_path = root / "alerts" / ("fleet-readiness-" + host + ".md")
@@ -103,7 +105,7 @@ def publish(report, registry, vault, host, outcome):
     changed = prior is not None and (active != previous or report["unknown"] != prior.get("unknown"))
     state = "firing" if active else "unknown" if report["status"] == "unknown" else "clear"
     since = prior.get("since", now) if prior and prior.get("state") == state else now
-    saved = {"host": host, "state": state, "since": since, "last_check": now, "active_failures": sorted(active), "status": report["status"], "observed_failures": sorted(failures), "unknown": report["unknown"], "read_only": True, "schema_version": 1}
+    saved = {"host": host, "state": state, "since": since, "last_check": now, "publication_id": publication_id, "active_failures": sorted(active), "status": report["status"], "observed_failures": sorted(failures), "unknown": report["unknown"], "read_only": True, "schema_version": 1}
     saved["machines"] = [{"id": m["id"], "checks": m["checks"], **({"primary_status": m["primary_status"]} if m.get("primary_status") in {"pass", "fail", "unknown"} else {})} for m in report["machines"]]
     saved["workflow_evidence"] = workflow_evidence
     saved["telemetry"] = {}
@@ -129,7 +131,7 @@ def publish(report, registry, vault, host, outcome):
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a", encoding="utf-8") as stream:
         stream.write(now + " host=" + host + " status=" + report["status"] + " verified_failures=" + str(len(active)) + " unknown=" + str(len(report["unknown"])) + "\n")
-    observation = {"schema_version": 1, "authoritative": False, "decision_record": "CEO/alerts/" + alert_path.name, "checked_at": now, "status": report["status"], "failures": report["failures"], "unknown": report["unknown"], "machines": saved["machines"], "telemetry": saved["telemetry"], "workflow_evidence": workflow_evidence}
+    observation = {"schema_version": 1, "authoritative": False, "decision_record": "CEO/alerts/" + alert_path.name, "publication_id": publication_id, "checked_at": now, "status": report["status"], "failures": report["failures"], "unknown": report["unknown"], "machines": saved["machines"], "telemetry": saved["telemetry"], "workflow_evidence": workflow_evidence}
     atomic_write(latest, json.dumps(observation, sort_keys=True) + "\n")
     if outcome:
         atomic_write(outcome, "fired" if changed else "noop")
