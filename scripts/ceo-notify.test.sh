@@ -16,6 +16,7 @@ setup() {
   TMP=$(mktemp -d)
   export CEO_DIR="$TMP/vault/CEO"
   export CEO_SECRETS_FILE="$TMP/secrets.json"
+  export CEO_NOTIFY_DEBUG_LOG="$TMP/notify-debug.log"
   mkdir -p "$CEO_DIR"
   unset CEO_DISCORD_WEBHOOK CEO_RUNNER CEO_MODEL CEO_MODEL_SOURCE CEO_RUNNER_ARTIFACT
 }
@@ -123,6 +124,7 @@ test_does_not_log_webhook_url() {
   rc=$?
   assert_eq "$rc" "0" "rc=0"
   assert_no_match "$out" "SECRET-TOKEN-12345" "webhook URL must not appear in script output"
+  assert_no_match "$(cat "$CEO_NOTIFY_DEBUG_LOG")" "SECRET-TOKEN" "webhook fragments must not appear in debug logs"
   teardown
 }
 
