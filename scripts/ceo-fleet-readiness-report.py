@@ -40,7 +40,7 @@ def read_state(path, host):
     return prior
 
 
-def validate(report):
+def validate(report, registry):
     if report.get("schema_version") != 1 or report.get("status") not in {"pass", "fail", "unknown"} or report.get("read_only") is not True:
         raise ValueError("invalid report")
     for field in ("failures", "unknown"):
@@ -72,8 +72,14 @@ def validate(report):
     if not isinstance(workflow_evidence, dict):
         raise ValueError("invalid workflow evidence")
     clean_workflows = {}
+    local_ci = registry.get("local_ci", {})
+    workflow_machine = local_ci.get("machine_id") if isinstance(local_ci, dict) else None
+    workflow_repos = local_ci.get("repos") if isinstance(local_ci, dict) else None
     for repo, workflow in workflow_evidence.items():
         if not isinstance(repo, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", repo) or not isinstance(workflow, dict) or set(workflow) != {"completed_at", "age_seconds"} or not isinstance(workflow["completed_at"], str):
+            raise ValueError("invalid workflow evidence")
+        identity = str(workflow_machine) + ":local-ci:workflow:" + repo
+        if not isinstance(workflow_repos, list) or repo not in workflow_repos or identity not in evidence:
             raise ValueError("invalid workflow evidence")
         completed = datetime.datetime.fromisoformat(workflow["completed_at"].replace("Z", "+00:00"))
         age = workflow["age_seconds"]
@@ -84,8 +90,8 @@ def validate(report):
     return evidence, clean_workflows
 
 
-def publish(report, vault, host, outcome):
-    evidence, workflow_evidence = validate(report)
+def publish(report, registry, vault, host, outcome):
+    evidence, workflow_evidence = validate(report, registry)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     root = vault / "CEO"
     latest = root / "reports" / ("fleet-readiness-" + host + ".json")
@@ -150,7 +156,7 @@ def main():
         registry = json.loads(Path(args.registry).read_text())
         if {m["id"] for m in report.get("machines", [])} != {m["id"] for m in registry["machines"]}:
             raise ValueError("incomplete fleet observation")
-        publish(report, Path(args.vault), args.host, Path(args.outcome_file) if args.outcome_file else None)
+        publish(report, registry, Path(args.vault), args.host, Path(args.outcome_file) if args.outcome_file else None)
         return 0
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired):
         print("ERROR: readiness observation or persistence failed; this run cannot establish recovery", file=sys.stderr)

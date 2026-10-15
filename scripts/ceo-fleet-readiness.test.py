@@ -19,7 +19,7 @@ class ReporterTests(unittest.TestCase):
         self.checker.write_text("import pathlib,sys\nprint(pathlib.Path(__file__).with_name('observation.json').read_text())\n")
         self.outcome = self.root / "outcome"
         self.registry = self.root / "registry.json"
-        self.registry.write_text(json.dumps({"machines": [{"id": "mac"}]}))
+        self.registry.write_text(json.dumps({"machines": [{"id": "mac"}], "local_ci": {"machine_id": "mac", "repos": ["llm-tools"]}}))
         self.latest = self.root / "CEO/reports/fleet-readiness-test.json"
 
     def tearDown(self):
@@ -43,9 +43,18 @@ class ReporterTests(unittest.TestCase):
     def test_workflow_evidence_survives_state_and_latest_publication(self):
         completed = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
         evidence = {"llm-tools": {"completed_at": completed.isoformat(), "age_seconds": 7 * 86400}}
-        self.assertEqual(self.run_report({"workflow": "pass"}, workflow_evidence=evidence).returncode, 0)
+        self.assertEqual(self.run_report({"local-ci:workflow:llm-tools": "pass"}, workflow_evidence=evidence).returncode, 0)
         self.assertEqual(self.state()["workflow_evidence"], evidence)
         self.assertEqual(json.loads(self.latest.read_text())["workflow_evidence"], evidence)
+
+    def test_workflow_evidence_must_match_roster_and_check(self):
+        completed = datetime.datetime.now(datetime.timezone.utc)
+        evidence = {"other": {"completed_at": completed.isoformat(), "age_seconds": 0}}
+        self.assertEqual(self.run_report({"local-ci:workflow:other": "pass"}, workflow_evidence=evidence).returncode, 1)
+        self.assertFalse(self.latest.exists())
+        evidence = {"llm-tools": {"completed_at": completed.isoformat(), "age_seconds": 0}}
+        self.assertEqual(self.run_report({"workflow": "pass"}, workflow_evidence=evidence).returncode, 1)
+        self.assertFalse(self.latest.exists())
 
     def test_invalid_workflow_evidence_cannot_publish(self):
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -58,7 +67,7 @@ class ReporterTests(unittest.TestCase):
         )
         for evidence in cases:
             with self.subTest(evidence=evidence):
-                self.assertEqual(self.run_report({"workflow": "pass"}, workflow_evidence=evidence).returncode, 1)
+                self.assertEqual(self.run_report({"local-ci:workflow:llm-tools": "pass"}, workflow_evidence=evidence).returncode, 1)
                 self.assertFalse(self.latest.exists())
 
     def test_baseline_and_unchanged_failures_are_quiet_new_failure_fires(self):
@@ -127,7 +136,7 @@ class ReporterTests(unittest.TestCase):
 
                 with patch.object(reporter, "atomic_write", side_effect=fail_persistently_before_write):
                     with self.assertRaises(OSError):
-                        reporter.publish(report, self.root, "test", self.outcome)
+                        reporter.publish(report, json.loads(self.registry.read_text()), self.root, "test", self.outcome)
                 self.assertEqual(alert.read_text(), before)
                 self.assertEqual(self.state()["active_failures"], ["mac:api"])
 
