@@ -1,0 +1,94 @@
+import importlib.util
+import io
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+SPEC = importlib.util.spec_from_file_location("fleet_discord", Path(__file__).with_name("ceo-fleet-readiness-discord.py"))
+
+
+class DeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.module = importlib.util.module_from_spec(SPEC)
+        SPEC.loader.exec_module(self.module)
+        self.ack = self.root / "ack.json"
+        self.pending = self.root / "pending.json"
+        self.webhook = "https://discord.com/api/webhooks/123/secret-test-value"
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def response(self):
+        result = io.BytesIO(b'{"id":"1234","channel_id":"5678"}')
+        result.status = 200
+        return result
+
+    def deliver(self, failures=None, warnings=None):
+        return self.module.deliver({"active_failures": failures or [], "unknown": warnings or []}, "test", self.ack, self.pending, self.webhook)
+
+    def test_initial_warning_is_sent_unchanged_is_quiet_recovery_is_sent(self):
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()) as post:
+            self.assertTrue(self.deliver(warnings=["gpu:trust-state"]))
+            self.assertFalse(self.deliver(warnings=["gpu:trust-state"]))
+            self.assertTrue(self.deliver())
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(json.loads(self.ack.read_text())["discord_message_id"], "1234")
+        self.assertNotIn("secret-test-value", self.ack.read_text())
+        self.assertNotIn("secret-test-value", self.pending.read_text())
+
+    def test_failed_delivery_retains_ack_and_retries_same_transition(self):
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()):
+            self.deliver(warnings=["gpu:trust-state"])
+        previous = self.ack.read_text()
+        with patch.object(self.module, "urlopen", side_effect=OSError("secret-test-value")), patch.object(self.module.time, "sleep"):
+            with self.assertRaises(self.module.DeliveryError):
+                self.deliver(failures=["gpu:api"])
+        self.assertEqual(self.ack.read_text(), previous)
+        self.assertNotIn("secret-test-value", self.pending.read_text())
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()):
+            self.assertTrue(self.deliver(failures=["gpu:api"]))
+
+    def test_http_error_or_missing_receipt_cannot_acknowledge(self):
+        for status, body in ((500, b'{}'), (200, b'{}'), (204, b''), (200, b'[]'), (200, b'null'), (200, b'{"id":123,"channel_id":"5678"}')):
+            with self.subTest(status=status, body=body):
+                def response(*args, **kwargs):
+                    value = io.BytesIO(body)
+                    value.status = status
+                    return value
+                with patch.object(self.module, "urlopen", side_effect=response), patch.object(self.module.time, "sleep"):
+                    with self.assertRaises(self.module.DeliveryError):
+                        self.deliver(warnings=["gpu:trust-state"])
+                self.assertFalse(self.ack.exists())
+
+    def test_invalid_persisted_ack_cannot_suppress_delivery(self):
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()):
+            self.deliver(warnings=["gpu:trust-state"])
+        original = json.loads(self.ack.read_text())
+        for key, value in (("schema_version", 2), ("discord_message_id", None), ("delivered_at", "invalid")):
+            self.ack.write_text(json.dumps({**original, key: value}))
+            with self.assertRaises((ValueError, TypeError)):
+                self.deliver(warnings=["gpu:trust-state"])
+
+    def test_post_receipt_write_failure_leaves_transition_unacknowledged(self):
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()), patch.object(self.module, "atomic_write", side_effect=[None, OSError("disk")]):
+            with self.assertRaises(OSError):
+                self.deliver(failures=["gpu:api"])
+        self.assertFalse(self.ack.exists())
+
+    def test_empty_initial_state_is_quiet_and_mentions_are_disabled(self):
+        with patch.object(self.module, "urlopen") as post:
+            self.assertFalse(self.deliver())
+        post.assert_not_called()
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()) as post:
+            self.deliver(failures=["gpu:api"])
+        request = post.call_args.args[0]
+        self.assertEqual(json.loads(request.data)["allowed_mentions"], {"parse": []})
+        self.assertEqual(post.call_args.kwargs["timeout"], 10)
+
+
+if __name__ == "__main__":
+    unittest.main()
