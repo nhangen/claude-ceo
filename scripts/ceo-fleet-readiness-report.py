@@ -68,11 +68,24 @@ def validate(report):
             evidence[identity] = value
     if sorted(k for k, v in evidence.items() if v == "fail") != report["failures"] or sorted(k for k, v in evidence.items() if v == "unknown") != report["unknown"]:
         raise ValueError("summary disagrees with evidence")
-    return evidence
+    workflow_evidence = report.get("workflow_evidence", {})
+    if not isinstance(workflow_evidence, dict):
+        raise ValueError("invalid workflow evidence")
+    clean_workflows = {}
+    for repo, workflow in workflow_evidence.items():
+        if not isinstance(repo, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", repo) or not isinstance(workflow, dict) or set(workflow) != {"completed_at", "age_seconds"} or not isinstance(workflow["completed_at"], str):
+            raise ValueError("invalid workflow evidence")
+        completed = datetime.datetime.fromisoformat(workflow["completed_at"].replace("Z", "+00:00"))
+        age = workflow["age_seconds"]
+        actual_age = int((stamp - completed).total_seconds()) if completed.tzinfo is not None else -1
+        if type(age) is not int or not 0 <= age <= 2**63 or completed > stamp or abs(actual_age - age) > 2:
+            raise ValueError("invalid workflow evidence")
+        clean_workflows[repo] = {"completed_at": completed.isoformat(), "age_seconds": age}
+    return evidence, clean_workflows
 
 
 def publish(report, vault, host, outcome):
-    evidence = validate(report)
+    evidence, workflow_evidence = validate(report)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     root = vault / "CEO"
     latest = root / "reports" / ("fleet-readiness-" + host + ".json")
@@ -86,6 +99,7 @@ def publish(report, vault, host, outcome):
     since = prior.get("since", now) if prior and prior.get("state") == state else now
     saved = {"host": host, "state": state, "since": since, "last_check": now, "active_failures": sorted(active), "status": report["status"], "observed_failures": sorted(failures), "unknown": report["unknown"], "read_only": True, "schema_version": 1}
     saved["machines"] = [{"id": m["id"], "checks": m["checks"], **({"primary_status": m["primary_status"]} if m.get("primary_status") in {"pass", "fail", "unknown"} else {})} for m in report["machines"]]
+    saved["workflow_evidence"] = workflow_evidence
     saved["telemetry"] = {}
     for context, metrics in report.get("telemetry", {}).items():
         if not re.fullmatch(r"[a-z0-9-]+", context) or not isinstance(metrics, dict):
@@ -109,7 +123,7 @@ def publish(report, vault, host, outcome):
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a", encoding="utf-8") as stream:
         stream.write(now + " host=" + host + " status=" + report["status"] + " verified_failures=" + str(len(active)) + " unknown=" + str(len(report["unknown"])) + "\n")
-    observation = {"schema_version": 1, "authoritative": False, "decision_record": "CEO/alerts/" + alert_path.name, "checked_at": now, "status": report["status"], "failures": report["failures"], "unknown": report["unknown"], "machines": saved["machines"], "telemetry": saved["telemetry"]}
+    observation = {"schema_version": 1, "authoritative": False, "decision_record": "CEO/alerts/" + alert_path.name, "checked_at": now, "status": report["status"], "failures": report["failures"], "unknown": report["unknown"], "machines": saved["machines"], "telemetry": saved["telemetry"], "workflow_evidence": workflow_evidence}
     atomic_write(latest, json.dumps(observation, sort_keys=True) + "\n")
     if outcome:
         atomic_write(outcome, "fired" if changed else "noop")

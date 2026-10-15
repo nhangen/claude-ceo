@@ -29,13 +29,37 @@ class ReporterTests(unittest.TestCase):
         text = (self.root / "CEO/alerts/fleet-readiness-test.md").read_text()
         return json.loads(text.split("<!-- fleet-readiness-state -->\n```json\n")[1].split("\n```", 1)[0])
 
-    def run_report(self, checks, stale=False):
+    def run_report(self, checks, stale=False, workflow_evidence=None):
         failures = sorted("mac:" + k for k, v in checks.items() if v == "fail")
         unknown = sorted("mac:" + k for k, v in checks.items() if v == "unknown")
         status = "fail" if failures else "unknown" if unknown else "pass"
         stamp = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1 if stale else 0)
-        self.observation.write_text(json.dumps({"schema_version": 1, "read_only": True, "checked_at": stamp.isoformat(), "status": status, "failures": failures, "unknown": unknown, "machines": [{"id": "mac", "checks": checks}]}))
+        report = {"schema_version": 1, "read_only": True, "checked_at": stamp.isoformat(), "status": status, "failures": failures, "unknown": unknown, "machines": [{"id": "mac", "checks": checks}]}
+        if workflow_evidence is not None:
+            report["workflow_evidence"] = workflow_evidence
+        self.observation.write_text(json.dumps(report))
         return subprocess.run(["python3", str(ROOT / "ceo-fleet-readiness-report.py"), "--vault", str(self.root), "--host", "test", "--checker", str(self.checker), "--registry", str(self.registry), "--outcome-file", str(self.outcome)], capture_output=True, text=True)
+
+    def test_workflow_evidence_survives_state_and_latest_publication(self):
+        completed = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+        evidence = {"llm-tools": {"completed_at": completed.isoformat(), "age_seconds": 7 * 86400}}
+        self.assertEqual(self.run_report({"workflow": "pass"}, workflow_evidence=evidence).returncode, 0)
+        self.assertEqual(self.state()["workflow_evidence"], evidence)
+        self.assertEqual(json.loads(self.latest.read_text())["workflow_evidence"], evidence)
+
+    def test_invalid_workflow_evidence_cannot_publish(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cases = (
+            [],
+            {"../repo": {"completed_at": now.isoformat(), "age_seconds": 0}},
+            {"llm-tools": {"completed_at": "not-a-time", "age_seconds": 0}},
+            {"llm-tools": {"completed_at": (now + datetime.timedelta(minutes=1)).isoformat(), "age_seconds": 0}},
+            {"llm-tools": {"completed_at": (now - datetime.timedelta(days=7)).isoformat(), "age_seconds": 0}},
+        )
+        for evidence in cases:
+            with self.subTest(evidence=evidence):
+                self.assertEqual(self.run_report({"workflow": "pass"}, workflow_evidence=evidence).returncode, 1)
+                self.assertFalse(self.latest.exists())
 
     def test_baseline_and_unchanged_failures_are_quiet_new_failure_fires(self):
         self.assertEqual(self.run_report({"api": "fail"}).returncode, 0)
