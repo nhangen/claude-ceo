@@ -953,7 +953,7 @@ EOF
 test_doctor_stignore_direct_invocation_reports_drift() {
   : > "$CEO_VAULT/.stignore"
   local output rc=0
-  output=$(CEO_STIGNORE_REPO= "$CEO_BIN" doctor 2>&1) || rc=$?
+  output=$(CEO_STIGNORE_REPO='' "$CEO_BIN" doctor 2>&1) || rc=$?
   assert_contains "$output" "✗ .stignore is missing '" "direct invocation must detect missing repo patterns"
   assert_not_contains "$output" "✓ .stignore matches the repo" "drift must not be reported as clean"
   assert_eq "$rc" "0" ".stignore drift remains a warning, not a failure"
@@ -966,7 +966,7 @@ test_doctor_stignore_symlink_invocation_reports_drift() {
   ln -s "$CEO_BIN" "$HOME/.local/bin/ceo"
   : > "$CEO_VAULT/.stignore"
   local output rc=0
-  output=$(CEO_STIGNORE_REPO= "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
+  output=$(CEO_STIGNORE_REPO='' "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
   assert_contains "$output" "✗ .stignore is missing '" "symlink invocation must detect missing repo patterns"
   assert_not_contains "$output" "✓ .stignore matches the repo" "symlink invocation must not silently skip the repo file"
   assert_eq "$rc" "0" ".stignore drift remains a warning, not a failure"
@@ -977,7 +977,7 @@ test_doctor_stignore_symlink_invocation_accepts_matching_live_file() {
   ln -s "$CEO_BIN" "$HOME/.local/bin/ceo"
   cp "$SCRIPT_DIR/../syncthing/shared.stignore" "$CEO_VAULT/.stignore"
   local output rc=0
-  output=$(CEO_STIGNORE_REPO= "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
+  output=$(CEO_STIGNORE_REPO='' "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
   assert_contains "$output" "✓ .stignore matches the repo" "matching live patterns must remain clean through a symlink"
   assert_not_contains "$output" "✗ .stignore" "matching live patterns must not report drift"
   assert_eq "$rc" "0" "matching live patterns must not fail doctor"
