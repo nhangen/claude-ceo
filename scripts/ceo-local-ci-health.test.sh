@@ -280,6 +280,24 @@ PY
   local body
   body=$(cat "$CEO_VAULT/CEO/alerts/local-ci-health-$CEO_HOSTNAME.md")
   assert_contains "$body" "| offline-repo | attention |" "unhealthy repository should be named"
+  assert_contains "$body" "Unhealthy runner records: 1" "offline runner should be diagnosed separately"
+  assert_not_contains "$body" "Failed workflows:" "missing workflow evidence must not imply a failed workflow"
+}
+
+test_failed_workflow_does_not_label_online_runner_unhealthy() {
+  write_config failed-workflow
+  python3 - <<PY
+import datetime as dt, json
+data = {"generated_at": dt.datetime.now(dt.timezone.utc).isoformat(), "summary":{"total":1,"online":0,"busy":0,"attention":1},"repos":[{"repo":"failed-workflow","phase":"active","host":{"running":True},"runner":{"status":"online","busy":False},"ci":{"status":"completed","conclusion":"failure"},"status":"attention"}]}
+open("$API_STUB_FILE", "w").write(json.dumps(data))
+PY
+  run_monitor
+  assert_eq "$(state_field status)" "firing" "failed workflow should retain its alert"
+  local body
+  body=$(cat "$CEO_VAULT/CEO/alerts/local-ci-health-$CEO_HOSTNAME.md")
+  assert_contains "$body" "Failed workflows: 1" "workflow failure should be identified"
+  assert_not_contains "$body" "Unhealthy runner records:" "online provisioned runner must not be labeled unhealthy"
+  assert_not_contains "$body" "runner records are unhealthy" "workflow failure must not retain the misleading runner diagnosis"
 }
 
 test_config_change_missing_from_live_snapshot_fires() {
