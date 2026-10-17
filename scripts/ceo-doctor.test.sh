@@ -950,4 +950,58 @@ EOF
     "doctor must not remove preexisting playbook-drift.md alert file"
 }
 
+test_doctor_stignore_direct_invocation_reports_drift() {
+  : > "$CEO_VAULT/.stignore"
+  local output rc=0
+  output=$(CEO_STIGNORE_REPO='' "$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "✗ .stignore is missing '" "direct invocation must detect missing repo patterns"
+  assert_not_contains "$output" "✓ .stignore matches the repo" "drift must not be reported as clean"
+  assert_eq "$rc" "0" ".stignore drift remains a warning, not a failure"
+}
+
+test_doctor_stignore_symlink_invocation_reports_drift() {
+  # Installed ceo lives outside the repository. The old BASH_SOURCE default
+  # looked in $HOME/.local/syncthing/ and silently reported an absent file clean.
+  mkdir -p "$HOME/.local/bin"
+  ln -s "$CEO_BIN" "$HOME/.local/bin/ceo"
+  : > "$CEO_VAULT/.stignore"
+  local output rc=0
+  output=$(CEO_STIGNORE_REPO='' "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
+  assert_contains "$output" "✗ .stignore is missing '" "symlink invocation must detect missing repo patterns"
+  assert_not_contains "$output" "✓ .stignore matches the repo" "symlink invocation must not silently skip the repo file"
+  assert_eq "$rc" "0" ".stignore drift remains a warning, not a failure"
+}
+
+test_doctor_stignore_symlink_invocation_accepts_matching_live_file() {
+  mkdir -p "$HOME/.local/bin"
+  ln -s "$CEO_BIN" "$HOME/.local/bin/ceo"
+  cp "$SCRIPT_DIR/../syncthing/shared.stignore" "$CEO_VAULT/.stignore"
+  local output rc=0
+  output=$(CEO_STIGNORE_REPO='' "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
+  assert_contains "$output" "✓ .stignore matches the repo" "matching live patterns must remain clean through a symlink"
+  assert_not_contains "$output" "✗ .stignore" "matching live patterns must not report drift"
+  assert_eq "$rc" "0" "matching live patterns must not fail doctor"
+}
+
+test_doctor_stignore_symlink_invocation_honors_repo_override() {
+  mkdir -p "$HOME/.local/bin"
+  ln -s "$CEO_BIN" "$HOME/.local/bin/ceo"
+  local override="$TEST_HOME/custom shared.stignore"
+  printf '%s\n' 'CEO/override-only/' > "$override"
+  cp "$SCRIPT_DIR/../syncthing/shared.stignore" "$CEO_VAULT/.stignore"
+  local output rc=0
+  output=$(CEO_STIGNORE_REPO="$override" "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
+  assert_contains "$output" ".stignore is missing 'CEO/override-only/'" "explicit override must take precedence over the resolved repo"
+  assert_contains "$output" "fix: cp $override " "remediation must name the explicit override"
+  assert_not_contains "$output" "✓ .stignore matches the repo" "override drift must not be reported as clean"
+  assert_eq "$rc" "0" "override drift remains a warning"
+
+  cp "$override" "$CEO_VAULT/.stignore"
+  rc=0
+  output=$(CEO_STIGNORE_REPO="$override" "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
+  assert_contains "$output" "✓ .stignore matches the repo" "matching override must not require the default repo's patterns"
+  assert_not_contains "$output" "✗ .stignore" "override must replace, not augment, the default repo"
+  assert_eq "$rc" "0" "matching override must not fail doctor"
+}
+
 run_tests

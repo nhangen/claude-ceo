@@ -739,7 +739,7 @@ cmd_doctor() {
   fi
 
   local _sti_out _sti_missing _sti_repo
-  _sti_repo="${CEO_STIGNORE_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/syncthing/shared.stignore}"
+  _sti_repo="${CEO_STIGNORE_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)/syncthing/shared.stignore}"
   _sti_out=$(_doctor_check_stignore "$_sti_repo" "$CEO_VAULT/.stignore")
   printf '%s\n' "$_sti_out" | grep -E '^(✗|  fix:)' | sed 's/^/  /' || true
   _sti_missing=$(printf '%s\n' "$_sti_out" | sed -n 's/^MISSING=\([0-9]*\)$/\1/p' | tail -1)
