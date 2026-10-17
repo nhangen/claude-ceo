@@ -997,9 +997,11 @@ test_doctor_stignore_symlink_invocation_honors_repo_override() {
   assert_eq "$rc" "0" "override drift remains a warning"
 
   cp "$override" "$CEO_VAULT/.stignore"
-  output=$(CEO_STIGNORE_REPO="$override" "$HOME/.local/bin/ceo" doctor 2>&1) || true
+  rc=0
+  output=$(CEO_STIGNORE_REPO="$override" "$HOME/.local/bin/ceo" doctor 2>&1) || rc=$?
   assert_contains "$output" "✓ .stignore matches the repo" "matching override must not require the default repo's patterns"
   assert_not_contains "$output" "✗ .stignore" "override must replace, not augment, the default repo"
+  assert_eq "$rc" "0" "matching override must not fail doctor"
 }
 
 run_tests
