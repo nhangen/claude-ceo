@@ -458,7 +458,11 @@ _record_failure() {
 ALERTEOF
   fi
   date +%s > "$LAST_RUN_FILE"
-  if [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
+  local failure_notified=0
+  if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ] && [ -f "$CEO_RUNNER_OUTCOME_FILE" ]; then
+    if [ "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" = "failure-notified" ]; then failure_notified=1; fi
+  fi
+  if [ "$failure_notified" = 0 ] && [ -x "$SCRIPT_DIR/ceo-notify.sh" ]; then
     "$SCRIPT_DIR/ceo-notify.sh" failure "$TRIGGER" "$reason" >/dev/null 2>&1 || \
       echo "$(date): WARN — ceo-notify.sh failure exited non-zero for $TRIGGER" >> "$SKIPS_LOG"
   fi

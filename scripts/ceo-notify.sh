@@ -91,7 +91,7 @@ if [ -z "$WEBHOOK" ]; then
   _dlog "webhook unresolved (env empty AND file missing/key absent), bailing 0"
   exit 0
 fi
-_dlog "webhook resolved length=${#WEBHOOK} prefix='${WEBHOOK:0:32}…'"
+_dlog "webhook resolved length=${#WEBHOOK}"
 
 EVENTS="failures"
 SETTINGS_FILE="${CEO_DIR:-$HOME/Documents/Obsidian/CEO}/settings.json"
@@ -203,7 +203,7 @@ PAYLOAD=$(jq -n \
 _dlog "POSTing to Discord (payload bytes=${#PAYLOAD})"
 CURL_OUT=$(curl -sS -o /dev/null -w '%{http_code} time=%{time_total}s' \
   -X POST -H "Content-Type: application/json" --max-time 10 \
-  -d "$PAYLOAD" "$WEBHOOK" 2>&1) || CURL_OUT="curl-failed: $CURL_OUT"
+  -d "$PAYLOAD" "$WEBHOOK" 2>/dev/null) || CURL_OUT="curl-failed"
 _dlog "curl result: $CURL_OUT"
 
 exit 0
