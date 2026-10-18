@@ -57,6 +57,15 @@ class ProfileContextTests(unittest.TestCase):
         self.assertIn("missing or unreadable", result.stdout)
         self.assertNotIn("Canonical active domains (", result.stdout)
 
+    # main() has its own catch layer for an unresolvable vault path
+    # (resolve(strict=True)), which render()'s catches never reach.
+    def test_nonexistent_vault_is_unavailable_not_crashed(self):
+        missing = self.vault / "no-such-vault"
+        result = subprocess.run(["python3", str(SCRIPT), str(missing), "2026-09-28"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("Active domains unavailable:"), result.stdout)
+        self.assertNotIn("Canonical active domains (", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
