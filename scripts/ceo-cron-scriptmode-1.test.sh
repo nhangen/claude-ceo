@@ -3,6 +3,39 @@
 # Shared preamble, setup/teardown, and helpers live in ceo-cron-test-common.sh.
 source "$(cd "$(dirname "$0")" && pwd)/ceo-cron-test-common.sh"
 
+test_fleet_collector_failure_is_notified_once_without_becoming_success() {
+  _write_outcome_playbook fleet-readiness ""
+  printf '#!/bin/bash\nexec bash "%s/ceo-fleet-readiness.sh"\n' "$SCRIPT_DIR" > "$SCRIPT_DIR/fleet-readiness-test.sh"
+  mkdir -p "$TEST_HOME/checker/scripts" "$TEST_HOME/checker/home/.claude" "$TEST_HOME/python"
+  printf 'raise SystemExit(2)\n' > "$TEST_HOME/checker/scripts/fleet-readiness.py"
+  printf '{}\n' > "$TEST_HOME/checker/home/.claude/olla-fleet.json"
+  printf '#!/bin/bash\nprintf "generic-post\\n" >> "$TEST_DELIVERY_ROOT/generic-posts"\nprintf "200"\n' > "$TEST_HOME/.bun/bin/curl"
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+  cat > "$TEST_HOME/python/sitecustomize.py" <<'PY'
+import io, os, pathlib, urllib.request
+def post(request, timeout):
+    assert request.get_method() == "POST" and timeout == 10
+    with (pathlib.Path(os.environ["TEST_DELIVERY_ROOT"]) / "posts").open("a") as stream:
+        stream.write("post\n")
+    response = io.BytesIO(b'{"id":"1234","channel_id":"5678"}')
+    response.status = 200
+    return response
+urllib.request.urlopen = post
+PY
+  local rc=0 tick
+  for tick in 1 2; do
+    assert_eq "$(cat "$CEO_STATE_DIR/.fail-count-fleet-readiness" 2>/dev/null || printf '0')" "$((tick - 1))" "each tick must retain the prior failure count"
+    rm -f "$CEO_STATE_DIR/.last-run-fleet-readiness"
+    rc=0
+    TEST_DELIVERY_ROOT="$TEST_HOME" PYTHONPATH="$TEST_HOME/python" LLM_TOOLS_REPO="$TEST_HOME/checker" CEO_DISCORD_WEBHOOK="https://discord.com/api/webhooks/123/test-only" CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" fleet-readiness --manual >/dev/null 2>&1 || rc=$?
+    assert_eq "$rc" "1" "failed collection must retain execution failure"
+  done
+  assert_eq "$(wc -l < "$TEST_HOME/posts" | tr -d ' ')" "1" "unchanged collector failure must be delivered once"
+  assert_eq "$(cat "$CEO_STATE_DIR/.fail-count-fleet-readiness")" "2" "both failures must retain bookkeeping"
+  local log; log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || true)
+  assert_not_contains "$log" "[failure/fleet-readiness]" "acknowledged dedicated delivery must suppress generic duplicates"
+}
+
 
 test_script_outcome_noop_suppresses_success_notify() {
   _write_outcome_playbook outcome-noop noop

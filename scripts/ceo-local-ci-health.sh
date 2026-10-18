@@ -118,7 +118,8 @@ for key in ("total", "online", "busy", "attention"):
         raise ValueError("invalid summary count")
 if s["total"] != len(repos) or s["online"] + s["busy"] + s["attention"] != s["total"]:
     raise ValueError("summary does not match repos")
-problems = 0
+runner_problems = 0
+workflow_problems = 0
 rows = []
 names = set()
 for repo in repos:
@@ -132,21 +133,28 @@ for repo in repos:
     runner = repo.get("runner") if isinstance(repo.get("runner"), dict) else {}
     running = host.get("running") is True
     runner_status = str(runner.get("status", "unknown"))
-    busy = runner.get("busy") is True
-    healthy = phase == "active" and running and runner_status == "online" and status in {"online", "busy"}
-    problems += 0 if healthy else 1
+    healthy = phase == "active" and running and runner_status == "online"
+    runner_problems += 0 if healthy else 1
+    workflow = repo.get("ci") if isinstance(repo.get("ci"), dict) else {}
+    workflow_problems += int(workflow.get("status") == "completed" and workflow.get("conclusion") in {"failure", "timed_out", "action_required"})
     rows.append("| {} | {} | {} | {} | {} |".format(name, status, phase, "yes" if running else "no", runner_status))
 if names != configured:
     raise ValueError("status fleet does not match current config")
-print("{}\t{}\t{}\t{}\t{}".format(s["total"], s["online"], s["busy"], s["attention"], problems))
+print("{}\t{}\t{}\t{}\t{}\t{}".format(s["total"], s["online"], s["busy"], s["attention"], runner_problems, workflow_problems))
 print("\n".join(rows))
 ' "$MAX_STATUS_AGE_SECONDS" "$CONFIG_PATH"); then
       _summary=$(printf '%s\n' "$_parsed" | head -n 1)
-      IFS=$'\t' read -r TOTAL ONLINE BUSY ATTENTION _problem_count <<< "$_summary"
+      IFS=$'\t' read -r TOTAL ONLINE BUSY ATTENTION _runner_problem_count _workflow_problem_count <<< "$_summary"
       REPO_ROWS=$(printf '%s\n' "$_parsed" | tail -n +2)
       API_STATE="ok"
-      if [ "$ATTENTION" -gt 0 ] || [ "$_problem_count" -gt 0 ]; then
-        REASONS+=("$ATTENTION fleet entries need attention; $_problem_count runner records are unhealthy")
+      if [ "$ATTENTION" -gt 0 ]; then
+        REASONS+=("$ATTENTION fleet entries need attention")
+      fi
+      if [ "$_runner_problem_count" -gt 0 ]; then
+        REASONS+=("Unhealthy runner records: $_runner_problem_count")
+      fi
+      if [ "$_workflow_problem_count" -gt 0 ]; then
+        REASONS+=("Failed workflows: $_workflow_problem_count")
       fi
     else
       API_STATE="invalid"
