@@ -65,7 +65,7 @@ _write_gh_stub() {
   esac
   [ -n "$fail_case" ] && fail_case="$fail_case echo 'gh: API rate limit exceeded' >&2; exit 1 ;;"
   local FAKE_GITHUB_TOKEN
-  FAKE_GITHUB_TOKEN=$(fake_token ghp)
+  FAKE_GITHUB_TOKEN=$(fake_token ghp_)
   cat > "$TMP/bin/gh" << STUB
 #!/bin/bash
 case "\$1 \$2" in

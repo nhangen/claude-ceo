@@ -260,7 +260,7 @@ _stub_gh_prs() {
   fi
 
   local FAKE_GITHUB_TOKEN
-  FAKE_GITHUB_TOKEN=$(fake_token ghp)
+  FAKE_GITHUB_TOKEN=$(fake_token ghp_)
   cat > "$TEST_HOME/.bun/bin/gh" << STUB
 #!/bin/bash
 echo "\$*" >> "\$HOME/gh-invoked.txt"
@@ -304,7 +304,7 @@ STUB
 # passes whether the code keys on the review search or on any of the others.
 _stub_gh_prs_review_search_fails() {
   local FAKE_GITHUB_TOKEN
-  FAKE_GITHUB_TOKEN=$(fake_token ghp)
+  FAKE_GITHUB_TOKEN=$(fake_token ghp_)
   cat > "$TEST_HOME/.bun/bin/gh" << 'STUB'
 #!/bin/bash
 echo "$*" >> "$HOME/gh-invoked.txt"

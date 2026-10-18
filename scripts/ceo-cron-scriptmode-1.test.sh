@@ -300,9 +300,9 @@ test_script_runner_failure_redacts_credentials_from_the_recorded_reason() {
   # shellcheck disable=SC1090  # sourced for its fake_token helper
   source "$SCRIPT_DIR/fake-credentials.sh"
   local FAKE_GITHUB_URL_TOKEN FAKE_GITHUB_BARE_TOKEN FAKE_OPENAI_KEY
-  FAKE_GITHUB_URL_TOKEN=$(fake_token ghp)
-  FAKE_GITHUB_BARE_TOKEN=$(fake_token ghp)
-  FAKE_OPENAI_KEY=$(fake_token sk)
+  FAKE_GITHUB_URL_TOKEN=$(fake_token ghp_ URL)
+  FAKE_GITHUB_BARE_TOKEN=$(fake_token ghp_ BARE)
+  FAKE_OPENAI_KEY=$(fake_token sk-)
   cat > "$SCRIPT_DIR/leaky-failing-script-test.sh" << SCRIPT
 #!/bin/bash
 # Synthetic credentials for redaction tests. None of these are real.

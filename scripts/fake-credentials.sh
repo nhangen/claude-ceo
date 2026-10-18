@@ -5,8 +5,8 @@
 # this helper, so the tree never holds a literal that a secret scanner (or a
 # human skimming a public repo) can mistake for a leaked key. The body spells
 # FAKE, is detector-length, and is visibly fake to a person:
-#   fake_token ghp  ->  ghp_FAKEFAKEFAKEFAKE0000EXAMPLE00000
-#   fake_secret("ghp")  ->  same value (python twin; one body shape everywhere)
+#   fake_token ghp_  ->  ghp_FAKEFAKEFAKEFAKE0000EXAMPLE00000
+#   fake_secret("ghp_")  ->  same value (python twin; one body shape everywhere)
 #
 # The fixture's NAME must say so too (FAKE_GITHUB_TOKEN, never bare `token`),
 # and the fixture block carries one comment:
@@ -17,15 +17,18 @@
 # would also hide a real key pasted into a test.
 #
 # The body is one literal in each of the two sites below (bash and python)
-# because they ARE the sanctioned assembly sites: a scanner pattern needs a
-# provider prefix and a token-length body in one line, and no line here joins
-# the two.
+# because they ARE the sanctioned assembly sites. Their example lines above show
+# the joined shape, so the guard test exempts both files.
 
-# fake_token <prefix> — print prefix + the standard fake body.
-#   FAKE_GITHUB_TOKEN=$(fake_token ghp)
-#   FAKE_OPENAI_KEY=$(fake_token sk)
-#   FAKE_SLACK_TOKEN=$(fake_token xoxb)
+# fake_token <prefix> [tag] — print prefix + the standard fake body.
+# <prefix> carries the provider's own delimiter, because it differs: "ghp_",
+# "sk-", "xoxb-". An optional alphanumeric <tag> makes two tokens in one test
+# distinguishable (FAKEFAKEFAKEFAKE<tag>0000EXAMPLE00000).
+#   FAKE_GITHUB_TOKEN=$(fake_token ghp_)
+#   FAKE_OPENAI_KEY=$(fake_token sk-)
+#   FAKE_SLACK_TOKEN=$(fake_token xoxb-)
 fake_token() {
-  local prefix="${1:?fake_token: provider prefix required, e.g. ghp, sk, xoxb}"
-  printf '%s_%s' "$prefix" "FAKEFAKEFAKEFAKE0000EXAMPLE00000"
+  local prefix="${1:?fake_token: provider prefix with delimiter required, e.g. ghp_, sk-, xoxb-}"
+  local tag="${2:-}"
+  printf '%s%s%s%s' "$prefix" "FAKEFAKEFAKEFAKE" "$tag" "0000EXAMPLE00000"
 }
