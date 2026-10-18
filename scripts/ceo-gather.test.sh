@@ -209,15 +209,16 @@ test_crashed_profile_context_reader_degrades_instead_of_aborting() {
     export CEO_PROFILE_CONTEXT_VERSION=1
     PATH="$stub:$PATH"
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
-    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}|DEGRADED=$FILE_GATHER_DEGRADED"
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION-unset}|DEGRADED=$FILE_GATHER_DEGRADED|PENDING=$PENDING_GATHER_DEGRADED"
     printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
     printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
     echo "STATUS=$CEO_GATHER_STATUS"
   )
-  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1" "a crashed reader must finish the gather, unset the version, and mark it degraded"
-  assert_contains "$out" "context reader failed" "the prompt says the context reader failed"
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1|PENDING=0" "a crashed reader must finish the gather, unset the version, degrade only the file scope, and mark it degraded"
+  assert_contains "$out" "Active domains unavailable: context reader failed (rc=1)" "the prompt says the context reader failed and carries the status"
   assert_contains "$out" "profile-context-reader-failed:rc=1" "the degraded reason carries the exit status"
-  assert_not_contains "$out" "STATUS=ok" "a degraded gather must not roll up as ok"
+  assert_not_contains "$out" "Canonical active domains (" "a crashed reader's partial output must not survive into the exported content"
+  assert_contains "$out" "STATUS=failed" "a degenerate degraded gather must roll up failed, not subtly as empty"
 }
 
 # The command-not-found path (python3 missing for the reader, or a shim exiting
@@ -235,16 +236,18 @@ test_python3_not_found_for_reader_degrades_with_rc_127() {
     export CEO_PROFILE_CONTEXT_VERSION=1
     PATH="$stub:$PATH"
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
-    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}|DEGRADED=$FILE_GATHER_DEGRADED"
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION-unset}|DEGRADED=$FILE_GATHER_DEGRADED|PENDING=$PENDING_GATHER_DEGRADED"
     printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
     printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
     echo "STATUS=$CEO_GATHER_STATUS"
+    echo "ENV_SETS=$(env | grep -c '^CEO_PROFILE_CONTEXT_VERSION')"
   )
-  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1" "a reader exiting 127 must finish the gather, unset the version, and mark it degraded"
-  assert_contains "$out" "context reader failed (rc=127)" "the prompt says the context reader failed and carries the status"
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1|PENDING=0" "a reader exiting 127 must finish the gather, unset the version, degrade only the file scope, and mark it degraded"
+  assert_contains "$out" "Active domains unavailable: context reader failed (rc=127)" "the prompt says the context reader failed and carries the status"
   assert_contains "$out" "profile-context-reader-failed:rc=127" "the degraded reason carries the exit status"
   assert_not_contains "$out" "Canonical active domains (" "a reader that exits before printing must not read as current context"
-  assert_not_contains "$out" "STATUS=ok" "a degraded gather must not roll up as ok"
+  assert_contains "$out" "STATUS=failed" "a degenerate degraded gather must roll up failed, not subtly as empty"
+  assert_contains "$out" "ENV_SETS=0" "the version must not merely be emptied from the env; it must be gone"
 }
 
 # Legacy Profile.md cannot affect canonical context or the pending queue.
@@ -523,16 +526,19 @@ test_stalled_profile_context_reader_times_out_and_marks_gather_degraded() {
     export CEO_VAULT_TIMEOUT=1
     PATH="$stub:$PATH"
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
-    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}|DEGRADED=$FILE_GATHER_DEGRADED"
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION-unset}|DEGRADED=$FILE_GATHER_DEGRADED|PENDING=$PENDING_GATHER_DEGRADED"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
     printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
     echo "STATUS=$CEO_GATHER_STATUS"
   )
-  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1" \
-    "a timed-out reader must finish the gather, unset version, and mark degraded (#594)"
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1|PENDING=0" \
+    "a timed-out reader must finish the gather, unset version, degrade only the file scope, and mark degraded (#594)"
   assert_contains "$out" "profile-context-reader-failed:rc=124" \
     "the degraded reason carries timeout rc 124"
-  assert_not_contains "$out" "STATUS=ok" \
-    "a timed-out gather must not roll up as ok"
+  assert_contains "$out" "STATUS=failed" \
+    "a degenerate degraded gather must roll up failed, not subtly as empty"
+  assert_contains "$out" "Active domains unavailable: context reader failed (rc=124)" \
+    "the timed-out reader's fallback message still reaches the prompt with its status"
 }
 
 test_stalled_pending_approvals_read_times_out_and_degrades() {
