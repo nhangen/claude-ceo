@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 SPEC = importlib.util.spec_from_file_location("fleet_discord", Path(__file__).with_name("ceo-fleet-readiness-discord.py"))
 
@@ -44,13 +44,28 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()):
             self.deliver(warnings=["gpu:trust-state"])
         previous = self.ack.read_text()
-        with patch.object(self.module, "urlopen", side_effect=OSError("secret-test-value")), patch.object(self.module.time, "sleep"):
+        with patch.object(self.module, "urlopen", side_effect=OSError("secret-test-value")) as post, patch.object(self.module.time, "sleep") as sleep:
             with self.assertRaises(self.module.DeliveryError):
                 self.deliver(failures=["gpu:api"])
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [call(1), call(2)])
         self.assertEqual(self.ack.read_text(), previous)
         self.assertNotIn("secret-test-value", self.pending.read_text())
         with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()):
             self.assertTrue(self.deliver(failures=["gpu:api"]))
+
+    def test_transient_failure_retries_and_acknowledges_valid_receipt(self):
+        with patch.object(self.module, "urlopen", side_effect=[OSError("temporary"), self.response()]) as post, patch.object(self.module.time, "sleep") as sleep:
+            self.assertTrue(self.deliver(failures=["gpu:api"]))
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(sleep.call_args_list, [call(1)])
+        acknowledgment = json.loads(self.ack.read_text())
+        self.assertEqual(acknowledgment["failures"], ["gpu:api"])
+        self.assertEqual(acknowledgment["discord_message_id"], "1234")
+        self.assertEqual(acknowledgment["discord_channel_id"], "5678")
+        with patch.object(self.module, "urlopen") as post:
+            self.assertFalse(self.deliver(failures=["gpu:api"]))
+        post.assert_not_called()
 
     def test_http_error_or_missing_receipt_cannot_acknowledge(self):
         for status, body in ((500, b'{}'), (200, b'{}'), (204, b''), (200, b'[]'), (200, b'null'), (200, b'{"id":123,"channel_id":"5678"}')):
