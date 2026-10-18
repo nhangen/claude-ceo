@@ -36,6 +36,27 @@ class ProfileContextTests(unittest.TestCase):
         self.assertIn("unavailable", output)
         self.assertNotIn("Old Employer", output)
 
+    # Exactly MAX_AGE_DAYS is fresh: kills a `>` → `>=` drift in the window
+    # check, which would withhold a section confirmed 30 days ago (#576 M8).
+    def test_exactly_thirty_day_old_domains_are_reported(self):
+        output = self.render("---\nactive_domains_as_of: 2026-08-29\n---\n## Active Domains\nAt Age Limit\n")
+        self.assertTrue(output.startswith("Canonical active domains ("))
+        self.assertIn("At Age Limit", output)
+
+    def test_future_dated_domains_are_withheld(self):
+        output = self.render("---\nactive_domains_as_of: 2026-09-29\n---\n## Active Domains\nFuture Dated\n")
+        self.assertIn("stale", output)
+        self.assertNotIn("Future Dated", output)
+
+    # A read error (the canonical file is a directory) is withheld with the
+    # unreadable reason, not a crash and not a partial render (#576 M10).
+    def test_unreadable_goals_are_unavailable_not_crashed(self):
+        (self.vault / "Profile/goals.md").mkdir()
+        result = subprocess.run(["python3", str(SCRIPT), str(self.vault), "2026-09-28"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("missing or unreadable", result.stdout)
+        self.assertNotIn("Canonical active domains (", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -220,6 +220,33 @@ test_crashed_profile_context_reader_degrades_instead_of_aborting() {
   assert_not_contains "$out" "STATUS=ok" "a degraded gather must not roll up as ok"
 }
 
+# The command-not-found path (python3 missing for the reader, or a shim exiting
+# 127) must degrade like every other reader failure (#576 M5): 127 falls through
+# no select-exit-code protocol, so a code that special-cases some statuses would
+# silently hand an empty read back as a clean pass.
+test_python3_not_found_for_reader_degrades_with_rc_127() {
+  _write_goals "$(date +%Y-%m-%d)"
+  local stub; stub="$TMP/py-stub-127"
+  mkdir -p "$stub"
+  printf '#!/bin/sh\ncase "$1" in *ceo-profile-context.py) exit 127 ;; esac\nexec "%s" "$@"\n' "$(command -v python3)" > "$stub/python3"
+  chmod +x "$stub/python3"
+  local out
+  out=$( set -euo pipefail
+    export CEO_PROFILE_CONTEXT_VERSION=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION:-unset}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+    echo "STATUS=$CEO_GATHER_STATUS"
+  )
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1" "a reader exiting 127 must finish the gather, unset the version, and mark it degraded"
+  assert_contains "$out" "context reader failed (rc=127)" "the prompt says the context reader failed and carries the status"
+  assert_contains "$out" "profile-context-reader-failed:rc=127" "the degraded reason carries the exit status"
+  assert_not_contains "$out" "Canonical active domains (" "a reader that exits before printing must not read as current context"
+  assert_not_contains "$out" "STATUS=ok" "a degraded gather must not roll up as ok"
+}
+
 # Legacy Profile.md cannot affect canonical context or the pending queue.
 test_legacy_profile_does_not_degrade_the_pending_queue() {
   echo "## Active Domains" > "$CEO_VAULT/Profile.md"
