@@ -244,6 +244,7 @@ test_python3_not_found_for_reader_degrades_with_rc_127() {
   )
   assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1|PENDING=0" "a reader exiting 127 must finish the gather, unset the version, degrade only the file scope, and mark it degraded"
   assert_contains "$out" "Active domains unavailable: context reader failed (rc=127)" "the prompt says the context reader failed and carries the status"
+  assert_contains "$out" "Do not infer current roles or priorities from history." "the fallback tells the model not to guess roles from history"
   assert_contains "$out" "profile-context-reader-failed:rc=127" "the degraded reason carries the exit status"
   assert_not_contains "$out" "Canonical active domains (" "a reader that exits before printing must not read as current context"
   assert_contains "$out" "STATUS=failed" "a degenerate degraded gather must roll up failed, not subtly as empty"
