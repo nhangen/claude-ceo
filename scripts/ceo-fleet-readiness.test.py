@@ -136,9 +136,14 @@ class ReporterTests(unittest.TestCase):
     def test_stale_report_cannot_modify_prior_state(self):
         self.run_report({"api": "fail"})
         before = self.latest.read_text()
+        alert = self.root / "CEO/alerts/fleet-readiness-test.md"
+        before_alert = alert.read_text()
+        before_publication_id = self.state()["publication_id"]
         result = self.run_report({"api": "pass"}, stale=True)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(self.latest.read_text(), before)
+        self.assertEqual(alert.read_text(), before_alert)
+        self.assertEqual(self.state()["publication_id"], before_publication_id)
 
     def test_uppercase_harness_identity_is_valid(self):
         result = self.run_report({"file:.codex/AGENTS.md": "fail"})
