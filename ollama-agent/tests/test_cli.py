@@ -9,6 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cli  # noqa: E402
 from ollama_agent.transport import parse_chat_response  # noqa: E402
 
+# Credential-shaped fixtures are assembled at runtime through the shared helper
+# (#572), so no literal in this file trips a secret scanner or reads as a
+# leaked key. The helper is the python twin of scripts/fake-credentials.sh.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_credentials import fake_secret  # noqa: E402
+
 
 def _rule(d, name, desc):
     (d / f"{name}.md").write_text(f"---\ndescription: {desc}\nglobs:\n---\n\n# {name}\n\nbody\n")
@@ -1301,7 +1307,7 @@ def test_cli_crashed_run_redacts_before_capping(tmp_path, monkeypatch):
     # Capped first, the token would keep "sk-ABCD": too short to match the
     # 8-char minimum, so only redacting the whole message scrubs it.
     error = _crash_error(tmp_path, monkeypatch,
-                         lambda: RuntimeError("x" * 192 + " sk-ABCDEFGHIJKLMNOP"))
+                         lambda: RuntimeError("x" * 192 + " " + fake_secret("sk-")))
     assert "sk-" not in error
 
 

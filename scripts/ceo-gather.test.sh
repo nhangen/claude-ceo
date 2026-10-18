@@ -5,6 +5,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/test-harness.sh"
+# Synthetic credentials for redaction tests. None of these are real. The gh
+# stub's fake token is assembled at runtime through this helper (#572).
+# shellcheck disable=SC1090  # sourced for its fake_token helper
+source "$SCRIPT_DIR/fake-credentials.sh"
 
 setup() {
   TMP=$(mktemp -d)
@@ -60,10 +64,12 @@ _write_gh_stub() {
     *) echo "_write_gh_stub: unknown fail arm '$fail_arm'" >&2; return 1 ;;
   esac
   [ -n "$fail_case" ] && fail_case="$fail_case echo 'gh: API rate limit exceeded' >&2; exit 1 ;;"
+  local FAKE_GITHUB_TOKEN
+  FAKE_GITHUB_TOKEN=$(fake_token ghp_)
   cat > "$TMP/bin/gh" << STUB
 #!/bin/bash
 case "\$1 \$2" in
-  "auth token") echo "ghs_faketoken"; exit 0 ;;
+  "auth token") echo "${FAKE_GITHUB_TOKEN}"; exit 0 ;;
   "auth status") exit 0 ;;
 esac
 if [ "\$1" = "search" ] && [ "\$2" = "prs" ]; then
