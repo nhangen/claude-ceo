@@ -29,7 +29,7 @@ class ReporterTests(unittest.TestCase):
         text = (self.root / "CEO/alerts/fleet-readiness-test.md").read_text()
         return json.loads(text.split("<!-- fleet-readiness-state -->\n```json\n")[1].split("\n```", 1)[0])
 
-    def run_report(self, checks, stale=False, workflow_evidence=None):
+    def run_report(self, checks, stale=False, workflow_evidence=None, telemetry=None):
         failures = sorted("mac:" + k for k, v in checks.items() if v == "fail")
         unknown = sorted("mac:" + k for k, v in checks.items() if v == "unknown")
         status = "fail" if failures else "unknown" if unknown else "pass"
@@ -37,8 +37,48 @@ class ReporterTests(unittest.TestCase):
         report = {"schema_version": 1, "read_only": True, "checked_at": stamp.isoformat(), "status": status, "failures": failures, "unknown": unknown, "machines": [{"id": "mac", "checks": checks}]}
         if workflow_evidence is not None:
             report["workflow_evidence"] = workflow_evidence
+        if telemetry is not None:
+            report["telemetry"] = telemetry
         self.observation.write_text(json.dumps(report))
         return subprocess.run(["python3", str(ROOT / "ceo-fleet-readiness-report.py"), "--vault", str(self.root), "--host", "test", "--checker", str(self.checker), "--registry", str(self.registry), "--outcome-file", str(self.outcome)], capture_output=True, text=True)
+
+    def test_telemetry_is_sanitized_in_both_publications(self):
+        telemetry = {
+            "mac": {
+                "disk_free_bytes": 1024,
+                "ram_available_bytes": 2048,
+                "memory_pressure_free_pct": 54,
+                "gpu_temperatures_c": [45, 46.5],
+                "gpu_power_limits_w": [250],
+                "versions": {"git": "2.48.1", "python3": "3.14", "node": "secret-test-value", "token": "1.2.3"},
+                "volumes_free_bytes": {"C:": 4096, "D:": -1, "secret-test-value": 8192},
+                "token": "secret-test-value",
+            },
+            "invalid": {
+                "disk_free_bytes": True,
+                "ram_available_bytes": -1,
+                "memory_pressure_free_pct": 2**64 + 1,
+                "gpu_temperatures_c": [True],
+                "gpu_power_limits_w": [1001],
+                "versions": {"git": 123, "node": "1.2.3-secret-test-value"},
+                "volumes_free_bytes": {"C:": True, "D:": 2**64 + 1},
+            },
+        }
+        expected = {
+            "mac": {
+                "disk_free_bytes": 1024,
+                "ram_available_bytes": 2048,
+                "memory_pressure_free_pct": 54,
+                "gpu_temperatures_c": [45, 46.5],
+                "gpu_power_limits_w": [250],
+                "versions": {"git": "2.48.1", "python3": "3.14"},
+                "volumes_free_bytes": {"C:": 4096},
+            },
+            "invalid": {"versions": {}, "volumes_free_bytes": {}},
+        }
+        self.assertEqual(self.run_report({"api": "pass"}, telemetry=telemetry).returncode, 0)
+        self.assertEqual(self.state()["telemetry"], expected)
+        self.assertEqual(json.loads(self.latest.read_text())["telemetry"], expected)
 
     def test_workflow_evidence_survives_state_and_latest_publication(self):
         completed = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
