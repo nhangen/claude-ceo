@@ -447,6 +447,9 @@ status: active
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
+  mkdir -p "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n## Active Domains\nCurrent Research\n' "$(date +%F)" > "$CEO_VAULT/Profile/goals.md"
+
   # Force gather phase to fail by emptying pending tasks
   : > "$CEO_DIR/approvals/pending.md"
 

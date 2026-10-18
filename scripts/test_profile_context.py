@@ -54,25 +54,26 @@ class ProfileContextTests(unittest.TestCase):
         self.assertNotIn("Future Dated", output)
 
     # A read error (the canonical file is a directory) is withheld with the
-    # unreadable reason, not a crash and not a partial render.
+    # unreadable reason, and exits non-zero so gather marks the file read
+    # degraded instead of leaving the status clean (#617).
     def test_unreadable_goals_are_unavailable_not_crashed(self):
         (self.vault / "Profile/goals.md").mkdir()
         result = subprocess.run(["python3", str(SCRIPT), str(self.vault), "2026-09-28"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("missing or unreadable", result.stdout)
         self.assertNotIn("Canonical active domains (", result.stdout)
 
     def test_invalid_today_argument_is_unavailable_not_crashed(self):
         (self.vault / "Profile/goals.md").write_text("---\nactive_domains_as_of: 2026-09-20\n---\n## Active Domains\nX\n")
         result = subprocess.run(["python3", str(SCRIPT), str(self.vault), "notadate"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertTrue(result.stdout.startswith("Active domains unavailable:"), result.stdout)
         self.assertNotIn("Canonical active domains (", result.stdout)
 
     def test_non_utf8_goals_are_unavailable_not_crashed(self):
         (self.vault / "Profile/goals.md").write_bytes(b"\xff\xfe---\n")
         result = subprocess.run(["python3", str(SCRIPT), str(self.vault), "2026-09-28"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertTrue(result.stdout.startswith("Active domains unavailable:"), result.stdout)
         self.assertNotIn("Canonical active domains (", result.stdout)
 
@@ -81,7 +82,7 @@ class ProfileContextTests(unittest.TestCase):
     def test_nonexistent_vault_is_unavailable_not_crashed(self):
         missing = self.vault / "no-such-vault"
         result = subprocess.run(["python3", str(SCRIPT), str(missing), "2026-09-28"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertTrue(result.stdout.startswith("Active domains unavailable:"), result.stdout)
         self.assertNotIn("Canonical active domains (", result.stdout)
 

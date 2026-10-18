@@ -611,7 +611,10 @@ _profile_context_rc=0
 ACTIVE_DOMAINS_CONTENT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" python3 "$GATHER_DIR/ceo-profile-context.py" "$VAULT" "$TODAY") || _profile_context_rc=$?
 if [ "$_profile_context_rc" -ne 0 ]; then
   echo "WARN: ceo-profile-context.py failed (rc=$_profile_context_rc)" >&2
-  ACTIVE_DOMAINS_CONTENT="Active domains unavailable: context reader failed (rc=$_profile_context_rc). Do not infer current roles or priorities from history."
+  case "$ACTIVE_DOMAINS_CONTENT" in
+    "Active domains unavailable: "*) ;;
+    *) ACTIVE_DOMAINS_CONTENT="Active domains unavailable: context reader failed (rc=$_profile_context_rc). Do not infer current roles or priorities from history." ;;
+  esac
   _file_gather_mark_degraded "profile-context-reader-failed:rc=$_profile_context_rc"
 fi
 unset _profile_context_rc

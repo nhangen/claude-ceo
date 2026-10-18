@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Render the dated canonical Active Domains section for CEO reports."""
+"""Render the dated canonical Active Domains section for CEO reports.
+
+Exit contract: 0 for rendered or content-withheld output (stale, no
+frontmatter, no section, oversized), 1 when the canonical source is missing
+or unreadable, or the invocation itself failed. A non-zero exit is the
+signal that ceo-gather.sh uses to mark the gather degraded, so a missing or
+unreadable Profile/goals.md must not pass as a clean read.
+"""
 import argparse
 from datetime import date
 from pathlib import Path
@@ -14,12 +21,16 @@ def unavailable(reason):
     return "Active domains unavailable: " + reason + ". Do not infer current roles or priorities from history.\n"
 
 
+class SourceUnavailable(OSError):
+    """The canonical source is missing or unreadable (distinct from content states)."""
+
+
 def render(vault, today):
     source = vault / "Profile/goals.md"
     try:
         content = source.read_text()
-    except OSError:
-        return unavailable("canonical Profile/goals.md is missing or unreadable")
+    except (OSError, UnicodeDecodeError) as error:
+        raise SourceUnavailable("canonical Profile/goals.md is missing or unreadable") from error
     match = re.match(r"^---\n(.*?)\n---\n", content, re.DOTALL)
     if not match:
         return unavailable("canonical Profile/goals.md has no frontmatter")
@@ -51,7 +62,7 @@ def main():
         return 0
     except (OSError, ValueError) as error:
         print(unavailable(str(error)), end="")
-        return 0
+        return 1
 
 
 if __name__ == "__main__":

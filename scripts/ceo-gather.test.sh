@@ -257,8 +257,52 @@ test_python3_not_found_for_reader_degrades_with_rc_127() {
   assert_contains "$out" "ENV_SETS=0" "the version must not merely be emptied from the env; it must be gone"
 }
 
+# An unreadable canonical Profile/goals.md (directory where the file should be)
+# must degrade the gather exactly like a crashed reader: the reader exits
+# non-zero, so gather marks the file scope degraded (#617).
+test_unreadable_goals_degrades_the_gather() {
+  mkdir -p "$CEO_VAULT/Profile"
+  rm -rf "$CEO_VAULT/Profile/goals.md"
+  mkdir "$CEO_VAULT/Profile/goals.md"
+  local out
+  out=$( set -euo pipefail
+    export CEO_PROFILE_CONTEXT_VERSION=1
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION-unset}|DEGRADED=$FILE_GATHER_DEGRADED|PENDING=$PENDING_GATHER_DEGRADED"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+    echo "STATUS=$CEO_GATHER_STATUS"
+  )
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1|PENDING=0" "an unreadable goals.md must finish the gather, unset the version, and degrade only the file scope"
+  assert_contains "$out" "Active domains unavailable: canonical Profile/goals.md is missing or unreadable" "the prompt withholds the canonical context and names the unreadable source"
+  assert_contains "$out" "Do not infer current roles or priorities from history." "the fallback tells the model not to guess roles from history"
+  assert_contains "$out" "profile-context-reader-failed" "the degraded reason names the failed reader"
+  assert_not_contains "$out" "Canonical active domains (" "an unreadable goals.md must not read as current context"
+  assert_contains "$out" "STATUS=failed" "a degenerate degraded gather must roll up failed, not subtly as empty"
+}
+
+test_non_utf8_goals_degrades_the_gather_with_the_reader_reason() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n\n## Active Domains\n\n- \377\376bad\n' "$(date +%Y-%m-%d)" \
+    > "$CEO_VAULT/Profile/goals.md"
+  local out
+  out=$( set -euo pipefail
+    export CEO_PROFILE_CONTEXT_VERSION=1
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION-unset}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+    echo "STATUS=$CEO_GATHER_STATUS"
+  )
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1" "a non-UTF-8 goals.md must degrade the gather and unset the version"
+  assert_contains "$out" "Active domains unavailable: canonical Profile/goals.md is missing or unreadable" "the reader's reason reaches the prompt"
+  assert_contains "$out" "profile-context-reader-failed:rc=1" "the degraded reason carries the exit status"
+  assert_contains "$out" "STATUS=failed" "a degenerate degraded gather must roll up failed, not subtly as empty"
+}
+
 # Legacy Profile.md cannot affect canonical context or the pending queue.
 test_legacy_profile_does_not_degrade_the_pending_queue() {
+  _write_goals "$(date +%Y-%m-%d)"
   echo "## Active Domains" > "$CEO_VAULT/Profile.md"
   chmod 000 "$CEO_VAULT/Profile.md"
   local out
@@ -289,6 +333,7 @@ test_an_unreadable_pending_file_normalizes_counts_and_degrades() {
 # grep -c prints 0 and exits 1 on a file with no matches; that is a quiet day,
 # not a read failure.
 test_a_count_with_no_matches_is_zero_not_degraded() {
+  _write_goals "$(date +%Y-%m-%d)"
   printf -- '- [x] done one\n- [x] done two\n' > "$CEO_VAULT/CEO/approvals/pending.md"
   local out
   out=$( set +eu
@@ -689,6 +734,7 @@ EOF
 
 # Every status needs a zero-match case, and a name with a space must count as one file.
 test_delegation_counts_cover_each_status_and_spaced_names() {
+  _write_goals "$(date +%Y-%m-%d)"
   _write_gh_stub '[]'
   mkdir -p "$CEO_VAULT/CEO/delegations"
   printf -- '---\nstatus: failed\n---\n' > "$CEO_VAULT/CEO/delegations/my delegation.md"

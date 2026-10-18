@@ -20,7 +20,9 @@ setup() {
   OLD_PATH="$PATH"
   export HOME="$TMP"
   export CEO_VAULT="$TMP/vault"
-  mkdir -p "$CEO_VAULT/CEO/approvals" "$CEO_VAULT/CEO/log"
+  mkdir -p "$CEO_VAULT/CEO/approvals" "$CEO_VAULT/CEO/log" "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n\n## Active Domains\n\n- Test domain\n' "$(date +%Y-%m-%d)" \
+    > "$CEO_VAULT/Profile/goals.md"
 
   mkdir -p "$TMP/.ceo"
   cat > "$TMP/.ceo/pr-sources.json" << 'JSON'
