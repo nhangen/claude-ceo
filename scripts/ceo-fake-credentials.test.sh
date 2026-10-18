@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # The two sanctioned assembly sites. Their body literals are the convention;
 # a scanner pattern needs a provider prefix AND a token-length body in one
-# line, and neither file joins the two.
+# line, and the example lines in both files show the joined shape.
 EXEMPT=(
   "scripts/fake-credentials.sh"
   "ollama-agent/tests/fake_credentials.py"
@@ -26,11 +26,17 @@ EXEMPT=(
 # like `task_spec` matching `sk_` + 16 chars.
 #   \b before the prefix: no alnum immediately before
 #   \b after the body:    no alnum immediately after
-PATTERN='\b(gh[pousr]_|github_pat_|xox[abprs]-|AIza|AKIA|sk-|hf_|npm_|glpat-)[A-Za-z0-9_-]{16,}\b'
+PATTERN='\b(gh[pousr]_|github_pat_|xox[abprs]-|AIza|AKIA|sk-|(sk|rk|pk)_(live|test)_|hf_|npm_|glpat-)[A-Za-z0-9_-]{16,}\b'
+
+FILES=$(git -C "$REPO_ROOT" ls-files -- '*.sh' '*.py' '*.js' '*.ts') || {
+  echo "FAIL: git ls-files failed; the guard cannot enumerate the tree"
+  exit 1
+}
 
 FAILS=0
 CHECKED=0
 while IFS= read -r f; do
+  [ -n "$f" ] || continue
   rel="${f#"$REPO_ROOT"/}"
   skip=0
   for ex in "${EXEMPT[@]}"; do
@@ -38,8 +44,11 @@ while IFS= read -r f; do
   done
   [ "$skip" = 1 ] && continue
   CHECKED=$((CHECKED + 1))
-  hits=$(grep -nE "$PATTERN" "$f" 2>/dev/null || true)
-  if [ -n "$hits" ]; then
+  hits=$(grep -nE "$PATTERN" "$REPO_ROOT/$f"); rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "FAIL: grep could not read $rel (exit $rc)"
+    FAILS=$((FAILS + 1))
+  elif [ "$rc" -eq 0 ]; then
     FAILS=$((FAILS + 1))
     echo "FAIL: credential-shaped literal in $rel"
     echo "$hits" | head -5
@@ -47,8 +56,12 @@ while IFS= read -r f; do
     echo "  -> #572: assemble at runtime, never bake a credential-shaped literal into source"
     echo
   fi
-done < <(git -C "$REPO_ROOT" ls-files -- '*.sh' '*.py' '*.js' '*.ts' 2>/dev/null)
+done <<< "$FILES"
 
+if [ "$CHECKED" -eq 0 ]; then
+  echo "FAIL: no files were checked; the guard would pass vacuously"
+  exit 1
+fi
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS file(s) with credential-shaped literals ($CHECKED checked)."
   echo "Fix: source the helper and assemble at runtime. See #572."
