@@ -293,11 +293,22 @@ PB
 # playbook is by definition one that shells out to authenticated tools — so a
 # token in its stderr is the ordinary case, not an exotic one.
 test_script_runner_failure_redacts_credentials_from_the_recorded_reason() {
-  cat > "$SCRIPT_DIR/leaky-failing-script-test.sh" << 'SCRIPT'
+  # Synthetic credentials for redaction tests. None of these are real. The
+  # fixture script assembles each at runtime through the shared helper
+  # (scripts/fake-credentials.sh), so no credential-shaped literal is baked into
+  # this source file. Each body is detector-length and spells FAKE/EXAMPLE.
+  # shellcheck disable=SC1090  # sourced for its fake_token helper
+  source "$SCRIPT_DIR/fake-credentials.sh"
+  local FAKE_GITHUB_URL_TOKEN FAKE_GITHUB_BARE_TOKEN FAKE_OPENAI_KEY
+  FAKE_GITHUB_URL_TOKEN=$(fake_token ghp)
+  FAKE_GITHUB_BARE_TOKEN=$(fake_token ghp)
+  FAKE_OPENAI_KEY=$(fake_token sk)
+  cat > "$SCRIPT_DIR/leaky-failing-script-test.sh" << SCRIPT
 #!/bin/bash
-echo "fatal: could not read Username for 'https://nathan:ghp_AAAABBBBCCCCDDDDEEEE@github.com'" >&2
-echo "gh: HTTP 401 with token=ghp_ZZZZYYYYXXXXWWWWVVVV1234" >&2
-echo "Authorization: Bearer sk-abcdefghijklmnopqrstuvwx" >&2
+# Synthetic credentials for redaction tests. None of these are real.
+echo "fatal: could not read Username for 'https://nathan:${FAKE_GITHUB_URL_TOKEN}@github.com'" >&2
+echo "gh: HTTP 401 with token=${FAKE_GITHUB_BARE_TOKEN}" >&2
+echo "Authorization: Bearer ${FAKE_OPENAI_KEY}" >&2
 exit 1
 SCRIPT
   _fixture_script "$SCRIPT_DIR/leaky-failing-script-test.sh"
@@ -320,11 +331,11 @@ PB
   local skips_log; skips_log=$(_skips_log)
   assert_contains "$skips_log" "Script exited 1 for script-leak" \
     "the failure must still be recorded"
-  assert_not_contains "$skips_log" "ghp_AAAABBBBCCCCDDDDEEEE" \
+  assert_not_contains "$skips_log" "$FAKE_GITHUB_URL_TOKEN" \
     "a token embedded in a remote URL must not reach the failure reason"
-  assert_not_contains "$skips_log" "ghp_ZZZZYYYYXXXXWWWWVVVV1234" \
+  assert_not_contains "$skips_log" "$FAKE_GITHUB_BARE_TOKEN" \
     "a bare token must not reach the failure reason"
-  assert_not_contains "$skips_log" "sk-abcdefghijklmnopqrstuvwx" \
+  assert_not_contains "$skips_log" "$FAKE_OPENAI_KEY" \
     "an api key must not reach the failure reason"
   assert_contains "$skips_log" "REDACTED" \
     "the redaction must be visible rather than silently dropping the line"

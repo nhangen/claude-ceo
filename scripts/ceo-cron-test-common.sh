@@ -11,6 +11,11 @@ CEO_CLI="$SCRIPT_DIR/ceo"
 CRON="$SCRIPT_DIR/ceo-cron.sh"
 
 source "$SCRIPT_DIR/test-harness.sh"
+# Synthetic credentials for redaction tests. None of these are real. The gh
+# stub below assembles its fake token at runtime through this helper, so no
+# credential-shaped literal is baked into the stub source (#572).
+# shellcheck disable=SC1090  # sourced for its fake_token helper
+source "$SCRIPT_DIR/fake-credentials.sh"
 
 setup() {
   TEST_HOME=$(mktemp -d)
@@ -254,6 +259,8 @@ _stub_gh_prs() {
     }]') || { echo "_stub_gh_prs: jq failed building $n PRs" >&2; return 1; }
   fi
 
+  local FAKE_GITHUB_TOKEN
+  FAKE_GITHUB_TOKEN=$(fake_token ghp)
   cat > "$TEST_HOME/.bun/bin/gh" << STUB
 #!/bin/bash
 echo "\$*" >> "\$HOME/gh-invoked.txt"
@@ -264,7 +271,7 @@ case "\$1 \${2:-}" in
       *) echo "Logged in to github.com account testuser (keyring)"; exit 0 ;;
     esac ;;
   "auth token"*)
-    echo "ghp_faketoken12345"
+    echo "${FAKE_GITHUB_TOKEN}"
     exit 0 ;;
   "search prs"*)
     case "\$*" in
@@ -296,6 +303,8 @@ STUB
 # probing it. Only the review arm fails, because a test whose every search fails
 # passes whether the code keys on the review search or on any of the others.
 _stub_gh_prs_review_search_fails() {
+  local FAKE_GITHUB_TOKEN
+  FAKE_GITHUB_TOKEN=$(fake_token ghp)
   cat > "$TEST_HOME/.bun/bin/gh" << 'STUB'
 #!/bin/bash
 echo "$*" >> "$HOME/gh-invoked.txt"
@@ -306,7 +315,7 @@ case "$1 ${2:-}" in
       *) echo "Logged in to github.com account testuser (keyring)"; exit 0 ;;
     esac ;;
   "auth token"*)
-    echo "ghp_faketoken12345"
+    echo "${FAKE_GITHUB_TOKEN}"
     exit 0 ;;
   "search prs"*)
     case "$*" in

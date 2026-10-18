@@ -9,6 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cli  # noqa: E402
 from ollama_agent.transport import parse_chat_response  # noqa: E402
 
+# Credential-shaped fixtures are assembled at runtime through the shared helper
+# (#572), so no literal in this file trips a secret scanner or reads as a
+# leaked key. The helper is the python twin of scripts/fake-credentials.sh.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_credentials import fake_secret  # noqa: E402
+
 
 def _rule(d, name, desc):
     (d / f"{name}.md").write_text(f"---\ndescription: {desc}\nglobs:\n---\n\n# {name}\n\nbody\n")
@@ -1227,7 +1233,7 @@ def _crash_error(tmp_path, monkeypatch, exc_factory):
     ("echoed: password: hunter2", "hunter2", "password: ***REDACTED***"),
     ("echoed: passwd=hunter2", "hunter2", "passwd=***REDACTED***"),
     ("echoed prompt: key " + "sk-" + "proj-" + "ABCDEFGHIJ0123456789 end", "ABCDEFGHIJ", "key ***REDACTED*** end"),
-    ("echoed: " + "sk_" + "live_" + "ABCDEFGHIJKLMNOP1234 end", "ABCDEFGHIJ", "***REDACTED*** end"),
+    ("sk_live_" + "ABCDEFGHIJ" + "KLMNOP1234 end", "ABCDEFGHIJ", "***REDACTED*** end"),
     ("echoed: " + "gh" + "u_" + "abcdefghijklmnop1234 end", "abcdefghij", "***REDACTED*** end"),
     ("echoed: " + "gl" + "pat-" + "ABCDEFGHIJKLMNOPQRST end", "ABCDEFGHIJ", "***REDACTED*** end"),
     ("echoed: " + "xo" + "xb-" + "1234567890-abcdef end", "1234567890", "***REDACTED*** end"),
@@ -1300,8 +1306,10 @@ def test_cli_transport_error_is_escaped_once(tmp_path, monkeypatch):
 def test_cli_crashed_run_redacts_before_capping(tmp_path, monkeypatch):
     # Capped first, the token would keep "sk-ABCD": too short to match the
     # 8-char minimum, so only redacting the whole message scrubs it.
+    # The sk- token is assembled at runtime from split parts so the literal
+    # never appears in this source (#572). The body is fake and detector-length.
     error = _crash_error(tmp_path, monkeypatch,
-                         lambda: RuntimeError("x" * 192 + " sk-ABCDEFGHIJKLMNOP"))
+                         lambda: RuntimeError("x" * 192 + " sk-" + "FAKEFAKEFAKEFAKE0000EXAMPLE00000"))
     assert "sk-" not in error
 
 
