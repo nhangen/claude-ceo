@@ -315,7 +315,7 @@ case "$1 ${2:-}" in
       *) echo "Logged in to github.com account testuser (keyring)"; exit 0 ;;
     esac ;;
   "auth token"*)
-    echo "${FAKE_GITHUB_TOKEN}"
+    echo "@@FAKE_GITHUB_TOKEN@@"
     exit 0 ;;
   "search prs"*)
     case "$*" in
@@ -333,6 +333,11 @@ case "$1 ${2:-}" in
     exit 99 ;;
 esac
 STUB
+  # The heredoc is quoted so the stub's own $-references reach it unexpanded;
+  # the fake token is substituted into the written file instead.
+  local stub_body
+  stub_body=$(<"$TEST_HOME/.bun/bin/gh")
+  printf '%s\n' "${stub_body//@@FAKE_GITHUB_TOKEN@@/$FAKE_GITHUB_TOKEN}" > "$TEST_HOME/.bun/bin/gh"
   chmod +x "$TEST_HOME/.bun/bin/gh"
 }
 
