@@ -257,6 +257,31 @@ test_python3_not_found_for_reader_degrades_with_rc_127() {
   assert_contains "$out" "ENV_SETS=0" "the version must not merely be emptied from the env; it must be gone"
 }
 
+# An unreadable canonical Profile/goals.md (directory where the file should be)
+# must degrade the gather exactly like a crashed reader: the reader exits
+# non-zero, so gather marks the file scope degraded — previously it printed the
+# withheld message and exited 0, leaving CEO_GATHER_STATUS clean (#617).
+test_unreadable_goals_degrades_the_gather() {
+  mkdir -p "$CEO_VAULT/Profile"
+  rm -rf "$CEO_VAULT/Profile/goals.md"
+  mkdir "$CEO_VAULT/Profile/goals.md"
+  local out
+  out=$( set -euo pipefail
+    export CEO_PROFILE_CONTEXT_VERSION=1
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|VERSION=${CEO_PROFILE_CONTEXT_VERSION-unset}|DEGRADED=$FILE_GATHER_DEGRADED|PENDING=$PENDING_GATHER_DEGRADED"
+    printf 'CONTENT=%s\n' "$ACTIVE_DOMAINS_CONTENT"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+    echo "STATUS=$CEO_GATHER_STATUS"
+  )
+  assert_contains "$out" "COMPLETED|VERSION=unset|DEGRADED=1|PENDING=0" "an unreadable goals.md must finish the gather, unset the version, and degrade only the file scope"
+  assert_contains "$out" "Active domains unavailable: canonical Profile/goals.md is missing or unreadable" "the prompt withholds the canonical context and names the unreadable source"
+  assert_contains "$out" "Do not infer current roles or priorities from history." "the fallback tells the model not to guess roles from history"
+  assert_contains "$out" "profile-context-reader-failed" "the degraded reason names the failed reader"
+  assert_not_contains "$out" "Canonical active domains (" "an unreadable goals.md must not read as current context"
+  assert_contains "$out" "STATUS=failed" "a degenerate degraded gather must roll up failed, not subtly as empty"
+}
+
 # Legacy Profile.md cannot affect canonical context or the pending queue.
 test_legacy_profile_does_not_degrade_the_pending_queue() {
   echo "## Active Domains" > "$CEO_VAULT/Profile.md"
