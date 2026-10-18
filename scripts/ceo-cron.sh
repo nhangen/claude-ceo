@@ -1849,7 +1849,6 @@ _redact_secrets() {
     -e 's#gh[pousr]_[A-Za-z0-9]{16,}#gh*_***REDACTED***#g' \
     -e 's#github_pat_[A-Za-z0-9_]{16,}#github_pat_***REDACTED***#g' \
     -e 's#sk-[A-Za-z0-9_-]{16,}#sk-***REDACTED***#g' \
-    -e 's#sk_[A-Za-z0-9_-]{16,}#sk_***REDACTED***#g' \
     -e 's#(sk|rk|pk)_(live|test)_[A-Za-z0-9_-]{16,}#\1_\2_***REDACTED***#g' \
     -e 's#xox[baprs]-[A-Za-z0-9-]{10,}#xox*-***REDACTED***#g' \
     -e 's#(//)[^/@[:space:]]+:[^/@[:space:]]+@#\1***REDACTED***@#g' \
