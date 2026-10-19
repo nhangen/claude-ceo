@@ -128,8 +128,10 @@ ceo_resolve_timeout_bin() {
 # ---------------------------------------------------------------------------
 ceo_validate_timeout() {
   case "${1-}" in
-    ''|*[!0-9]*|0) return 1 ;;
+    ''|*[!0-9]*) return 1 ;;
   esac
+  # All-zero ("0", "00") is the uncapped case; strip leading zeros to catch it.
+  [ -n "${1#"${1%%[!0]*}"}" ] || return 1
   printf '%s\n' "$1"
 }
 

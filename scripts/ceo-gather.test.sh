@@ -1134,4 +1134,18 @@ test_stalled_blessings_pool_read_leaves_cache_unwritten() {
   fi
 }
 
+test_validate_timeout_accepts_positive_integers_only() {
+  local v rc
+  for v in 1 10 010 3600; do
+    rc=0
+    ( source "$SCRIPT_DIR/ceo-config.sh"; ceo_validate_timeout "$v" >/dev/null ) || rc=$?
+    assert_eq "$rc" "0" "ceo_validate_timeout accepts '$v'"
+  done
+  for v in "" 0 00 000 abc -5 +5 1.5 "1 2"; do
+    rc=0
+    ( source "$SCRIPT_DIR/ceo-config.sh"; ceo_validate_timeout "$v" >/dev/null ) || rc=$?
+    assert_eq "$rc" "1" "ceo_validate_timeout rejects '$v'"
+  done
+}
+
 run_tests
