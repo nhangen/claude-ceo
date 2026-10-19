@@ -767,4 +767,110 @@ describe("createJobDispatcher", () => {
       cleanup();
     }
   });
+
+  test("a pre-spawn marker write that throws does not spawn, leaves no marker, and logs dispatch failed", () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const spawnCalls: string[][] = [];
+      const mockSpawn = ((options: { cmd?: string[] }) => {
+        spawnCalls.push(options.cmd ?? []);
+        return ({ pid: 99999, unref: () => {}, exited: new Promise<number>(() => {}) }) as unknown as ReturnType<typeof Bun.spawn>;
+      }) as unknown as typeof Bun.spawn;
+      // Real ENOSPC/EIO shape: bytes land in the tempfile before the fault; the
+      // atomic wrapper must clean the torn tempfile up and never rename.
+      const rawWrite = (path: string, content: string) => {
+        writeFileSync(path, content);
+        throw new Error("ENOSPC: no space left on device, write");
+      };
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: new SchedulerDispatchContext(),
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+        rawWrite,
+      });
+
+      dispatch("unwritable-job");
+
+      expect(spawnCalls).toEqual([]);
+      expect(logs.some((l) => l.includes("dispatch failed for unwritable-job: ENOSPC"))).toBe(true);
+      // No phantom in-flight marker, no torn tempfile, no done record.
+      expect(existsSync(join(runDir, "unwritable-job"))).toBe(false);
+      expect(readdirSync(runDir)).toEqual([]);
+      expect(readdirSync(dDir)).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refuses to dispatch an unsafe job name without touching run-state", () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const spawnCalls: string[][] = [];
+      const mockSpawn = ((options: { cmd?: string[] }) => {
+        spawnCalls.push(options.cmd ?? []);
+        return ({ pid: 99999, unref: () => {}, exited: new Promise<number>(() => {}) }) as unknown as ReturnType<typeof Bun.spawn>;
+      }) as unknown as typeof Bun.spawn;
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: new SchedulerDispatchContext(),
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+      });
+
+      dispatch("../escape");
+
+      expect(logs).toEqual([`refusing to dispatch unsafe job name: ${JSON.stringify("../escape")}`]);
+      expect(spawnCalls).toEqual([]);
+      expect(readdirSync(runDir)).toEqual([]);
+      expect(readdirSync(dDir)).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refuses to dispatch when envFor returns null (invalid persisted retry attempt)", () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const spawnCalls: string[][] = [];
+      const context = new SchedulerDispatchContext();
+      // Retain a persisted heartbeat whose attempt is already at MAX_ATTEMPTS,
+      // so envFor's norx-bookkeeping gate refuses to build a dispatch env.
+      context.retain({ attempts: { "norx-bookkeeping": 3 } } as unknown as Parameters<typeof context.retain>[0]);
+      const mockSpawn = ((options: { cmd?: string[] }) => {
+        spawnCalls.push(options.cmd ?? []);
+        return ({ pid: 99999, unref: () => {}, exited: new Promise<number>(() => {}) }) as unknown as ReturnType<typeof Bun.spawn>;
+      }) as unknown as typeof Bun.spawn;
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: context,
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+      });
+
+      dispatch("norx-bookkeeping");
+
+      expect(logs).toEqual(["refusing to dispatch norx-bookkeeping: persisted retry attempt is missing or invalid"]);
+      expect(spawnCalls).toEqual([]);
+      expect(readdirSync(runDir)).toEqual([]);
+      expect(readdirSync(dDir)).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
 });

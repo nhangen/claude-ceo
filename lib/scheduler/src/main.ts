@@ -13,7 +13,19 @@
  * Schedules evaluate in the host's local timezone (the matcher is created with
  * no timezone, matching `new Date()`); registry schedules carry no per-entry tz.
  */
-import { readFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
 import {
@@ -310,6 +322,29 @@ export function createClearRunning(runMarker: string, log: (msg: string) => void
 export const ATOMIC_TMP_INFIX = ".tmp.";
 
 /**
+ * Write a file and fsync it before returning, so the bytes survive the rename:
+ * without the fsync some filesystems keep the rename but not the data after a
+ * power loss, leaving a zero-length done record (cronbird's cooldown lost) or
+ * an empty running marker (#602). Any fault thrown before the rename still
+ * leaves the previous dest contents in place.
+ */
+function flushWrite(path: string, content: string): void {
+  const fd = openSync(path, "w");
+  try {
+    writeSync(fd, content);
+    fsyncSync(fd);
+    closeSync(fd);
+  } catch (err) {
+    try {
+      closeSync(fd);
+    } catch {
+      // ignore secondary close error; the write/fsync error is the one to surface
+    }
+    throw err;
+  }
+}
+
+/**
  * Replaces `dest` via a same-directory tempfile + rename, so an ENOSPC/IO fault
  * mid-write leaves the previous contents in place rather than a truncated file.
  * Both run-state writers need that: a torn done record loses cronbird's cooldown,
@@ -320,7 +355,7 @@ export const ATOMIC_TMP_INFIX = ".tmp.";
 export function writeFileAtomic(
   dest: string,
   body: string,
-  rawWrite: (path: string, content: string) => void = writeFileSync,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): void {
   const rand = Math.random().toString(36).slice(2, 8);
   const tmp = `${dest}${ATOMIC_TMP_INFIX}${process.pid}.${Date.now()}.${rand}`;
@@ -369,7 +404,7 @@ export function createJobDispatcher(deps: JobDispatcherDeps): (name: string) => 
     dispatchArgv,
     log,
     spawn = Bun.spawn,
-    rawWrite = writeFileSync,
+    rawWrite = flushWrite,
     now = Date.now,
   } = deps;
   const writeRunningMarker = (path: string, content: string) => writeFileAtomic(path, content, rawWrite);
