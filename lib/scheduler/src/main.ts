@@ -526,6 +526,7 @@ export function recordFatalInSyncedHeartbeat(
   host: string,
   code: string,
   now: Date,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): "written" | "unchanged" {
   let prevTs: string | null = null;
   try {
@@ -536,9 +537,7 @@ export function recordFatalInSyncedHeartbeat(
     // No prior heartbeat, or an unreadable one: record the fault with no ts.
   }
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ host, ts: prevTs, fatal: { code, since: now.toISOString() } }, null, 2));
-  renameSync(tmp, path);
+  writeFileAtomic(path, JSON.stringify({ host, ts: prevTs, fatal: { code, since: now.toISOString() } }, null, 2), rawWrite);
   return "written";
 }
 
@@ -593,6 +592,7 @@ export function recordFatalSchedulerdAlert(
   host: string,
   code: string,
   now: Date,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): "written" | "unchanged" {
   try {
     const prev = readFileSync(path, "utf8");
@@ -602,9 +602,7 @@ export function recordFatalSchedulerdAlert(
   }
   mkdirSync(dirname(path), { recursive: true });
   const iso = now.toISOString();
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, formatSchedulerdAlert(host, "firing", iso, iso, code), "utf8");
-  renameSync(tmp, path);
+  writeFileAtomic(path, formatSchedulerdAlert(host, "firing", iso, iso, code), rawWrite);
   return "written";
 }
 
@@ -619,6 +617,7 @@ export function clearSchedulerdAlert(
   path: string,
   host: string,
   now: Date,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): "written" | "unchanged" {
   try {
     const prev = readFileSync(path, "utf8");
@@ -629,9 +628,7 @@ export function clearSchedulerdAlert(
   }
   mkdirSync(dirname(path), { recursive: true });
   const iso = now.toISOString();
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, formatSchedulerdAlert(host, "clear", iso, iso), "utf8");
-  renameSync(tmp, path);
+  writeFileAtomic(path, formatSchedulerdAlert(host, "clear", iso, iso), rawWrite);
   return "written";
 }
 

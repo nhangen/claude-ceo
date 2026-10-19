@@ -314,6 +314,34 @@ describe("trackCompletion", () => {
   });
 });
 
+describe("synced heartbeat and alert writers are atomic", () => {
+  const now = new Date("2026-09-29T02:00:00.000Z");
+  const torn = (path: string, content: string) => {
+    writeFileSync(path, content.slice(0, 3));
+    throw new Error("EIO: i/o error, write");
+  };
+  const cases: Array<[string, string, (path: string) => unknown]> = [
+    ["recordFatalInSyncedHeartbeat", JSON.stringify({ host: "mac", ts: "t" }), (p) => recordFatalInSyncedHeartbeat(p, "mac", "EACCES", now, torn)],
+    ["recordFatalSchedulerdAlert", formatSchedulerdAlert("mac", "clear", "t", "t"), (p) => recordFatalSchedulerdAlert(p, "mac", "EACCES", now, torn)],
+    ["clearSchedulerdAlert", formatSchedulerdAlert("mac", "firing", "t", "t", "EACCES"), (p) => clearSchedulerdAlert(p, "mac", now, torn)],
+  ];
+
+  for (const [name, prior, run] of cases) {
+    test(`${name} leaves the previous file and no tempfile when the write tears`, () => {
+      const dir = mkdtempSync(join(tmpdir(), "ceo-sync-atomic-"));
+      try {
+        const path = join(dir, "state");
+        writeFileSync(path, prior);
+        expect(() => run(path)).toThrow("EIO");
+        expect(readFileSync(path, "utf8")).toBe(prior);
+        expect(readdirSync(dir)).toEqual(["state"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe("recordFatalInSyncedHeartbeat", () => {
   const setup = () => {
     const dir = mkdtempSync(join(tmpdir(), "ceo-fatal-hb-"));
