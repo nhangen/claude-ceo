@@ -1148,4 +1148,21 @@ test_validate_timeout_accepts_positive_integers_only() {
   done
 }
 
+test_daily_note_section_longer_than_head_keeps_its_lines() {
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/Daily"
+  { printf '## Top 3\n'; seq 1 20000 | sed 's/^/- item /'; printf '## Next\n'; } > "$CEO_VAULT/Daily/$(date +%Y-%m-%d).md"
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    printf 'TOP3_LINES=%s\n' "$(printf '%s\n' "$DAILY_NOTE_TOP3" | grep -c '^- item')"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "TOP3_LINES=5" \
+    "head closing early SIGPIPEs the sed; the lines it already emitted must survive (#606)"
+  assert_not_contains "$out" "daily-note-top3" \
+    "a SIGPIPE (rc 141) is not a timeout and must not mark the gather degraded"
+}
+
 run_tests
