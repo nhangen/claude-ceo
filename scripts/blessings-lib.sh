@@ -66,13 +66,22 @@ ensure_blessings_cache() {
   # The upstream head caps the src read at 2000 lines, which the pool never
   # reaches through `strip_frontmatter_stdin` — the cap is against a runaway or
   # stalled read, not the pool size (#606).
-  local picks pool
+  # A timed-out read (124-126) returns without touching the cache: writing the
+  # empty pool would stamp today's date on a blessing-less file and the freshness
+  # check above would keep it for the rest of the day.
+  local picks pool pool_rc=0
   pool=$(_blessings_bound head -2000 "$src" \
     | strip_frontmatter_stdin \
     | { grep '^- ' || true; } \
     | awk 'BEGIN{srand()} {print rand()"\t"$0}' \
     | sort -k1,1n \
-    | cut -f2-)
+    | cut -f2-) || pool_rc=$?
+  case "$pool_rc" in
+    124|125|126)
+      echo "blessings: pool read failed (rc=$pool_rc); cache left unchanged" >&2
+      return 1
+      ;;
+  esac
   picks=$(head -3 <<< "$pool")
 
   tmp=$(mktemp "$cache.tmp.XXXXXX")

@@ -1109,4 +1109,29 @@ test_gather_test_marks_degraded_on_unrunnable_stat() {
     "the degraded reason records the unrunnable stat"
 }
 
+test_stalled_blessings_pool_read_leaves_cache_unwritten() {
+  _write_gh_stub '[]'
+  printf -- '---\n---\n- one\n- two\n- three\n' > "$CEO_VAULT/CEO/blessings.md"
+  rm -f "$CEO_VAULT/CEO/cache/blessings-today.md"
+  local stub; stub="$TMP/bless-pool-stub"
+  mkdir -p "$stub"
+  local real_head; real_head="$(type -P head)"
+  printf '#!/bin/sh\ncase "$*" in *"/blessings.md"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$real_head" > "$stub/head"
+  chmod +x "$stub/head"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED"
+  )
+  assert_contains "$out" "COMPLETED" \
+    "a stalled blessings pool read must not abort or hang the gather (#606)"
+  if [ -e "$CEO_VAULT/CEO/cache/blessings-today.md" ]; then
+    echo "FAIL: a timed-out pool read wrote a blessing-less cache stamped with today's date"
+    return 1
+  fi
+}
+
 run_tests
