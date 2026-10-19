@@ -109,12 +109,8 @@ for dir in "${SEARCH_DIRS[@]}"; do
 
     # Fetch with timeout so offline network / invalid remotes don't hang
     fetch_ok=0
-    if [ -n "${CEO_TIMEOUT_BIN:-}" ] && command -v "$CEO_TIMEOUT_BIN" >/dev/null 2>&1; then
+    if [ -n "${CEO_TIMEOUT_BIN:-}" ]; then
       "$CEO_TIMEOUT_BIN" 10 git -C "$repo" fetch "$remote" -q 2>/dev/null && fetch_ok=1 || true
-    elif command -v timeout >/dev/null 2>&1; then
-      timeout 10 git -C "$repo" fetch "$remote" -q 2>/dev/null && fetch_ok=1 || true
-    elif command -v gtimeout >/dev/null 2>&1; then
-      gtimeout 10 git -C "$repo" fetch "$remote" -q 2>/dev/null && fetch_ok=1 || true
     else
       git -C "$repo" fetch "$remote" -q 2>/dev/null && fetch_ok=1 || true
     fi
@@ -161,7 +157,10 @@ if ! {
     --field behind_count="${#BEHIND_REPOS[@]}" \
     --field fetch_failed_count="${#FETCH_FAILED_REPOS[@]}" \
     --field unconfigured_count="${#UNCONFIGURED_REPOS[@]}" \
-    --field observation_failed="$OBSERVATION_FAILED"
+    --field observation_failed="$OBSERVATION_FAILED" || {
+      echo "ERROR: ceo-git-monitor: frontmatter write failed" >&2
+      exit 1
+    }
   printf '\n# Git Monitor\n\n'
   printf '<!-- alert: [[CEO/alerts/git-monitor]] -->\n\n'
 
@@ -193,7 +192,11 @@ if ! {
       printf '\n'
     fi
   else
-    printf 'All tracked repositories are clean and up to date.\n\n'
+    if [ ${#UNCONFIGURED_REPOS[@]} -gt 0 ]; then
+      printf 'Tracked repositories with configured upstream remotes are clean and up to date.\n\n'
+    else
+      printf 'All tracked repositories are clean and up to date.\n\n'
+    fi
   fi
 
   if [ ${#UNCONFIGURED_REPOS[@]} -gt 0 ]; then
