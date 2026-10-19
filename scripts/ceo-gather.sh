@@ -650,7 +650,10 @@ fi
 GATHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=blessings-lib.sh
 source "$GATHER_DIR/blessings-lib.sh"
-ensure_blessings_cache || true
+# A failed refresh (timed-out pool read) leaves yesterday's cache, or none, for
+# the read below to succeed on, so it has to be marked here or the gather
+# reports healthy with stale blessings.
+ensure_blessings_cache || _file_gather_mark_degraded "blessings-cache-refresh-failed:$CEO_DIR/blessings.md:rc=$?"
 
 if _gather_test -f "$CEO_DIR/cache/blessings-today.md"; then
 export BLESSINGS_TODAY

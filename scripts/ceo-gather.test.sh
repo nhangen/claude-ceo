@@ -1124,10 +1124,13 @@ test_stalled_blessings_pool_read_leaves_cache_unwritten() {
     export CEO_VAULT_TIMEOUT=1
     PATH="$stub:$PATH"
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
-    echo "COMPLETED"
+    echo "COMPLETED|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
   )
-  assert_contains "$out" "COMPLETED" \
-    "a stalled blessings pool read must not abort or hang the gather (#606)"
+  assert_contains "$out" "COMPLETED|DEGRADED=1" \
+    "a stalled blessings pool read must degrade the gather, not abort or hang it (#606)"
+  assert_contains "$out" "blessings-cache-refresh-failed" \
+    "the degraded reason records the failed cache refresh"
   if [ -e "$CEO_VAULT/CEO/cache/blessings-today.md" ]; then
     echo "FAIL: a timed-out pool read wrote a blessing-less cache stamped with today's date"
     return 1

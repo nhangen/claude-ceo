@@ -70,7 +70,7 @@ ensure_blessings_cache() {
   # empty pool would stamp today's date on a blessing-less file and the freshness
   # check above would keep it for the rest of the day.
   local picks pool pool_rc=0
-  pool=$(_blessings_bound head -2000 "$src" \
+  pool=$(set -o pipefail; _blessings_bound head -2000 "$src" \
     | strip_frontmatter_stdin \
     | { grep '^- ' || true; } \
     | awk 'BEGIN{srand()} {print rand()"\t"$0}' \
