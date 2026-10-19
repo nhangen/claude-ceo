@@ -175,7 +175,7 @@ test_oversized_active_domains_does_not_abort() {
   local out; out=$(_run_gather_strict ACTIVE_DOMAINS_CONTENT)
   assert_contains "$out" "RC=0" \
     "an oversized Active Domains section must not abort the gather (#293)"
-  assert_contains "$out" "FIRST=Active domains unavailable" \
+  assert_contains "$out" "FIRST=Active domains unavailable: canonical Active Domains section exceeds the report context limit" \
     "an oversized canonical section must be withheld rather than partially injected"
 }
 
