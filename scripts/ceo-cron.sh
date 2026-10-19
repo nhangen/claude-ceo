@@ -715,17 +715,17 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
-# --- Resolve timeout binary (portable: GNU coreutils on Linux, gtimeout on macOS, no-op fallback) ---
+# --- Resolve timeout binary through the shared resolver (#606) ---
 # macOS ships without `timeout`; `brew install coreutils` provides `gtimeout`. If neither is
 # installed, we fall back to a no-op that just runs the command — claude has its own internal
 # timeouts and --max-turns is a separate safety net, so unbounded wall-clock is acceptable
-# rather than crashing the cron.
-if command -v timeout &>/dev/null; then
-  TIMEOUT_BIN="timeout"
-elif command -v gtimeout &>/dev/null; then
-  TIMEOUT_BIN="gtimeout"
-else
-  TIMEOUT_BIN=""  # signals "no timeout available" — wrapped commands run without wall-clock cap
+# rather than crashing the cron. Gather additionally falls back to python3 (its reads sit
+# directly on the stalled mount); cron's wrapped commands are claude runs, where
+# --max-turns is the in-process safety net and unbounded wall-clock is acceptable.
+# The resolver is the shared one from ceo-config.sh — one timeout policy (#606).
+ceo_resolve_timeout_bin
+TIMEOUT_BIN="$CEO_TIMEOUT_BIN"  # empty signals "no timeout available" — wrapped commands run without wall-clock cap
+if [ -z "$TIMEOUT_BIN" ]; then
   echo "$(date): WARN — no timeout binary found (timeout/gtimeout). Wall-clock cap disabled. Install: brew install coreutils" >&2
 fi
 # Helper: prefix a command with the timeout binary if available, else run directly.

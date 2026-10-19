@@ -828,4 +828,344 @@ EOF
     "mixed status matches must count accurately (#592)"
 }
 
+# --- Parse-time timeout validation (#606) ---
+# GNU timeout exits 125 on a non-numeric delay before the command ever runs,
+# which would read as every bounded vault read failing at once; 0 disables the
+# wall-clock cap entirely. Both must fall back to the default with a WARN.
+
+test_invalid_CEO_VAULT_TIMEOUT_warns_and_falls_back() {
+  _write_gh_stub '[]'
+  _write_goals "$(date +%Y-%m-%d)"
+  mkdir -p "$CEO_VAULT/CEO/training"
+  echo "briefings content" > "$CEO_VAULT/CEO/training/briefings.md"
+  local out err
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=abc
+    source "$SCRIPT_DIR/ceo-gather.sh" 2>"$TMP/stderr.log" >/dev/null
+    echo "BRIEFINGS=${BRIEFINGS_TRAINING}|DEGRADED=$FILE_GATHER_DEGRADED"
+  )
+  err=$(cat "$TMP/stderr.log")
+  assert_contains "$out" "BRIEFINGS=briefings content|DEGRADED=0" \
+    "an invalid CEO_VAULT_TIMEOUT must fall back to the default, not fail every bounded read at once"
+  assert_contains "$err" "CEO_VAULT_TIMEOUT 'abc' is not a positive integer; using 10" \
+    "the fallback must warn, not silently swap the value"
+}
+
+test_zero_CEO_VAULT_TIMEOUT_falls_back_to_default() {
+  _write_gh_stub '[]'
+  _write_goals "$(date +%Y-%m-%d)"
+  mkdir -p "$CEO_VAULT/CEO/training"
+  echo "briefings content" > "$CEO_VAULT/CEO/training/briefings.md"
+  local out err
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=0
+    source "$SCRIPT_DIR/ceo-gather.sh" 2>"$TMP/stderr.log" >/dev/null
+    echo "BRIEFINGS=${BRIEFINGS_TRAINING}|DEGRADED=$FILE_GATHER_DEGRADED"
+  )
+  err=$(cat "$TMP/stderr.log")
+  assert_contains "$out" "BRIEFINGS=briefings content|DEGRADED=0" \
+    "CEO_VAULT_TIMEOUT=0 must not disable the wall-clock cap (#606)"
+  assert_contains "$err" "not a positive integer; using 10" \
+    "the 0 fallback warns like the non-numeric one"
+}
+
+test_valid_CEO_VAULT_TIMEOUT_survives_validation() {
+  _write_gh_stub '[]'
+  _write_goals "$(date +%Y-%m-%d)"
+  mkdir -p "$CEO_VAULT/CEO/training"
+  echo "briefings content" > "$CEO_VAULT/CEO/training/briefings.md"
+  local out err
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=12
+    source "$SCRIPT_DIR/ceo-gather.sh" 2>"$TMP/stderr.log" >/dev/null
+    echo "BRIEFINGS=${BRIEFINGS_TRAINING}|DEGRADED=$FILE_GATHER_DEGRADED"
+  )
+  err=$(cat "$TMP/stderr.log")
+  assert_contains "$out" "BRIEFINGS=briefings content|DEGRADED=0" \
+    "a valid configured timeout must run the gather clean"
+  assert_not_contains "$err" "CEO_VAULT_TIMEOUT" \
+    "a valid configured timeout must not trigger the WARN"
+}
+
+# --- Bounded orphan reads (#606): extraction greps, stat guards, section seds,
+# the ledger awk, and the blessings cache read each sit on the vault mount and
+# must not hang the tick.
+
+test_stalled_pending_extraction_grep_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  echo '- [ ] ask Slava about the mount' > "$CEO_VAULT/Pending.md"
+  local stub; stub="$TMP/pending-grep-stub"
+  mkdir -p "$stub"
+  local real_grep; real_grep="$(type -P grep)"
+  printf '#!/bin/sh\ncase "$*" in *"Pending.md"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$real_grep" > "$stub/grep"
+  chmod +x "$stub/grep"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|PENDING_ASK_QUESTIONS=${PENDING_ASK_QUESTIONS}|DEGRADED=$FILE_GATHER_DEGRADED|PD=$PENDING_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|PENDING_ASK_QUESTIONS=|DEGRADED=1|PD=1" \
+    "a stalled Pending.md extraction grep must time out and degrade the pending preflight, not claim a quiet day (#606)"
+  assert_contains "$out" "Pending.md:rc=124" \
+    "the degraded reason records the extraction timeout"
+}
+
+test_stalled_today_log_count_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  local today; today=$(date +%Y-%m-%d)
+  mkdir -p "$CEO_VAULT/CEO/log"
+  printf '**Status:** completed\n' > "$CEO_VAULT/CEO/log/$today.md"
+  local stub; stub="$TMP/log-grep-stub"
+  mkdir -p "$stub"
+  local real_grep; real_grep="$(type -P grep)"
+  printf '#!/bin/sh\ncase "$*" in *"log/%s.md"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$today" "$real_grep" > "$stub/grep"
+  chmod +x "$stub/grep"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|SUMMARY=$TODAY_LOG_SUMMARY|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|SUMMARY=actions:0 completed:0 failed:0|DEGRADED=1" \
+    "a stalled today-log count must time out to zeros and degrade, not hang the tick (#606)"
+  assert_contains "$out" "today-log-actions:rc=124" \
+    "the degraded reason records the count timeout"
+}
+
+test_stalled_daily_note_sed_times_out_without_hanging() {
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/Daily"
+  printf '## Top 3\n- one\n' > "$CEO_VAULT/Daily/$(date +%Y-%m-%d).md"
+  local stub; stub="$TMP/dailynote-sed-stub"
+  mkdir -p "$stub"
+  local real_sed; real_sed="$(type -P sed)"
+  printf '#!/bin/sh\ncase "$*" in *"Daily/"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$real_sed" > "$stub/sed"
+  chmod +x "$stub/sed"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|TOP3=$DAILY_NOTE_TOP3|TASKS=$DAILY_NOTE_TASKS|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|TOP3=|TASKS=|DEGRADED=1" \
+    "a stalled daily-note section read must time out to empty and degrade, not read as a clean empty section (#606)"
+  assert_contains "$out" "daily-note-top3:rc=124" \
+    "the degraded reason records the Top 3 read timeout"
+  assert_contains "$out" "daily-note-tasks:rc=124" \
+    "the degraded reason records the Tasks read timeout"
+}
+
+test_stalled_yesterday_summary_sed_times_out_without_hanging() {
+  _write_gh_stub '[]'
+  local yday; yday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d yesterday +%Y-%m-%d)
+  mkdir -p "$CEO_VAULT/CEO/log"
+  printf '# log\n<!-- eod-summary -->\nan entry\n' > "$CEO_VAULT/CEO/log/$yday.md"
+  local stub; stub="$TMP/yday-sed-stub"
+  mkdir -p "$stub"
+  local real_sed; real_sed="$(type -P sed)"
+  printf '#!/bin/sh\ncase "$*" in *"log/%s.md"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$yday" "$real_sed" > "$stub/sed"
+  chmod +x "$stub/sed"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|SUMMARY=$YESTERDAY_LOG_SUMMARY|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|SUMMARY=no eod summary|DEGRADED=1" \
+    "a stalled eod-summary read must time out to the absent state and degrade (#606)"
+  assert_contains "$out" "yesterday-summary:rc=124" \
+    "the degraded reason records the eod-summary timeout"
+}
+
+test_stalled_sync_conflict_find_times_out_without_hanging() {
+  _write_gh_stub '[]'
+  local stub; stub="$TMP/sync-find-stub"
+  mkdir -p "$stub"
+  local real_find; real_find="$(type -P find)"
+  printf '#!/bin/sh\ncase "$*" in *"sync-conflict-"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$real_find" > "$stub/find"
+  chmod +x "$stub/find"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|SYNC_CONFLICT_COUNT=$SYNC_CONFLICT_COUNT|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|SYNC_CONFLICT_COUNT=0|DEGRADED=1" \
+    "a stalled sync-conflict walk must time out to 0 and degrade, not report a healthy zero (#606)"
+  assert_contains "$out" "sync-conflicts:rc=124" \
+    "the degraded reason records the sync-conflict walk timeout"
+}
+
+test_stalled_ledger_awk_times_out_without_hanging() {
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/CEO/model"
+  printf -- '---\npredicted today:\n  - org/repo#1: explanation\n---\n' > "$CEO_VAULT/CEO/model/2026-01-01.md"
+  local stub; stub="$TMP/ledger-awk-stub"
+  mkdir -p "$stub"
+  local real_awk; real_awk="$(type -P awk)"
+  printf '#!/bin/sh\ncase "$*" in *"model/2026-01-01.md"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$real_awk" > "$stub/awk"
+  chmod +x "$stub/awk"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|LEDGER=${LEDGER_RECENT}|PREDICTED=${LEDGER_PREV_PREDICTED}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED" \
+    "a stalled ledger awk must time out without hanging or aborting the gather (#606)"
+  assert_contains "$out" "PREDICTED=[]|DEGRADED=1" \
+    "the timed-out prediction parse reads empty and degrades"
+  assert_contains "$out" "ledger-predicted:rc=124" \
+    "the degraded reason records the awk timeout"
+}
+
+test_stalled_pending_stat_guard_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  echo '- [ ] something' > "$CEO_VAULT/Pending.md"
+  local stub; stub="$TMP/test-stat-stub"
+  mkdir -p "$stub"
+  printf '#!/bin/sh\ncase "$2" in *Pending.md*) sleep 2; exit 0 ;; *) exec /usr/bin/test "$@" ;; esac\n' > "$stub/test"
+  chmod +x "$stub/test"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|ASKQ=${PENDING_ASK_QUESTIONS}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|ASKQ=|DEGRADED=1" \
+    "a timed-out stat guard must read as unanswerable, not as an absent file (#606)"
+  assert_contains "$out" "stat:rc=124" \
+    "the degraded reason records the stat timeout"
+}
+
+test_stalled_blessings_cache_read_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/CEO/cache"
+  printf -- '---\ndate: %s\n---\nblessing one\n' "$(date +%Y-%m-%d)" > "$CEO_VAULT/CEO/cache/blessings-today.md"
+  local stub; stub="$TMP/bless-head-stub"
+  mkdir -p "$stub"
+  local real_head; real_head="$(type -P head)"
+  printf '#!/bin/sh\ncase "$*" in *"blessings-today.md"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$real_head" > "$stub/head"
+  chmod +x "$stub/head"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|BLESSINGS=${BLESSINGS_TODAY}|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|BLESSINGS=|DEGRADED=1" \
+    "a stalled blessings cache read must time out, empty the blessing, and degrade without hanging (#606)"
+  assert_contains "$out" "blessings-today.md:read:rc=124" \
+    "the degraded reason records the cache read timeout"
+}
+
+test_gather_test_marks_degraded_on_unrunnable_stat() {
+  _write_gh_stub '[]'
+  echo '- [ ] something' > "$CEO_VAULT/Pending.md"
+  local stub; stub="$TMP/test-126-stub"
+  mkdir -p "$stub"
+  printf '#!/bin/sh\ncase "$2" in *Pending.md*) exit 126 ;; *) exec /usr/bin/test "$@" ;; esac\n' > "$stub/test"
+  chmod +x "$stub/test"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|DEGRADED=1" \
+    "an unrunnable stat (rc 126) must read as unanswerable, not as an absent file (#606)"
+  assert_contains "$out" "stat:rc=126" \
+    "the degraded reason records the unrunnable stat"
+}
+
+test_stalled_blessings_pool_read_leaves_cache_unwritten() {
+  _write_gh_stub '[]'
+  printf -- '---\n---\n- one\n- two\n- three\n' > "$CEO_VAULT/CEO/blessings.md"
+  rm -f "$CEO_VAULT/CEO/cache/blessings-today.md"
+  local stub; stub="$TMP/bless-pool-stub"
+  mkdir -p "$stub"
+  local real_head; real_head="$(type -P head)"
+  printf '#!/bin/sh\ncase "$*" in *"/blessings.md"*) sleep 2; exit 0 ;; *) exec "%s" "$@" ;; esac\n' "$real_head" > "$stub/head"
+  chmod +x "$stub/head"
+  local out
+  out=$(
+    set -euo pipefail
+    export CEO_VAULT_TIMEOUT=1
+    PATH="$stub:$PATH"
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    echo "COMPLETED|DEGRADED=$FILE_GATHER_DEGRADED"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "COMPLETED|DEGRADED=1" \
+    "a stalled blessings pool read must degrade the gather, not abort or hang it (#606)"
+  assert_contains "$out" "blessings-cache-refresh-failed" \
+    "the degraded reason records the failed cache refresh"
+  if [ -e "$CEO_VAULT/CEO/cache/blessings-today.md" ]; then
+    echo "FAIL: a timed-out pool read wrote a blessing-less cache stamped with today's date"
+    return 1
+  fi
+}
+
+test_validate_timeout_accepts_positive_integers_only() {
+  local v rc
+  for v in 1 10 010 3600; do
+    rc=0
+    ( source "$SCRIPT_DIR/ceo-config.sh"; ceo_validate_timeout "$v" >/dev/null ) || rc=$?
+    assert_eq "$rc" "0" "ceo_validate_timeout accepts '$v'"
+  done
+  for v in "" 0 00 000 abc -5 +5 1.5 "1 2"; do
+    rc=0
+    ( source "$SCRIPT_DIR/ceo-config.sh"; ceo_validate_timeout "$v" >/dev/null ) || rc=$?
+    assert_eq "$rc" "1" "ceo_validate_timeout rejects '$v'"
+  done
+}
+
+test_daily_note_section_longer_than_head_keeps_its_lines() {
+  _write_gh_stub '[]'
+  mkdir -p "$CEO_VAULT/Daily"
+  { printf '## Top 3\n'; seq 1 20000 | sed 's/^/- item /'; printf '## Next\n'; } > "$CEO_VAULT/Daily/$(date +%Y-%m-%d).md"
+  local out
+  out=$(
+    set -euo pipefail
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    printf 'TOP3_LINES=%s\n' "$(printf '%s\n' "$DAILY_NOTE_TOP3" | grep -c '^- item')"
+    printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
+  )
+  assert_contains "$out" "TOP3_LINES=5" \
+    "head closing early SIGPIPEs the sed; the lines it already emitted must survive (#606)"
+  assert_not_contains "$out" "daily-note-top3" \
+    "a SIGPIPE (rc 141) is not a timeout and must not mark the gather degraded"
+}
+
 run_tests
