@@ -167,7 +167,8 @@ test_unreadable_pending_marks_degraded() {
 # The canonical section is bounded before prompt injection.
 test_oversized_active_domains_does_not_abort() {
   mkdir -p "$CEO_VAULT/Profile"
-  { printf '%s\n' '---' 'active_domains_as_of: 2026-09-28' '---' '## Active Domains'
+  local as_of; as_of=$(date +%Y-%m-%d)
+  { printf '%s\n' '---' "active_domains_as_of: $as_of" '---' '## Active Domains'
     for i in $(seq 1 2000); do echo "- domain $i with padding to exceed the byte cap"; done
     echo "## Next Section"; } > "$CEO_VAULT/Profile/goals.md"
 
