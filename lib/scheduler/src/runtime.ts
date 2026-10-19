@@ -236,8 +236,9 @@ export function dispatchArgv(cronBin: string, name: string): string[] {
 // clearing the running marker. `readCompletions` reassembles both dirs.
 //
 // One writer/reader (the daemon's single event loop) → no cross-process torn
-// reads; plain writeFileSync is safe, no temp-rename needed. `done/` holds one
-// file per job (overwritten each completion), so it stays bounded to the job set.
+// reads, but a crash or ENOSPC mid-write still tears a file, so main.ts writes
+// these through writeFileAtomic (fsync + rename). `done/` holds one file per job
+// (overwritten each completion), so it stays bounded to the job set.
 
 /** Root for the dispatch-completion state dirs, host-local under `~/.ceo`. */
 export function runStateDir(home: string): string {

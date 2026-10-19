@@ -6,6 +6,7 @@ import {
   clearSchedulerdAlertOrLog,
   createClearRunning,
   createJobDispatcher,
+  flushWrite,
   formatSchedulerdAlert,
   parseAlertField,
   readStateDir,
@@ -15,6 +16,7 @@ import {
   SchedulerDispatchContext,
   trackCompletion,
   writeDoneRecordAtomic,
+  writeFileAtomic,
 } from "@/main";
 import { runningDir, doneDir } from "@/runtime";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -312,6 +314,34 @@ describe("trackCompletion", () => {
   });
 });
 
+describe("synced heartbeat and alert writers are atomic", () => {
+  const now = new Date("2026-09-29T02:00:00.000Z");
+  const torn = (path: string, content: string) => {
+    writeFileSync(path, content.slice(0, 3));
+    throw new Error("EIO: i/o error, write");
+  };
+  const cases: Array<[string, string, (path: string) => unknown]> = [
+    ["recordFatalInSyncedHeartbeat", JSON.stringify({ host: "mac", ts: "t" }), (p) => recordFatalInSyncedHeartbeat(p, "mac", "EACCES", now, torn)],
+    ["recordFatalSchedulerdAlert", formatSchedulerdAlert("mac", "clear", "t", "t"), (p) => recordFatalSchedulerdAlert(p, "mac", "EACCES", now, torn)],
+    ["clearSchedulerdAlert", formatSchedulerdAlert("mac", "firing", "t", "t", "EACCES"), (p) => clearSchedulerdAlert(p, "mac", now, torn)],
+  ];
+
+  for (const [name, prior, run] of cases) {
+    test(`${name} leaves the previous file and no tempfile when the write tears`, () => {
+      const dir = mkdtempSync(join(tmpdir(), "ceo-sync-atomic-"));
+      try {
+        const path = join(dir, "state");
+        writeFileSync(path, prior);
+        expect(() => run(path)).toThrow("EIO");
+        expect(readFileSync(path, "utf8")).toBe(prior);
+        expect(readdirSync(dir)).toEqual(["state"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe("recordFatalInSyncedHeartbeat", () => {
   const setup = () => {
     const dir = mkdtempSync(join(tmpdir(), "ceo-fatal-hb-"));
@@ -520,6 +550,43 @@ describe("readStateDir", () => {
       expect(readStateDir(dir)).toEqual({ "real-job": "1000 4242" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("flushWrite", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-flush-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  test("fsyncs only after the full body is on the file", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const path = join(dir, "f");
+      const seen: string[] = [];
+      flushWrite(path, "complete-body", () => {
+        seen.push(readFileSync(path, "utf8"));
+      });
+      expect(seen).toEqual(["complete-body"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("an fsync failure surfaces and leaves the previous dest and no tempfile", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const dest = join(dir, "my-job");
+      writeFileSync(dest, "previous");
+      const failingFsync = () => {
+        throw new Error("EIO: i/o error, fsync");
+      };
+      expect(() => writeFileAtomic(dest, "next", (p, c) => flushWrite(p, c, failingFsync))).toThrow("EIO");
+      expect(readFileSync(dest, "utf8")).toBe("previous");
+      expect(readdirSync(dir)).toEqual(["my-job"]);
+    } finally {
+      cleanup();
     }
   });
 });
@@ -763,6 +830,112 @@ describe("createJobDispatcher", () => {
 
       expect(logs.some((l) => l.includes("dispatch failed for failed-job: ENOENT: binary not found"))).toBe(true);
       expect(existsSync(join(runDir, "failed-job"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("a pre-spawn marker write that throws does not spawn, leaves no marker, and logs dispatch failed", () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const spawnCalls: string[][] = [];
+      const mockSpawn = ((options: { cmd?: string[] }) => {
+        spawnCalls.push(options.cmd ?? []);
+        return ({ pid: 99999, unref: () => {}, exited: new Promise<number>(() => {}) }) as unknown as ReturnType<typeof Bun.spawn>;
+      }) as unknown as typeof Bun.spawn;
+      // Real ENOSPC/EIO shape: bytes land in the tempfile before the fault; the
+      // atomic wrapper must clean the torn tempfile up and never rename.
+      const rawWrite = (path: string, content: string) => {
+        writeFileSync(path, content);
+        throw new Error("ENOSPC: no space left on device, write");
+      };
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: new SchedulerDispatchContext(),
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+        rawWrite,
+      });
+
+      dispatch("unwritable-job");
+
+      expect(spawnCalls).toEqual([]);
+      expect(logs.some((l) => l.includes("dispatch failed for unwritable-job: ENOSPC"))).toBe(true);
+      // No phantom in-flight marker, no torn tempfile, no done record.
+      expect(existsSync(join(runDir, "unwritable-job"))).toBe(false);
+      expect(readdirSync(runDir)).toEqual([]);
+      expect(readdirSync(dDir)).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refuses to dispatch an unsafe job name without touching run-state", () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const spawnCalls: string[][] = [];
+      const mockSpawn = ((options: { cmd?: string[] }) => {
+        spawnCalls.push(options.cmd ?? []);
+        return ({ pid: 99999, unref: () => {}, exited: new Promise<number>(() => {}) }) as unknown as ReturnType<typeof Bun.spawn>;
+      }) as unknown as typeof Bun.spawn;
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: new SchedulerDispatchContext(),
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+      });
+
+      dispatch("../escape");
+
+      expect(logs).toEqual([`refusing to dispatch unsafe job name: ${JSON.stringify("../escape")}`]);
+      expect(spawnCalls).toEqual([]);
+      expect(readdirSync(runDir)).toEqual([]);
+      expect(readdirSync(dDir)).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("refuses to dispatch when envFor returns null (invalid persisted retry attempt)", () => {
+    const { runDir, dDir, vault, cleanup } = setup();
+    try {
+      const logs: string[] = [];
+      const spawnCalls: string[][] = [];
+      const context = new SchedulerDispatchContext();
+      // Retain a persisted heartbeat whose attempt is already at MAX_ATTEMPTS,
+      // so envFor's norx-bookkeeping gate refuses to build a dispatch env.
+      context.retain({ attempts: { "norx-bookkeeping": 3 } } as unknown as Parameters<typeof context.retain>[0]);
+      const mockSpawn = ((options: { cmd?: string[] }) => {
+        spawnCalls.push(options.cmd ?? []);
+        return ({ pid: 99999, unref: () => {}, exited: new Promise<number>(() => {}) }) as unknown as ReturnType<typeof Bun.spawn>;
+      }) as unknown as typeof Bun.spawn;
+
+      const dispatch = createJobDispatcher({
+        runDir,
+        dDir,
+        vault,
+        dispatchContext: context,
+        dispatchArgv: (name) => ["fake-bin", name],
+        log: (m) => logs.push(m),
+        spawn: mockSpawn,
+      });
+
+      dispatch("norx-bookkeeping");
+
+      expect(logs).toEqual(["refusing to dispatch norx-bookkeeping: persisted retry attempt is missing or invalid"]);
+      expect(spawnCalls).toEqual([]);
+      expect(readdirSync(runDir)).toEqual([]);
+      expect(readdirSync(dDir)).toEqual([]);
     } finally {
       cleanup();
     }

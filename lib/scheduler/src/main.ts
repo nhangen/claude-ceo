@@ -13,7 +13,18 @@
  * Schedules evaluate in the host's local timezone (the matcher is created with
  * no timezone, matching `new Date()`); registry schedules carry no per-entry tz.
  */
-import { readFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
 import {
@@ -310,17 +321,37 @@ export function createClearRunning(runMarker: string, log: (msg: string) => void
 export const ATOMIC_TMP_INFIX = ".tmp.";
 
 /**
+ * Write a file and fsync it before returning, so the bytes survive the rename:
+ * without the fsync some filesystems keep the rename but not the data after a
+ * power loss, leaving a zero-length done record (cronbird's cooldown lost) or
+ * an empty running marker (#602). writeFileSync loops until the whole body is
+ * written; a bare writeSync can return short and the truncated file would be
+ * fsynced and renamed into place.
+ */
+export function flushWrite(path: string, content: string, fsync: (fd: number) => void = fsyncSync): void {
+  const fd = openSync(path, "w");
+  try {
+    writeFileSync(fd, content);
+    fsync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * Replaces `dest` via a same-directory tempfile + rename, so an ENOSPC/IO fault
  * mid-write leaves the previous contents in place rather than a truncated file.
  * Both run-state writers need that: a torn done record loses cronbird's cooldown,
  * and a torn running marker parses as "not running" and reopens the
  * MAX_CONCURRENT=1 gate while the child is still alive (#586). Any torn tempfile
- * is removed before rethrowing. `rawWrite` is the seam tests fail at.
+ * is removed before rethrowing. The parent directory is not fsynced, so a crash
+ * right after the rename can still surface the old contents. `rawWrite` is the
+ * seam tests fail at.
  */
 export function writeFileAtomic(
   dest: string,
   body: string,
-  rawWrite: (path: string, content: string) => void = writeFileSync,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): void {
   const rand = Math.random().toString(36).slice(2, 8);
   const tmp = `${dest}${ATOMIC_TMP_INFIX}${process.pid}.${Date.now()}.${rand}`;
@@ -369,7 +400,7 @@ export function createJobDispatcher(deps: JobDispatcherDeps): (name: string) => 
     dispatchArgv,
     log,
     spawn = Bun.spawn,
-    rawWrite = writeFileSync,
+    rawWrite = flushWrite,
     now = Date.now,
   } = deps;
   const writeRunningMarker = (path: string, content: string) => writeFileAtomic(path, content, rawWrite);
@@ -497,6 +528,7 @@ export function recordFatalInSyncedHeartbeat(
   host: string,
   code: string,
   now: Date,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): "written" | "unchanged" {
   let prevTs: string | null = null;
   try {
@@ -507,9 +539,7 @@ export function recordFatalInSyncedHeartbeat(
     // No prior heartbeat, or an unreadable one: record the fault with no ts.
   }
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ host, ts: prevTs, fatal: { code, since: now.toISOString() } }, null, 2));
-  renameSync(tmp, path);
+  writeFileAtomic(path, JSON.stringify({ host, ts: prevTs, fatal: { code, since: now.toISOString() } }, null, 2), rawWrite);
   return "written";
 }
 
@@ -564,6 +594,7 @@ export function recordFatalSchedulerdAlert(
   host: string,
   code: string,
   now: Date,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): "written" | "unchanged" {
   try {
     const prev = readFileSync(path, "utf8");
@@ -573,9 +604,7 @@ export function recordFatalSchedulerdAlert(
   }
   mkdirSync(dirname(path), { recursive: true });
   const iso = now.toISOString();
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, formatSchedulerdAlert(host, "firing", iso, iso, code), "utf8");
-  renameSync(tmp, path);
+  writeFileAtomic(path, formatSchedulerdAlert(host, "firing", iso, iso, code), rawWrite);
   return "written";
 }
 
@@ -590,6 +619,7 @@ export function clearSchedulerdAlert(
   path: string,
   host: string,
   now: Date,
+  rawWrite: (path: string, content: string) => void = flushWrite,
 ): "written" | "unchanged" {
   try {
     const prev = readFileSync(path, "utf8");
@@ -600,9 +630,7 @@ export function clearSchedulerdAlert(
   }
   mkdirSync(dirname(path), { recursive: true });
   const iso = now.toISOString();
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, formatSchedulerdAlert(host, "clear", iso, iso), "utf8");
-  renameSync(tmp, path);
+  writeFileAtomic(path, formatSchedulerdAlert(host, "clear", iso, iso), rawWrite);
   return "written";
 }
 
