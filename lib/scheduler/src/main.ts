@@ -24,7 +24,6 @@ import {
   renameSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
@@ -325,22 +324,17 @@ export const ATOMIC_TMP_INFIX = ".tmp.";
  * Write a file and fsync it before returning, so the bytes survive the rename:
  * without the fsync some filesystems keep the rename but not the data after a
  * power loss, leaving a zero-length done record (cronbird's cooldown lost) or
- * an empty running marker (#602). Any fault thrown before the rename still
- * leaves the previous dest contents in place.
+ * an empty running marker (#602). writeFileSync loops until the whole body is
+ * written; a bare writeSync can return short and the truncated file would be
+ * fsynced and renamed into place.
  */
-function flushWrite(path: string, content: string): void {
+export function flushWrite(path: string, content: string, fsync: (fd: number) => void = fsyncSync): void {
   const fd = openSync(path, "w");
   try {
-    writeSync(fd, content);
-    fsyncSync(fd);
+    writeFileSync(fd, content);
+    fsync(fd);
+  } finally {
     closeSync(fd);
-  } catch (err) {
-    try {
-      closeSync(fd);
-    } catch {
-      // ignore secondary close error; the write/fsync error is the one to surface
-    }
-    throw err;
   }
 }
 

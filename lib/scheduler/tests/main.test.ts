@@ -6,6 +6,7 @@ import {
   clearSchedulerdAlertOrLog,
   createClearRunning,
   createJobDispatcher,
+  flushWrite,
   formatSchedulerdAlert,
   parseAlertField,
   readStateDir,
@@ -15,6 +16,7 @@ import {
   SchedulerDispatchContext,
   trackCompletion,
   writeDoneRecordAtomic,
+  writeFileAtomic,
 } from "@/main";
 import { runningDir, doneDir } from "@/runtime";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -520,6 +522,43 @@ describe("readStateDir", () => {
       expect(readStateDir(dir)).toEqual({ "real-job": "1000 4242" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("flushWrite", () => {
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ceo-flush-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  test("fsyncs only after the full body is on the file", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const path = join(dir, "f");
+      const seen: string[] = [];
+      flushWrite(path, "complete-body", () => {
+        seen.push(readFileSync(path, "utf8"));
+      });
+      expect(seen).toEqual(["complete-body"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("an fsync failure surfaces and leaves the previous dest and no tempfile", () => {
+    const { dir, cleanup } = setup();
+    try {
+      const dest = join(dir, "my-job");
+      writeFileSync(dest, "previous");
+      const failingFsync = () => {
+        throw new Error("EIO: i/o error, fsync");
+      };
+      expect(() => writeFileAtomic(dest, "next", (p, c) => flushWrite(p, c, failingFsync))).toThrow("EIO");
+      expect(readFileSync(dest, "utf8")).toBe("previous");
+      expect(readdirSync(dir)).toEqual(["my-job"]);
+    } finally {
+      cleanup();
     }
   });
 });
