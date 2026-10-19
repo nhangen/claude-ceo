@@ -127,14 +127,12 @@ fi
 # Gather keeps the python3 fallback (#594) for stock macOS; cron bounds its
 # claude runs by --max-turns instead and does not need it.
 : "${CEO_VAULT_TIMEOUT:=10}"
-if command -v ceo_validate_timeout >/dev/null 2>&1; then
-  _vault_timeout_ok=$(ceo_validate_timeout "$CEO_VAULT_TIMEOUT") || true
-  if [ -z "$_vault_timeout_ok" ]; then
-    echo "WARN: CEO_VAULT_TIMEOUT '$CEO_VAULT_TIMEOUT' is not a positive integer; using 10" >&2
-    CEO_VAULT_TIMEOUT=10
-  fi
-  unset _vault_timeout_ok
+_vault_timeout_ok=$(ceo_validate_timeout "$CEO_VAULT_TIMEOUT") || true
+if [ -z "$_vault_timeout_ok" ]; then
+  echo "WARN: CEO_VAULT_TIMEOUT '$CEO_VAULT_TIMEOUT' is not a positive integer; using 10" >&2
+  CEO_VAULT_TIMEOUT=10
 fi
+unset _vault_timeout_ok
 
 # --- Pending approvals ---
 PENDING_FILE="$CEO_DIR/approvals/pending.md"

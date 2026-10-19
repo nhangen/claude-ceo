@@ -724,13 +724,10 @@ fi
 # --max-turns is the in-process safety net and unbounded wall-clock is acceptable.
 # The resolver is the shared one from ceo-config.sh — one timeout policy (#606).
 ceo_resolve_timeout_bin
-case "$CEO_TIMEOUT_BIN" in
-  timeout|gtimeout) TIMEOUT_BIN="$CEO_TIMEOUT_BIN" ;;
-  *)
-    TIMEOUT_BIN=""  # signals "no timeout available" — wrapped commands run without wall-clock cap
-    echo "$(date): WARN — no timeout binary found (timeout/gtimeout). Wall-clock cap disabled. Install: brew install coreutils" >&2
-    ;;
-esac
+TIMEOUT_BIN="$CEO_TIMEOUT_BIN"  # empty signals "no timeout available" — wrapped commands run without wall-clock cap
+if [ -z "$TIMEOUT_BIN" ]; then
+  echo "$(date): WARN — no timeout binary found (timeout/gtimeout). Wall-clock cap disabled. Install: brew install coreutils" >&2
+fi
 # Helper: prefix a command with the timeout binary if available, else run directly.
 # Usage: $(_with_timeout 300) claude --print …
 _with_timeout() {
