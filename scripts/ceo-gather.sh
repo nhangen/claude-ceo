@@ -65,6 +65,24 @@ $1"
   fi
 }
 
+# _gather_test <test-args...> — bounded stat guard (#606). A stat on the vault
+# mount is a read too, so the bare `test` builtin runs under the timeout shim.
+# A plain miss (rc 1) returns 1 like the `[ … ]` it replaces; a timed-out (124)
+# or unrunnable (125/126) check marks the gather degraded before returning 1,
+# because on a stalled mount "absent" and "unanswerable" are different facts —
+# the same split the grep-based readers above make.
+_gather_test() {
+  local _rc=0
+  _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" test "$@" 2>/dev/null || _rc=$?
+  case "$_rc" in
+    0|1) return "$_rc" ;;
+    *)
+      _file_gather_mark_degraded "file-read-failed:${*: -1}:stat:rc=$_rc"
+      return 1
+      ;;
+  esac
+}
+
 # Timeout shim for vault and network reads (#594). The binary comes from the
 # library resolver; unlike it, gather falls back to python3 when neither timeout
 # nor gtimeout is on PATH (stock macOS), since a stalled mount would otherwise
@@ -86,11 +104,26 @@ else
   echo "WARN: no timeout, gtimeout, or python3 on PATH; vault reads are unbounded" >&2
   _CEO_TIMEOUT() { shift; "$@"; }
 fi
+
+# One shared read-timeout policy (#606): the binary is resolved once in
+# ceo-config.sh and the configured read timeout is validated at parse time, so
+# `CEO_VAULT_TIMEOUT=abc` cannot turn every bounded read into a simultaneous
+# `timeout` exit 125, and `=0` cannot silently disable the wall-clock cap.
+# Gather keeps the python3 fallback (#594) for stock macOS; cron bounds its
+# claude runs by --max-turns instead and does not need it.
 : "${CEO_VAULT_TIMEOUT:=10}"
+if command -v ceo_validate_timeout >/dev/null 2>&1; then
+  _vault_timeout_ok=$(ceo_validate_timeout "$CEO_VAULT_TIMEOUT") || true
+  if [ -z "$_vault_timeout_ok" ]; then
+    echo "WARN: CEO_VAULT_TIMEOUT '$CEO_VAULT_TIMEOUT' is not a positive integer; using 10" >&2
+    CEO_VAULT_TIMEOUT=10
+  fi
+  unset _vault_timeout_ok
+fi
 
 # --- Pending approvals ---
 PENDING_FILE="$CEO_DIR/approvals/pending.md"
-if [ -f "$PENDING_FILE" ]; then
+if _gather_test -f "$PENDING_FILE"; then
   export PENDING_COUNT
   _pcount_rc=0
   PENDING_COUNT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" grep -c "^- \[ \]" "$PENDING_FILE" 2>/dev/null) || _pcount_rc=$?
@@ -254,7 +287,7 @@ ceo_ceo_branches_preflight() {
   while IFS= read -r repo_path; do
     repo_path=$(echo "$repo_path" | xargs)
     [ -z "$repo_path" ] && continue
-    [ -d "$repo_path" ] || continue
+    _gather_test -d "$repo_path" || continue
     local git_out git_rc=0 git_err
     git_err=$(mktemp) || git_err=""
     git_out=$(git -C "$repo_path" branch --list "${branch_prefix}*" 2>"${git_err:-/dev/null}") || git_rc=$?
@@ -279,12 +312,13 @@ ceo_ceo_branches_preflight() {
 # inside grep so nothing can signal, then splits grep's exit status three ways:
 # 0 matched, 1 legitimately empty (a valid state — the pending-drip preflight
 # skips on it), anything else an IO/tooling error that must not masquerade as
-# empty. Only the third case marks the gather degraded.
+# empty. Only the third case marks the gather degraded. Bounded by the timeout
+# shim, since greps on the vault mount are reads too (#606).
 _gather_capture_lines() {
   local _dest="$1" _max="$2" _file="$3" _pattern="$4" _scope="${5:-}"
   local _out _rc=0 _err _detail=""
   _err=$(mktemp) || _err=""
-  _out=$(grep -n -m "$_max" "$_pattern" "$_file" 2>"${_err:-/dev/null}") || _rc=$?
+  _out=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" grep -n -m "$_max" "$_pattern" "$_file" 2>"${_err:-/dev/null}") || _rc=$?
   if [ "$_rc" -gt 1 ]; then
     [ -n "$_err" ] && _detail=$(head -c 200 "$_err" 2>/dev/null)
     echo "WARN: grep on $_file failed (rc=$_rc): $_detail" >&2
@@ -477,9 +511,10 @@ PR_MERGED_COUNT=$(echo "$PR_MERGED" | jq 'if type=="array" then length else 0 en
 # --- Today's log ---
 # grep -c prints a count and exits 1 on zero matches, so only a non-numeric result
 # (grep exit 2, a read error) is a failure; the pending counts above use the same split.
+# Bounded by the timeout shim like every other vault read (#606).
 _gather_count_today_log() {
   local _var="$1" _out _rc=0
-  _out=$(grep -c "$2" "$TODAY_LOG" 2>/dev/null) || _rc=$?
+  _out=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" grep -c "$2" "$TODAY_LOG" 2>/dev/null) || _rc=$?
   case "$_out" in
     ''|*[!0-9]*)
       _file_gather_mark_degraded "file-read-failed:$TODAY_LOG:today-log-$3:rc=$_rc"
@@ -489,7 +524,7 @@ _gather_count_today_log() {
   printf -v "$_var" '%s' "$_out"
 }
 TODAY_LOG="$LOG_DIR/$TODAY.md"
-if [ -f "$TODAY_LOG" ]; then
+if _gather_test -f "$TODAY_LOG"; then
   export TODAY_LOG_EXISTS=true
   _gather_count_today_log TOTAL "^\*\*Status:\*\*" actions
   _gather_count_today_log COMPLETED "^\*\*Status:\*\* completed" completed
@@ -503,15 +538,17 @@ fi
 # --- Yesterday's log ---
 YESTERDAY=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d yesterday +%Y-%m-%d)
 YESTERDAY_LOG="$LOG_DIR/$YESTERDAY.md"
-if [ -f "$YESTERDAY_LOG" ]; then
+if _gather_test -f "$YESTERDAY_LOG"; then
   export YESTERDAY_LOG_EXISTS=true
 export YESTERDAY_LOG_SUMMARY
 # Capture then truncate. The old `sed … | head -20 || echo "no eod summary"` did not
 # abort, which is worse: on SIGPIPE head had already emitted 20 good lines and the
 # fallback got *appended* to them, so the prompt carried 20 real lines contradicted
 # by a "no eod summary" trailer. Reachable when the eod section runs to EOF and the
-# day log exceeds the pipe buffer. (#293)
-_yday_summary_raw=$(sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null) || _yday_summary_raw=""
+# day log exceeds the pipe buffer. (#293) The sed itself is bounded (#606) since the
+# section extractor reads the same growing file; on timeout the summary reads as
+# absent, which the report renders as its normal "no eod summary" state.
+_yday_summary_raw=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null) || _yday_summary_raw=""
 if [ -n "$_yday_summary_raw" ]; then
   YESTERDAY_LOG_SUMMARY=$(head -20 <<< "$_yday_summary_raw")
 else
@@ -537,7 +574,7 @@ _gather_count_delegations() {
   fi
 }
 export DELEGATION_COMPLETED=0 DELEGATION_IN_PROGRESS=0 DELEGATION_FAILED=0
-if [ -d "$CEO_DIR/delegations" ]; then
+if _gather_test -d "$CEO_DIR/delegations"; then
   _DELEGATION_FILES=()
   _find_rc=0
   _find_out=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR/delegations" -name "*.md" -not -name ".gitkeep" -mtime -7 2>/dev/null) || _find_rc=$?
@@ -554,16 +591,25 @@ if [ -d "$CEO_DIR/delegations" ]; then
 fi
 
 # --- Sync conflicts ---
+# The largest walk on the mount (a full `find "$CEO_DIR"`) — bounded like every
+# other vault read (#606); on timeout the count reads 0 rather than aborting a
+# set -e source, and the tick still moves.
 export SYNC_CONFLICT_COUNT
-SYNC_CONFLICT_COUNT=$(find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs)
+SYNC_CONFLICT_COUNT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs) || SYNC_CONFLICT_COUNT=0
 
 # --- Daily note sections ---
+# The `sed -n '/X/,/^## /p'` section extractor runs to the next header, unbounded
+# on a day log whose section grows without bound (#606): the timeout shim bounds
+# the sed and head caps what a section can contribute, so the writer escapes
+# SIGPIPE when the section runs long. `tail -n +2` drops the header line, as the
+# originals did. The `||` keeps a timed-out read (124) from aborting a set -e
+# source after the substitution already captured the variable as empty.
 DAILY_NOTE="$VAULT/Daily/$TODAY.md"
-if [ -f "$DAILY_NOTE" ]; then
+if _gather_test -f "$DAILY_NOTE"; then
 export DAILY_NOTE_TOP3
-DAILY_NOTE_TOP3=$(sed -n '/^## Top 3/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -6 | tail -n +2 || echo "")
+DAILY_NOTE_TOP3=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/^## Top 3/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -6 | tail -n +2) || DAILY_NOTE_TOP3=""
 export DAILY_NOTE_TASKS
-DAILY_NOTE_TASKS=$(sed -n '/^## Tasks/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -20 | tail -n +2 || echo "")
+DAILY_NOTE_TASKS=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/^## Tasks/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -20 | tail -n +2) || DAILY_NOTE_TASKS=""
 else
   export DAILY_NOTE_TOP3=""
   export DAILY_NOTE_TASKS=""
@@ -575,9 +621,21 @@ GATHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$GATHER_DIR/blessings-lib.sh"
 ensure_blessings_cache || true
 
-if [ -f "$CEO_DIR/cache/blessings-today.md" ]; then
+if _gather_test -f "$CEO_DIR/cache/blessings-today.md"; then
 export BLESSINGS_TODAY
-BLESSINGS_TODAY=$(strip_frontmatter "$CEO_DIR/cache/blessings-today.md")
+# The cache read is bounded twice (#606): head caps what strip_frontmatter can
+# stream, and the timeout shim bounds the head itself, so a stalled mount
+# degrades instead of hanging the tick. A non-zero rc is a read failure, not a
+# quiet day: the blessing empties and the gather degrades, same as unreadable
+# status files above.
+_blessings_rc=0
+BLESSINGS_TODAY=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" head -200 "$CEO_DIR/cache/blessings-today.md" 2>/dev/null | strip_frontmatter_stdin) || _blessings_rc=$?
+if [ "$_blessings_rc" -ne 0 ]; then
+  echo "WARN: reading $CEO_DIR/cache/blessings-today.md failed (rc=$_blessings_rc)" >&2
+  _file_gather_mark_degraded "file-read-failed:$CEO_DIR/cache/blessings-today.md:read:rc=$_blessings_rc"
+  BLESSINGS_TODAY=""
+fi
+unset _blessings_rc
 else
   export BLESSINGS_TODAY=""
 fi
@@ -588,7 +646,7 @@ fi
 GATHER_MAX_FILE=10000
 _gather_safe_read() {
   local file="$1"
-  if [ -f "$file" ]; then
+  if _gather_test -f "$file"; then
     _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" head -c "$GATHER_MAX_FILE" "$file" 2>/dev/null
   fi
 }
@@ -635,7 +693,7 @@ esac
 # so the preflight returns 2 ("cannot tell") rather than claiming no work. An
 # unsearchable vault root also reads as absent here, since `-f` cannot see past it.
 PENDING_FILE="$VAULT/Pending.md"
-if [ -f "$PENDING_FILE" ]; then
+if _gather_test -f "$PENDING_FILE"; then
 export PENDING_ASK_QUESTIONS
 # See _gather_capture_lines: caps inside grep so the truncation can't SIGPIPE (#293),
 # and separates "no unchecked items" from "could not read the file" — a bare `|| true`
@@ -674,23 +732,25 @@ export LEDGER_RECENT
 export LEDGER_PREV_PREDICTED
 LEDGER_PREV_PREDICTED="[]"
 _ledger_dir="$CEO_DIR/model"
-if [ -d "$_ledger_dir" ]; then
+if _gather_test -d "$_ledger_dir"; then
   # `|| true`: with the dir present but holding no .md, bash leaves the glob literal
   # and ls exits non-zero, which pipefail + errexit turned into an aborted gather —
   # same blast radius as #293, reachable on a fresh host or after a ledger prune.
   # 2>/dev/null hides the message, not the status.
-  _latest=$(ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1) || true
+  _latest=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1) || true
   if [ -n "$_latest" ]; then
-    LEDGER_RECENT=$(tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
+    # tail and awk both read the same growing ledger file — like every other
+    # vault read, they run under the timeout shim (#606).
+    LEDGER_RECENT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
     # Parse the LAST "predicted today:" block's indented bullets into "repo#num" strings.
     # awk sets f=1 at each header (resetting on each, so only the last block's lines survive
     # into the final emitted set), captures "  - " bullets, stops at the next non-indented line.
-    _pred_lines=$(awk '
+    _pred_lines=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" awk '
       /predicted today:/ { f=1; out=""; next }
       f && /^  - / { out=out $0 "\n"; next }
       f && /^[^ ]/ { f=0 }
       END { printf "%s", out }
-    ' "$_latest" 2>/dev/null | sed -E 's/^  - //; s/:.*$//' | sed '/^$/d')
+    ' "$_latest" 2>/dev/null | sed -E 's/^  - //; s/:.*$//' | sed '/^$/d') || _pred_lines=""
     if [ -n "$_pred_lines" ]; then
       LEDGER_PREV_PREDICTED=$(printf '%s\n' "$_pred_lines" | jq -R . | jq -s . 2>/dev/null || echo "[]")
     fi

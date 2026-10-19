@@ -104,8 +104,8 @@ ceo_load_config() {
 # ---------------------------------------------------------------------------
 # ceo_resolve_timeout_bin — sets CEO_TIMEOUT_BIN to "timeout" / "gtimeout" / "".
 # Empty value means no portable timeout available; callers must handle that.
-# Mirrors the resolver in ceo-cron.sh:85-107; promoted here so non-cron scripts
-# (e.g. `ceo playbook scan`'s ollama probe) can share the same shim.
+# The one resolver for every CEO script (#606) — gather and cron both call it
+# rather than carrying their own copies.
 # ---------------------------------------------------------------------------
 ceo_resolve_timeout_bin() {
   if command -v timeout &>/dev/null; then
@@ -116,6 +116,21 @@ ceo_resolve_timeout_bin() {
     CEO_TIMEOUT_BIN=""
   fi
   export CEO_TIMEOUT_BIN
+}
+
+# ---------------------------------------------------------------------------
+# ceo_validate_timeout <value> — echoes the value when it is a positive integer
+# (seconds); non-zero exit (empty echo) when it is not. `0` is rejected because
+# GNU timeout reads it as "no wall-clock cap", and a non-integer makes timeout
+# exit 125 — either way the reads run degraded-or-unbounded rather than
+# bounded (#606). Consumers pass the echoed value straight to the timeout
+# binary, so the units stay bare integer seconds.
+# ---------------------------------------------------------------------------
+ceo_validate_timeout() {
+  case "${1-}" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  printf '%s\n' "$1"
 }
 
 # ---------------------------------------------------------------------------
