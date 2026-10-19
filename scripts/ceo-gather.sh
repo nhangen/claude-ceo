@@ -83,6 +83,21 @@ _gather_test() {
   esac
 }
 
+# _gather_read_timed_out <rc> <path> <tag> — for bounded reads whose fallback is
+# an empty value: marks the gather degraded and returns 0 only when the read hit
+# the wall-clock cap (124) or could not run (125/126), so a stalled mount does
+# not report as a healthy "0" or "none". Any other rc returns 1 and the caller
+# keeps its existing fallback.
+_gather_read_timed_out() {
+  case "$1" in
+    124|125|126)
+      _file_gather_mark_degraded "file-read-failed:$2:$3:rc=$1"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # Timeout shim for vault and network reads (#594). The binary comes from the
 # library resolver; unlike it, gather falls back to python3 when neither timeout
 # nor gtimeout is on PATH (stock macOS), since a stalled mount would otherwise
@@ -548,7 +563,12 @@ export YESTERDAY_LOG_SUMMARY
 # day log exceeds the pipe buffer. (#293) The sed itself is bounded (#606) since the
 # section extractor reads the same growing file; on timeout the summary reads as
 # absent, which the report renders as its normal "no eod summary" state.
-_yday_summary_raw=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null) || _yday_summary_raw=""
+_yday_rc=0
+_yday_summary_raw=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/eod-summary/,/^## /p' "$YESTERDAY_LOG" 2>/dev/null) || _yday_rc=$?
+if [ "$_yday_rc" -ne 0 ]; then
+  _yday_summary_raw=""
+  _gather_read_timed_out "$_yday_rc" "$YESTERDAY_LOG" yesterday-summary || true
+fi
 if [ -n "$_yday_summary_raw" ]; then
   YESTERDAY_LOG_SUMMARY=$(head -20 <<< "$_yday_summary_raw")
 else
@@ -593,9 +613,15 @@ fi
 # --- Sync conflicts ---
 # The largest walk on the mount (a full `find "$CEO_DIR"`) — bounded like every
 # other vault read (#606); on timeout the count reads 0 rather than aborting a
-# set -e source, and the tick still moves.
+# set -e source, and the tick still moves. A timed-out walk also marks the gather
+# degraded: "0 conflicts" and "could not look" are different facts.
 export SYNC_CONFLICT_COUNT
-SYNC_CONFLICT_COUNT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs) || SYNC_CONFLICT_COUNT=0
+_sync_rc=0
+SYNC_CONFLICT_COUNT=$(set -o pipefail; _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR" -name "*.sync-conflict-*" -type f 2>/dev/null | wc -l | xargs) || _sync_rc=$?
+if [ "$_sync_rc" -ne 0 ]; then
+  SYNC_CONFLICT_COUNT=0
+  _gather_read_timed_out "$_sync_rc" "$CEO_DIR" sync-conflicts || true
+fi
 
 # --- Daily note sections ---
 # The `sed -n '/X/,/^## /p'` section extractor runs to the next header, unbounded
@@ -607,9 +633,19 @@ SYNC_CONFLICT_COUNT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" find "$CEO_DIR" -name "*
 DAILY_NOTE="$VAULT/Daily/$TODAY.md"
 if _gather_test -f "$DAILY_NOTE"; then
 export DAILY_NOTE_TOP3
-DAILY_NOTE_TOP3=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/^## Top 3/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -6 | tail -n +2) || DAILY_NOTE_TOP3=""
+_top3_rc=0
+DAILY_NOTE_TOP3=$(set -o pipefail; _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/^## Top 3/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -6 | tail -n +2) || _top3_rc=$?
+if [ "$_top3_rc" -ne 0 ]; then
+  DAILY_NOTE_TOP3=""
+  _gather_read_timed_out "$_top3_rc" "$DAILY_NOTE" daily-note-top3 || true
+fi
 export DAILY_NOTE_TASKS
-DAILY_NOTE_TASKS=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/^## Tasks/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -20 | tail -n +2) || DAILY_NOTE_TASKS=""
+_tasks_rc=0
+DAILY_NOTE_TASKS=$(set -o pipefail; _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" sed -n '/^## Tasks/,/^## /p' "$DAILY_NOTE" 2>/dev/null | head -20 | tail -n +2) || _tasks_rc=$?
+if [ "$_tasks_rc" -ne 0 ]; then
+  DAILY_NOTE_TASKS=""
+  _gather_read_timed_out "$_tasks_rc" "$DAILY_NOTE" daily-note-tasks || true
+fi
 else
   export DAILY_NOTE_TOP3=""
   export DAILY_NOTE_TASKS=""
@@ -737,20 +773,32 @@ if _gather_test -d "$_ledger_dir"; then
   # and ls exits non-zero, which pipefail + errexit turned into an aborted gather —
   # same blast radius as #293, reachable on a fresh host or after a ledger prune.
   # 2>/dev/null hides the message, not the status.
-  _latest=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1) || true
+  _latest_rc=0
+  _latest=$(set -o pipefail; _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" ls -1 "$_ledger_dir"/*.md 2>/dev/null | sort | tail -1) || _latest_rc=$?
+  _gather_read_timed_out "$_latest_rc" "$_ledger_dir" ledger-ls || true
   if [ -n "$_latest" ]; then
     # tail and awk both read the same growing ledger file — like every other
     # vault read, they run under the timeout shim (#606).
-    LEDGER_RECENT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" tail -40 "$_latest" 2>/dev/null) || LEDGER_RECENT=""
+    _ledger_rc=0
+    LEDGER_RECENT=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" tail -40 "$_latest" 2>/dev/null) || _ledger_rc=$?
+    if [ "$_ledger_rc" -ne 0 ]; then
+      LEDGER_RECENT=""
+      _gather_read_timed_out "$_ledger_rc" "$_latest" ledger-tail || true
+    fi
     # Parse the LAST "predicted today:" block's indented bullets into "repo#num" strings.
     # awk sets f=1 at each header (resetting on each, so only the last block's lines survive
     # into the final emitted set), captures "  - " bullets, stops at the next non-indented line.
-    _pred_lines=$(_CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" awk '
+    _pred_rc=0
+    _pred_lines=$(set -o pipefail; _CEO_TIMEOUT "$CEO_VAULT_TIMEOUT" awk '
       /predicted today:/ { f=1; out=""; next }
       f && /^  - / { out=out $0 "\n"; next }
       f && /^[^ ]/ { f=0 }
       END { printf "%s", out }
-    ' "$_latest" 2>/dev/null | sed -E 's/^  - //; s/:.*$//' | sed '/^$/d') || _pred_lines=""
+    ' "$_latest" 2>/dev/null | sed -E 's/^  - //; s/:.*$//' | sed '/^$/d') || _pred_rc=$?
+    if [ "$_pred_rc" -ne 0 ]; then
+      _pred_lines=""
+      _gather_read_timed_out "$_pred_rc" "$_latest" ledger-predicted || true
+    fi
     if [ -n "$_pred_lines" ]; then
       LEDGER_PREV_PREDICTED=$(printf '%s\n' "$_pred_lines" | jq -R . | jq -s . 2>/dev/null || echo "[]")
     fi
