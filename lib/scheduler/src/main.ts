@@ -344,7 +344,9 @@ export function flushWrite(path: string, content: string, fsync: (fd: number) =>
  * Both run-state writers need that: a torn done record loses cronbird's cooldown,
  * and a torn running marker parses as "not running" and reopens the
  * MAX_CONCURRENT=1 gate while the child is still alive (#586). Any torn tempfile
- * is removed before rethrowing. `rawWrite` is the seam tests fail at.
+ * is removed before rethrowing. The parent directory is not fsynced, so a crash
+ * right after the rename can still surface the old contents. `rawWrite` is the
+ * seam tests fail at.
  */
 export function writeFileAtomic(
   dest: string,
