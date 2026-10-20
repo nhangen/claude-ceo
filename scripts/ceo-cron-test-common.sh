@@ -4,7 +4,12 @@
 
 set -uo pipefail  # no -e — tests handle their own failures
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: the SIGKILL arm in ceo-cron-scriptmode-1.test.sh generates
+# its child suite under scripts/tmp/ (#581), so a sourced copy of this file can
+# have a $0 one level deeper. test-harness.sh and every other path this file
+# resolves must be found relative to THIS file, wherever the suite that sources
+# it happens to live.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034  # consumed by the ceo-cron-*.test.sh shards that source this file
 CEO_CLI="$SCRIPT_DIR/ceo"
 # shellcheck disable=SC2034  # consumed by the ceo-cron-*.test.sh shards that source this file
@@ -35,6 +40,16 @@ setup() {
   # Bypass the ollama daemon HTTP probe in tests (the stubbed ollama binary
   # has no daemon backing it). Production runs leave this unset.
   export CEO_OLLAMA_SKIP_PROBE=1
+
+  # Fixture scripts live under scripts/tmp/ — gitignored by the repo-wide tmp/
+  # pattern, verified per-site in repo-hygiene.test.sh — so a SIGKILL, which no
+  # trap can convert into a teardown (#380 covers INT/TERM/HUP), can leak at most
+  # an untracked scratch file rather than an executable into the tracked
+  # directory (#581). The directory is remade every arm and never deleted by
+  # any suite: parallel suites share the one scripts/tmp/, and fixture names
+  # stay unique per suite — the same property .github/workflows/test.yml
+  # already relies on.
+  mkdir -p "$SCRIPT_DIR/tmp"
 
   # Isolate cron lock to this test invocation
   export CEO_LOCK_FILE="$TEST_HOME/ceo-cron.lock"
@@ -195,20 +210,23 @@ _FIXTURE_NEWLINE=$'\n'
 
 # _fixture_script <path>... — chmod +x each path and register it for teardown.
 #
-# These fixtures have to live in SCRIPT_DIR: the runner resolves a playbook's
-# `script:` relative to the checked-out scripts/ directory, which is tracked.
-# What was wrong was the cleanup, not the location — an `rm -f` on the last line
-# of a test body is skipped by a failing assertion, a `return`, or an `exit`,
-# leaving an untracked executable in a tracked directory, one `git add -A` from
-# a commit (test-writes-stay-in-the-fixture). teardown runs on all of those; a
-# test body's last line does not. An interrupt is covered too, but by a separate
-# mechanism -- run_tests traps INT/TERM/HUP and calls teardown, which it did not
-# before this change, so the two have to hold together.
+# These fixtures live under the gitignored scripts/tmp/ subdir — still inside
+# the checked-out scripts/ directory, so the runner resolves a playbook's
+# `script:` from SCRIPT_DIR the way it always has, with no `..` needed — but no
+# longer in the tracked tree itself. What went wrong before #581 was keeping
+# them in the tree's tracked surface while cleanup was bespoke: an `rm -f` on
+# the last line of a test body is skipped by a failing assertion, a `return`,
+# or an `exit`, and teardown covers aborts, INT/TERM/HUP (#380), but not
+# SIGKILL, which no trap can convert into a teardown. In the tracked directory
+# such a leak sat one `git add -A` from a commit
+# (test-writes-stay-in-the-fixture). Under the ignored scratch dir it is at
+# worst an untracked tmp/ leftover, the same class of file every other cron
+# scratch lands in — and a rerun of the same suite recreates the same name and
+# sweeps it at teardown anyway.
 #
-# It also protects the -P 4 reasoning in .github/workflows/test.yml, which rests
-# on no two suites writing the same fixed path under scripts/. A leaked fixture
-# from an aborted run makes that hand-maintained property false for every later
-# run on the same checkout.
+# It still protects the -P 4 reasoning in .github/workflows/test.yml, which
+# rests on no two suites writing the same fixed path under scripts/ — the
+# move keeps that property, it only relocates where the fixed paths live.
 _fixture_script() {
   local f
   # Loudly, not by returning 1 nobody checks: without the register the fixture
@@ -359,15 +377,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: $trig-test.sh
+script: tmp/$trig-test.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/$trig-test.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/$trig-test.sh" << SH
 #!/bin/bash
 [ -n "$outcome" ] && [ -n "\$CEO_RUNNER_OUTCOME_FILE" ] && printf '%s' "$outcome" > "\$CEO_RUNNER_OUTCOME_FILE"
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/$trig-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/$trig-test.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 }
 

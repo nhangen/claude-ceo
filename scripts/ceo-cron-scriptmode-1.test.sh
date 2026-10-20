@@ -5,7 +5,7 @@ source "$(cd "$(dirname "$0")" && pwd)/ceo-cron-test-common.sh"
 
 test_fleet_collector_failure_is_notified_once_without_becoming_success() {
   _write_outcome_playbook fleet-readiness ""
-  printf '#!/bin/bash\nexec bash "%s/ceo-fleet-readiness.sh"\n' "$SCRIPT_DIR" > "$SCRIPT_DIR/fleet-readiness-test.sh"
+  printf '#!/bin/bash\nexec bash "%s/ceo-fleet-readiness.sh"\n' "$SCRIPT_DIR" > "$SCRIPT_DIR/tmp/fleet-readiness-test.sh"
   mkdir -p "$TEST_HOME/checker/scripts" "$TEST_HOME/checker/home/.claude" "$TEST_HOME/python"
   printf 'raise SystemExit(2)\n' > "$TEST_HOME/checker/scripts/fleet-readiness.py"
   printf '{}\n' > "$TEST_HOME/checker/home/.claude/olla-fleet.json"
@@ -42,7 +42,7 @@ test_script_outcome_noop_suppresses_success_notify() {
   CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" outcome-noop >/dev/null 2>&1 || true
   local log; log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
   assert_not_contains "$log" "[success/outcome-noop]" "a noop outcome must suppress the success notify"
-  rm -f "$SCRIPT_DIR/outcome-noop-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/outcome-noop-test.sh"
 }
 
 
@@ -53,7 +53,7 @@ test_autopilot_fired_outcome_notifies() {
   CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" ticket-triage-autopilot >/dev/null 2>&1 || true
   local log; log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
   assert_contains "$log" "[success/ticket-triage-autopilot]" "a fired autopilot tick must send the success notify"
-  rm -f "$SCRIPT_DIR/ticket-triage-autopilot-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/ticket-triage-autopilot-test.sh"
 }
 
 
@@ -63,7 +63,7 @@ test_script_without_outcome_keeps_default_notify() {
   CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" bash "$CRON" outcome-default >/dev/null 2>&1 || true
   local log; log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
   assert_contains "$log" "[success/outcome-default]" "a script writing no outcome must still notify (default preserved)"
-  rm -f "$SCRIPT_DIR/outcome-default-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/outcome-default-test.sh"
 }
 
 
@@ -95,7 +95,7 @@ _assert_teardown_sweeps() {  # $1=label  $2..=extra paths to create+register
 }
 
 test_teardown_sweeps_a_registered_fixture() {
-  _assert_teardown_sweeps "single" "$SCRIPT_DIR/sweep-single-test.sh"
+  _assert_teardown_sweeps "single" "$SCRIPT_DIR/tmp/sweep-single-test.sh"
 }
 
 # The two-argument call at ceo-cron-misc.test.sh's model/pureshell site is the
@@ -103,7 +103,7 @@ test_teardown_sweeps_a_registered_fixture() {
 # test green while leaking the second path on every run.
 test_teardown_sweeps_every_path_of_a_multi_path_registration() {
   _assert_teardown_sweeps "multi" \
-    "$SCRIPT_DIR/sweep-multi-a-test.sh" "$SCRIPT_DIR/sweep-multi-b-test.sh"
+    "$SCRIPT_DIR/tmp/sweep-multi-a-test.sh" "$SCRIPT_DIR/tmp/sweep-multi-b-test.sh"
 }
 
 # A path containing a newline would be swept in fragments, and the tail fragment
@@ -115,7 +115,7 @@ test_a_fixture_path_containing_a_newline_is_refused() {
   # vacuously. The helper had the identical bug; this arm found it.
   # Under TEST_HOME, not SCRIPT_DIR: _fixture_script refuses this path by design,
   # so it can never be registered, and an unregisterable file has no business in
-  # the tracked directory. Nothing about the arm needs it there.
+  # the suite's scratch directory. Nothing about the arm needs it there.
   local bad="$TEST_HOME/sweep-a"$'\n'"sweep-b.sh"
   printf '#!/bin/bash\nexit 0\n' > "$bad"
   local err rc=0
@@ -134,14 +134,16 @@ test_a_fixture_path_containing_a_newline_is_refused() {
 # mid-body cannot then assert on what teardown did, because it is gone.
 _child_abort_leaves_no_fixture() {  # $1=label  $2=abort statement
   local label="$1" abort="$2"
-  local probe="$SCRIPT_DIR/abort-$label-test.sh"
+  local probe="$SCRIPT_DIR/tmp/abort-$label-test.sh"
   rm -f "$probe"
-  # The child lives in SCRIPT_DIR, not TEST_HOME: ceo-cron-test-common.sh
-  # resolves test-harness.sh from $(dirname "$0"), so a child elsewhere fails to
-  # source and never runs. That failure is silent in the shape these arms take —
-  # the probe is then never created, and "gone" is trivially true — which is why
-  # each arm also asserts the child actually produced a run.
-  local child="$SCRIPT_DIR/abort-child-probe.sh"
+  # The child lives under scripts/tmp/, not TEST_HOME: ceo-cron-test-common.sh
+  # resolves test-harness.sh relative to its own BASH_SOURCE, so a child suite
+  # generated anywhere still sources the harness (pre-#581 it had to sit beside
+  # the other suites, and a misplaced child failed to source and never ran —
+  # silent in the shape these arms take, since the probe is then never created
+  # and "gone" is trivially true — which is why each arm also asserts the child
+  # actually produced a run).
+  local child="$SCRIPT_DIR/tmp/abort-child-probe.sh"
   {
     echo '#!/bin/bash'
     echo 'set -uo pipefail'
@@ -180,7 +182,7 @@ test_a_body_ending_on_a_failing_assertion_still_has_its_fixture_swept() {
 }
 
 # A signal skips teardown unless run_tests traps it, which it did not before
-# #380. Without the trap the executable stays in the tracked scripts/ directory.
+# #380. Without the trap the executable stays behind under scripts/tmp/.
 #
 # SIGTERM, not SIGINT: a shell backgrounds a child with SIGINT set to SIG_IGN and
 # the child inherits it, so `kill -INT` on a `&`-launched suite does nothing and
@@ -189,9 +191,9 @@ test_a_body_ending_on_a_failing_assertion_still_has_its_fixture_swept() {
 # HUP is the other realistic one: a closing terminal or agent session (#571).
 _signalled_run_leaves_no_fixture() {
   local sig="$1"
-  local probe="$SCRIPT_DIR/abort-signal-test.sh"
+  local probe="$SCRIPT_DIR/tmp/abort-signal-test.sh"
   rm -f "$probe"
-  local child="$SCRIPT_DIR/interrupt-child-probe.sh"
+  local child="$SCRIPT_DIR/tmp/interrupt-child-probe.sh"
   {
     echo '#!/bin/bash'
     echo 'set -uo pipefail'
@@ -206,7 +208,7 @@ _signalled_run_leaves_no_fixture() {
   } > "$child"
   # Same reason as the abort helper, and more urgent here: this child sleeps 60s
   # by construction, so it is the likeliest file in the repo to be caught by a
-  # Ctrl-C — and it sits in the tracked directory.
+  # Ctrl-C. Under scripts/tmp/ even the leak that would remain is ignored scratch.
   _fixture_script "$child"
   env -u TEST_FILTER bash "$child" >"$TEST_HOME/interrupt-out" 2>&1 &
   local child_pid=$!
@@ -233,12 +235,88 @@ test_a_hung_up_run_still_has_its_fixture_swept() {
   _signalled_run_leaves_no_fixture HUP
 }
 
+# SIGKILL cannot be trapped, so #380's teardown-on-signal coverage ends here and
+# the register — which lives in the child's TEST_HOME — becomes unreachable with
+# the child: a real kill mid-suite does leak the fixture. What stops that leak
+# from being a problem is where it lands (#581): a fixture killed mid-suite now
+# lives under the gitignored scripts/tmp/, so `git status` can never show it
+# under scripts/, and a rerun of the same suite recreates the same name and
+# sweeps it at its own teardown.
+#
+# Like the abort and signal helpers above, each half runs a whole child suite so
+# the kill and the rerun happen against the real harness, not an in-process
+# stand-in; the generation, READY probe, and wait mirrors them exactly.
+test_a_sigkilled_run_leaves_the_tracked_tree_clean() {
+  local probe="$SCRIPT_DIR/tmp/abort-kill-test.sh"
+  rm -f "$probe"
+  local child="$SCRIPT_DIR/tmp/kill-child-probe.sh"
+  {
+    echo '#!/bin/bash'
+    echo 'set -uo pipefail'
+    echo "source '$SCRIPT_DIR/ceo-cron-test-common.sh'"
+    echo 'test_x() {'
+    echo "  printf '#!/bin/bash\\nexit 0\\n' > \"$probe\""
+    echo "  _fixture_script \"$probe\""
+    echo '  echo READY'
+    echo '  sleep 60'
+    echo '}'
+    echo 'run_tests'
+  } > "$child"
+  _fixture_script "$child"
+  env -u TEST_FILTER bash "$child" >"$TEST_HOME/kill-out" 2>&1 &
+  local child_pid=$!
+  local waited=0
+  while [ "$waited" -lt 100 ] && ! grep -q READY "$TEST_HOME/kill-out" 2>/dev/null; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  kill -9 "$child_pid" 2>/dev/null || true
+  wait "$child_pid" 2>/dev/null || true
+  rm -f "$child"
+
+  assert_contains "$(cat "$TEST_HOME/kill-out" 2>/dev/null || echo "")" "READY" \
+    "the child reached the body before being SIGKILLed"
+  # Present, not gone: no trap runs on KILL, so the fixture leak itself is the
+  # setup for the acceptance. Asserting presence keeps the arm honest — without
+  # it, a teardown that ran somehow (trap regression) would stop testing the
+  # location at all.
+  assert_eq "$(test -f "$probe" && echo present || echo gone)" "present" \
+    "a SIGKILLed run does leave the fixture — under scripts/tmp/, never scripts/"
+  # Nothing NEW, not nothing at all: --porcelain also reports legitimately
+  # modified tracked files (e.g. the change under test pre-merge), which says
+  # nothing about a leaked fixture. Only an untracked `??` entry would be one.
+  assert_eq "$(git -C "$SCRIPT_DIR" status --porcelain -- . | grep -c '^??' || true)" "0" \
+    "after a suite killed mid-run, git status shows nothing new under scripts/"
+  rm -f "$probe"
+
+  # The rerun the issue names: recreate the same name, register it, assert the
+  # recreate landed, exit normally — this run's teardown sweeps the file the
+  # previous run leaked, and the tracked tree stays clean through it.
+  {
+    echo '#!/bin/bash'
+    echo 'set -uo pipefail'
+    echo "source '$SCRIPT_DIR/ceo-cron-test-common.sh'"
+    echo 'test_x() {'
+    echo "  printf '#!/bin/bash\\nexit 0\\n' > \"$probe\""
+    echo "  _fixture_script \"$probe\""
+    echo "  assert_eq \"\$(test -f \"$probe\" && echo present || echo gone)\" \"present\" \"rerun recreated the leaked fixture\""
+    echo '}'
+    echo 'run_tests'
+  } > "$child"
+  _fixture_script "$child"
+  local out; out=$(env -u TEST_FILTER bash "$child" 2>&1)
+  rm -f "$child"
+  assert_contains "$out" "All tests passed" \
+    "the rerun suite actually ran, or the sweep it performs was never exercised"
+  assert_eq "$(test -f "$probe" && echo present || echo gone)" "gone" \
+    "a rerun of the killed suite sweeps the fixture its predecessor leaked"
+}
+
 
 test_registering_without_a_test_home_fails_loudly() {
   local saved="$TEST_HOME"
   TEST_HOME="$saved/definitely-not-here"
   local err rc=0
-  err=$(_fixture_script "$SCRIPT_DIR/sweep-nohome-test.sh" 2>&1) || rc=$?
+  err=$(_fixture_script "$SCRIPT_DIR/tmp/sweep-nohome-test.sh" 2>&1) || rc=$?
   TEST_HOME="$saved"
   assert_eq "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero" \
     "a missing TEST_HOME fails the registration"
@@ -247,13 +325,13 @@ test_registering_without_a_test_home_fails_loudly() {
 
 
 test_script_runner_failure_records_bounded_output_in_failure_reason() {
-  cat > "$SCRIPT_DIR/failing-script-test.sh" << 'SCRIPT'
+  cat > "$SCRIPT_DIR/tmp/failing-script-test.sh" << 'SCRIPT'
 #!/bin/bash
 echo "Line 1 output"
 echo "conflict: duplicate directory found" >&2
 exit 1
 SCRIPT
-  _fixture_script "$SCRIPT_DIR/failing-script-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-fail.md" << 'PB'
 ---
 name: script-fail
@@ -261,7 +339,7 @@ description: Failing script test fixture
 trigger: cron
 schedule: "0 9 * * *"
 runner: script
-script: failing-script-test.sh
+script: tmp/failing-script-test.sh
 tier: read
 status: active
 ---
@@ -276,7 +354,7 @@ PB
     "failure record must include the output prefix"
   assert_contains "$skips_log" "conflict: duplicate directory found" \
     "failure record must contain the script output (#302)"
-  rm -f "$SCRIPT_DIR/failing-script-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/failing-script-test.sh"
 }
 
 # The arm above pins that output is recorded; this pins that it is *bounded*,
@@ -285,7 +363,7 @@ PB
 # it to ceo-notify.sh for the Discord webhook. Without this, widening the tail
 # and the cut leaves the suite green.
 test_script_runner_failure_output_is_bounded_to_the_last_lines() {
-  cat > "$SCRIPT_DIR/verbose-failing-script-test.sh" << 'SCRIPT'
+  cat > "$SCRIPT_DIR/tmp/verbose-failing-script-test.sh" << 'SCRIPT'
 #!/bin/bash
 for i in $(seq 1 40); do
   printf 'noise-line-%03d-%s\n' "$i" "$(printf 'x%.0s' $(seq 1 300))" >&2
@@ -293,7 +371,7 @@ done
 echo "FINAL-MARKER the real error" >&2
 exit 1
 SCRIPT
-  _fixture_script "$SCRIPT_DIR/verbose-failing-script-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/verbose-failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-verbose.md" << 'PB'
 ---
 name: script-verbose
@@ -301,7 +379,7 @@ description: Verbose failing script fixture
 trigger: cron
 schedule: "0 9 * * *"
 runner: script
-script: verbose-failing-script-test.sh
+script: tmp/verbose-failing-script-test.sh
 tier: read
 status: active
 ---
@@ -319,7 +397,7 @@ PB
     "the bound must keep the LAST lines — the error — not the first"
   assert_not_contains "$line" "noise-line-001" \
     "the first lines of a long failure must be dropped, not the last"
-  rm -f "$SCRIPT_DIR/verbose-failing-script-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/verbose-failing-script-test.sh"
 }
 
 # The reason reaches a Discord webhook and a synced file, and a runner: script
@@ -336,7 +414,7 @@ test_script_runner_failure_redacts_credentials_from_the_recorded_reason() {
   FAKE_GITHUB_URL_TOKEN=$(fake_token ghp_ URL)
   FAKE_GITHUB_BARE_TOKEN=$(fake_token ghp_ BARE)
   FAKE_OPENAI_KEY=$(fake_token sk-)
-  cat > "$SCRIPT_DIR/leaky-failing-script-test.sh" << SCRIPT
+  cat > "$SCRIPT_DIR/tmp/leaky-failing-script-test.sh" << SCRIPT
 #!/bin/bash
 # Synthetic credentials for redaction tests. None of these are real.
 echo "fatal: could not read Username for 'https://nathan:${FAKE_GITHUB_URL_TOKEN}@github.com'" >&2
@@ -344,7 +422,7 @@ echo "gh: HTTP 401 with token=${FAKE_GITHUB_BARE_TOKEN}" >&2
 echo "Authorization: Bearer ${FAKE_OPENAI_KEY}" >&2
 exit 1
 SCRIPT
-  _fixture_script "$SCRIPT_DIR/leaky-failing-script-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/leaky-failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-leak.md" << 'PB'
 ---
 name: script-leak
@@ -352,7 +430,7 @@ description: Credential-bearing failing script fixture
 trigger: cron
 schedule: "0 9 * * *"
 runner: script
-script: leaky-failing-script-test.sh
+script: tmp/leaky-failing-script-test.sh
 tier: read
 status: active
 ---
@@ -372,20 +450,20 @@ PB
     "an api key must not reach the failure reason"
   assert_contains "$skips_log" "REDACTED" \
     "the redaction must be visible rather than silently dropping the line"
-  rm -f "$SCRIPT_DIR/leaky-failing-script-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/leaky-failing-script-test.sh"
 }
 
 # A script that reports its error on stdout and exits non-zero is ordinary.
 # Testing `[ -s "$SCRIPT_ERR_TMP" ]` rather than the trimmed tail meant a
 # trailing newline on stderr suppressed the stdout diagnostic entirely.
 test_script_runner_failure_falls_back_to_stdout_when_stderr_is_blank() {
-  cat > "$SCRIPT_DIR/stdout-failing-script-test.sh" << 'SCRIPT'
+  cat > "$SCRIPT_DIR/tmp/stdout-failing-script-test.sh" << 'SCRIPT'
 #!/bin/bash
 echo "STDOUT-DIAGNOSTIC the real error" 
 printf '\n' >&2
 exit 1
 SCRIPT
-  _fixture_script "$SCRIPT_DIR/stdout-failing-script-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/stdout-failing-script-test.sh"
   cat > "$CEO_DIR/playbooks/script-stdout.md" << 'PB'
 ---
 name: script-stdout
@@ -393,7 +471,7 @@ description: stdout-only failing script fixture
 trigger: cron
 schedule: "0 9 * * *"
 runner: script
-script: stdout-failing-script-test.sh
+script: tmp/stdout-failing-script-test.sh
 tier: read
 status: active
 ---
@@ -405,7 +483,7 @@ PB
   local skips_log; skips_log=$(_skips_log)
   assert_contains "$skips_log" "STDOUT-DIAGNOSTIC the real error" \
     "a whitespace-only stderr must not suppress the stdout diagnostic"
-  rm -f "$SCRIPT_DIR/stdout-failing-script-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/stdout-failing-script-test.sh"
 }
 
 
@@ -416,11 +494,11 @@ PB
 # which, or whose cron-skips.log to open. #390 made that worse by putting the
 # failing host's own script output in the reason.
 test_the_three_strike_alert_names_the_host_that_failed() {
-  cat > "$SCRIPT_DIR/alert-host-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/alert-host-test.sh" << 'SH'
 #!/bin/bash
 exit 7
 SH
-  _fixture_script "$SCRIPT_DIR/alert-host-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/alert-host-test.sh"
   cat > "$CEO_DIR/playbooks/alert-host.md" << 'PB'
 ---
 name: alert-host
@@ -431,7 +509,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: alert-host-test.sh
+script: tmp/alert-host-test.sh
 ---
 # noop
 PB
@@ -450,7 +528,7 @@ PB
     "the count line names the host — this is the sentence a reader quotes"
   assert_contains "$pending" "on test-host-a, check cron-raw-test-host-a.log" \
     "the action line names the host whose logs to open"
-  rm -f "$SCRIPT_DIR/alert-host-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/alert-host-test.sh"
 }
 
 # The fallback has to degrade the label, not the escalation. With the `||` inside
@@ -461,11 +539,11 @@ PB
 test_an_unresolvable_host_still_escalates_and_still_stamps_last_run() {
   printf '#!/bin/bash\nexit 0\n' > "$TEST_HOME/.bun/bin/hostname"
   chmod +x "$TEST_HOME/.bun/bin/hostname"
-  cat > "$SCRIPT_DIR/fb-host-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/fb-host-test.sh" << 'SH'
 #!/bin/bash
 exit 7
 SH
-  _fixture_script "$SCRIPT_DIR/fb-host-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/fb-host-test.sh"
   cat > "$CEO_DIR/playbooks/fb-host.md" << 'PB'
 ---
 name: fb-host
@@ -476,7 +554,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: fb-host-test.sh
+script: tmp/fb-host-test.sh
 ---
 # noop
 PB
@@ -504,7 +582,7 @@ PB
   local notify; notify=$(cat "$TEST_HOME/notify-fb.log" 2>/dev/null || echo "")
   assert_contains "$notify" "[failure/fb-host]" \
     "and the failure notify still fires after a degraded host resolution"
-  rm -f "$SCRIPT_DIR/fb-host-test.sh" "$TEST_HOME/.bun/bin/hostname"
+  rm -f "$SCRIPT_DIR/tmp/fb-host-test.sh" "$TEST_HOME/.bun/bin/hostname"
 }
 
 # Nothing in the production path creates $CEO_DIR/approvals — only the test
@@ -512,11 +590,11 @@ PB
 # escalation. Unchecked, that aborted the rest of _record_failure, and
 # cron-skips.log still said only that the run had failed.
 test_an_unwritable_pending_queue_does_not_swallow_the_rest_of_the_failure_path() {
-  cat > "$SCRIPT_DIR/ro-queue-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/ro-queue-test.sh" << 'SH'
 #!/bin/bash
 exit 7
 SH
-  _fixture_script "$SCRIPT_DIR/ro-queue-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/ro-queue-test.sh"
   cat > "$CEO_DIR/playbooks/ro-queue.md" << 'PB'
 ---
 name: ro-queue
@@ -527,7 +605,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: ro-queue-test.sh
+script: tmp/ro-queue-test.sh
 ---
 # noop
 PB
@@ -546,7 +624,7 @@ PB
   local skips; skips=$(_skips_log)
   assert_contains "$skips" "could not be written to approvals/pending.md" \
     "and the dropped escalation says so, rather than reading as a plain failure"
-  rm -f "$SCRIPT_DIR/ro-queue-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/ro-queue-test.sh"
 }
 
 # The logs are append-only and shared by every playbook, so the failure tail has
@@ -554,17 +632,17 @@ PB
 # second failing tick quotes the first one's output as its own cause — the same
 # cross-run misattribution #390 fixed in the norx wrapper, one layer up.
 test_the_failure_tail_quotes_this_runs_output_not_the_previous_ticks() {
-  cat > "$SCRIPT_DIR/slice-a-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/slice-a-test.sh" << 'SH'
 #!/bin/bash
 echo "cause-from-the-earlier-tick" >&2
 exit 3
 SH
-  cat > "$SCRIPT_DIR/slice-b-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/slice-b-test.sh" << 'SH'
 #!/bin/bash
 echo "cause-from-this-tick" >&2
 exit 4
 SH
-  _fixture_script "$SCRIPT_DIR/slice-a-test.sh" "$SCRIPT_DIR/slice-b-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/slice-a-test.sh" "$SCRIPT_DIR/tmp/slice-b-test.sh"
   for n in a b; do
     cat > "$CEO_DIR/playbooks/slice-$n.md" << PB
 ---
@@ -576,7 +654,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: slice-$n-test.sh
+script: tmp/slice-$n-test.sh
 ---
 # noop
 PB
@@ -590,7 +668,7 @@ PB
   assert_contains "$b_line" "cause-from-this-tick" "the tail quotes the run that just failed"
   assert_not_contains "$b_line" "cause-from-the-earlier-tick" \
     "and not the previous tick's, which is still sitting in the same shared log"
-  rm -f "$SCRIPT_DIR/slice-a-test.sh" "$SCRIPT_DIR/slice-b-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/slice-a-test.sh" "$SCRIPT_DIR/tmp/slice-b-test.sh"
 }
 
 # The offset only identifies this run's bytes while nothing else appends to these
@@ -628,17 +706,17 @@ test_no_playbook_script_writes_to_the_shared_cron_logs() {
 # for, had its offset unverified: dropping the argument from that one call site
 # left every existing arm green.
 test_the_stdout_fallback_is_also_scoped_to_this_run() {
-  cat > "$SCRIPT_DIR/slice-c-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/slice-c-test.sh" << 'SH'
 #!/bin/bash
 echo "stdout-cause-from-the-earlier-tick"
 exit 5
 SH
-  cat > "$SCRIPT_DIR/slice-d-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/slice-d-test.sh" << 'SH'
 #!/bin/bash
 echo "stdout-cause-from-this-tick"
 exit 6
 SH
-  _fixture_script "$SCRIPT_DIR/slice-c-test.sh" "$SCRIPT_DIR/slice-d-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/slice-c-test.sh" "$SCRIPT_DIR/tmp/slice-d-test.sh"
   for n in c d; do
     cat > "$CEO_DIR/playbooks/slice-$n.md" << PB
 ---
@@ -650,7 +728,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: slice-$n-test.sh
+script: tmp/slice-$n-test.sh
 ---
 # noop
 PB
@@ -665,7 +743,7 @@ PB
     "the stdout fallback quotes the run that just failed"
   assert_not_contains "$d_line" "stdout-cause-from-the-earlier-tick" \
     "and is scoped by the offset too, not just the stderr path"
-  rm -f "$SCRIPT_DIR/slice-c-test.sh" "$SCRIPT_DIR/slice-d-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/slice-c-test.sh" "$SCRIPT_DIR/tmp/slice-d-test.sh"
 }
 
 # The log is the child's stdout now, so bash opens it before exec'ing: a failed
@@ -674,12 +752,12 @@ PB
 # happen. The old capture-then-flush tolerated a log-write failure; this must
 # classify it instead.
 test_an_unwritable_script_log_is_not_reported_as_a_script_failure() {
-  cat > "$SCRIPT_DIR/ro-log-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/ro-log-test.sh" << 'SH'
 #!/bin/bash
 echo "this script should never run"
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/ro-log-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/ro-log-test.sh"
   cat > "$CEO_DIR/playbooks/ro-log.md" << 'PB'
 ---
 name: ro-log
@@ -690,7 +768,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: ro-log-test.sh
+script: tmp/ro-log-test.sh
 ---
 # noop
 PB
@@ -714,7 +792,7 @@ PB
   local err; err=$(_stderr_log)
   assert_not_contains "$out" "this script should never run" \
     "the script really did not run — the assertion above is not about wording"
-  rm -f "$SCRIPT_DIR/ro-log-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/ro-log-test.sh"
 }
 
 # Two properties that only matter when things go wrong, and that capture-then-flush
@@ -722,7 +800,7 @@ PB
 # showed an empty file; and a killed run lost its output entirely, because the
 # flush and the tmp-file cleanup were both after the script returned.
 test_script_output_is_live_and_survives_a_killed_run() {
-  cat > "$SCRIPT_DIR/live-out-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/live-out-test.sh" << 'SH'
 #!/bin/bash
 echo "live-marker-from-script"
 # Both streams: they are redirected separately, so reverting only one to
@@ -735,7 +813,7 @@ echo "live-marker-on-stderr" >&2
 i=0
 while [ ! -f "$LOG_DIR/stop-now" ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
 SH
-  _fixture_script "$SCRIPT_DIR/live-out-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/live-out-test.sh"
   cat > "$CEO_DIR/playbooks/live-out.md" << 'PB'
 ---
 name: live-out
@@ -746,7 +824,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: live-out-test.sh
+script: tmp/live-out-test.sh
 ---
 # noop
 PB
@@ -780,7 +858,7 @@ PB
     "the bytes written before the parent died are still in the log"
   assert_contains "$err" "live-marker-on-stderr" \
     "on both streams — each is redirected separately and can regress alone"
-  rm -f "$SCRIPT_DIR/live-out-test.sh" "$CEO_DIR/log/stop-now"
+  rm -f "$SCRIPT_DIR/tmp/live-out-test.sh" "$CEO_DIR/log/stop-now"
 }
 
 test_read_tier_failure_increments_fail_count() {
@@ -1013,7 +1091,7 @@ preflight: none
 tier: read
 status: active
 runner: scrpt
-script: typo-runner.sh
+script: tmp/typo-runner.sh
 ---
 PB
 

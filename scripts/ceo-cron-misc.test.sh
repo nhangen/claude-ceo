@@ -14,15 +14,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: fake-intake.sh
+script: tmp/fake-intake.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/fake-intake.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/fake-intake.sh" << SH
 #!/bin/bash
 echo "ran" > "$TEST_HOME/script-fired.txt"
 SH
-  _fixture_script "$SCRIPT_DIR/fake-intake.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/fake-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   CEO_VERBOSE=1 bash "$CRON" fake-intake >/dev/null 2>&1
@@ -33,7 +33,7 @@ SH
     FAILS=$((FAILS + 1))
   fi
 
-  rm -f "$SCRIPT_DIR/fake-intake.sh"
+  rm -f "$SCRIPT_DIR/tmp/fake-intake.sh"
 }
 
 
@@ -77,19 +77,19 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: shape-noop.sh
+script: tmp/shape-noop.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/shape-noop.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/shape-noop.sh" << 'SH'
 #!/bin/bash
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/shape-noop.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/shape-noop.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   local rc=0
   bash "$CRON" valid-trigger_1 >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "ceo-cron.sh must accept trigger names matching [A-Za-z0-9._-]+"
-  rm -f "$SCRIPT_DIR/shape-noop.sh"
+  rm -f "$SCRIPT_DIR/tmp/shape-noop.sh"
 }
 
 
@@ -305,22 +305,22 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: playbook-id-script.sh
+script: tmp/playbook-id-script.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/playbook-id-script.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/playbook-id-script.sh" << SH
 #!/bin/bash
 printf '%s' "\${CEO_PLAYBOOK_ID:-UNSET}" > "$TEST_HOME/playbook-id-from-child.txt"
 SH
-  _fixture_script "$SCRIPT_DIR/playbook-id-script.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/playbook-id-script.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" playbook-id-script >/dev/null 2>&1
   local got
   got=$(cat "$TEST_HOME/playbook-id-from-child.txt" 2>/dev/null || echo "MISSING")
   assert_eq "$got" "playbook-id-script" "script-runner must export CEO_PLAYBOOK_ID=<trigger> to its child"
 
-  rm -f "$SCRIPT_DIR/playbook-id-script.sh"
+  rm -f "$SCRIPT_DIR/tmp/playbook-id-script.sh"
 }
 
 
@@ -335,7 +335,7 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: model-script.sh
+script: tmp/model-script.sh
 model: sonnet
 ---
 PB
@@ -349,21 +349,21 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: pureshell-script.sh
+script: tmp/pureshell-script.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/model-script.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/model-script.sh" << SH
 #!/bin/bash
 printf '%s' "\${CEO_MODEL:-UNSET}" > "$TEST_HOME/model-from-child.txt"
 printf '%s' "\${CEO_MODEL_SOURCE:-UNSET}" > "$TEST_HOME/source-from-child.txt"
 printf '%s' "\${CEO_RUNNER_ARTIFACT:-UNSET}" > "$TEST_HOME/artifact-from-child.txt"
 SH
-  cat > "$SCRIPT_DIR/pureshell-script.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/pureshell-script.sh" << SH
 #!/bin/bash
 printf '[%s]' "\${CEO_MODEL-UNSET}" > "$TEST_HOME/pureshell-model-from-child.txt"
 SH
-  _fixture_script "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/model-script.sh" "$SCRIPT_DIR/tmp/pureshell-script.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" model-script >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" pureshell-script >/dev/null 2>&1
@@ -375,9 +375,11 @@ SH
   assert_eq "$got_model" "sonnet" "script-runner must export CEO_MODEL=<frontmatter model>, not the runner name"
   assert_eq "$got_pure" "[]" "script-runner with no model must export CEO_MODEL empty, not 'script'"
   assert_eq "$got_source" "declared" "script-runner must export CEO_MODEL_SOURCE=declared (frontmatter claim, not harness-invoked)"
-  assert_eq "$got_artifact" "model-script.sh" "script-runner must export CEO_RUNNER_ARTIFACT=<script file> for the Discord embed"
+  # The export is the script field verbatim — SCRIPT_PATH, which since #581 can
+  # be a tmp/-relative one — never a bare basename or the runner name.
+  assert_eq "$got_artifact" "tmp/model-script.sh" "script-runner must export CEO_RUNNER_ARTIFACT=<script file> for the Discord embed"
 
-  rm -f "$SCRIPT_DIR/model-script.sh" "$SCRIPT_DIR/pureshell-script.sh"
+  rm -f "$SCRIPT_DIR/tmp/model-script.sh" "$SCRIPT_DIR/tmp/pureshell-script.sh"
 }
 
 
@@ -501,15 +503,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: v-test.sh
+script: tmp/v-test.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/v-test.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/v-test.sh" << SH
 #!/bin/bash
 echo "ran" > "$TEST_HOME/v-test-fired.txt"
 SH
-  _fixture_script "$SCRIPT_DIR/v-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/v-test.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   unset CEO_VERBOSE
@@ -517,7 +519,7 @@ SH
   assert_file_exists "$TEST_HOME/v-test-fired.txt" \
     "script must run end-to-end with CEO_VERBOSE unset (regression guard for a528fde)"
 
-  rm -f "$SCRIPT_DIR/v-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/v-test.sh"
 }
 
 
@@ -532,16 +534,16 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: stderr-intake.sh
+script: tmp/stderr-intake.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/stderr-intake.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/stderr-intake.sh" << 'SH'
 #!/bin/bash
 echo "synthetic-script-stderr-sentinel" >&2
 exit 4
 SH
-  _fixture_script "$SCRIPT_DIR/stderr-intake.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/stderr-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" stderr-intake >/dev/null 2>&1 || true
 
@@ -550,7 +552,7 @@ SH
   assert_contains "$stderr_log" "synthetic-script-stderr-sentinel" \
     "script stderr must be appended to cron-stderr.log"
 
-  rm -f "$SCRIPT_DIR/stderr-intake.sh"
+  rm -f "$SCRIPT_DIR/tmp/stderr-intake.sh"
 }
 
 
@@ -565,15 +567,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: fail-intake.sh
+script: tmp/fail-intake.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/fail-intake.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/fail-intake.sh" << 'SH'
 #!/bin/bash
 exit 7
 SH
-  _fixture_script "$SCRIPT_DIR/fail-intake.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/fail-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" fail-intake >/dev/null 2>&1 || true
 
@@ -581,7 +583,7 @@ SH
   fails=$(_fail_count)
   assert_eq "$fails" "1" "FAIL_COUNT_FILE must be 1 after one script failure"
 
-  rm -f "$SCRIPT_DIR/fail-intake.sh"
+  rm -f "$SCRIPT_DIR/tmp/fail-intake.sh"
 }
 
 
@@ -596,15 +598,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: ok-intake.sh
+script: tmp/ok-intake.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/ok-intake.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/ok-intake.sh" << 'SH'
 #!/bin/bash
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/ok-intake.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/ok-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   echo 2 > "$(_ceo_state)/.fail-count-ok-intake"
   CEO_VERBOSE=1 bash "$CRON" ok-intake >/dev/null 2>&1 || true
@@ -613,7 +615,7 @@ SH
   fails=$(_fail_count)
   assert_eq "$fails" "0" "FAIL_COUNT_FILE must be 0 after a successful script run"
 
-  rm -f "$SCRIPT_DIR/ok-intake.sh"
+  rm -f "$SCRIPT_DIR/tmp/ok-intake.sh"
 }
 
 
@@ -628,15 +630,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: log-intake.sh
+script: tmp/log-intake.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/log-intake.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/log-intake.sh" << 'SH'
 #!/bin/bash
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/log-intake.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/log-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_VERBOSE=1 bash "$CRON" log-intake >/dev/null 2>&1 || true
 
@@ -644,7 +646,7 @@ SH
   runs_log=$(_runs_log)
   assert_contains "$runs_log" "log-intake completed" "cron-runs.log must record successful script run"
 
-  rm -f "$SCRIPT_DIR/log-intake.sh"
+  rm -f "$SCRIPT_DIR/tmp/log-intake.sh"
 }
 
 
@@ -667,14 +669,14 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: host-intake.sh
+script: tmp/host-intake.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/host-intake.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/host-intake.sh" << 'SH'
 #!/bin/bash
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/host-intake.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/host-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   if [ -n "$1" ]; then
     CEO_HOSTNAME="$1" bash "$CRON" host-intake >/dev/null 2>&1 || true
@@ -685,7 +687,7 @@ SH
     # tree on whoever has it exported.
     env -u CEO_HOSTNAME bash "$CRON" host-intake >/dev/null 2>&1 || true
   fi
-  rm -f "$SCRIPT_DIR/host-intake.sh"
+  rm -f "$SCRIPT_DIR/tmp/host-intake.sh"
 }
 
 test_an_unresolvable_host_says_so_in_cron_skips() {
@@ -734,14 +736,14 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: ro-intake.sh
+script: tmp/ro-intake.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/ro-intake.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/ro-intake.sh" << 'SH'
 #!/bin/bash
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/ro-intake.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/ro-intake.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   # A directory where the log file should be: the append cannot succeed, and the
@@ -753,7 +755,7 @@ SH
   mkdir -p "$CEO_DIR/log/cron-runs-$blocked_host.log"
 
   bash "$CRON" ro-intake >/dev/null 2>&1 || true
-  rm -f "$SCRIPT_DIR/ro-intake.sh"
+  rm -f "$SCRIPT_DIR/tmp/ro-intake.sh"
 
   local skips
   skips=$(_skips_log)
@@ -780,14 +782,14 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: $name.sh
+script: tmp/$name.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/$name.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/$name.sh" << 'SH'
 #!/bin/bash
 exit 1
 SH
-  _fixture_script "$SCRIPT_DIR/$name.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/$name.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 }
 
@@ -809,7 +811,7 @@ test_an_uncreatable_state_dir_refuses_to_dispatch() {
 
   local rc=0
   bash "$CRON" nodir-check >/dev/null 2>&1 || rc=$?
-  rm -f "$SCRIPT_DIR/nodir-check.sh" "$CEO_STATE_DIR"
+  rm -f "$SCRIPT_DIR/tmp/nodir-check.sh" "$CEO_STATE_DIR"
 
   assert_eq "$rc" "1" "an uncreatable state dir must stop the run, not half-apply bookkeeping"
   local skips
@@ -877,7 +879,7 @@ test_production_honors_CEO_STATE_DIR_not_just_HOME() {
   mkdir -p "$elsewhere"
   _write_failing_playbook override-check
   CEO_STATE_DIR="$elsewhere" bash "$CRON" override-check >/dev/null 2>&1 || true
-  rm -f "$SCRIPT_DIR/override-check.sh"
+  rm -f "$SCRIPT_DIR/tmp/override-check.sh"
 
   assert_file_exists "$elsewhere/.fail-count-override-check" \
     "production must resolve the state dir through CEO_STATE_DIR, not \$HOME"
@@ -912,7 +914,7 @@ test_cron_state_is_written_outside_the_synced_vault() {
   # they agree on a wrong number (#299).
   _write_failing_playbook state-check
   bash "$CRON" state-check >/dev/null 2>&1 || true
-  rm -f "$SCRIPT_DIR/state-check.sh"
+  rm -f "$SCRIPT_DIR/tmp/state-check.sh"
 
   assert_file_exists "$(_ceo_state)/.fail-count-state-check" \
     "the failure counter must land in the host-local state dir"
@@ -928,7 +930,7 @@ test_legacy_cron_state_is_migrated_on_first_run() {
   printf '2\n' > "$CEO_DIR/log/.fail-count-migr-check"
 
   bash "$CRON" migr-check >/dev/null 2>&1 || true
-  rm -f "$SCRIPT_DIR/migr-check.sh"
+  rm -f "$SCRIPT_DIR/tmp/migr-check.sh"
 
   assert_eq "$(cat "$(_ceo_state)/.fail-count-migr-check" 2>/dev/null)" "3" \
     "the legacy counter must carry across and increment, not restart at 1"
@@ -944,7 +946,7 @@ test_migration_does_not_clobber_existing_host_local_state() {
   printf '1\n' > "$(_ceo_state)/.fail-count-clob-check"
 
   bash "$CRON" clob-check >/dev/null 2>&1 || true
-  rm -f "$SCRIPT_DIR/clob-check.sh"
+  rm -f "$SCRIPT_DIR/tmp/clob-check.sh"
 
   assert_eq "$(cat "$(_ceo_state)/.fail-count-clob-check" 2>/dev/null)" "2" \
     "the host-local counter wins and increments from its own value"
@@ -971,7 +973,7 @@ test_an_unwritable_skips_journal_refuses_to_dispatch() {
 
   local rc=0
   bash "$CRON" unwritable-skips >/dev/null 2>&1 || rc=$?
-  rm -f "$SCRIPT_DIR/unwritable-skips.sh"
+  rm -f "$SCRIPT_DIR/tmp/unwritable-skips.sh"
   rmdir "$skips" 2>/dev/null || true
 
   assert_eq "$rc" "1" "an unwritable failure journal must stop the run, not fail silently"
@@ -1024,7 +1026,7 @@ test_the_dispatcher_journals_are_keyed_by_host() {
   # and one writer per file means syncing them costs no conflicts.
   _write_failing_playbook journal-check
   bash "$CRON" journal-check >/dev/null 2>&1 || true
-  rm -f "$SCRIPT_DIR/journal-check.sh"
+  rm -f "$SCRIPT_DIR/tmp/journal-check.sh"
 
   assert_file_exists "$(_skips_log_path)" "the skips journal must be keyed by host"
   assert_contains "$(cat "$(_skips_log_path)")" "journal-check" \
@@ -1052,7 +1054,7 @@ test_operator_facing_strings_name_a_journal_that_exists() {
     rm -f "$CEO_STATE_DIR/.last-run-strings-check"
     bash "$CRON" strings-check >/dev/null 2>&1 || true
   done
-  rm -f "$SCRIPT_DIR/strings-check.sh"
+  rm -f "$SCRIPT_DIR/tmp/strings-check.sh"
 
   local pending named
   pending=$(cat "$CEO_DIR/approvals/pending.md" 2>/dev/null || echo "")
@@ -1081,7 +1083,7 @@ test_two_hosts_write_separate_journals() {
   CEO_HOSTNAME=hostJ1 bash "$CRON" j2-check >/dev/null 2>&1 || true
   rm -f "$CEO_STATE_DIR/.last-run-j2-check"
   CEO_HOSTNAME=hostJ2 bash "$CRON" j2-check >/dev/null 2>&1 || true
-  rm -f "$SCRIPT_DIR/j2-check.sh"
+  rm -f "$SCRIPT_DIR/tmp/j2-check.sh"
 
   assert_file_exists "$CEO_DIR/log/cron-skips-hostJ1.log" "host J1 writes its own journal"
   assert_file_exists "$CEO_DIR/log/cron-skips-hostJ2.log" "host J2 writes its own journal"
@@ -1183,15 +1185,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: disk-monitor-test.sh
+script: tmp/disk-monitor-test.sh
 ---
 PB
 
-  cat > "$SCRIPT_DIR/disk-monitor-test.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/disk-monitor-test.sh" << 'SH'
 #!/bin/bash
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/disk-monitor-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/disk-monitor-test.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   CEO_NOTIFY_DEBUG_LOG="$TEST_HOME/notify-debug.log" CEO_VERBOSE=1 bash "$CRON" disk-monitor >/dev/null 2>&1 || true
 
@@ -1199,7 +1201,7 @@ SH
   notify_log=$(cat "$TEST_HOME/notify-debug.log" 2>/dev/null || echo "")
   assert_not_contains "$notify_log" "[success/disk-monitor]" "disk-monitor success must not invoke success notification"
 
-  rm -f "$SCRIPT_DIR/disk-monitor-test.sh"
+  rm -f "$SCRIPT_DIR/tmp/disk-monitor-test.sh"
 }
 
 

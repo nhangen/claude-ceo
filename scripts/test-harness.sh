@@ -227,9 +227,11 @@ run_tests() {
   skips_tmp="${body_fails_tmp}.skips"
 
   # An interrupt otherwise skips teardown entirely, so whatever a suite cleans
-  # up there stays behind — for the ceo-cron suites that is an executable in the
-  # tracked scripts/ directory (#380), which is the leak teardown exists to
-  # prevent. Ctrl-C during a slow suite is not an exotic event. `type` is
+  # up there stays behind — for the ceo-cron suites that is a fixture script
+  # left under scripts/ (#380). Those fixtures have moved to the gitignored
+  # scripts/tmp/ since #581 — a SIGKILL, which no trap can cover, leaks at most
+  # ignored scratch — and teardown still sweeps the register's names beneath it.
+  # `type` is
   # re-checked because the trap outlives any one arm. Every trapped signal
   # exits 130; no caller distinguishes 129/130/143.
   # `trap - INT TERM HUP` first, so a second signal — or one arriving while the
