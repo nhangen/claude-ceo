@@ -74,11 +74,15 @@ _registry_report_flag() {
   # because jq treats false as empty, which would collapse an explicit
   # discord_report:false into the settings fallback. Branch on array length and
   # an explicit null check instead so false stays distinct from absent.
+  # Booleans are emitted as true/false; non-booleans are tagged with "invalid:"
+  # plus their JSON representation so strings like "true"/"false" do not coerce
+  # into booleans, empty strings and "absent" do not collide with sentinels,
+  # and newlines stay JSON-escaped (#564).
   val=$(jq -r --arg t "$TRIGGER" --arg f "$field" \
     '[.playbooks[]? | select(.name==$t) | .[$f]] as $v
      | if ($v | length) == 0 then "absent"
        elif ($v[0] == null) then "absent"
-       else ($v[0] | tostring) end' \
+       else ($v[0] | if type == "boolean" then tostring else "invalid:" + tojson end) end' \
     "$reg" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     # jq's own message, or a parse error and an EACCES look identical here and
@@ -102,8 +106,8 @@ _registry_report_flag() {
       _dlog "registry query produced no output for $field, falling back to settings ($reg)"
       echo absent
       ;;
-    *)
-      _dlog "registry flag for $field is not a boolean ($(printf '%s' "$val" | tr '\n' ' ' | head -c 80)), falling back to settings ($reg)"
+    invalid:*|*)
+      _dlog "registry flag for $field is not a boolean ($(printf '%s' "${val#invalid:}" | tr '\n' ' ' | head -c 80)), falling back to settings ($reg)"
       echo absent
       ;;
   esac
