@@ -316,7 +316,6 @@ test_non_boolean_registry_flag_is_named_not_called_absent() {
 
 test_string_true_falls_back_to_settings_and_logs_not_a_boolean() {
   echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
-  # Non-default trigger not in settings allow-list.
   echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
   mkdir -p "$HOME/.ceo"
   echo '{"playbooks":[{"name":"custom-report","discord_report":"true"}]}' > "$HOME/.ceo/registry.json"
@@ -335,7 +334,6 @@ test_string_true_falls_back_to_settings_and_logs_not_a_boolean() {
 
 test_string_false_falls_back_to_settings_and_logs_not_a_boolean() {
   echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
-  # Non-default trigger in settings allow-list.
   echo '{"discord_report_triggers":["custom-report"]}' > "$CEO_DIR/settings.json"
   mkdir -p "$HOME/.ceo"
   echo '{"playbooks":[{"name":"custom-report","discord_report":"false"}]}' > "$HOME/.ceo/registry.json"
@@ -388,7 +386,6 @@ test_newline_string_flag_is_reported_as_non_boolean_not_no_output() {
   echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
   echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
   mkdir -p "$HOME/.ceo"
-  # JSON containing a newline string value
   printf '{"playbooks":[{"name":"morning-brief","discord_report":"\\n"}]}' > "$HOME/.ceo/registry.json"
 
   printf 'newline body' | "$REPORT" morning-brief >/dev/null 2>&1

@@ -74,10 +74,8 @@ _registry_report_flag() {
   # because jq treats false as empty, which would collapse an explicit
   # discord_report:false into the settings fallback. Branch on array length and
   # an explicit null check instead so false stays distinct from absent.
-  # Booleans are emitted as true/false; non-booleans are tagged with "invalid:"
-  # plus their JSON representation so strings like "true"/"false" do not coerce
-  # into booleans, empty strings and "absent" do not collide with sentinels,
-  # and newlines stay JSON-escaped (#564).
+  # tojson keeps a string "true"/"false" from passing as a boolean and keeps
+  # "", "absent", and embedded newlines from colliding with the sentinels (#564).
   val=$(jq -r --arg t "$TRIGGER" --arg f "$field" \
     '[.playbooks[]? | select(.name==$t) | .[$f]] as $v
      | if ($v | length) == 0 then "absent"
