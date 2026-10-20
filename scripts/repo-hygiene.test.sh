@@ -50,6 +50,8 @@ test_a_git_failure_is_not_reported_as_not_ignored() {
 test_tmp_dir_is_ignored() {
   assert_eq "$(_is_ignored tmp/cron-full.out)" "yes" "tmp/ cron stdout is ignored"
   assert_eq "$(_is_ignored tmp/scratch.md)" "yes" "tmp/ scratch markdown is ignored"
+  assert_eq "$(_is_ignored scripts/tmp/x-test.sh)" "yes" \
+    "scripts/tmp/ fixtures are ignored at depth (the ceo-cron suites rely on it)"
 }
 
 test_eval_output_dirs_are_ignored() {

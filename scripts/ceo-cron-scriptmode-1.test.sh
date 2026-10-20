@@ -284,7 +284,11 @@ test_a_sigkilled_run_leaves_the_tracked_tree_clean() {
   # Nothing NEW, not nothing at all: --porcelain also reports legitimately
   # modified tracked files (e.g. the change under test pre-merge), which says
   # nothing about a leaked fixture. Only an untracked `??` entry would be one.
-  assert_eq "$(git -C "$SCRIPT_DIR" status --porcelain -- . | grep -c '^??' || true)" "0" \
+  assert_eq "$(git -C "$SCRIPT_DIR" check-ignore -q "$probe" && echo ignored || echo tracked)" "ignored" \
+    "the leaked fixture is gitignored, so git status cannot show it under scripts/"
+  local st
+  st=$(git -C "$SCRIPT_DIR" status --porcelain -- .) || st="git-status-failed"
+  assert_eq "$(printf '%s\n' "$st" | grep -c '^??\|^git-status-failed' || true)" "0" \
     "after a suite killed mid-run, git status shows nothing new under scripts/"
   rm -f "$probe"
 
