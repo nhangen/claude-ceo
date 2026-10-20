@@ -228,12 +228,9 @@ run_tests() {
 
   # An interrupt otherwise skips teardown entirely, so whatever a suite cleans
   # up there stays behind — for the ceo-cron suites that is a fixture script
-  # left under scripts/ (#380). Those fixtures have moved to the gitignored
-  # scripts/tmp/ since #581 — a SIGKILL, which no trap can cover, leaks at most
-  # ignored scratch — and teardown still sweeps the register's names beneath it.
-  # `type` is
-  # re-checked because the trap outlives any one arm. Every trapped signal
-  # exits 130; no caller distinguishes 129/130/143.
+  # left under scripts/tmp/ (#380). Ctrl-C during a slow suite is not an exotic
+  # event. `type` is re-checked because the trap outlives any one arm. Every
+  # trapped signal exits 130; no caller distinguishes 129/130/143.
   # `trap - INT TERM HUP` first, so a second signal — or one arriving while the
   # loop's own teardown is mid-flight — cannot re-enter this handler. A
   # second pass through a teardown that has already unset its saved HOME
