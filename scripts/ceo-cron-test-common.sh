@@ -4,7 +4,9 @@
 
 set -uo pipefail  # no -e — tests handle their own failures
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: the SIGKILL arm's child suite lives under scripts/tmp/, so
+# its $0 is one level deeper than this file.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034  # consumed by the ceo-cron-*.test.sh shards that source this file
 CEO_CLI="$SCRIPT_DIR/ceo"
 # shellcheck disable=SC2034  # consumed by the ceo-cron-*.test.sh shards that source this file
@@ -35,6 +37,15 @@ setup() {
   # Bypass the ollama daemon HTTP probe in tests (the stubbed ollama binary
   # has no daemon backing it). Production runs leave this unset.
   export CEO_OLLAMA_SKIP_PROBE=1
+
+  # Fixtures live under scripts/tmp/, ignored by the repo-wide tmp/ pattern
+  # (guarded in repo-hygiene.test.sh), because SIGKILL cannot run teardown (#581).
+  # No suite deletes the dir: parallel suites share it, and fixture names stay
+  # unique per suite, as .github/workflows/test.yml's -P 4 relies on.
+  mkdir -p "$SCRIPT_DIR/tmp" || {
+    echo "setup: cannot create $SCRIPT_DIR/tmp" >&2
+    return 1
+  }
 
   # Isolate cron lock to this test invocation
   export CEO_LOCK_FILE="$TEST_HOME/ceo-cron.lock"
@@ -195,20 +206,15 @@ _FIXTURE_NEWLINE=$'\n'
 
 # _fixture_script <path>... — chmod +x each path and register it for teardown.
 #
-# These fixtures have to live in SCRIPT_DIR: the runner resolves a playbook's
-# `script:` relative to the checked-out scripts/ directory, which is tracked.
-# What was wrong was the cleanup, not the location — an `rm -f` on the last line
-# of a test body is skipped by a failing assertion, a `return`, or an `exit`,
-# leaving an untracked executable in a tracked directory, one `git add -A` from
-# a commit (test-writes-stay-in-the-fixture). teardown runs on all of those; a
-# test body's last line does not. An interrupt is covered too, but by a separate
-# mechanism -- run_tests traps INT/TERM/HUP and calls teardown, which it did not
-# before this change, so the two have to hold together.
+# Fixtures live under the ignored scripts/tmp/, still inside scripts/ so the
+# runner resolves a playbook's `script:` from SCRIPT_DIR with no `..`. An `rm -f`
+# on a test body's last line is skipped by a failing assertion, `return`, or
+# `exit`, so registered paths are swept by teardown, which covers aborts and
+# INT/TERM/HUP (#380). SIGKILL cannot be trapped; that leak lands in the ignored
+# dir, and a rerun of the same suite sweeps it (#581).
 #
-# It also protects the -P 4 reasoning in .github/workflows/test.yml, which rests
-# on no two suites writing the same fixed path under scripts/. A leaked fixture
-# from an aborted run makes that hand-maintained property false for every later
-# run on the same checkout.
+# Fixed paths keep the -P 4 reasoning in .github/workflows/test.yml true: no two
+# suites write the same one.
 _fixture_script() {
   local f
   # Loudly, not by returning 1 nobody checks: without the register the fixture
@@ -228,6 +234,10 @@ _fixture_script() {
         echo "_fixture_script: refusing a path containing a newline" >&2
         return 1 ;;
     esac
+    [ -f "$f" ] || {
+      echo "_fixture_script: fixture missing: $f" >&2
+      return 1
+    }
     chmod +x "$f"
     # A file, not a shell array: test bodies run in a subshell, so an array
     # appended there never reaches teardown in the parent. This is the same
@@ -359,15 +369,15 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: $trig-test.sh
+script: tmp/$trig-test.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/$trig-test.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/$trig-test.sh" << SH
 #!/bin/bash
 [ -n "$outcome" ] && [ -n "\$CEO_RUNNER_OUTCOME_FILE" ] && printf '%s' "$outcome" > "\$CEO_RUNNER_OUTCOME_FILE"
 exit 0
 SH
-  _fixture_script "$SCRIPT_DIR/$trig-test.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/$trig-test.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 }
 

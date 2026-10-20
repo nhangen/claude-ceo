@@ -227,11 +227,10 @@ run_tests() {
   skips_tmp="${body_fails_tmp}.skips"
 
   # An interrupt otherwise skips teardown entirely, so whatever a suite cleans
-  # up there stays behind — for the ceo-cron suites that is an executable in the
-  # tracked scripts/ directory (#380), which is the leak teardown exists to
-  # prevent. Ctrl-C during a slow suite is not an exotic event. `type` is
-  # re-checked because the trap outlives any one arm. Every trapped signal
-  # exits 130; no caller distinguishes 129/130/143.
+  # up there stays behind — for the ceo-cron suites that is a fixture script
+  # left under scripts/tmp/ (#380). Ctrl-C during a slow suite is not an exotic
+  # event. `type` is re-checked because the trap outlives any one arm. Every
+  # trapped signal exits 130; no caller distinguishes 129/130/143.
   # `trap - INT TERM HUP` first, so a second signal — or one arriving while the
   # loop's own teardown is mid-flight — cannot re-enter this handler. A
   # second pass through a teardown that has already unset its saved HOME

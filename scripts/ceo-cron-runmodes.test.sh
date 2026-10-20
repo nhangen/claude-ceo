@@ -162,14 +162,14 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: dr-script.sh
+script: tmp/dr-script.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/dr-script.sh" << SH
+  cat > "$SCRIPT_DIR/tmp/dr-script.sh" << SH
 #!/bin/bash
 echo "ran" > "$TEST_HOME/dr-script-fired.txt"
 SH
-  _fixture_script "$SCRIPT_DIR/dr-script.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/dr-script.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   bash "$CRON" dr-script --dry-run >/dev/null 2>&1 || true
@@ -179,7 +179,7 @@ SH
   assert_file_exists "$pf" "dry-run must write a preview file"
   assert_contains "$(cat "$pf" 2>/dev/null)" "dr-script.sh" "preview must name the would-run script"
 
-  rm -f "$SCRIPT_DIR/dr-script.sh"
+  rm -f "$SCRIPT_DIR/tmp/dr-script.sh"
 }
 
 
@@ -983,14 +983,14 @@ preflight: none
 tier: read
 status: active
 runner: script
-script: dr-trunc.sh
+script: tmp/dr-trunc.sh
 ---
 PB
-  cat > "$SCRIPT_DIR/dr-trunc.sh" << 'SH'
+  cat > "$SCRIPT_DIR/tmp/dr-trunc.sh" << 'SH'
 #!/bin/bash
 true
 SH
-  _fixture_script "$SCRIPT_DIR/dr-trunc.sh"
+  _fixture_script "$SCRIPT_DIR/tmp/dr-trunc.sh"
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
   bash "$CRON" dr-trunc --dry-run >/dev/null 2>&1 || true
@@ -998,7 +998,7 @@ SH
 
   assert_eq "$(grep -c '# DRY-RUN preview' "$(_preview_file dr-trunc)" 2>/dev/null | tr -d ' ')" "1" "a re-run must replace the preview, not append a second header"
 
-  rm -f "$SCRIPT_DIR/dr-trunc.sh"
+  rm -f "$SCRIPT_DIR/tmp/dr-trunc.sh"
 }
 
 
