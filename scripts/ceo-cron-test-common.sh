@@ -44,7 +44,7 @@ setup() {
   # unique per suite, as .github/workflows/test.yml's -P 4 relies on.
   mkdir -p "$SCRIPT_DIR/tmp" || {
     echo "setup: cannot create $SCRIPT_DIR/tmp" >&2
-    exit 1
+    return 1
   }
 
   # Isolate cron lock to this test invocation
