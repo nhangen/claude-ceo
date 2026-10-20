@@ -304,7 +304,7 @@ test_non_boolean_registry_flag_is_named_not_called_absent() {
 
   local log
   log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
-  assert_contains "$log" "registry flag for discord_report is not a boolean (yes), falling back to settings" \
+  assert_contains "$log" 'registry flag for discord_report is not a boolean ("yes"), falling back to settings' \
     "a present non-boolean flag must be named with its value"
   assert_not_contains "$log" "registry flag absent for discord_report" \
     "a present non-boolean flag is not absent"
@@ -312,6 +312,120 @@ test_non_boolean_registry_flag_is_named_not_called_absent() {
   assert_not_contains "$log" "registry jq query failed" "the registry parses"
   assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "yes body" \
     "a non-boolean flag falls back to the settings allow-list and still delivers"
+}
+
+test_string_true_falls_back_to_settings_and_logs_not_a_boolean() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"custom-report","discord_report":"true"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'custom body' | "$REPORT" custom-report >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" 'registry flag for discord_report is not a boolean ("true"), falling back to settings' \
+    "a string true flag must be reported as a non-boolean naming its JSON value"
+  assert_not_contains "$log" "delivery enabled by registry discord_report flag" \
+    "a string true must not be honored as boolean true"
+  assert_eq "$(find "$CURL_CAPTURE_DIR" -type f | wc -l | tr -d ' ')" "0" \
+    "a string true must fall back to settings and not deliver when unlisted"
+}
+
+test_string_false_falls_back_to_settings_and_logs_not_a_boolean() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["custom-report"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"custom-report","discord_report":"false"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'custom body' | "$REPORT" custom-report >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" 'registry flag for discord_report is not a boolean ("false"), falling back to settings' \
+    "a string false flag must be reported as a non-boolean naming its JSON value"
+  assert_not_contains "$log" "delivery disabled by registry discord_report flag" \
+    "a string false must not be honored as boolean false"
+  assert_contains "$(cat "$CURL_CAPTURE_DIR"/payload-*.json 2>/dev/null)" "custom body" \
+    "a string false must fall back to settings and deliver when listed"
+}
+
+test_literal_absent_string_is_reported_as_non_boolean() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief","discord_report":"absent"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'absent body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" 'registry flag for discord_report is not a boolean ("absent"), falling back to settings' \
+    "a literal absent string must be reported as a non-boolean"
+  assert_not_contains "$log" "registry flag absent for discord_report" \
+    "a literal absent string is not an absent flag"
+}
+
+test_empty_string_flag_is_reported_as_non_boolean_not_no_output() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief","discord_report":""}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'empty string body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" 'registry flag for discord_report is not a boolean (""), falling back to settings' \
+    "an empty string flag must be reported as a non-boolean"
+  assert_not_contains "$log" "registry query produced no output for discord_report" \
+    "an empty string flag is not empty query output"
+}
+
+test_newline_string_flag_is_reported_as_non_boolean_not_no_output() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  printf '{"playbooks":[{"name":"morning-brief","discord_report":"\\n"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'newline body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" 'registry flag for discord_report is not a boolean ("\n"), falling back to settings' \
+    "a newline string flag must be reported as a non-boolean"
+  assert_not_contains "$log" "registry query produced no output for discord_report" \
+    "a newline string flag is not empty query output"
+}
+
+test_null_flag_is_reported_as_absent_not_non_boolean() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief","discord_report":null}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'null body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" "registry flag absent for discord_report" \
+    "an explicit null flag is treated as absent"
+  assert_not_contains "$log" "is not a boolean" \
+    "an explicit null flag is not a non-boolean value"
+}
+
+test_invalid_prefixed_string_flag_logs_its_own_value() {
+  echo '{"discord_report_webhook":"http://127.0.0.1/reports"}' > "$CEO_SECRETS_FILE"
+  echo '{"discord_report_triggers":["morning-brief"]}' > "$CEO_DIR/settings.json"
+  mkdir -p "$HOME/.ceo"
+  echo '{"playbooks":[{"name":"morning-brief","discord_report":"invalid:x"}]}' > "$HOME/.ceo/registry.json"
+
+  printf 'prefix body' | "$REPORT" morning-brief >/dev/null 2>&1
+
+  local log
+  log=$(cat "$CEO_DISCORD_REPORT_DEBUG_LOG" 2>/dev/null || echo "")
+  assert_contains "$log" 'registry flag for discord_report is not a boolean ("invalid:x"), falling back to settings' \
+    "a value that starts with the invalid: tag keeps its own prefix in the log"
 }
 
 test_multi_document_registry_value_logs_on_one_line() {
