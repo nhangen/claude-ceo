@@ -8,7 +8,6 @@ Slice 2 (#187): real shell/fs/git tools + task-relevant rule injection.
 import argparse
 import hashlib
 import json
-import re
 import signal
 import sys
 from datetime import datetime, timezone
@@ -19,7 +18,7 @@ from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryErr
                           load_registry, load_scores, load_skill_index, mcp_tools_to_ollama,
                           ollama_transport, render_catalog, run_agent)
 from ollama_agent.ledger import append_run
-from ollama_agent.transport import REDACT_WINDOW, format_error, redact_secrets
+from ollama_agent.transport import format_error
 
 # Local open-weights LLMs (Llama/Qwen/Gemma) under byte-pair encoding run
 # ~3-4 characters per token across mixed code, markdown, and JSON schemas.
@@ -106,9 +105,6 @@ def _restore_default_kill_handlers():
             signal.signal(sig, signal.SIG_DFL)
         except ValueError:
             pass
-
-
-_format_error = format_error
 
 
 def _crash_record(reason, run_id, usage_tracker, toolbox, error_class=None, error=None):
@@ -395,7 +391,7 @@ def main(argv=None):
     except KeyboardInterrupt as e:
         print("agent interrupted", file=sys.stderr)
         rec = _crash_record("killed", a.run_id, usage_tracker, toolbox,
-                            error_class=type(e).__name__, error=_format_error(e))
+                            error_class=type(e).__name__, error=format_error(e))
         exit_code = 130
     # Deliberately broad. The ledger's job is to record that a run burned tokens,
     # and a TypeError in the loop burned them exactly as a RuntimeError would.
@@ -403,12 +399,12 @@ def main(argv=None):
     # this catch exists to close, so the class is recorded (in error_class) rather
     # than branched on.
     except Exception as e:
-        # Both sinks go through _format_error: a raw `{e}` could raise before the
+        # Both sinks go through format_error: a raw `{e}` could raise before the
         # row is built, and would put an unredacted upstream body in the log.
-        error = _format_error(e)
+        error = format_error(e)
         # stderr keeps more than the ledger's 200, so a context-overflow
         # message still reaches its remediation.
-        print(f"agent failed: {type(e).__name__}: {_format_error(e, limit=2000) or ''}",
+        print(f"agent failed: {type(e).__name__}: {format_error(e, limit=2000) or ''}",
               file=sys.stderr)
         rec = _crash_record("error", a.run_id, usage_tracker, toolbox,
                             error_class=type(e).__name__, error=error)
