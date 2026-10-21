@@ -7,8 +7,13 @@ returncode are NOT operational failures and must stay out of .tool_errors.
 """
 import json
 import subprocess
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fake_credentials import fake_secret  # noqa: E402
+from ollama_agent.transport import format_error  # noqa: E402
 from ollama_agent.tools import ToolBox, TOOLS, ERROR_RELEVANT_TOOLS
 from ollama_agent.skills import Skill, USE_SKILL_TOOL
 
@@ -470,3 +475,31 @@ def test_toolbox_tool_error_bounds_escapes_and_redacts(tmp_path, monkeypatch):
     assert "\\t" in err
     # 200 char pre-escape cut + 2 chars from \n and \t escaping
     assert len(err) == 202
+
+
+def test_toolbox_tool_error_redacts_secret_straddling_the_cut(tmp_path, monkeypatch):
+    tb = ToolBox(cwd=str(tmp_path))
+    secret = fake_secret("sk-")
+
+    def dispatch_failing_write(msg):
+        monkeypatch.setattr(Path, "write_text", lambda *a, **k: (_ for _ in ()).throw(OSError(msg)))
+        return json.loads(tb.dispatch("write_file", {"path": "test.txt", "content": "hi"}))["error"]
+
+    prefix_len = dispatch_failing_write("PROBE").index("PROBE")
+    full = dispatch_failing_write("x" * (192 - prefix_len) + " " + secret)
+    assert full.index(secret) < 200 < full.index(secret) + len(secret)
+    err = tb.tool_errors[-1]["error"]
+    assert "sk-" not in err
+    assert len(err) <= 200
+
+
+def test_format_error_returns_none_for_an_empty_message():
+    assert format_error(RuntimeError("")) is None
+
+
+def test_format_error_survives_an_unprintable_value():
+    class Unprintable:
+        def __str__(self):
+            raise ValueError("no")
+
+    assert format_error(Unprintable()) == "<unprintable Unprintable>"
