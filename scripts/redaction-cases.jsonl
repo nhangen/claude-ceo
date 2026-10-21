@@ -47,3 +47,6 @@
 {"id":"kv_number_handling_token_bare_space","input":"reported token=4096 in body","must_contain":["token=4096"],"must_not_contain":["***REDACTED***"]}
 {"id":"kv_number_handling_token_bare_digits_prefix","input":"reported token=4096abc123 in body","must_not_contain":["4096abc123"],"must_contain":["token=***REDACTED***"]}
 {"id":"marker_idempotent","input":"apiKey=***REDACTED*** ok","must_contain":["apiKey=***REDACTED*** ok"],"must_not_contain":["REDACTED***REDACTED"]}
+{"id":"pem_block_multiline","input":"before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEwIBAAKCAQEAFAKEFAKE\nZmFrZWZha2U9\n-----END RSA PRIVATE KEY-----\nafter","must_not_contain":["MIIEwIBAAKCAQEAFAKEFAKE","ZmFrZWZha2U9","END RSA","PRIVATE KEY"],"must_contain":["before","after","***REDACTED***"]}
+{"id":"kv_count_then_password_same_line","input":"token: 4096 password={{BODY}}","must_not_contain":["{{BODY}}"],"must_contain":["token: 4096"]}
+{"id":"kv_password_then_count_same_line","input":"password=12345678 token: 4096","must_not_contain":["12345678"],"must_contain":["token: 4096"]}

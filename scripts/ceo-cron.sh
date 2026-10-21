@@ -1852,7 +1852,7 @@ if [ "$RUNNER" = "script" ]; then
 # Coverage converges with ollama-agent/ollama_agent/transport.py `redact_secrets`
 # (#566): both sides must satisfy the same (input, must-not-contain) cases in
 # scripts/redaction-cases.jsonl, walked by scripts/ceo-cron-redaction.test.sh
-# and ollama-agent/tests/test_cli.py. Add a new credential shape once, to the
+# and ollama-agent/tests/test_redaction_fixture.py. Add a new credential shape once, to the
 # fixture and to both implementations — not here alone.
 #
 # POSIX ERE, not GNU extensions: this runs under BSD and GNU sed alike. sed has
@@ -1862,7 +1862,7 @@ if [ "$RUNNER" = "script" ]; then
 #     line and stripped at the end so a match at column 0 still has that
 #     character to capture.
 #   - Count-shaped values the numeric carve-out must keep ("token: 4096") are
-#     wrapped in ~REDKEEP9/~/~REDEND~ by the token-family key=value pass and
+#     wrapped in ~REDKEEP9 ... ~REDEND~ by the token-family key=value pass and
 #     unwrapped by the last: sed cannot say "and not this", so the keep-class
 #     is fenced off before the redacting passes see it. The opening sentinel
 #     ends in `9` so the fenced name keeps an alnum predecessor — a pure
@@ -1900,9 +1900,21 @@ _redact_secrets() {
   local vquoted="(\"[^\"]*\"|${q}[^${q}]*${q})"
   local vbare="([^$stop]+)"
   local vbaretk="([^$stop]*[^0-9$stop][^$stop]*)"
-  sed -E \
+  awk '
+    {
+      line = $0; out = ""; resumed = inpem
+      while (1) {
+        if (inpem) {
+          if (match(line, /-----END [A-Z ]*PRIVATE KEY-----/)) { line = substr(line, RSTART + RLENGTH); inpem = 0; continue }
+          line = ""; break
+        }
+        if (match(line, /-----BEGIN [A-Z ]*PRIVATE KEY-----/)) { out = out substr(line, 1, RSTART - 1) "***REDACTED***"; line = substr(line, RSTART + RLENGTH); inpem = 1; continue }
+        break
+      }
+      if (resumed && out == "" && line == "") next
+      print out line
+    }' | sed -E \
     -e 's/^/ /' \
-    -e 's#-----BEGIN [A-Z ]*PRIVATE KEY-----.*#***REDACTED***#' \
     -e 's#([A-Za-z][A-Za-z0-9+.-]{0,31}://)[^/@[:space:]]+@#\1***REDACTED***@#g' \
     -e "s/${lead}((([Pp][Rr][Oo][Xx][Yy]-)?[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn])|(([Ss][Ee][Tt]-)?[Cc][Oo][Oo][Kk][Ii][Ee]))([[:space:]]*:[[:space:]]*)(([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn]|[Dd][Ii][Gg][Ee][Ss][Tt])[[:space:]]+)?[^[:space:],;]+/\\1\\2\\7***REDACTED***/g" \
     -e 's/([^A-Za-z0-9])([Bb][Ee][Aa][Rr][Ee][Rr])([[:space:]]+)([A-Za-z0-9._~+/=-]{8,})/\1\2\3***REDACTED***/g' \
@@ -1962,7 +1974,7 @@ _script_tail() {
   # the dispatcher would die before _record_failure ran, turning a script failure
   # into the generic aborted-before-its-own-failure-handling path. A diagnostic
   # must not be able to take down the failure it is describing.
-  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -c 65536 | tail -n 10 | cut -c1-120 | _redact_secrets | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true
+  tail -c "+$((off + 1))" "$f" 2>/dev/null | tail -c 65536 | _redact_secrets | tail -n 10 | cut -c1-120 | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true
 }
 
   if [ "$SCRIPT_EXIT" -ne 0 ]; then
