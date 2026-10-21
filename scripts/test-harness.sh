@@ -441,7 +441,7 @@ run_tests() {
     esac
     after=$(_debug_log_state "$log")
     if [ "$before" = unreadable ] || [ "$after" = unreadable ]; then
-      fail_test "default debug log unreadable: $log"
+      fail_test "default debug log unreadable: $log (check its ownership and mode, or a rotation mid-read)"
     elif [ "$before" != "$after" ]; then
       fail_test "default debug log changed: $log (a suite leaked into it, or a concurrent writer on this host)"
     fi
