@@ -74,7 +74,8 @@ test_require_vault_returns_zero_when_resolved() {
 
 test_ceo_report_fails_loud_on_unresolved_vault() {
   local rc=0 out
-  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo-report.sh" intake test-trigger "content" 2>&1) || rc=$?
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_DISCORD_REPORT_DEBUG_LOG="$CEO_DISCORD_REPORT_DEBUG_LOG" CEO_NOTIFY_DEBUG_LOG="$CEO_NOTIFY_DEBUG_LOG" \
+    HOME="$TEST_HOME/empty" PATH="$PATH" bash "$SCRIPT_DIR/ceo-report.sh" intake test-trigger "content" 2>&1) || rc=$?
   assert_eq "$rc" "1" "ceo-report.sh must exit 1 when no vault resolves"
   assert_contains "$out" "FATAL" "stderr missing FATAL"
   assert_eq "$([ -d "$TEST_HOME/empty/Documents/Obsidian/CEO" ] && echo 1 || echo 0)" "0" "silent provision under default path"
