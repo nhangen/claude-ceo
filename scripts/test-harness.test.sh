@@ -663,17 +663,19 @@ FX
 test_debug_logs_are_isolated_before_setup_and_between_arms() {
   _run_child '
 setup() {
-  [ -d "$(dirname "$CEO_DISCORD_REPORT_DEBUG_LOG")" ] || return 1
-  [ -d "$(dirname "$CEO_NOTIFY_DEBUG_LOG")" ] || return 1
+  [ -n "$CEO_DISCORD_REPORT_DEBUG_LOG" ] && [ -d "$(dirname "$CEO_DISCORD_REPORT_DEBUG_LOG")" ] || return 1
+  [ -n "$CEO_NOTIFY_DEBUG_LOG" ] && [ -d "$(dirname "$CEO_NOTIFY_DEBUG_LOG")" ] || return 1
 }
 teardown() { unset CEO_DISCORD_REPORT_DEBUG_LOG CEO_NOTIFY_DEBUG_LOG; }
 test_a() {
   printf "report sentinel\n" >> "$CEO_DISCORD_REPORT_DEBUG_LOG"
   printf "notify sentinel\n" >> "$CEO_NOTIFY_DEBUG_LOG"
+  printf "%s\n" "$CEO_DISCORD_REPORT_DEBUG_LOG" > "$(dirname "$CEO_DISCORD_REPORT_DEBUG_LOG")/a-path"
   assert_file_exists "$CEO_DISCORD_REPORT_DEBUG_LOG" "report log is writable"
   assert_file_exists "$CEO_NOTIFY_DEBUG_LOG" "notify log is writable"
 }
 test_b() {
+  assert_eq "$([ "$(cat "$(dirname "$CEO_DISCORD_REPORT_DEBUG_LOG")/a-path")" = "$CEO_DISCORD_REPORT_DEBUG_LOG" ] && echo same || echo distinct)" "distinct" "arms get distinct report log paths"
   assert_eq "$([ -e "$CEO_DISCORD_REPORT_DEBUG_LOG" ] && echo exists)" "" "report log starts empty"
   assert_eq "$([ -e "$CEO_NOTIFY_DEBUG_LOG" ] && echo exists)" "" "notify log starts empty"
 }'
@@ -697,10 +699,18 @@ test_x() {
 }"
     assert_eq "$CHILD_RC" "1" "a changed default debug log fails the suite"
     assert_contains "$CHILD_OUT" "default debug log changed: $log" "guard identifies the changed log"
+    assert_contains "$CHILD_OUT" "FAIL [debug-log-guard]" "guard failure is labelled as the guard, not the last arm"
+    assert_contains "$CHILD_OUT" "concurrent writer" "guard failure says an outside writer can cause it"
   done
   rm -f "$TMP/report-default.log" "$TMP/notify-default.log"
   _run_child "test_x() { printf 'new log\n' > '$TMP/report-default.log'; assert_eq a a 'body passes'; }"
   assert_eq "$CHILD_RC" "1" "creating a previously absent default log fails the suite"
+  printf 'existing content\n' > "$TMP/report-default.log"
+  chmod 000 "$TMP/report-default.log"
+  _run_child 'test_x() { assert_eq a a "body passes"; }'
+  chmod 600 "$TMP/report-default.log"
+  assert_eq "$CHILD_RC" "1" "an unreadable default log fails the suite instead of reading as absent"
+  assert_contains "$CHILD_OUT" "default debug log unreadable" "guard names the unreadable log"
   HARNESS="$real_harness"
 }
 

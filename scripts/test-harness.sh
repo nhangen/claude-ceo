@@ -218,14 +218,26 @@ _record_test_abort() {
   fi
 }
 
+# State of a host-shared debug log: its checksum, "absent", or "unreadable".
+# An unreadable log must not read as absent, or the guard passes blind (#565).
+_debug_log_state() {
+  if [ ! -e "$1" ]; then
+    echo absent
+  elif [ ! -r "$1" ]; then
+    echo unreadable
+  else
+    cksum < "$1"
+  fi
+}
+
 run_tests() {
   local count=0 skips=0
   local body_fails_tmp assertions_tmp parent_fails_tmp skips_tmp
   local debug_dir report_before notify_before log before after
   local report_log=/tmp/ceo-discord-report-debug.log notify_log=/tmp/ceo-notify-debug.log
   debug_dir=$(mktemp -d) || return 1
-  report_before=$(cksum 2>/dev/null < "$report_log" || echo absent)
-  notify_before=$(cksum 2>/dev/null < "$notify_log" || echo absent)
+  report_before=$(_debug_log_state "$report_log")
+  notify_before=$(_debug_log_state "$notify_log")
   body_fails_tmp=$(mktemp)
   parent_fails_tmp=$(mktemp)
   assertions_tmp="${body_fails_tmp}.assertions"
@@ -248,6 +260,10 @@ run_tests() {
       continue
     fi
     CURRENT_TEST="$fn"
+    # Per-arm fixture paths keep suites off the host-shared /tmp defaults. The
+    # /tmp literals in run_tests mirror the defaults in ceo-discord-report.sh and
+    # ceo-notify.sh. The guard after the loop watches host-shared files, so a
+    # concurrent writer on this host (another worktree, schedulerd) fails it too.
     export CEO_DISCORD_REPORT_DEBUG_LOG="$debug_dir/$fn-report.log"
     export CEO_NOTIFY_DEBUG_LOG="$debug_dir/$fn-notify.log"
 
@@ -416,14 +432,17 @@ run_tests() {
   rm -f "$body_fails_tmp" "$assertions_tmp" "$parent_fails_tmp" "$skips_tmp"
   rm -rf "$debug_dir"
   unset CEO_DISCORD_REPORT_DEBUG_LOG CEO_NOTIFY_DEBUG_LOG
+  CURRENT_TEST="debug-log-guard"
   for log in "$report_log" "$notify_log"; do
     case "$log" in
       "$report_log") before="$report_before" ;;
       *) before="$notify_before" ;;
     esac
-    after=$(cksum 2>/dev/null < "$log" || echo absent)
-    if [ "$before" != "$after" ]; then
-      fail_test "default debug log changed: $log"
+    after=$(_debug_log_state "$log")
+    if [ "$before" = unreadable ] || [ "$after" = unreadable ]; then
+      fail_test "default debug log unreadable: $log"
+    elif [ "$before" != "$after" ]; then
+      fail_test "default debug log changed: $log (a suite leaked into it, or a concurrent writer on this host)"
     fi
   done
 
