@@ -1897,7 +1897,7 @@ _redact_secrets() {
   # Value grammar: a quoted string (either quote char, spaces allowed) or a
   # bare run. The token-family bare arm refuses an all-digit value, mirroring
   # Python's numeric carve-out for unquoted counts.
-  local vquoted="(\"[^\"]*\"|$q[^$q]*$q)"
+  local vquoted="(\"[^\"]*\"|${q}[^${q}]*${q})"
   local vbare="([^$stop]+)"
   local vbaretk="([^$stop]*[^0-9$stop][^$stop]*)"
   sed -E \
@@ -1910,7 +1910,7 @@ _redact_secrets() {
     -e 's/([^A-Za-z0-9])((AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}))/\1***REDACTED***/g' \
     -e 's/([^A-Za-z0-9])([Tt][Oo][Kk][Ee][Nn])([[:space:]]+)([A-Za-z0-9._~+/=-]{16,})/\1\2\3***REDACTED***/g' \
     -e 's/([^A-Za-z0-9])(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*)/\1***REDACTED***/g' \
-    -e "s/${lead}(${prefix}?[Rr][Ee][Ss][Pp][Oo][Nn][Ss][Ee])${vsep}(\"[0-9a-fA-F]{16,}\"|$q[0-9a-fA-F]{16,}$q|[0-9a-fA-F]{16,})/\\1\\2\\4***REDACTED***/g" \
+    -e "s/${lead}(${prefix}?[Rr][Ee][Ss][Pp][Oo][Nn][Ss][Ee])${vsep}(\"[0-9a-fA-F]{16,}\"|${q}[0-9a-fA-F]{16,}${q}|[0-9a-fA-F]{16,})/\\1\\2\\4***REDACTED***/g" \
     -e "s/${lead}(${prefix}?${tok})${vsep}(\"[0-9]+([$stop][^\"]*)?\"|'[0-9]+([$stop][^$q]*)?')/\\1\\2~REDKEEP9\\5\\6~REDEND~/g" \
     -e "s/${lead}(${prefix}?${pw})${vsep}(${vquoted}|${vbare})/\\1\\2\\5***REDACTED***/g" \
     -e "s/${lead}(${prefix}?${tok})${vsep}(${vquoted}|${vbaretk})/\\1\\2\\5***REDACTED***/g" \
