@@ -1848,16 +1848,74 @@ if [ "$RUNNER" = "script" ]; then
 # `- [x] **Approved: ...**` would otherwise forge an approved item that
 # ceo-scan.sh feeds verbatim into the morning-scan prompt. Keep the `tr` if this
 # is ever rewritten to preserve more context.
+#
+# Coverage converges with ollama-agent/ollama_agent/transport.py `redact_secrets`
+# (#566): both sides must satisfy the same (input, must-not-contain) cases in
+# scripts/redaction-cases.jsonl, walked by scripts/ceo-cron-redaction.test.sh
+# and ollama-agent/tests/test_cli.py. Add a new credential shape once, to the
+# fixture and to both implementations — not here alone.
+#
+# POSIX ERE, not GNU extensions: this runs under BSD and GNU sed alike. sed has
+# no lookbehind and no lookahead, so two constructions stand in for Python's:
+#   - Every boundary pattern captures the preceding non-alnum character and
+#     re-emits it (Python's `(?<![A-Za-z0-9])`). A space is prepended to each
+#     line and stripped at the end so a match at column 0 still has that
+#     character to capture.
+#   - Count-shaped values the numeric carve-out must keep ("token: 4096") are
+#     wrapped in ~REDKEEP9/~/~REDEND~ by the token-family key=value pass and
+#     unwrapped by the last: sed cannot say "and not this", so the keep-class
+#     is fenced off before the redacting passes see it. The opening sentinel
+#     ends in `9` so the fenced name keeps an alnum predecessor — a pure
+#     punctuation sentinel would itself create the boundary the later
+#     key=value passes match through. A count value containing `~` breaks the
+#     sentinel-bounded unwrap and stays wrapped in visible residue; Python
+#     keeps that value too, so the divergence is cosmetic noise, never a
+#     secret shown that Python also shows.
+# The marker and case list are shared with the Python side; diverging here
+# alone fails one of the two suites (#566).
 _redact_secrets() {
+  # Boundary: the non-alnum character a match may not be preceded by, captured
+  # and re-emitted in place of Python's `(?<![A-Za-z0-9])`.
+  local lead='([^A-Za-z0-9])'
+  # An optional joined prefix (DATABASE_, x-, ...) ahead of the keyword, bounded
+  # like the Python side's lazy {0,64}.
+  local prefix='([A-Za-z0-9_-]{0,64})'
+  local tok='([Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy])'
+  local pw='([Pp][Aa][Ss][Ss][Pp][Hh][Rr][Aa][Ss][Ee]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd]|[Pp][Aa][Ss][Ss]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?|[Ss][Ee][Cc][Rr][Ee][Tt]|[Aa][Uu][Tt][Hh])'
+  # $q carries the apostrophe so double-quoted sed args can name both quote
+  # characters. $stop is a bracket-less char set: characters that terminate a
+  # bare value (mirrors the Python value grammar).
+  local q="'"
+  local stop="[:space:]$q\"',}&"
+  # Separator between name and value; the quote JSON puts between name and
+  # colon belongs to it. On a keep (count) match the fence is laid BETWEEN the
+  # name and the separator: a later key=value pass needs to match name
+  # + separator back-to-back, and `~REDKEEP9` blocks it. (Wrapping the value
+  # alone is not enough — the bare-value charset tolerates `~` and would match
+  # through the sentinel.)
+  local vsep="([\"$q]?[[:space:]]*[:=][[:space:]]*)"
+  # Value grammar: a quoted string (either quote char, spaces allowed) or a
+  # bare run. The token-family bare arm refuses an all-digit value, mirroring
+  # Python's numeric carve-out for unquoted counts.
+  local vquoted="(\"[^\"]*\"|$q[^$q]*$q)"
+  local vbare="([^$stop]+)"
+  local vbaretk="([^$stop]*[^0-9$stop][^$stop]*)"
   sed -E \
-    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#gh*_***REDACTED***#g' \
-    -e 's#github_pat_[A-Za-z0-9_]{16,}#github_pat_***REDACTED***#g' \
-    -e 's#sk-[A-Za-z0-9_-]{16,}#sk-***REDACTED***#g' \
-    -e 's#(sk|rk|pk)_(live|test)_[A-Za-z0-9_-]{16,}#\1_\2_***REDACTED***#g' \
-    -e 's#xox[baprs]-[A-Za-z0-9-]{10,}#xox*-***REDACTED***#g' \
-    -e 's#(//)[^/@[:space:]]+:[^/@[:space:]]+@#\1***REDACTED***@#g' \
-    -e 's/([Aa]uthorization:[[:space:]]*)[^[:space:]]+/\1***REDACTED***/g' \
-    -e 's/(([Tt]oken|[Aa]pi[_-]?[Kk]ey|[Ss]ecret|[Pp]assword)[[:space:]]*[=:][[:space:]]*)[^[:space:]&]+/\1***REDACTED***/g'
+    -e 's/^/ /' \
+    -e 's#-----BEGIN [A-Z ]*PRIVATE KEY-----.*#***REDACTED***#' \
+    -e 's#([A-Za-z][A-Za-z0-9+.-]{0,31}://)[^/@[:space:]]+@#\1***REDACTED***@#g' \
+    -e "s/${lead}((([Pp][Rr][Oo][Xx][Yy]-)?[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn])|(([Ss][Ee][Tt]-)?[Cc][Oo][Oo][Kk][Ii][Ee]))([[:space:]]*:[[:space:]]*)(([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn]|[Dd][Ii][Gg][Ee][Ss][Tt])[[:space:]]+)?[^[:space:],;]+/\\1\\2\\7***REDACTED***/g" \
+    -e 's/([^A-Za-z0-9])([Bb][Ee][Aa][Rr][Ee][Rr])([[:space:]]+)([A-Za-z0-9._~+/=-]{8,})/\1\2\3***REDACTED***/g' \
+    -e 's/([^A-Za-z0-9])((gh[pousr]_|github_pat_|glpat-|hf_|npm_|xox[abprs]-|sk-|(sk|rk|pk)_(live|test)_)[A-Za-z0-9_-]{8,})/\1***REDACTED***/g' \
+    -e 's/([^A-Za-z0-9])((AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}))/\1***REDACTED***/g' \
+    -e 's/([^A-Za-z0-9])([Tt][Oo][Kk][Ee][Nn])([[:space:]]+)([A-Za-z0-9._~+/=-]{16,})/\1\2\3***REDACTED***/g' \
+    -e 's/([^A-Za-z0-9])(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*)/\1***REDACTED***/g' \
+    -e "s/${lead}(${prefix}?[Rr][Ee][Ss][Pp][Oo][Nn][Ss][Ee])${vsep}(\"[0-9a-fA-F]{16,}\"|$q[0-9a-fA-F]{16,}$q|[0-9a-fA-F]{16,})/\\1\\2\\4***REDACTED***/g" \
+    -e "s/${lead}(${prefix}?${tok})${vsep}(\"[0-9]+([$stop][^\"]*)?\"|'[0-9]+([$stop][^$q]*)?')/\\1\\2~REDKEEP9\\5\\6~REDEND~/g" \
+    -e "s/${lead}(${prefix}?${pw})${vsep}(${vquoted}|${vbare})/\\1\\2\\5***REDACTED***/g" \
+    -e "s/${lead}(${prefix}?${tok})${vsep}(${vquoted}|${vbaretk})/\\1\\2\\5***REDACTED***/g" \
+    -e 's/~REDKEEP9([^~]*)~REDEND~/\1/g' \
+    -e 's/^ //'
 }
 
 # Bounded, redacted, single-line tail of one run's slice of a shared log. 10

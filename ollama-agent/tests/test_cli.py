@@ -1225,7 +1225,8 @@ def _crash_error(tmp_path, monkeypatch, exc_factory):
     ("upstream said Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz", "Authorization: ***REDACTED***"),
     ("upstream said Authorization: Token abcdef123456", "abcdef123456", "Authorization: ***REDACTED***"),
     ("upstream said cookie: session=abc123", "abc123", "cookie: ***REDACTED***"),
-    ('{"api_key": "s3cr3tvalue", "model": "m"}', "s3cr3tvalue", '"api_key": "***REDACTED***"'),
+    # #566: the quoted arm consumes the value's own quotes, matching the sed side
+    ('{"api_key": "s3cr3tvalue", "model": "m"}', "s3cr3tvalue", '"api_key": ***REDACTED***'),
     ("echoed prompt: export HF_TOKEN=abcdefgh123 done", "abcdefgh123", "HF_TOKEN=***REDACTED***"),
     ("echoed: DATABASE_PASSWORD=hunter2hunter2", "hunter2hunter2", "DATABASE_PASSWORD=***REDACTED***"),
     ("echoed: refresh_token=abcdef123456", "abcdef123456", "refresh_token=***REDACTED***"),

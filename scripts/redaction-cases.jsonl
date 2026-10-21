@@ -1,0 +1,49 @@
+{"id":"url_creds","input":"postgres://vaultapp:S3cr3tVault@db01:5432/prod failed","must_not_contain":["vaultapp:S3cr3tVault@"],"must_contain":["postgres://***REDACTED***@db01"]}
+{"id":"digest_response_bare","input":"upstream failed: response={{HEX32}} status=401","must_not_contain":["{{HEX32}}"],"must_contain":["response=***REDACTED*** status=401"]}
+{"id":"bearer_standalone","input":"upstream said Bearer ABCDEFGHIJKLMNOP1234 rejected","must_not_contain":["ABCDEFGHIJKLMNOP1234"],"must_contain":["Bearer ***REDACTED***"]}
+{"id":"gh_prefix_token","input":"gh: HTTP 401 with token=ghp_FAKEFAKEFAKEFAKE0000EXAMPLE00000","must_not_contain":["ghp_FAKEFAKEFAKEFAKE0000EXAMPLE00000"],"must_contain":["token=***REDACTED***"]}
+{"id":"github_pat_prefix","input":"github_pat_FAKEFAKEFAKEFAKE0000EXAMPLE00000 rejected","must_not_contain":["github_pat_FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"glpat_query","input":"https://gitlab.com/api/v4/projects?private_token=glpat-FAKEFAKEFAKEFAKE0000EXAMPLE00000","must_not_contain":["glpat-FAKEFAKEFAKEFAKE0000EXAMPLE00000"],"must_contain":["private_token=***REDACTED***"]}
+{"id":"sk_prefix_key","input":"key sk-FAKEFAKEFAKEFAKE0000EXAMPLE00000 end","must_not_contain":["FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"provider_prefix_pk","input":"secret pk_test_{{BODY}} found in log","must_not_contain":["pk_test_{{BODY}}"],"must_contain":["secret ***REDACTED*** found in log"]}
+{"id":"akia_prefix_key","input":"aws: new signing attempt with AKIAFAKEFAKEFAKEFAKE00 provisioning","must_not_contain":["AKIAFAKEFAKEFAKEFAKE"]}
+{"id":"token_keyword_standalone_upper","input":"Token ABCDEFGHIJKLMNOP1234 accepted","must_not_contain":["ABCDEFGHIJKLMNOP1234"],"must_contain":["Token ***REDACTED*** accepted"]}
+{"id":"kv_prefix_join_hf","input":"export HF_TOKEN=FAKEFAKEFAKEFAKE0000EXAMPLE00000 done","must_not_contain":["FAKEFAKEFAKEFAKE0000EXAMPLE00000"],"must_contain":["HF_TOKEN=***REDACTED***"]}
+{"id":"kv_prefix_join_refresh","input":"refresh_token=FAKEFAKEFAKEFAKE0000EXAMPLE00000 rotated","must_not_contain":["FAKEFAKEFAKEFAKE0000EXAMPLE00000"],"must_contain":["refresh_token=***REDACTED***"]}
+{"id":"kv_json_api_key","input":"aq: {\"api_key\": \"s3cr3tvalue\", \"model\": \"m\"}","must_not_contain":["s3cr3tvalue"],"must_contain":["api_key\": ***REDACTED***"]}
+{"id":"kv_password_colon","input":"password: hunter2 detected","must_not_contain":["hunter2"],"must_contain":["password: ***REDACTED***"]}
+{"id":"kv_all_digit_secret","input":"secret=12345678 submitted OTP","must_not_contain":["12345678"],"must_contain":["secret=***REDACTED***"]}
+{"id":"kv_quoted_with_space","input":"password=\"Correct Horse Battery\" pinned","must_not_contain":["Correct Horse Battery"],"must_contain":["password=***REDACTED***"]}
+{"id":"kv_number_handling_token_count","input":"context window reported token: 4096 tail","must_contain":["token: 4096"],"must_not_contain":["***REDACTED***"]}
+{"id":"kv_number_handling_api_key_count_json","input":"aq: {\"api_key\": 2048}","must_contain":["api_key\": 2048"],"must_not_contain":["***REDACTED***"]}
+{"id":"url_user_only","input":"https://{{BODY}}@github.com/org/repo.git","must_not_contain":["{{BODY}}@"],"must_contain":["https://***REDACTED***@github.com"]}
+{"id":"pem_block_one_line","input":"-----BEGIN RSA PRIVATE KEY-----MIIEwIBAAKCAQEAFAKEFAKEFAKEFAKE-----END RSA PRIVATE KEY-----","must_not_contain":["MIIEwIBAAKCAQEAFAKEFAKEFAKEFAKE","PRIVATE KEY"],"must_contain":["***REDACTED***"]}
+{"id":"pem_block_truncated","input":"fatal: -----BEGIN OPENSSH PRIVATE KEY-----b3BlbnNzaC1rZXktdjEAAAAA","must_not_contain":["b3BlbnNzaC1rZXktdjEA","PRIVATE KEY"]}
+{"id":"auth_header_bearer","input":"Authorization: Bearer ABCDEFGHIJKLMNOP1234 rejected","must_not_contain":["ABCDEFGHIJKLMNOP1234"],"must_contain":["Authorization: ***REDACTED***"]}
+{"id":"auth_header_basic","input":"Authorization: Basic dXNlcjpwYXNzd29yZA==","must_not_contain":["dXNlcjpwYXNzd29yZA=="],"must_contain":["Authorization: ***REDACTED***"]}
+{"id":"proxy_authorization","input":"Proxy-Authorization: Basic dXNlcjpwYXNzd29yZA==","must_not_contain":["dXNlcjpwYXNzd29yZA=="],"must_contain":["Proxy-Authorization: ***REDACTED***"]}
+{"id":"cookie_value","input":"Cookie: session=abc123def456ghi789; other=xyz","must_not_contain":["abc123def456ghi789"],"must_contain":["Cookie: ***REDACTED***"]}
+{"id":"set_cookie","input":"Set-Cookie: sessionid=abc123def456ghi789","must_not_contain":["abc123def456ghi789"],"must_contain":["***REDACTED***"]}
+{"id":"digest_header_response","input":"Authorization: Digest username=\"u\", realm=\"x\", response=\"{{HEX32}}\", nonce=\"abc123\"","must_not_contain":["{{HEX32}}"],"must_contain":["nonce=\"abc123\""]}
+{"id":"gh_fine_prefix_token","input":"gh: HTTP 401 with token=ghr_FAKEFAKEFAKEFAKE0000EXAMPLE00000","must_not_contain":["ghr_FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"glpat_double_colon_url","input":"serving https://user:glpat-FAKEFAKEFAKEFAKE0000EXAMPLE00000@gitlab.local/repo.git failed","must_not_contain":["glpat-FAKEFAKEFAKEFAKE0000EXAMPLE00000","user:glpat-FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"hf_prefix_value","input":"export HF_TOKEN=hf_FAKEFAKEFAKEFAKE0000EXAMPLE00000 done","must_not_contain":["hf_FAKEFAKEFAKEFAKE0000EXAMPLE00000"],"must_contain":["HF_TOKEN=***REDACTED***"]}
+{"id":"npm_prefix_token","input":"npm config set //registry.npmjs.org/:_authToken npm_FAKEFAKEFAKEFAKE0000EXAMPLE00000","must_not_contain":["npm_FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"rk_test_prefix_key","input":"rk_test_FAKEFAKEFAKEFAKE0000EXAMPLE00000 used at checkout","must_not_contain":["rk_test_FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"pk_live_prefix_key","input":"pk_live_FAKEFAKEFAKEFAKE0000EXAMPLE00000 in checkout page","must_not_contain":["pk_live_FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"xoxb_slack_token","input":"slack rtm start returned xoxb-FAKEFAKEFAKEFAKE0000EXAMPLE00000","must_not_contain":["xoxb-FAKEFAKEFAKEFAKE0000EXAMPLE00000"]}
+{"id":"aiza_api_key","input":"AIza{{BODY}}xyz rejected","must_not_contain":["AIzaFAKEFAKEFAKEFAKE"],"must_contain":["***REDACTED*** rejected"]}
+{"id":"jwt_leak","input":"header included eyJFAKEFAKEFAKE.eyJEXAMPLE00000.EXAMPLE00000 end","must_not_contain":["eyJFAKEFAKEFAKE"],"must_contain":["***REDACTED*** end"]}
+{"id":"token_keyword_standalone_lower","input":"peer token ABCDEFGHIJKLMNOP1234 accepted","must_not_contain":["ABCDEFGHIJKLMNOP1234"],"must_contain":["token ***REDACTED*** accepted"]}
+{"id":"kv_passwd","input":"passwd=hunter2 set on db","must_not_contain":["hunter2"],"must_contain":["passwd=***REDACTED***"]}
+{"id":"kv_passphrase_quoted","input":"passphrase=\"correct horse\" exported","must_not_contain":["correct horse"],"must_contain":["passphrase=***REDACTED***"]}
+{"id":"kv_private_key_and_url","input":"DB_URL=postgres://u:p12w@db/x private_key=abcdef123456 end","must_not_contain":["p12w@db","abcdef123456"]}
+{"id":"kv_auth_long","input":"auth=q098u23roiwjeflkdsjaf09823457 seen in upstream body","must_not_contain":["q098u23roiwjeflkdsjaf09823457"],"must_contain":["auth=***REDACTED***"]}
+{"id":"kv_pass_short","input":"pass=hunter2 stored","must_not_contain":["hunter2"],"must_contain":["pass=***REDACTED***"]}
+{"id":"kv_all_digit_password","input":"password=1234567890 pinned","must_not_contain":["1234567890"],"must_contain":["password=***REDACTED***"]}
+{"id":"kv_quoted_sq_with_space","input":"DATABASE_PASSWORD='correct horse 42' applied","must_not_contain":["correct horse 42"],"must_contain":["DATABASE_PASSWORD=***REDACTED***"]}
+{"id":"kv_json_password","input":"aq: {\"password\": \"s3cr3t value 42\"}","must_not_contain":["s3cr3t value 42"],"must_contain":["password\": ***REDACTED***"]}
+{"id":"kv_number_handling_token_count_json","input":"aq: {\"token\": \"4096\", \"num_ctx\": 8192}","must_contain":["token\": \"4096"],"must_not_contain":["token\": ***REDACTED***"]}
+{"id":"kv_number_handling_token_bare_space","input":"reported token=4096 in body","must_contain":["token=4096"],"must_not_contain":["***REDACTED***"]}
+{"id":"kv_number_handling_token_bare_digits_prefix","input":"reported token=4096abc123 in body","must_not_contain":["4096abc123"],"must_contain":["token=***REDACTED***"]}
+{"id":"marker_idempotent","input":"apiKey=***REDACTED*** ok","must_contain":["apiKey=***REDACTED*** ok"],"must_not_contain":["REDACTED***REDACTED"]}

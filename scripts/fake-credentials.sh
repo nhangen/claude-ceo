@@ -28,7 +28,20 @@
 #   FAKE_OPENAI_KEY=$(fake_token sk-)
 #   FAKE_SLACK_TOKEN=$(fake_token xoxb-)
 fake_token() {
-  local prefix="${1:?fake_token: provider prefix with delimiter required, e.g. ghp_, sk-, xoxb-}"
+  # Set-but-empty is legal here and means the bare un-prefixed body: the
+  # redaction fixture (#566) walks {{BODY}}, which needs the body alone.
+  # Only the unset case is a caller bug.
+  [ $# -ge 1 ] || { echo "fake_token: provider prefix required as \$1 ('' = bare body), e.g. ghp_, sk-, xoxb-" >&2; return 1; }
+  local prefix="$1"
   local tag="${2:-}"
   printf '%s%s%s%s' "$prefix" "FAKEFAKEFAKEFAKE" "$tag" "0000EXAMPLE00000"
+}
+
+# fake_hex32 — 32 chars of [0-9a-f] spelling DEC0DE, so a placeholder-expanded
+# redaction test can exercise hex-validated shapes (Digest `response=`) the same
+# way fake_token exercises prefix shapes. Python twin: fake_hex32 in
+# fake_credentials.py.
+#   FAKE_DIGEST_RESPONSE=$(fake_hex32)
+fake_hex32() {
+  printf 'DEC0DEDEC0DEDEC0DEDEC0DEC0DE00'
 }
