@@ -177,6 +177,36 @@ def _error_excerpt(text, limit=200):
     return text[:limit].replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _escape_control(match):
+    ch = match.group()
+    return {"\n": "\\n", "\r": "\\r", "\t": "\\t"}.get(ch, f"\\x{ord(ch):02x}")
+
+
+def format_error(e, limit=200):
+    """The exception's or error message, redacted, cut to limit, and control characters escaped.
+
+    Used by cli.py for the ledger's `error` field (#493, #530) and by tools.py for
+    `tool_errors` entries (#567). The message is redacted by `redact_secrets`,
+    cut to `limit` chars, and its control characters escaped onto one line.
+    Backslashes are not doubled: a transport message already went through
+    `_error_excerpt`, whose escaping must not be applied twice. Redaction repeats
+    here, on the whole message before the cut, for text the transport never saw --
+    the url in "unreachable at <url>", a non-transport exception, or tool/MCP
+    error output.
+    """
+    try:
+        msg = str(e)
+    except Exception:
+        return f"<unprintable {type(e).__name__}>"
+    if not msg:
+        return None
+    msg = redact_secrets(msg[:limit + REDACT_WINDOW])[:limit]
+    return _CONTROL_CHARS.sub(_escape_control, msg)
+
+
 def parse_chat_response(status, body, provenance=None):
     """Return (message, usage). `usage` carries ollama's own token counts —
     prompt_eval_count (input) and eval_count (output) — so a caller can attribute

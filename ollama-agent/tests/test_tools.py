@@ -7,6 +7,7 @@ returncode are NOT operational failures and must stay out of .tool_errors.
 """
 import json
 import subprocess
+from pathlib import Path
 
 from ollama_agent.tools import ToolBox, TOOLS, ERROR_RELEVANT_TOOLS
 from ollama_agent.skills import Skill, USE_SKILL_TOOL
@@ -448,3 +449,24 @@ def test_toolbox_dispatch_default_allowed_tools_none_permits_configured_tools(tm
     res = json.loads(tb.dispatch("read_file", {"path": "test.txt"}))
     assert res["content"] == "ok"
     assert tb.unknown_calls == []
+
+
+def test_toolbox_tool_error_bounds_escapes_and_redacts(tmp_path, monkeypatch):
+    # #567: mutating-tool errors recorded in tool_errors must be bounded to 200 chars,
+    # escaped to one line, and have secret patterns redacted.
+    # Reverting format_error in _note_tool_error fails because raw multi-line secret text leaks.
+    tb = ToolBox(cwd=str(tmp_path))
+    secret = "sk-" + "a" * 25
+    long_msg = f"disk failure: token={secret}\nline2\t" + ("x" * 300)
+    monkeypatch.setattr(Path, "write_text", lambda *a, **k: (_ for _ in ()).throw(OSError(long_msg)))
+    res = json.loads(tb.dispatch("write_file", {"path": "test.txt", "content": "hi"}))
+    assert secret in res["error"]
+    assert len(tb.tool_errors) == 1
+    err = tb.tool_errors[0]["error"]
+    assert secret not in err
+    assert "token=***REDACTED***" in err
+    assert "\n" not in err
+    assert "\\n" in err
+    assert "\\t" in err
+    # 200 char pre-escape cut + 2 chars from \n and \t escaping
+    assert len(err) == 202

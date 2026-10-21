@@ -19,7 +19,7 @@ from ollama_agent import (ToolBox, TOOLS, USE_SKILL_TOOL, MCPClient, RegistryErr
                           load_registry, load_scores, load_skill_index, mcp_tools_to_ollama,
                           ollama_transport, render_catalog, run_agent)
 from ollama_agent.ledger import append_run
-from ollama_agent.transport import REDACT_WINDOW, redact_secrets
+from ollama_agent.transport import REDACT_WINDOW, format_error, redact_secrets
 
 # Local open-weights LLMs (Llama/Qwen/Gemma) under byte-pair encoding run
 # ~3-4 characters per token across mixed code, markdown, and JSON schemas.
@@ -108,33 +108,7 @@ def _restore_default_kill_handlers():
             pass
 
 
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _escape_control(match):
-    ch = match.group()
-    return {"\n": "\\n", "\r": "\\r", "\t": "\\t"}.get(ch, f"\\x{ord(ch):02x}")
-
-
-def _format_error(e, limit=200):
-    """The exception's message for the ledger's `error` field, or None if it has none.
-
-    The class is not repeated here: it is `error_class` (#505). The message is
-    redacted by the transport's `redact_secrets`, cut to `limit` chars, and its
-    control characters escaped onto one line (#493). Backslashes are not doubled:
-    a transport message already went through `_error_excerpt`, whose escaping
-    must not be applied twice. Redaction repeats here, on the whole message
-    before the cut, for text the transport never saw -- the url in "unreachable
-    at <url>", or a non-transport exception.
-    """
-    try:
-        msg = str(e)
-    except Exception:
-        return f"<unprintable {type(e).__name__}>"
-    if not msg:
-        return None
-    msg = redact_secrets(msg[:limit + REDACT_WINDOW])[:limit]
-    return _CONTROL_CHARS.sub(_escape_control, msg)
+_format_error = format_error
 
 
 def _crash_record(reason, run_id, usage_tracker, toolbox, error_class=None, error=None):
