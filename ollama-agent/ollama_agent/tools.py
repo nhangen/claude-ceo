@@ -239,10 +239,9 @@ class ToolBox:
         except (json.JSONDecodeError, TypeError):
             return
         if isinstance(parsed, dict) and parsed.get("error"):
-            # Bounded, unescaped, and redacted before entering tool_errors (#567).
             # An MCP or tool error can echo credentials (e.g. HF_TOKEN) or long
-            # arguments from request bodies.
-            self.tool_errors.append({"tool": name, "error": format_error(parsed["error"]) or ""})
+            # arguments from request bodies; bound, redact, and escape it (#567).
+            self.tool_errors.append({"tool": name, "error": format_error(parsed["error"])})
 
 
 TOOLS = [
