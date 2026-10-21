@@ -126,7 +126,7 @@ REDACTED = "***REDACTED***"
 # Coverage is converged with the sed side in scripts/ceo-cron.sh
 # `_redact_secrets` (#566, #530, #493): both implementations must satisfy the
 # same (input, must-not-contain) cases in scripts/redaction-cases.jsonl, walked
-# by ollama-agent/tests/test_cli.py and scripts/ceo-cron-redaction.test.sh.
+# by ollama-agent/tests/test_redaction_fixture.py and scripts/ceo-cron-redaction.test.sh.
 # Anything added here must be mirrored there, and vice versa -- diverging
 # silently fails one of the two suites. Values below are kept as plain
 # separators-adjacent literals where the sed side is structured the same way,

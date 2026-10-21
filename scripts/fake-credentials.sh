@@ -43,5 +43,5 @@ fake_token() {
 # fake_credentials.py.
 #   FAKE_DIGEST_RESPONSE=$(fake_hex32)
 fake_hex32() {
-  printf 'DEC0DEDEC0DEDEC0DEDEC0DEC0DE00'
+  printf 'dec0dedec0dedec0dedec0dec0de0000'
 }
