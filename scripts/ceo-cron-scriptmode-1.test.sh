@@ -218,8 +218,15 @@ _signalled_run_leaves_no_fixture() {
   done
   kill -"$sig" "$child_pid" 2>/dev/null || true
   wait "$child_pid" 2>/dev/null || true
+  local survivors
+  survivors=$(pgrep -f "$child" 2>/dev/null || true)
+  if [ -n "$survivors" ]; then
+    echo "$survivors" | xargs kill -9 2>/dev/null || true
+  fi
   rm -f "$child"
 
+  assert_eq "$survivors" "" \
+    "no process running the child script survives after wait ($sig)"
   assert_contains "$(cat "$TEST_HOME/interrupt-out" 2>/dev/null || echo "")" "READY" \
     "the child reached the body before being signalled"
   assert_eq "$(test -f "$probe" && echo present || echo gone)" "gone" \

@@ -243,6 +243,7 @@ run_tests() {
   parent_fails_tmp=$(mktemp)
   assertions_tmp="${body_fails_tmp}.assertions"
   skips_tmp="${body_fails_tmp}.skips"
+  local body_pid=""
 
   # An interrupt otherwise skips teardown entirely, so whatever a suite cleans
   # up there stays behind — for the ceo-cron suites that is a fixture script
@@ -255,7 +256,9 @@ run_tests() {
   # aborts under `set -u` before reaching the exit, costing the status.
   # HUP is what a closing terminal or agent session sends the shells it started;
   # untrapped, it left a fixture behind in scripts/ (#571).
-  trap 'trap - INT TERM HUP; type teardown >/dev/null 2>&1 && teardown; rm -rf "$debug_dir"; exit 130' INT TERM HUP
+  # A signal to the harness PID orphaned the running test body subshell; killing
+  # and waiting body_pid ensures no test body survives after teardown (#582).
+  trap 'trap - INT TERM HUP; [ -n "$body_pid" ] && { kill -TERM "$body_pid" 2>/dev/null || true; wait "$body_pid" 2>/dev/null || true; }; type teardown >/dev/null 2>&1 && teardown; rm -rf "$debug_dir"; exit 130' INT TERM HUP
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue
@@ -382,7 +385,9 @@ run_tests() {
       ' EXIT
       "$fn"
     ) &
-    wait "$!" || true
+    body_pid=$!
+    wait "$body_pid" || true
+    body_pid=""
     # Documented because the 26-line note above explains everything else about
     # this construct and missed it: a background job in a non-interactive
     # shell gets /dev/null on stdin, so every test body now reads EOF instead
