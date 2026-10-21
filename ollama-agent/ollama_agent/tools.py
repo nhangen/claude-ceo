@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .mcp import MCPToolError
 from .skills import MAX_SKILL_BODY
+from .transport import format_error
 
 MAX_OUTPUT = 4000      # chars of stdout/stderr returned to the model per call
 MAX_READ = 20000       # chars returned by read_file
@@ -238,7 +239,9 @@ class ToolBox:
         except (json.JSONDecodeError, TypeError):
             return
         if isinstance(parsed, dict) and parsed.get("error"):
-            self.tool_errors.append({"tool": name, "error": parsed["error"]})
+            # An MCP or tool error can echo credentials (e.g. HF_TOKEN) or long
+            # arguments from request bodies; bound, redact, and escape it (#567).
+            self.tool_errors.append({"tool": name, "error": format_error(parsed["error"])})
 
 
 TOOLS = [

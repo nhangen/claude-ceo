@@ -206,6 +206,52 @@ def test_toolbox_mcp_error_recorded_not_crash(tmp_path):
     assert "MCPError" in tb.tool_errors[0]["error"]
 
 
+def test_toolbox_mcp_error_redacts_hf_token_and_bounds_and_escapes(tmp_path):
+    # #567: MCP tool error text can echo model arguments, request bodies, or credentials.
+    # tool_errors entries must be bounded (200 chars), control chars escaped, and secrets redacted.
+    # Reverting format_error in _note_tool_error leaves HF_TOKEN leaked and length unbounded.
+    secret = "hf_" + "x" * 28
+    long_msg = "api failure: HF_TOKEN=" + secret + " trailing\nline2\x1b[31m " + "z" * 300
+    tb = ToolBox(cwd=tmp_path, mcp_client=FakeClient(raises=MCPError(long_msg)),
+                 mcp_names={"mcp__query": "query"})
+    out = json.loads(tb.dispatch("mcp__query", {}))
+    # Model result still gets the full diagnostic error from dispatch
+    assert secret in out["error"]
+    assert len(tb.tool_errors) == 1
+    err = tb.tool_errors[0]["error"]
+    assert secret not in err
+    assert "HF_TOKEN=***REDACTED***" in err
+    assert "\n" not in err
+    assert "\\n" in err
+    assert "\\x1b" in err
+    # 200 char pre-escape cut + 1 for \n + 3 for \x1b
+    assert len(err) == 204
+
+
+def test_toolbox_mcp_error_bounds_pure_ascii_to_200(tmp_path):
+    # #567: Pure ascii error text is capped at exactly 200 chars.
+    tb = ToolBox(cwd=tmp_path, mcp_client=FakeClient(raises=MCPError("e" * 300)),
+                 mcp_names={"mcp__query": "query"})
+    tb.dispatch("mcp__query", {})
+    assert len(tb.tool_errors[0]["error"]) == 200
+
+
+def test_toolbox_mcp_iserror_through_real_client_redacts_hf_token(tmp_path):
+    # #567: Real MCPClient isError -> raise MCPToolError -> _note_tool_error path.
+    # Reverting format_error in _note_tool_error fails because secret remains unredacted.
+    secret = "hf_" + "k" * 32
+    client = MCPClient(FakeTransport(tool_results={
+        "boom": {"isError": True, "content": [{"type": "text", "text": f"export HF_TOKEN={secret} failed"}]}
+    }))
+    tb = ToolBox(cwd=tmp_path, mcp_client=client, mcp_names={"mcp__boom": "boom"})
+    tb.dispatch("mcp__boom", {})
+    assert len(tb.tool_errors) == 1
+    err = tb.tool_errors[0]["error"]
+    assert secret not in err
+    assert "HF_TOKEN=***REDACTED***" in err
+    assert len(err) <= 200
+
+
 def test_toolbox_records_mcp_iserror_not_success(tmp_path):
     # The real client, not FakeClient: the isError -> raise -> tool_errors chain
     # is otherwise pinned only one layer at a time, and a guard that recorded
