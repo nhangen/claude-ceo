@@ -219,14 +219,15 @@ _record_test_abort() {
 }
 
 # State of a host-shared debug log: its checksum, "absent", or "unreadable".
-# An unreadable log must not read as absent, or the guard passes blind (#565).
+# An unreadable log must not read as absent, or the guard passes blind (#565); a
+# read that fails after the -r precheck (rotation, I/O error) is unreadable too.
 _debug_log_state() {
   if [ ! -e "$1" ]; then
     echo absent
   elif [ ! -r "$1" ]; then
     echo unreadable
   else
-    cksum < "$1"
+    cksum 2>/dev/null < "$1" || echo unreadable
   fi
 }
 

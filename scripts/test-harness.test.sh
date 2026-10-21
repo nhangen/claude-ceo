@@ -705,12 +705,20 @@ test_x() {
   rm -f "$TMP/report-default.log" "$TMP/notify-default.log"
   _run_child "test_x() { printf 'new log\n' > '$TMP/report-default.log'; assert_eq a a 'body passes'; }"
   assert_eq "$CHILD_RC" "1" "creating a previously absent default log fails the suite"
+  # Write-only (0200) log: appendable but unreadable, so a leaked append must not
+  # compare equal as absent-before/absent-after. Root ignores the mode bits.
   printf 'existing content\n' > "$TMP/report-default.log"
-  chmod 000 "$TMP/report-default.log"
-  _run_child 'test_x() { assert_eq a a "body passes"; }'
+  chmod 200 "$TMP/report-default.log"
+  if [ -r "$TMP/report-default.log" ]; then
+    skip_test "mode bits do not make a file unreadable for this user"
+  else
+    _run_child "test_x() { printf 'leaked content\n' >> '$TMP/report-default.log'; assert_eq a a 'body passes'; }"
+    assert_eq "$CHILD_RC" "1" "an appendable but unreadable default log fails the suite"
+    assert_contains "$CHILD_OUT" "default debug log unreadable: $TMP/report-default.log" "guard names the unreadable log"
+  fi
   chmod 600 "$TMP/report-default.log"
-  assert_eq "$CHILD_RC" "1" "an unreadable default log fails the suite instead of reading as absent"
-  assert_contains "$CHILD_OUT" "default debug log unreadable" "guard names the unreadable log"
+  # A read that fails after the readability precheck (a directory passes -r) is unreadable, not empty.
+  assert_eq "$(_debug_log_state "$TMP")" "unreadable" "a failed cksum reads as unreadable, not as an empty state"
   HARNESS="$real_harness"
 }
 
