@@ -221,6 +221,11 @@ _record_test_abort() {
 run_tests() {
   local count=0 skips=0
   local body_fails_tmp assertions_tmp parent_fails_tmp skips_tmp
+  local debug_dir report_before notify_before log before after
+  local report_log=/tmp/ceo-discord-report-debug.log notify_log=/tmp/ceo-notify-debug.log
+  debug_dir=$(mktemp -d) || return 1
+  report_before=$(cksum 2>/dev/null < "$report_log" || echo absent)
+  notify_before=$(cksum 2>/dev/null < "$notify_log" || echo absent)
   body_fails_tmp=$(mktemp)
   parent_fails_tmp=$(mktemp)
   assertions_tmp="${body_fails_tmp}.assertions"
@@ -237,12 +242,14 @@ run_tests() {
   # aborts under `set -u` before reaching the exit, costing the status.
   # HUP is what a closing terminal or agent session sends the shells it started;
   # untrapped, it left a fixture behind in scripts/ (#571).
-  trap 'trap - INT TERM HUP; type teardown >/dev/null 2>&1 && teardown; exit 130' INT TERM HUP
+  trap 'trap - INT TERM HUP; type teardown >/dev/null 2>&1 && teardown; rm -rf "$debug_dir"; exit 130' INT TERM HUP
   for fn in $(declare -F | awk '{print $3}' | grep '^test_'); do
     if [ -n "${TEST_FILTER:-}" ] && [[ "$fn" != *"$TEST_FILTER"* ]]; then
       continue
     fi
     CURRENT_TEST="$fn"
+    export CEO_DISCORD_REPORT_DEBUG_LOG="$debug_dir/$fn-report.log"
+    export CEO_NOTIFY_DEBUG_LOG="$debug_dir/$fn-notify.log"
 
     # Each scope gets its own file, and inside a parent scope the file is the only
     # channel — HARNESS_PARENT_SCOPE suppresses the in-process bump. Sharing the body's
@@ -407,6 +414,18 @@ run_tests() {
     count=$((count + 1))
   done
   rm -f "$body_fails_tmp" "$assertions_tmp" "$parent_fails_tmp" "$skips_tmp"
+  rm -rf "$debug_dir"
+  unset CEO_DISCORD_REPORT_DEBUG_LOG CEO_NOTIFY_DEBUG_LOG
+  for log in "$report_log" "$notify_log"; do
+    case "$log" in
+      "$report_log") before="$report_before" ;;
+      *) before="$notify_before" ;;
+    esac
+    after=$(cksum 2>/dev/null < "$log" || echo absent)
+    if [ "$before" != "$after" ]; then
+      fail_test "default debug log changed: $log"
+    fi
+  done
 
   if [ "$count" -eq 0 ]; then
     echo "FAILED: no tests discovered"

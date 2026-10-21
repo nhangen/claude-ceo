@@ -659,4 +659,49 @@ FX
     "the guard must flag exactly the five write lines, not the reads on 6 and 7"
 }
 
+
+test_debug_logs_are_isolated_before_setup_and_between_arms() {
+  _run_child '
+setup() {
+  [ -d "$(dirname "$CEO_DISCORD_REPORT_DEBUG_LOG")" ] || return 1
+  [ -d "$(dirname "$CEO_NOTIFY_DEBUG_LOG")" ] || return 1
+}
+teardown() { unset CEO_DISCORD_REPORT_DEBUG_LOG CEO_NOTIFY_DEBUG_LOG; }
+test_a() {
+  printf "report sentinel\n" >> "$CEO_DISCORD_REPORT_DEBUG_LOG"
+  printf "notify sentinel\n" >> "$CEO_NOTIFY_DEBUG_LOG"
+  assert_file_exists "$CEO_DISCORD_REPORT_DEBUG_LOG" "report log is writable"
+  assert_file_exists "$CEO_NOTIFY_DEBUG_LOG" "notify log is writable"
+}
+test_b() {
+  assert_eq "$([ -e "$CEO_DISCORD_REPORT_DEBUG_LOG" ] && echo exists)" "" "report log starts empty"
+  assert_eq "$([ -e "$CEO_NOTIFY_DEBUG_LOG" ] && echo exists)" "" "notify log starts empty"
+}'
+  assert_eq "$CHILD_RC" "0" "each arm gets fresh debug paths before setup"
+}
+
+test_debug_log_guard_rejects_default_log_changes() {
+  local real_harness="$HARNESS" log
+  # Redirect the guard targets in a copy so the positive control cannot touch host logs.
+  sed "s|/tmp/ceo-discord-report-debug.log|$TMP/report-default.log|g; s|/tmp/ceo-notify-debug.log|$TMP/notify-default.log|g" \
+    "$HARNESS" > "$TMP/harness.sh"
+  HARNESS="$TMP/harness.sh"
+  for log in "$TMP/report-default.log" "$TMP/notify-default.log"; do
+    printf 'existing content\n' > "$log"
+    _run_child 'test_x() { assert_eq a a "unchanged defaults pass"; }'
+    assert_eq "$CHILD_RC" "0" "unchanged default logs pass the guard"
+    _run_child "
+test_x() {
+  printf 'leaked content\n' >> '$log'
+  assert_eq a a 'body otherwise passes'
+}"
+    assert_eq "$CHILD_RC" "1" "a changed default debug log fails the suite"
+    assert_contains "$CHILD_OUT" "default debug log changed: $log" "guard identifies the changed log"
+  done
+  rm -f "$TMP/report-default.log" "$TMP/notify-default.log"
+  _run_child "test_x() { printf 'new log\n' > '$TMP/report-default.log'; assert_eq a a 'body passes'; }"
+  assert_eq "$CHILD_RC" "1" "creating a previously absent default log fails the suite"
+  HARNESS="$real_harness"
+}
+
 run_tests
