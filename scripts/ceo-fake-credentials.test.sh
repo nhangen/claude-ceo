@@ -28,7 +28,7 @@ EXEMPT=(
 #   \b after the body:    no alnum immediately after
 PATTERN='\b(gh[pousr]_|github_pat_|xox[abprs]-|AIza|AKIA|sk-|(sk|rk|pk)_(live|test)_|hf_|npm_|glpat-)[A-Za-z0-9_-]{16,}\b'
 
-FILES=$(git -C "$REPO_ROOT" ls-files -- '*.sh' '*.py' '*.js' '*.ts') || {
+FILES=$(git -C "$REPO_ROOT" ls-files -- '*.sh' '*.py' '*.js' '*.ts' '*.jsonl' '*.json') || {
   echo "FAIL: git ls-files failed; the guard cannot enumerate the tree"
   exit 1
 }
