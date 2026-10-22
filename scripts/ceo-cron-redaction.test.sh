@@ -33,8 +33,9 @@ test_redaction_fixture_walk_function_extraction() {
 
 test_redaction_fixture_walk() {
   _redacts_init
-  local row id input bad keep out body hex32
+  local row id input bad keep out body body16 hex32
   body=$(fake_token "")
+  body16=${body:0:16}
   hex32=$(fake_hex32)
   jq -e -s 'length > 0 and all(.[]; ((.must_not_contain // []) + (.must_contain // [])) | length > 0)' \
     < "$SCRIPT_DIR/redaction-cases.jsonl" >/dev/null || {
@@ -44,16 +45,16 @@ test_redaction_fixture_walk() {
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     id=$(printf '%s' "$row" | jq -r '.id')
-    input=$(printf '%s' "$row" | jq -r '.input' | sed -e "s|{{BODY}}|$body|g" -e "s|{{HEX32}}|$hex32|g")
+    input=$(printf '%s' "$row" | jq -r '.input' | sed -e "s|{{BODY16}}|$body16|g" -e "s|{{BODY}}|$body|g" -e "s|{{HEX32}}|$hex32|g")
     out=$(printf '%s\n' "$input" | _redact_secrets)
     while IFS= read -r bad; do
       [ -n "$bad" ] || continue
       assert_not_contains "$out" "$bad" "$id: '$bad' must not survive redaction"
-    done < <(printf '%s' "$row" | jq -r '.must_not_contain // [] | .[]' | sed -e "s|{{BODY}}|$body|g" -e "s|{{HEX32}}|$hex32|g")
+    done < <(printf '%s' "$row" | jq -r '.must_not_contain // [] | .[]' | sed -e "s|{{BODY16}}|$body16|g" -e "s|{{BODY}}|$body|g" -e "s|{{HEX32}}|$hex32|g")
     while IFS= read -r keep; do
       [ -n "$keep" ] || continue
       assert_contains "$out" "$keep" "$id: '$keep' must survive redaction"
-    done < <(printf '%s' "$row" | jq -r '.must_contain // [] | .[]' | sed -e "s|{{BODY}}|$body|g" -e "s|{{HEX32}}|$hex32|g")
+    done < <(printf '%s' "$row" | jq -r '.must_contain // [] | .[]' | sed -e "s|{{BODY16}}|$body16|g" -e "s|{{BODY}}|$body|g" -e "s|{{HEX32}}|$hex32|g")
   done < "$SCRIPT_DIR/redaction-cases.jsonl"
 }
 
@@ -70,6 +71,23 @@ test_script_tail_redacts_key_longer_than_window() {
   } > "$log"
   out=$(_script_tail "$log" 0)
   assert_not_contains "$out" "KEYBODY" "key body beyond the 10-line window must not reach the tail"
+  assert_contains "$out" "exit 1" "lines after the key must survive"
+}
+
+test_script_tail_redacts_key_whose_begin_is_cut_by_the_byte_window() {
+  _redacts_init
+  sed -n '/^_script_tail() {/,/^}/p' "$SCRIPT_DIR/ceo-cron.sh" > "$TEST_HOME/tail-fn.sh"
+  # shellcheck source=/dev/null  # generated fixture
+  . "$TEST_HOME/tail-fn.sh"
+  local log="$TEST_HOME/err.log" i out
+  {
+    printf '%s\n' "boot failed" "-----BEGIN RSA PRIVATE KEY-----"
+    for i in $(seq 1 1100); do printf 'KEYBODY%04dFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE\n' "$i"; done
+    printf '%s\n' "-----END RSA PRIVATE KEY-----" "exit 1"
+  } > "$log"
+  out=$(_script_tail "$log" 0)
+  assert_not_contains "$out" "KEYBODY" "key body whose BEGIN line fell outside the 64 KB window must not reach the tail"
+  assert_not_contains "$out" "END RSA" "the orphan END marker must not reach the tail"
   assert_contains "$out" "exit 1" "lines after the key must survive"
 }
 

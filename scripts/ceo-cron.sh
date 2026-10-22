@@ -1900,6 +1900,8 @@ _redact_secrets() {
   local vquoted="(\"[^\"]*\"|${q}[^${q}]*${q})"
   local vbare="([^$stop]+)"
   local vbaretk="([^$stop]*[^0-9$stop][^$stop]*)"
+  # An END with no BEGIN before it means the byte window in _script_tail cut the
+  # key's head off: drop everything buffered so far, since it is key body.
   awk '
     {
       line = $0; out = ""; resumed = inpem
@@ -1908,12 +1910,16 @@ _redact_secrets() {
           if (match(line, /-----END [A-Z ]*PRIVATE KEY-----/)) { line = substr(line, RSTART + RLENGTH); inpem = 0; continue }
           line = ""; break
         }
-        if (match(line, /-----BEGIN [A-Z ]*PRIVATE KEY-----/)) { out = out substr(line, 1, RSTART - 1) "***REDACTED***"; line = substr(line, RSTART + RLENGTH); inpem = 1; continue }
+        hasb = match(line, /-----BEGIN [A-Z ]*PRIVATE KEY-----/); bs = RSTART; bl = RLENGTH
+        hase = match(line, /-----END [A-Z ]*PRIVATE KEY-----/)
+        if (hase && (!hasb || RSTART < bs)) { n = 0; out = "***REDACTED***"; line = substr(line, RSTART + RLENGTH); continue }
+        if (hasb) { out = out substr(line, 1, bs - 1) "***REDACTED***"; line = substr(line, bs + bl); inpem = 1; continue }
         break
       }
       if (resumed && out == "" && line == "") next
-      print out line
-    }' | sed -E \
+      buf[++n] = out line
+    }
+    END { for (i = 1; i <= n; i++) print buf[i] }' | sed -E \
     -e 's/^/ /' \
     -e 's#([A-Za-z][A-Za-z0-9+.-]{0,31}://)[^/@[:space:]]+@#\1***REDACTED***@#g' \
     -e "s/${lead}((([Pp][Rr][Oo][Xx][Yy]-)?[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn])|(([Ss][Ee][Tt]-)?[Cc][Oo][Oo][Kk][Ii][Ee]))([[:space:]]*:[[:space:]]*)(([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn]|[Dd][Ii][Gg][Ee][Ss][Tt])[[:space:]]+)?[^[:space:],;]+/\\1\\2\\7***REDACTED***/g" \

@@ -25,7 +25,7 @@ def _rows():
 
 
 def _expand(text: str) -> str:
-    return text.replace("{{BODY}}", fake_secret("")).replace("{{HEX32}}", fake_hex32())
+    return text.replace("{{BODY16}}", fake_secret("")[:16]).replace("{{BODY}}", fake_secret("")).replace("{{HEX32}}", fake_hex32())
 
 
 def test_fixture_rows_assert_something():
