@@ -39,3 +39,11 @@ def fake_secret(prefix: str, tag: str = "") -> str:
     ``tag`` makes two tokens in one test distinguishable.
     """
     return f"{prefix}{_FAKE_HEAD}{tag}{_FAKE_TAIL}"
+
+
+def fake_hex32() -> str:
+    """32 chars of [0-9a-f] spelling DEC0DE — the bash twin is ``fake_hex32`` in
+    scripts/fake-credentials.sh. Exercised for hex-validated redaction shapes
+    (Digest ``response=``) the same way ``fake_secret`` exercises prefix shapes.
+    """
+    return "dec0dedec0dedec0dedec0dec0de0000"

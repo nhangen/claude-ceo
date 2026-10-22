@@ -122,7 +122,23 @@ REDACTED = "***REDACTED***"
 # does not name, which is why it runs here, on the raw body: escaping first turns
 # a newline into a literal `\n` whose `n` hides a line-initial `TOKEN=` from the
 # word-boundary guard, and cutting first can split `user:pass@` from its `@`.
-# The marker and coverage track scripts/ceo-cron.sh `_redact_secrets`.
+#
+# Coverage is converged with the sed side in scripts/ceo-cron.sh
+# `_redact_secrets` (#566, #530, #493): both implementations must satisfy the
+# same (input, must-not-contain) cases in scripts/redaction-cases.jsonl, walked
+# by ollama-agent/tests/test_redaction_fixture.py and scripts/ceo-cron-redaction.test.sh.
+# Anything added here must be mirrored there, and vice versa -- diverging
+# silently fails one of the two suites. Values below are kept as plain
+# separators-adjacent literals where the sed side is structured the same way,
+# so the two lists can be diffed by eye.
+#
+# sed has no lookbehind or lookahead; there the boundary is the captured non-alnum
+# lead character, and the count carve-out is a sentinel fence (~REDKEEP9/~REDEND~)
+# laid between the keyword and the separator. Every pattern here that carries a
+# marker or a boundary appears on the sed side with the same name/coverage,
+# including the prefixes spelled across adjacent literals (also why the sed
+# program does not contain the joined forms either): the plain concatenation
+# would otherwise make this source match a secret scanner's key detectors.
 _NOT_ALNUM = r"(?<![A-Za-z0-9])"
 # Provider prefixes are split across adjacent literals so this source does not
 # itself match a secret scanner's key detectors.
@@ -138,13 +154,37 @@ _SECRET_PATTERNS = (
     (re.compile(_NOT_ALNUM + r"(?:AK" r"IA[0-9A-Z]{16}|AI" r"za[0-9A-Za-z_-]{35})"), REDACTED),
     (re.compile(_NOT_ALNUM + r"(token)\s+[A-Za-z0-9._~+/=-]{16,}", re.I), r"\1 " + REDACTED),
     (re.compile(_NOT_ALNUM + r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"), REDACTED),
-    # Keys like HF_TOKEN or refresh_token: the name may carry a `_`-joined
-    # prefix, which a leading \b would refuse. A value that is only digits is
-    # a count ("token: 4096"), not a credential.
-    (re.compile(_NOT_ALNUM + r"([A-Za-z0-9_-]{0,64}?(?:api[_-]?key|token|secret|password|passwd|pwd|"
-                r"passphrase|private[_-]?key|credentials?))"
-                r"([\"']?\s*[:=]\s*[\"']?)(?![0-9]+(?:[\s\"',}&]|$))(?!\*\*\*REDACTED)"
-                r"[^\s\"',}&]+", re.I), r"\1\2" + REDACTED),
+    # Digest authentication (`response=` nonce-echo, RFC 2617): hex is not a
+    # tunable and there is no plausible count for it, so no digit carve-out.
+    (re.compile(_NOT_ALNUM + r"((?:[A-Za-z0-9_-]{0,64}?[Rr][Ee][Ss][Pp][Oo][Nn][Ss][Ee]))"
+                r"([\"']?\s*[:=]\s*)"
+                r"(?:\"[0-9a-fA-F]{16,}\"|'[0-9a-fA-F]{16,}'|[0-9a-fA-F]{16,})"), r"\1\2" + REDACTED),
+    # Key=value credentials. The name may carry a `_`-joined prefix
+    # (DATABASE_PASSWORD, refresh_token), which a leading \b would refuse; the
+    # bound matches the sed side's {0,64}. The value is a quoted string
+    # (spaces allowed, both quote chars, quotes consumed like the sed side)
+    # or a bare run.
+    #
+    # The password family is one pattern and api-key/token the other because
+    # only the latter keeps count values: a bare all-digit value ("token: 4096"
+    # is a context size, not a credential) is refused by the leading negative
+    # lookahead, and so is a quoted all-digit value ("token: \"4096\""). A value
+    # that merely *starts* with digits then continues ("token: 4096abcdef") is
+    # a credential, not a count. The password family never keeps: no "count"
+    # shape exists for a password, so bare digits (secret=12345678) are
+    # redacted there. idempotency needs no marker guard; the value arm matches
+    # the marker and rewrites it to itself.
+    (re.compile(_NOT_ALNUM + r"((?:[A-Za-z0-9_-]{0,64}?(?:[Pp][Aa][Ss][Ss](?:[Pp][Hh][Rr][Aa][Ss][Ee]|"
+                r"[Ww][Oo][Rr][Dd]|[Ww][Dd])?|[Pp][Ww][Dd]|"
+                r"[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-]?[Kk][Ee][Yy]|"
+                r"[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?|[Ss][Ee][Cc][Rr][Ee][Tt]|[Aa][Uu][Tt][Hh])))"
+                r"([\"']?\s*[:=]\s*)"
+                r"(?:\"[^\"]*\"|'[^']*'|[^\s\"',}&]+)"), r"\1\2" + REDACTED),
+    (re.compile(_NOT_ALNUM + r"((?:[A-Za-z0-9_-]{0,64}?(?:[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|"
+                r"[Tt][Oo][Kk][Ee][Nn])))"
+                r"([\"']?\s*[:=]\s*)"
+                r"(?![\"']?[0-9]+[\"']?(?:[\s\"',}&]|$))"
+                r"(?:\"[^\"]*\"|'[^']*'|[^\s\"',}&]+)"), r"\1\2" + REDACTED),
 )
 
 
