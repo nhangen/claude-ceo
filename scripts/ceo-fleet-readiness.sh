@@ -20,7 +20,7 @@ if [ -z "$repo" ]; then
   done
 fi
 if [ -z "$repo" ] || [ ! -f "$repo/scripts/fleet-readiness.py" ]; then
-  printf 'ERROR: fleet checker unavailable; set LLM_TOOLS_REPO\n' >&2
+  printf 'ERROR: fleet checker unavailable; set CEO_FLEET_READINESS_REPO or LLM_TOOLS_REPO\n' >&2
   notify_execution_failure
   exit 1
 fi
