@@ -90,6 +90,66 @@ EOF
   out=$(bash "$SCRIPT" 2>&1) || rc=$?
   assert_eq "0" "$rc" "must ignore checker repo and succeed on real repo"
   assert_contains "$out" "REAL_REPO_RUN" "real repo must be chosen"
+  assert_contains "$out" "ignoring LLM_TOOLS_REPO" "skip must be reported"
+}
+
+_stub_align() {
+  mkdir -p "$1/scripts"
+  printf '#!/bin/sh\necho "%s"\nexit 0\n' "$2" > "$1/scripts/llm-tools-align.sh"
+  chmod +x "$1/scripts/llm-tools-align.sh"
+}
+
+test_align_repo_beats_inherited_llm_tools_repo() {
+  _stub_align "$TEST_HOME/custom/llm-tools" CUSTOM_ALIGN_RUN
+  _stub_align "$TEST_HOME/decoy/llm-tools" DECOY_RUN
+  export CEO_LLM_TOOLS_ALIGN_REPO="$TEST_HOME/custom/llm-tools" LLM_TOOLS_REPO="$TEST_HOME/decoy/llm-tools"
+  local out rc=0
+  out=$(bash "$SCRIPT" 2>&1) || rc=$?
+  assert_eq "0" "$rc" "align repo must win"
+  assert_contains "$out" "CUSTOM_ALIGN_RUN" "align-specific repo must run"
+  assert_not_contains "$out" "DECOY_RUN" "inherited repo must not run"
+}
+
+test_explicit_align_repo_is_not_filtered() {
+  _stub_align "$TEST_HOME/.local/share/llm-tools-deploy" EXPLICIT_DEPLOY_RUN
+  _stub_align "$HOME/code/llm-tools" AUTODISCOVERED_RUN
+  export CEO_LLM_TOOLS_ALIGN_REPO="$TEST_HOME/.local/share/llm-tools-deploy"
+  local out rc=0
+  out=$(bash "$SCRIPT" 2>&1) || rc=$?
+  assert_eq "0" "$rc" "explicit override must run"
+  assert_contains "$out" "EXPLICIT_DEPLOY_RUN" "explicit override must be honored"
+  assert_not_contains "$out" "AUTODISCOVERED_RUN" "explicit override must not fall back"
+}
+
+test_bad_explicit_align_repo_fails_loudly() {
+  _stub_align "$HOME/code/llm-tools" AUTODISCOVERED_RUN
+  export CEO_LLM_TOOLS_ALIGN_REPO="$TEST_HOME/missing/llm-tools"
+  local out rc=0
+  out=$(bash "$SCRIPT" 2>&1) || rc=$?
+  assert_eq "1" "$rc" "bad explicit override must exit 1"
+  assert_contains "$out" "$TEST_HOME/missing/llm-tools" "error must name the configured path"
+  assert_not_contains "$out" "AUTODISCOVERED_RUN" "bad explicit override must not fall back"
+}
+
+test_deploy_checkout_in_inherited_repo_is_skipped_with_notice() {
+  _stub_align "$TEST_HOME/.local/share/llm-tools-deploy" DEPLOY_SHOULD_NOT_RUN
+  _stub_align "$HOME/code/llm-tools" REAL_REPO_RUN
+  export LLM_TOOLS_REPO="$TEST_HOME/.local/share/llm-tools-deploy"
+  local out rc=0
+  out=$(bash "$SCRIPT" 2>&1) || rc=$?
+  assert_eq "0" "$rc" "must fall back to the real repo"
+  assert_contains "$out" "REAL_REPO_RUN" "real repo must be chosen"
+  assert_not_contains "$out" "DEPLOY_SHOULD_NOT_RUN" "deploy checkout must not run"
+  assert_contains "$out" "ignoring LLM_TOOLS_REPO" "skip must be reported"
+}
+
+test_similar_name_in_inherited_repo_is_not_skipped() {
+  _stub_align "$TEST_HOME/notes/llm-tools-deploy-notes" NOTES_REPO_RUN
+  export LLM_TOOLS_REPO="$TEST_HOME/notes/llm-tools-deploy-notes"
+  local out rc=0
+  out=$(bash "$SCRIPT" 2>&1) || rc=$?
+  assert_eq "0" "$rc" "similarly named repo must run"
+  assert_contains "$out" "NOTES_REPO_RUN" "guard must match the basename, not a substring"
 }
 
 test_propagates_nonzero_exit() {
