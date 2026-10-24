@@ -30,7 +30,7 @@ The wrapper emits `noop` after dedicated delivery to avoid a duplicate generic s
 
 ## Installation gate
 
-Set `LLM_TOOLS_REPO` to a persistent reviewed checkout, and `CEO_FLEET_LOCAL_CONTEXT=ml1-wsl` when running on ML1 WSL. Verify existing SSH keys/known-host trust and private reads in assigned contexts. Run manually first. Only then activate, scan and assign through `ceo playbook` on the verified owner. Disable the desktop observer only after scheduled CEO dispatch, matching publication evidence, acknowledged Discord delivery and a quiet unchanged repeat are verified. CEO then owns this audit exclusively.
+Set `CEO_FLEET_READINESS_REPO` (or `LLM_TOOLS_REPO`) to a persistent reviewed checkout, and `CEO_FLEET_LOCAL_CONTEXT=ml1-wsl` when running on ML1 WSL. Verify existing SSH keys/known-host trust and private reads in assigned contexts. Run manually first. Only then activate, scan and assign through `ceo playbook` on the verified owner. Disable the desktop observer only after scheduled CEO dispatch, matching publication evidence, acknowledged Discord delivery and a quiet unchanged repeat are verified. CEO then owns this audit exclusively.
 
 ## Known gaps
 

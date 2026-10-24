@@ -13,7 +13,7 @@ notify_execution_failure() {
     if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then printf 'failure-notified' > "$CEO_RUNNER_OUTCOME_FILE"; fi
   fi
 }
-repo="${LLM_TOOLS_REPO:-}"
+repo="${CEO_FLEET_READINESS_REPO:-${LLM_TOOLS_REPO:-}}"
 if [ -z "$repo" ]; then
   for candidate in "$HOME/code/llm-tools" "$HOME/Code/llm-tools" "$HOME/.local/share/llm-tools-deploy"; do
     if [ -f "$candidate/scripts/fleet-readiness.py" ]; then repo="$candidate"; break; fi
