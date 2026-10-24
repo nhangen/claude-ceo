@@ -13,14 +13,14 @@ notify_execution_failure() {
     if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then printf 'failure-notified' > "$CEO_RUNNER_OUTCOME_FILE"; fi
   fi
 }
-repo="${LLM_TOOLS_REPO:-}"
+repo="${CEO_FLEET_READINESS_REPO:-${LLM_TOOLS_REPO:-}}"
 if [ -z "$repo" ]; then
   for candidate in "$HOME/code/llm-tools" "$HOME/Code/llm-tools" "$HOME/.local/share/llm-tools-deploy"; do
     if [ -f "$candidate/scripts/fleet-readiness.py" ]; then repo="$candidate"; break; fi
   done
 fi
 if [ -z "$repo" ] || [ ! -f "$repo/scripts/fleet-readiness.py" ]; then
-  printf 'ERROR: fleet checker unavailable; set LLM_TOOLS_REPO\n' >&2
+  printf 'ERROR: fleet checker unavailable; set CEO_FLEET_READINESS_REPO or LLM_TOOLS_REPO\n' >&2
   notify_execution_failure
   exit 1
 fi
