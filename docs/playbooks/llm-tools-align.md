@@ -23,6 +23,16 @@ configured symlinks with `scripts/migrate.sh --apply`.
 - No CEO vault output on routine success. The script writes `noop` to
   `CEO_RUNNER_OUTCOME_FILE` so scheduled success notifications stay quiet.
 
+## Configuration
+
+- `CEO_LLM_TOOLS_ALIGN_REPO` — the llm-tools checkout to align. Authoritative:
+  it is never filtered, and a missing or non-executable path fails the run.
+- `LLM_TOOLS_REPO` — inherited fallback. Ignored, with a stderr notice, when its
+  basename is `llm-tools-deploy` or starts with `fleet-readiness-checker`, since
+  fleet-readiness points it at a throwaway checker checkout.
+- With neither set, the script tries `~/code/llm-tools`, `~/Code/llm-tools`,
+  `~/ML-AI/llm-tools`, then `/c/Projects/llm-tools`.
+
 ## Failure behavior
 
 The run exits nonzero when the pull step fails, symlink creation is unavailable,
