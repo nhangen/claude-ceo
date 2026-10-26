@@ -233,19 +233,21 @@ test_scan_registers_real_cron_failure_digest_with_inline_registry() {
     "verify gate must not rely on a wall-clock modification window (#560)"
 }
 
+# Scan the shipped cron-failure-digest playbook into the fixture registry and
+# print its verify gate as the bridge receives it (test-expected-from-production-entry-point).
+_scanned_verify_cmd() {
+  cp "$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md" "$CEO_DIR/playbooks/cron-failure-digest.md"
+  CEO_OLLAMA_SKIP_PROBE=1 _run_scan
+  jq -r '.playbooks[]|select(.name=="cron-failure-digest").registry' "$HOME/.ceo/registry.json" \
+    | jq -r '.tasks["cron-failure-digest"].verify // empty'
+}
+
 test_cron_failure_digest_verify_refuses_stale_same_day_file() {
   # #560: A manual rerun within 30 minutes of a prior run must NOT pass verify
   # if the model writes nothing this time. Read verify from the scanned registry
   # (test-expected-from-production-entry-point) and exercise inside $CEO_DIR.
-  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
-  cp "$real" "$CEO_DIR/playbooks/cron-failure-digest.md"
-  export CEO_OLLAMA_SKIP_PROBE=1
-  _run_scan
-  unset CEO_OLLAMA_SKIP_PROBE
-  local reg="$HOME/.ceo/registry.json"
-  local inline verify
-  inline=$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").registry' "$reg")
-  verify=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].verify // empty' 2>/dev/null)
+  local verify
+  verify=$(_scanned_verify_cmd)
   assert_contains "$verify" "reports/cron-failures/" "verify command must be present in registry"
 
   local marker target
@@ -259,7 +261,7 @@ test_cron_failure_digest_verify_refuses_stale_same_day_file() {
   printf '# Cron failures %s\n- [ ] failure line\n' "$(date +%F)" > "$CEO_DIR/$target"
 
   local rc1=0
-  ( cd "$CEO_DIR" && eval "$verify" ) >/dev/null 2>&1 || rc1=$?
+  ( cd "$CEO_DIR" && sh -c "$verify" ) >/dev/null 2>&1 || rc1=$?
   assert_eq "$rc1" "0" "clean run with valid digest must verify"
   assert_eq "$([ -f "$CEO_DIR/$marker" ] && echo exists || echo absent)" "absent" \
     "verify must remove marker on success"
@@ -267,27 +269,20 @@ test_cron_failure_digest_verify_refuses_stale_same_day_file() {
   # Run 2 (rerun within 30 min): step 1 runs and touches marker, but model writes nothing new.
   printf '%s\n' "$target" > "$CEO_DIR/$marker"
   assert_fails "rerun with stale same-day file must fail verify" \
-    bash -c "cd '$CEO_DIR' && eval \"\$1\"" _ "$verify"
+    sh -c "cd '$CEO_DIR' && $verify"
 
   # Run 3: rerun where model makes zero tool calls (marker not present).
   rm -f "$CEO_DIR/$marker"
   assert_fails "rerun where model makes zero tool calls must fail verify" \
-    bash -c "cd '$CEO_DIR' && eval \"\$1\"" _ "$verify"
+    sh -c "cd '$CEO_DIR' && $verify"
 }
 
 test_cron_failure_digest_verify_handles_midnight_rollover() {
   # #560: A run crossing midnight computes a date in step 1 that differs from
   # the date when verify runs. Verify must check the file recorded in the marker,
   # not re-compute date +%F.
-  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
-  cp "$real" "$CEO_DIR/playbooks/cron-failure-digest.md"
-  export CEO_OLLAMA_SKIP_PROBE=1
-  _run_scan
-  unset CEO_OLLAMA_SKIP_PROBE
-  local reg="$HOME/.ceo/registry.json"
-  local inline verify
-  inline=$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").registry' "$reg")
-  verify=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].verify // empty' 2>/dev/null)
+  local verify
+  verify=$(_scanned_verify_cmd)
 
   local marker yesterday
   marker="reports/cron-failures/.run-start-$(hostname -s)"
@@ -298,7 +293,7 @@ test_cron_failure_digest_verify_handles_midnight_rollover() {
   printf '# Cron failures 2026-10-24\n- [ ] failure line\n' > "$CEO_DIR/$yesterday"
 
   local rc=0
-  ( cd "$CEO_DIR" && eval "$verify" ) >/dev/null 2>&1 || rc=$?
+  ( cd "$CEO_DIR" && sh -c "$verify" ) >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "verify must succeed on step 1 recorded path across midnight"
   assert_eq "$([ -f "$CEO_DIR/$marker" ] && echo exists || echo absent)" "absent" \
     "verify must remove marker on success"
