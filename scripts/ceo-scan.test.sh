@@ -244,8 +244,7 @@ _scanned_verify_cmd() {
 
 test_cron_failure_digest_verify_refuses_stale_same_day_file() {
   # #560: A manual rerun within 30 minutes of a prior run must NOT pass verify
-  # if the model writes nothing this time. Read verify from the scanned registry
-  # (test-expected-from-production-entry-point) and exercise inside $CEO_DIR.
+  # if the model writes nothing this time.
   local verify
   verify=$(_scanned_verify_cmd)
   assert_contains "$verify" "reports/cron-failures/" "verify command must be present in registry"
@@ -300,8 +299,6 @@ test_cron_failure_digest_verify_handles_midnight_rollover() {
 }
 
 test_cron_failure_digest_step1_records_marker_and_outpath() {
-  # Verify that the actual step 1 shell command extracted from the playbook body
-  # creates the marker file and emits OUTPATH when executed in $CEO_DIR.
   local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
   local step1_cmd
   step1_cmd=$(awk '/^[[:space:]]*mkdir -p reports\/cron-failures/{sub(/^[[:space:]]*/, ""); print}' "$real")
