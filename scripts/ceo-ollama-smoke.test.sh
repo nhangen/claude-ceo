@@ -28,6 +28,22 @@ setup() {
   mkdir -p "$TEST_HOME/shim"
   printf '#!/bin/bash\nshift\nexec "$@"\n' > "$TEST_HOME/shim/timeout"
   chmod +x "$TEST_HOME/shim/timeout"
+  # awk shim: AWK_FAIL_REWRITE=1 fails only the inbox rewrite (the one call
+  # that passes -v r=), so a failed close-out can be staged deterministically.
+  local real_awk
+  real_awk=$(type -p awk 2>/dev/null || command -v awk || echo "/usr/bin/awk")
+  cat > "$TEST_HOME/shim/awk" <<AWKSTUB
+#!/bin/bash
+if [ "\${AWK_FAIL_REWRITE:-0}" = "1" ]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+      r=*) exit 1 ;;
+    esac
+  done
+fi
+exec "$real_awk" "\$@"
+AWKSTUB
+  chmod +x "$TEST_HOME/shim/awk"
   INBOX="$CEO_DIR/inbox/ollama-smoke.md"
 }
 
@@ -128,6 +144,25 @@ test_recovery_marks_task_done() {
   assert_eq "$(_open_tasks)" "0" "task no longer open"
   assert_contains "$(cat "$INBOX")" "- [done] Ollama live stack smoke cleared" "task rewritten to done"
   assert_eq "$(_outcome)" "fired" "recovery notifies"
+}
+
+test_failed_close_out_is_retried_on_next_clean_run() {
+  # #559 shape: state commits clear before the inbox rewrite. A rewrite that
+  # fails must leave the task open, and the next clean run must close it
+  # even though it sees clear→clear, not firing→clear.
+  _mock 1 2 1 0
+  _run
+  _mock 0 6 0 0
+  local rc=0
+  AWK_FAIL_REWRITE=1 PATH="$TEST_HOME/shim:$PATH" _CEO_PATH_AUGMENTED=1 bash "$SCRIPT" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "failed inbox rewrite must exit 1"
+  assert_eq "$(_field status)" "clear" "state already committed clear before the close-out"
+  assert_eq "$(_open_tasks)" "1" "task is still open after the failed close-out"
+  _run
+  assert_eq "$(_open_tasks)" "0" "next clean run must close the stranded task"
+  assert_eq "$(grep -c 'Ollama live stack smoke cleared' "$INBOX")" "1" "exactly one [done] line after the retry"
+  _run
+  assert_eq "$(grep -c 'Ollama live stack smoke cleared' "$INBOX")" "1" "clear→clear after the recovery must not rewrite again"
 }
 
 test_firing_then_all_skip_keeps_task_open() {

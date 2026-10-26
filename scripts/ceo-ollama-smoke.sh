@@ -2,7 +2,7 @@
 # ceo-ollama-smoke.sh — weekly live-stack canary (#276). Runs
 # ollama-agent/tests/integration_smoke.sh and keeps CEO/alerts/ollama-smoke.md
 # as a state machine: overwrite with current state, escalate to the inbox only
-# on a transition into firing, resolve the task only on a fully verified pass.
+# on a transition into firing, resolve any open task on a fully verified pass.
 #
 # Invoked by ceo-cron.sh when the ollama-smoke playbook (runner:script) fires.
 
@@ -174,7 +174,10 @@ if [ "$PRIOR_STATUS" != "unknown" ]; then
       printf '%s\n' "$TASK_LINE" >> "$INBOX_FILE" || { echo "ERROR: failed to append to $INBOX_FILE" >&2; exit 1; }
       INBOX_CHANGED=1
     fi
-  elif [ "$CURRENT_STATUS" = "clear" ] && [ "$PRIOR_STATUS" = "firing" ] && active_task_present; then
+  elif [ "$CURRENT_STATUS" = "clear" ] && active_task_present; then
+    # Close-out keys on inbox content, not on the firing→clear transition:
+    # state above already reads clear, so a rewrite that fails here would
+    # otherwise strand the open task on every later clear run (#559).
     INBOX_TMP=$(mktemp "${INBOX_FILE}.XXXXXX") || { echo "ERROR: mktemp failed for $INBOX_FILE" >&2; exit 1; }
     trap 'rm -f "$INBOX_TMP"' EXIT
     awk -v m="$TASK_MARKER" -v r="- [done] Ollama live stack smoke cleared $(date +%Y-%m-%d) $TASK_MARKER" \
