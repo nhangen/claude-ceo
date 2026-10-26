@@ -227,6 +227,101 @@ test_scan_registers_real_cron_failure_digest_with_inline_registry() {
   verify=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].verify // empty' 2>/dev/null)
   assert_contains "$verify" "reports/cron-failures/" \
     "shipped low-stakes-write playbook must carry a verify gate through scan"
+  assert_contains "$verify" "-newer" \
+    "verify gate must require the digest to be newer than the run-start marker (#560)"
+  assert_not_contains "$verify" "-mmin" \
+    "verify gate must not rely on a wall-clock modification window (#560)"
+}
+
+test_cron_failure_digest_verify_refuses_stale_same_day_file() {
+  # #560: A manual rerun within 30 minutes of a prior run must NOT pass verify
+  # if the model writes nothing this time. Read verify from the scanned registry
+  # (test-expected-from-production-entry-point) and exercise inside $CEO_DIR.
+  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
+  cp "$real" "$CEO_DIR/playbooks/cron-failure-digest.md"
+  export CEO_OLLAMA_SKIP_PROBE=1
+  _run_scan
+  unset CEO_OLLAMA_SKIP_PROBE
+  local reg="$HOME/.ceo/registry.json"
+  local inline verify
+  inline=$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").registry' "$reg")
+  verify=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].verify // empty' 2>/dev/null)
+  assert_contains "$verify" "reports/cron-failures/" "verify command must be present in registry"
+
+  local marker target
+  marker="reports/cron-failures/.run-start-$(hostname -s)"
+  target="reports/cron-failures/$(date +%F)-$(hostname -s).md"
+  mkdir -p "$CEO_DIR/reports/cron-failures"
+
+  # Run 1: clean run. Step 1 records marker and path; step 2 writes valid heading.
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  sleep 0.05
+  printf '# Cron failures %s\n- [ ] failure line\n' "$(date +%F)" > "$CEO_DIR/$target"
+
+  local rc1=0
+  ( cd "$CEO_DIR" && eval "$verify" ) >/dev/null 2>&1 || rc1=$?
+  assert_eq "$rc1" "0" "clean run with valid digest must verify"
+  assert_eq "$([ -f "$CEO_DIR/$marker" ] && echo exists || echo absent)" "absent" \
+    "verify must remove marker on success"
+
+  # Run 2 (rerun within 30 min): step 1 runs and touches marker, but model writes nothing new.
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  assert_fails "rerun with stale same-day file must fail verify" \
+    bash -c "cd '$CEO_DIR' && eval \"\$1\"" _ "$verify"
+
+  # Run 3: rerun where model makes zero tool calls (marker not present).
+  rm -f "$CEO_DIR/$marker"
+  assert_fails "rerun where model makes zero tool calls must fail verify" \
+    bash -c "cd '$CEO_DIR' && eval \"\$1\"" _ "$verify"
+}
+
+test_cron_failure_digest_verify_handles_midnight_rollover() {
+  # #560: A run crossing midnight computes a date in step 1 that differs from
+  # the date when verify runs. Verify must check the file recorded in the marker,
+  # not re-compute date +%F.
+  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
+  cp "$real" "$CEO_DIR/playbooks/cron-failure-digest.md"
+  export CEO_OLLAMA_SKIP_PROBE=1
+  _run_scan
+  unset CEO_OLLAMA_SKIP_PROBE
+  local reg="$HOME/.ceo/registry.json"
+  local inline verify
+  inline=$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").registry' "$reg")
+  verify=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].verify // empty' 2>/dev/null)
+
+  local marker yesterday
+  marker="reports/cron-failures/.run-start-$(hostname -s)"
+  yesterday="reports/cron-failures/2026-10-24-$(hostname -s).md"
+  mkdir -p "$CEO_DIR/reports/cron-failures"
+  printf '%s\n' "$yesterday" > "$CEO_DIR/$marker"
+  sleep 0.05
+  printf '# Cron failures 2026-10-24\n- [ ] failure line\n' > "$CEO_DIR/$yesterday"
+
+  local rc=0
+  ( cd "$CEO_DIR" && eval "$verify" ) >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "verify must succeed on step 1 recorded path across midnight"
+  assert_eq "$([ -f "$CEO_DIR/$marker" ] && echo exists || echo absent)" "absent" \
+    "verify must remove marker on success"
+}
+
+test_cron_failure_digest_step1_records_marker_and_outpath() {
+  # Verify that the actual step 1 shell command extracted from the playbook body
+  # creates the marker file and emits OUTPATH when executed in $CEO_DIR.
+  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
+  local step1_cmd
+  step1_cmd=$(awk '/^[[:space:]]*mkdir -p reports\/cron-failures/{sub(/^[[:space:]]*/, ""); print}' "$real")
+  assert_contains "$step1_cmd" "mkdir -p reports/cron-failures" "step 1 shell command must exist in playbook"
+
+  local out
+  out=$(cd "$CEO_DIR" && eval "$step1_cmd")
+  local marker
+  marker="$CEO_DIR/reports/cron-failures/.run-start-$(hostname -s)"
+  assert_file_exists "$marker" "step 1 must create run-start marker"
+  local recorded_path expected_path
+  recorded_path=$(cat "$marker")
+  expected_path="reports/cron-failures/$(date +%F)-$(hostname -s).md"
+  assert_eq "$recorded_path" "$expected_path" "marker must contain expected OUTPATH"
+  assert_contains "$out" "OUTPATH=$expected_path" "step 1 stdout must print OUTPATH"
 }
 
 test_discord_report_flags_carried_to_registry() {
