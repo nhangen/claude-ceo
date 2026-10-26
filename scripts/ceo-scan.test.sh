@@ -276,20 +276,21 @@ test_cron_failure_digest_verify_refuses_stale_same_day_file() {
     sh -c "cd '$CEO_DIR' && $verify"
 }
 
-test_cron_failure_digest_verify_handles_midnight_rollover() {
+test_cron_failure_digest_verify_reads_target_from_marker_not_date() {
   # #560: A run crossing midnight computes a date in step 1 that differs from
-  # the date when verify runs. Verify must check the file recorded in the marker,
-  # not re-compute date +%F.
+  # the date when verify runs, so verify must take the path from the marker.
+  # The clock does not move here; the marker simply names a non-today file.
   local verify
   verify=$(_scanned_verify_cmd)
 
-  local marker yesterday
+  local marker yday yesterday
   marker="reports/cron-failures/.run-start-$(hostname -s)"
-  yesterday="reports/cron-failures/2026-10-24-$(hostname -s).md"
+  yday=$(date -v-1d +%F 2>/dev/null || date -d yesterday +%F)
+  yesterday="reports/cron-failures/$yday-$(hostname -s).md"
   mkdir -p "$CEO_DIR/reports/cron-failures"
   printf '%s\n' "$yesterday" > "$CEO_DIR/$marker"
   sleep 0.05
-  printf '# Cron failures 2026-10-24\n- [ ] failure line\n' > "$CEO_DIR/$yesterday"
+  printf '# Cron failures %s\n- [ ] failure line\n' "$yday" > "$CEO_DIR/$yesterday"
 
   local rc=0
   ( cd "$CEO_DIR" && sh -c "$verify" ) >/dev/null 2>&1 || rc=$?
