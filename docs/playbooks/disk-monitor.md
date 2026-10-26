@@ -33,7 +33,7 @@ Written as a follow-up to a multi-TB WSL crash-dump exhaustion incident. The fir
 
 Dedupe is gated by an HTML-comment marker (`<!-- disk-monitor:<host> -->`) embedded in every task line. The marker survives user reformats (translating the message, editing wording) so the same alert never produces two active task lines. The sustained-firing re-poke appends a fresh `- [ ]` only when no unchecked line carries the marker — i.e., the prior task has been checked off — and the alert continues to fire past 24 hours.
 
-When state transitions `firing → clear`, the playbook flips the matching `- [ ]` task in `CEO/inbox/<host>.md` to `- [done]` and appends a one-line resolution note. The rewrite is exact-string match (no regex), so hosts with regex metacharacters in their names rewrite correctly.
+When state resolves to `clear` with a clean measurement, the playbook closes any unchecked matching `- [ ]` task in `CEO/inbox/<host>.md` — flip it to `- [done]` and append a one-line resolution note. The close-out keys on the marker, not the `firing → clear` transition, so a run that committed `status: clear` but failed the close-out is retried by the next clean run (#559). The rewrite is exact-string match (no regex), so hosts with regex metacharacters in their names rewrite correctly.
 
 ## Measurement-failure invariant
 

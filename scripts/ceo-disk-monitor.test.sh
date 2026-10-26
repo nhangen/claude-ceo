@@ -314,6 +314,18 @@ test_inbox_rewrite_awk_failure_is_fatal_and_named() {
   local leftovers
   leftovers=$(find "$CEO_DIR/inbox" -name "testhost.md.*")
   assert_eq "$leftovers" "" "no temporary inbox files should be left on failure"
+
+  # Follow-up clean run: the failed run already committed status: clear, so
+  # close-out must be retried on inbox content (task marker still checked),
+  # not on a firing→clear transition it can no longer detect (#559).
+  local retry_rc=0
+  DUMP_GB_STUB="0" run_monitor || retry_rc=$?
+  assert_eq "$retry_rc" "0" "retry run itself must succeed"
+  local inbox_recovered
+  inbox_recovered=$(cat "$inbox_file")
+  assert_contains "$inbox_recovered" "- [done] Cleaned wsl-crashes on testhost" "the stranded task must be closed by the next clean run"
+  assert_not_contains "$inbox_recovered" "- [ ] Clean wsl-crashes on testhost" "no unchecked task may survive the retry"
+  assert_contains "$inbox_recovered" "disk monitor cleared" "resolution note must be appended once the close-out lands"
 }
 
 test_inbox_rewrite_uses_inbox_dir_for_mktemp() {

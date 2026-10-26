@@ -1,8 +1,8 @@
 #!/bin/bash
 # ceo-disk-monitor.sh — Six-hour disk-state check (WSL2).
 # State machine, not signal generator. Writes one state file (overwrite),
-# one log line (append), and only touches the inbox on state transitions
-# or sustained firing.
+# one log line (append), and touches the inbox on state transitions,
+# sustained firing, or a clear still finding an unchecked task.
 #
 # Windows paths (`/mnt/c/...`) make this WSL2-specific; override
 # CEO_DISK_WSL_CRASHES_PATH and CEO_DISK_C_MOUNT for other layouts.
@@ -245,7 +245,12 @@ if [ "$MEASUREMENT_FAILED" -eq 0 ] && [ "$PRIOR_STATUS" != "unknown" ] && [ "$CU
     # — `active_task_present` is false once the `[ ]` becomes `[x]` or
     # `[done]`, allowing the append.
     active_task_present || _append_inbox "$TASK_LINE"
-  elif [ "$PRIOR_STATUS" = "firing" ] && [ "$CURRENT_STATUS" = "clear" ]; then
+  elif [ "$CURRENT_STATUS" = "clear" ]; then
+    # Close-out keys on inbox content (the task marker), not on the
+    # firing→clear transition: a prior run can commit status: clear, fail
+    # the close-out (mktemp/awk/mv), and exit — keying on the transition
+    # would strand the open task forever. Retrying on each clean run for
+    # as long as the marker stays unchecked makes that failure recoverable.
     if active_task_present; then
       tmpfile=$(mktemp "${INBOX_FILE}.XXXXXX") || { echo "ERROR: ceo-disk-monitor: mktemp failed for inbox rewrite" >&2; exit 1; }
       trap 'rm -f "$tmpfile"' EXIT
