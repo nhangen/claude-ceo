@@ -269,10 +269,33 @@ test_cron_failure_digest_verify_refuses_stale_same_day_file() {
   printf '%s\n' "$target" > "$CEO_DIR/$marker"
   assert_fails "rerun with stale same-day file must fail verify" \
     sh -c "cd '$CEO_DIR' && $verify"
+  # The bridge gives the model another turn after a failed gate; that retry is
+  # gated only while the marker is still there.
+  assert_file_exists "$CEO_DIR/$marker" "a failed verify must leave the marker in place"
 
   # Run 3: rerun where model makes zero tool calls (marker not present).
   rm -f "$CEO_DIR/$marker"
   assert_fails "rerun where model makes zero tool calls must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  sleep 0.05
+  : > "$CEO_DIR/$target"
+  assert_fails "an empty digest must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  sleep 0.05
+  printf 'no heading here\n' > "$CEO_DIR/$target"
+  assert_fails "a digest without the heading must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  : > "$CEO_DIR/$marker"
+  assert_fails "an empty marker must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  printf 'reports/cron-failures/does-not-exist.md\n' > "$CEO_DIR/$marker"
+  assert_fails "a marker naming a missing file must fail verify" \
     sh -c "cd '$CEO_DIR' && $verify"
 }
 
