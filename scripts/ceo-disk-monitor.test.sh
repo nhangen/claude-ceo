@@ -314,9 +314,10 @@ test_inbox_rewrite_awk_failure_is_fatal_and_named() {
   local leftovers
   leftovers=$(find "$CEO_DIR/inbox" -name "testhost.md.*")
   assert_eq "$leftovers" "" "no temporary inbox files should be left on failure"
+  assert_eq "$(state_field status)" "clear" "failed close-out must already have committed clear"
 
   # Follow-up clean run: the failed run already committed status: clear, so
-  # close-out must be retried on inbox content (task marker still checked),
+  # close-out must be retried on inbox content (task line still unchecked),
   # not on a firing→clear transition it can no longer detect (#559).
   local retry_rc=0
   DUMP_GB_STUB="0" run_monitor || retry_rc=$?
@@ -325,7 +326,13 @@ test_inbox_rewrite_awk_failure_is_fatal_and_named() {
   inbox_recovered=$(cat "$inbox_file")
   assert_contains "$inbox_recovered" "- [done] Cleaned wsl-crashes on testhost" "the stranded task must be closed by the next clean run"
   assert_not_contains "$inbox_recovered" "- [ ] Clean wsl-crashes on testhost" "no unchecked task may survive the retry"
-  assert_contains "$inbox_recovered" "disk monitor cleared" "resolution note must be appended once the close-out lands"
+  assert_eq "$(grep -c -F "disk monitor cleared" "$inbox_file")" "1" "resolution note must be appended exactly once"
+
+  # Steady state after the recovery: the close-out branch now runs on every
+  # clean tick, so a further clear run must not rewrite or append again.
+  DUMP_GB_STUB="0" run_monitor
+  assert_eq "$(grep -c -F -- "- [done] Cleaned wsl-crashes on testhost" "$inbox_file")" "1" "clear→clear must not add a second [done] line"
+  assert_eq "$(grep -c -F "disk monitor cleared" "$inbox_file")" "1" "clear→clear must not append a second resolution note"
 }
 
 test_inbox_rewrite_uses_inbox_dir_for_mktemp() {
