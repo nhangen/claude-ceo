@@ -546,6 +546,7 @@ test_runner_ollama_agent_clears_stale_digest_run_start_marker_before_dispatch() 
   # and only a passing verify removes. A run that died before verify (turn cap,
   # crash, timeout) leaves it behind, and the next run that makes no tool calls
   # would pass the gate on that run's digest unless dispatch clears it first.
+  unset CEO_HOSTNAME
   _register_agent_pb cron-failure-digest low-stakes-write
   _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
   cat > "$HOME/.bun/bin/marker-probe" << PROBE
