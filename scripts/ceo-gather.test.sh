@@ -56,21 +56,25 @@ _write_gh_stub() {
   local authored_body="${3:-[]}"
   local fail_arm="${4:-}"
   local fail_case=""
+  local FAKE_GITHUB_TOKEN
+  FAKE_GITHUB_TOKEN=$(fake_token ghp_)
+  local auth_token_cmd="echo \"${FAKE_GITHUB_TOKEN}\"; exit 0"
+  local auth_status_cmd="exit 0"
   case "$fail_arm" in
     '') ;;
     merged)   fail_case='*"--merged"*)' ;;
     review)   fail_case='*"--review-requested"*)' ;;
     authored) fail_case='*"--state open"*"--author"*)' ;;
+    hang-auth-status) auth_status_cmd="sleep 10; exit 0" ;;
+    hang-auth-token)  auth_token_cmd="sleep 10; exit 0" ;;
     *) echo "_write_gh_stub: unknown fail arm '$fail_arm'" >&2; return 1 ;;
   esac
   [ -n "$fail_case" ] && fail_case="$fail_case echo 'gh: API rate limit exceeded' >&2; exit 1 ;;"
-  local FAKE_GITHUB_TOKEN
-  FAKE_GITHUB_TOKEN=$(fake_token ghp_)
   cat > "$TMP/bin/gh" << STUB
 #!/bin/bash
 case "\$1 \$2" in
-  "auth token") echo "${FAKE_GITHUB_TOKEN}"; exit 0 ;;
-  "auth status") exit 0 ;;
+  "auth token") $auth_token_cmd ;;
+  "auth status") $auth_status_cmd ;;
 esac
 if [ "\$1" = "search" ] && [ "\$2" = "prs" ]; then
   case "\$*" in
@@ -92,6 +96,15 @@ _run_gather() {
   ( set +eu
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
     echo "DEGRADED=${PR_GATHER_DEGRADED}|REVIEW_DEGRADED=${PR_REVIEW_GATHER_DEGRADED}|REVIEW_COUNT=${PR_REVIEW_COUNT}|AUTHORED_COUNT=${PR_AUTHORED_COUNT}|MERGED_COUNT=${PR_MERGED_COUNT}|REASONS=${PR_GATHER_DEGRADED_REASONS}" )
+}
+
+# Cron sources gather under `set -euo pipefail`; a probe that times out must not
+# abort the tick before it is marked. A fresh process, because a subshell run in
+# an `||` or `if` context ignores its own `set -e`.
+_run_gather_strict() {
+  bash -c 'set -euo pipefail
+    source "$1/ceo-gather.sh" >/dev/null 2>&1
+    echo "DEGRADED=${PR_GATHER_DEGRADED}|REVIEW_DEGRADED=${PR_REVIEW_GATHER_DEGRADED}|REVIEW_COUNT=${PR_REVIEW_COUNT}|REASONS=${PR_GATHER_DEGRADED_REASONS}"' _ "$SCRIPT_DIR" || true
 }
 
 # _preflight_rc <count> <review-degraded> — the 0/1/2 contract on its own terms.
@@ -544,9 +557,139 @@ STUB
   duration=$((end - start))
   assert_contains "$out" "REVIEW_DEGRADED=1" \
     "a hanging glab auth status must time out and degrade the review queue (#641)"
-  assert_contains "$out" "glab-review-unavailable" \
-    "degraded reason must be glab-review-unavailable, not an inner api failure (#641)"
+  assert_contains "$out" "glab-auth-timeout" \
+    "degraded reason must name the timeout, not an inner api failure (#641)"
   [ "$duration" -lt 5 ] || fail_test "glab auth status hang was not terminated by timeout (took ${duration}s)"
+}
+
+# Discovery mode: no usernames configured. A timed-out probe is not "this host
+# does not use GitLab", which is what an unauthenticated glab means here.
+test_hanging_glab_auth_status_in_discovery_mode_degrades_review_queue() {
+  _write_gh_stub '[]'
+  cat > "$TMP/bin/glab" << 'STUB'
+#!/bin/bash
+case "$1 $2" in
+  "auth status") sleep 10; exit 0 ;;
+  *) echo "glab stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$TMP/bin/glab"
+  local out start end
+  start=$(date +%s)
+  out=$( export CEO_FORGE_TIMEOUT=1; _run_gather )
+  end=$(date +%s)
+  assert_contains "$out" "REVIEW_DEGRADED=1" "a timed-out glab probe must degrade the review queue"
+  assert_contains "$out" "glab-auth-timeout" "the degraded reason must name the timeout"
+  [ $((end - start)) -lt 5 ] || fail_test "glab auth status hang took $((end - start))s"
+}
+
+test_hanging_glab_api_user_in_discovery_mode_times_out_and_degrades() {
+  _write_gh_stub '[]'
+  cat > "$TMP/bin/glab" << 'STUB'
+#!/bin/bash
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "api user") sleep 10; echo '{"username":"late"}' ;;
+  *) echo "glab stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$TMP/bin/glab"
+  local out start end
+  start=$(date +%s)
+  out=$( export CEO_FORGE_TIMEOUT=1; _run_gather_strict )
+  end=$(date +%s)
+  [ $((end - start)) -lt 5 ] || fail_test "glab api user hang took $((end - start))s; discovery is unbounded"
+  assert_contains "$out" "REVIEW_DEGRADED=1" \
+    "authenticated glab that resolves no username must degrade, not report an empty queue"
+  assert_contains "$out" "glab-review-no-users-resolved" "the degraded reason must say no user resolved"
+}
+
+# _write_glab_authed_stub <user-for-api-user> — authenticated glab whose MR
+# search returns one review-requested MR for the expected username only.
+_write_glab_authed_stub() {
+  local api_user="$1" expect_user="$2"
+  cat > "$TMP/bin/glab" << STUB
+#!/bin/bash
+case "\$1 \$2" in
+  "auth status") exit 0 ;;
+  "api user") [ -n "$api_user" ] && { echo '{"username":"$api_user"}'; exit 0; }
+              echo "glab stub: api user not expected" >&2; exit 99 ;;
+  "api merge_requests?"*"reviewer_username=$expect_user&"*)
+    echo '[{"iid":7,"title":"t","created_at":"2026-10-01T00:00:00Z","references":{"full":"grp/proj!7"},"web_url":"https://gitlab.example/grp/proj/-/merge_requests/7"}]' ;;
+  "api merge_requests?"*"author_username=$expect_user&"*) echo '[]' ;;
+  *) echo "glab stub: unexpected argv: \$*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$TMP/bin/glab"
+}
+
+test_authenticated_glab_counts_configured_users_mrs() {
+  cat > "$TMP/.ceo/pr-sources.json" << 'JSON'
+{ "github": { "accounts": ["testacct"] }, "gitlab": { "usernames": ["gluser"] } }
+JSON
+  _write_gh_stub '[]'
+  _write_glab_authed_stub "" gluser
+  local out; out=$(_run_gather)
+  assert_contains "$out" "REVIEW_COUNT=1" "a configured GitLab user's review MR must be counted"
+  assert_contains "$out" "REVIEW_DEGRADED=0" "a clean GitLab search is not a degradation"
+}
+
+test_authenticated_glab_discovers_username_and_counts_mrs() {
+  _write_gh_stub '[]'
+  _write_glab_authed_stub discovered discovered
+  local out; out=$(_run_gather)
+  assert_contains "$out" "REVIEW_COUNT=1" "the discovered GitLab user's review MR must be counted"
+  assert_contains "$out" "REVIEW_DEGRADED=0" "a clean GitLab search is not a degradation"
+}
+
+test_hanging_gh_auth_token_is_bounded_and_degrades() {
+  _write_gh_stub '[]' '[]' '[]' hang-auth-token
+  local out start end
+  start=$(date +%s)
+  out=$( export CEO_FORGE_TIMEOUT=1; _run_gather )
+  end=$(date +%s)
+  [ $((end - start)) -lt 5 ] || fail_test "gh auth token hang took $((end - start))s"
+  assert_contains "$out" "token-fetch-failed:testacct" "a timed-out token fetch must be marked"
+}
+
+test_hanging_gh_auth_status_with_no_accounts_is_bounded() {
+  cat > "$TMP/.ceo/pr-sources.json" << 'JSON'
+{ "github": { "accounts": [] }, "gitlab": { "usernames": [] } }
+JSON
+  _write_gh_stub '[]' '[]' '[]' hang-auth-status
+  local out start end
+  start=$(date +%s)
+  out=$( export CEO_FORGE_TIMEOUT=1; _run_gather_strict )
+  end=$(date +%s)
+  # Discovery plus the no-accounts guard each probe once: two capped probes.
+  assert_eq "$(( end - start < 6 ))" "1" "gh auth status hang took $((end - start))s; the probes are unbounded"
+  assert_contains "$out" "REVIEW_DEGRADED=1" "a timed-out gh probe must not certify an empty review queue"
+  assert_contains "$out" "gh-auth-timeout" "the degraded reason must name the timeout"
+}
+
+test_preflight_reports_a_timed_out_gh_probe() {
+  _write_gh_stub '[]' '[]' '[]' hang-auth-status
+  local out
+  out=$( set +eu
+    export CEO_FORGE_TIMEOUT=1
+    source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+    rc=0; o=$(ceo_pr_review_preflight) || rc=$?
+    echo "RC=$rc|OUT=$o" )
+  assert_contains "$out" "RC=2" "a timed-out gh probe leaves the queue unknown"
+  assert_contains "$out" "timed out" "the reason must say the probe timed out, not that gh is unauthenticated"
+}
+
+test_invalid_forge_timeout_falls_back_to_default() {
+  _write_gh_stub '[]'
+  local v
+  for v in 0 abc 10s; do
+    local got
+    got=$( set +eu
+      export CEO_FORGE_TIMEOUT="$v"
+      source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
+      echo "$CEO_FORGE_TIMEOUT" )
+    assert_eq "$got" "10" "CEO_FORGE_TIMEOUT='$v' must fall back to 10"
+  done
 }
 
 # gh is authenticated and the account list resolves to nothing, so no search is
@@ -733,7 +876,7 @@ test_timeout_fallback_to_python3_when_no_timeout_bin_on_path() {
     source "$SCRIPT_DIR/ceo-gather.sh" >/dev/null 2>&1
     echo "COMPLETED|BRIEFINGS=${BRIEFINGS_TRAINING}|DEGRADED=$FILE_GATHER_DEGRADED"
     printf 'REASONS=%s\n' "$FILE_GATHER_DEGRADED_REASONS"
-    type _CEO_TIMEOUT | grep -q "python3 -c" && echo "PYBRANCH=yes"
+    { [ -z "$_gather_timeout_bin" ] && type _ceo_timeout_with | grep -q "python3 -c" && echo "PYBRANCH=yes"; } || true
   )
   assert_contains "$out" "PYBRANCH=yes" "the shim must be the python3 fallback, not a timeout binary on PATH"
   assert_contains "$out" "COMPLETED|BRIEFINGS=|DEGRADED=1" \
