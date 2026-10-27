@@ -1280,9 +1280,17 @@ fi
 if ! command -v gh &>/dev/null; then
   echo "$(date): ERROR — gh CLI not found on PATH=$PATH" >> "$CRON_STDERR_LOG"
   _v "ERROR: gh CLI not found"
-elif ! gh auth status &>/dev/null 2>&1; then
-  echo "$(date): WARNING — gh CLI not authenticated. PR-related playbooks will fail." >> "$SKIPS_LOG"
-  _v "WARNING: gh CLI not authenticated"
+else
+  _gh_auth_secs=$(ceo_forge_timeout)
+  _gh_auth_rc=0
+  _ceo_timeout "$_gh_auth_secs" gh auth status &>/dev/null || _gh_auth_rc=$?
+  if [ "$_gh_auth_rc" -eq 124 ]; then
+    echo "$(date): WARNING — gh auth status timed out after ${_gh_auth_secs}s. PR-related playbooks may fail." >> "$SKIPS_LOG"
+    _v "WARNING: gh auth status timed out"
+  elif [ "$_gh_auth_rc" -ne 0 ]; then
+    echo "$(date): WARNING — gh CLI not authenticated. PR-related playbooks will fail." >> "$SKIPS_LOG"
+    _v "WARNING: gh CLI not authenticated"
+  fi
 fi
 
 # --- Validate vault ---
