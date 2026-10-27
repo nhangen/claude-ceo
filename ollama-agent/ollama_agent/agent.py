@@ -103,6 +103,10 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     "verify-failed" (out of turns, gate last observed red),
     "verify-error" (out of turns, gate last observed timing out or failing with returncode=None),
     "error" (crashed run), or "killed" (interrupted run).
+
+    `verify_stderr` (#639) carries the last observed red gate's own stderr, so a
+    caller that logs only `reason` can still name the failing gate clause;
+    empty unless a returncode'd, non-zero check has run.
     """
     # cli.py refuses this earlier with a REFUSED line and exit 2, which is the
     # better operator message; keep that one. This is the library-caller backstop,
@@ -118,6 +122,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     verify_gated = bool(verify_cmd)
     verify_error = False
     reason = None
+    verify_stderr = ""
     turns = 0
     ollama_input_tokens = 0
     ollama_output_tokens = 0
@@ -164,6 +169,9 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
             if verify_cmd:
                 res = json.loads(toolbox.run_shell(verify_cmd))
                 if res.get("returncode") == 0:
+                    # A later green gate clears an earlier red gate's stderr (#639):
+                    # a clean run must not ship stale diagnostics for its reason.
+                    verify_stderr = ""
                     verified = True
                     verify_error = False
                     completed = True
@@ -180,6 +188,11 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                     verify_error = False
                     _track(usage_tracker, "verified", False)
                 err_detail = ("\nerror:\n%s" % res["error"]) if res.get("error") else ""
+                if res.get("returncode") is not None:
+                    # Last observed red gate's stderr (#639): the ceo-cron failure
+                    # record reads only `reason`, so a silent gate clause must
+                    # surface here rather than only in the model's message feed.
+                    verify_stderr = res.get("stderr", "") or ""
                 if verify_error:
                     # A timeout is not evidence the code is wrong, but a change that
                     # hangs the suite also lands here, so the model is told to find
@@ -242,6 +255,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
         "verify_gated": verify_gated,
         "verify_cmd": verify_cmd,
         "reason": reason,
+        "verify_stderr": verify_stderr,
         "turns": turns,
         "run_id": run_id,
         "ollama_input_tokens": ollama_input_tokens,

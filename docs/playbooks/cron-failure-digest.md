@@ -12,7 +12,7 @@ status: active
 runner: ollama-agent
 model: mistral-small3.2:24b
 task: cron-failure-digest
-registry: {"tasks":{"cron-failure-digest":{"runner":"ollama","model":"mistral-small3.2:24b","tier":"low-stakes-write","tools":["read_file","run_shell","write_file","edit_file","list_dir"],"rules":false,"skills":false,"verify":"m=\"reports/cron-failures/.run-start-$(hostname -s)\"; test -s \"$m\" && f=\"$(cat \"$m\")\" && test -s \"$f\" && grep -q '^# Cron failures' \"$f\" && find \"$f\" -newer \"$m\" | grep -q . && rm -f \"$m\""}}}
+registry: {"tasks":{"cron-failure-digest":{"runner":"ollama","model":"mistral-small3.2:24b","tier":"low-stakes-write","tools":["read_file","run_shell","write_file","edit_file","list_dir"],"rules":false,"skills":false,"verify":"m=\"reports/cron-failures/.run-start-$(hostname -s)\"; test -s \"$m\" || { echo \"digest verify: run-start marker missing or empty\" >&2; exit 1; }; f=\"$(cat \"$m\")\" || { echo \"digest verify: cannot read run-start marker: $m\" >&2; exit 1; }; test -s \"$f\" || { echo \"digest verify: digest empty or missing: $f\" >&2; exit 1; }; grep -q '^# Cron failures' \"$f\" || { echo \"digest verify: digest lacks '# Cron failures' heading: $f\" >&2; exit 1; }; find \"$f\" -newer \"$m\" | grep -q . || { echo \"digest verify: digest not newer than run-start marker\" >&2; exit 1; }; rm -f \"$m\""}}}
 artifact: CEO/reports/cron-failures/{TODAY}-{HOST}.md
 ---
 You are writing a digest of recent CEO cron failures. Your working directory is the vault's CEO directory. Make EXACTLY two tool calls, then stop with a one-line summary — do NOT run extra searches, greps, or re-reads (over-exploring is what makes this task fail to finish).

@@ -266,37 +266,58 @@ test_cron_failure_digest_verify_refuses_stale_same_day_file() {
     "verify must remove marker on success"
 
   # Run 2 (rerun within 30 min): step 1 runs and touches marker, but model writes nothing new.
+  # Every failing arm also pins the #639 stderr diagnostic: the failing clause
+  # must name itself on stderr, and stdout must stay empty (grep -q . reads it).
+  _assert_digest_verify_diagnoses() {
+    local want="$1"
+    local out err
+    out=$(sh -c "cd '$CEO_DIR' && $verify" 2>"$TMP/verify-err") || :
+    err=$(cat "$TMP/verify-err")
+    [ -n "$err" ] && [ -z "$out" ] || return 1
+    grep -q "$want" "$TMP/verify-err" || return 1
+  }
   printf '%s\n' "$target" > "$CEO_DIR/$marker"
-  assert_fails "rerun with stale same-day file must fail verify" \
-    sh -c "cd '$CEO_DIR' && $verify"
+  assert_fails "rerun with stale same-day file must fail verify" sh -c "cd '$CEO_DIR' && $verify"
+  _assert_digest_verify_diagnoses "digest not newer than run-start marker" || {
+    printf '  FAIL [%s] stale-file failure must name its clause on stderr\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
   # The bridge gives the model another turn after a failed gate; that retry is
   # gated only while the marker is still there.
   assert_file_exists "$CEO_DIR/$marker" "a failed verify must leave the marker in place"
 
   # Run 3: rerun where model makes zero tool calls (marker not present).
   rm -f "$CEO_DIR/$marker"
-  assert_fails "rerun where model makes zero tool calls must fail verify" \
-    sh -c "cd '$CEO_DIR' && $verify"
+  assert_fails "rerun where model makes zero tool calls must fail verify" sh -c "cd '$CEO_DIR' && $verify"
+  _assert_digest_verify_diagnoses "run-start marker missing or empty" || {
+    printf '  FAIL [%s] missing-marker failure must name its clause on stderr\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
 
   printf '%s\n' "$target" > "$CEO_DIR/$marker"
   sleep 0.05
   : > "$CEO_DIR/$target"
-  assert_fails "an empty digest must fail verify" \
-    sh -c "cd '$CEO_DIR' && $verify"
+  assert_fails "an empty digest must fail verify" sh -c "cd '$CEO_DIR' && $verify"
+  _assert_digest_verify_diagnoses "digest empty or missing" || {
+    printf '  FAIL [%s] empty-digest failure must name its clause on stderr\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
 
   printf '%s\n' "$target" > "$CEO_DIR/$marker"
   sleep 0.05
   printf 'no heading here\n' > "$CEO_DIR/$target"
-  assert_fails "a digest without the heading must fail verify" \
-    sh -c "cd '$CEO_DIR' && $verify"
+  assert_fails "a digest without the heading must fail verify" sh -c "cd '$CEO_DIR' && $verify"
+  _assert_digest_verify_diagnoses "digest lacks '# Cron failures' heading" || {
+    printf '  FAIL [%s] missing-heading failure must name its clause on stderr\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
+
+  # Diagnostics are stderr-only (#639): the bridge clips verify stdout back into
+  # the model's message feed, so nothing may leak onto stdout.
+  assert_eq "$(sh -c "cd '$CEO_DIR' && $verify" 2>"$TMP/verify-err"; true)" "" \
+    "failing verify must write nothing to stdout (diagnostics go to stderr)"
 
   : > "$CEO_DIR/$marker"
-  assert_fails "an empty marker must fail verify" \
-    sh -c "cd '$CEO_DIR' && $verify"
+  assert_fails "an empty marker must fail verify" sh -c "cd '$CEO_DIR' && $verify"
+  _assert_digest_verify_diagnoses "run-start marker missing or empty" || {
+    printf '  FAIL [%s] empty-marker failure must name its clause on stderr\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
 
   printf 'reports/cron-failures/does-not-exist.md\n' > "$CEO_DIR/$marker"
-  assert_fails "a marker naming a missing file must fail verify" \
-    sh -c "cd '$CEO_DIR' && $verify"
+  assert_fails "a marker naming a missing file must fail verify" sh -c "cd '$CEO_DIR' && $verify"
+  _assert_digest_verify_diagnoses "digest empty or missing" || {
+    printf '  FAIL [%s] missing-file failure must name its clause on stderr\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
 }
 
 test_cron_failure_digest_verify_reads_target_from_marker_not_date() {
