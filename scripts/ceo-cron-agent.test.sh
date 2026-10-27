@@ -516,10 +516,15 @@ test_runner_ollama_agent_gated_unverified_completion_fails_cron_run() {
   cat > "$CEO_DIR/bridge-registry.json" << 'EOF'
 {"tasks": {"agent-v-fail": {"runner": "ollama", "model": "qwen2.5-coder:7b", "tier": "low-stakes-write", "verify": "pytest -q"}}}
 EOF
-  _make_agent_stub '{"completed": true, "verified": false, "verify_gated": true, "reason": "verify-failed", "turns": 8, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  _make_agent_stub '{"completed": true, "verified": false, "verify_gated": true, "reason": "verify-failed", "verify_stderr": "cat: x: No such file\ndigest verify: digest empty or missing: reports/cron-failures/x.md\n", "turns": 8, "calls": [], "unknown_calls": [], "tool_errors": []}'
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   assert_fails "a gated run that did not verify must exit non-zero" bash "$CRON" agent-v-fail
   assert_contains "$(_skips_log)" "gated run ended verify-failed" "skips log must name the gated run's end reason"
+  # #639: the bridge's verify_stderr names the failing clause, so the skips log
+  # sees WHICH clause went red, not just that the gate is red.
+  assert_contains "$(_skips_log)" "last verify stderr: cat: x: No such file;digest verify: digest empty or missing: reports/cron-failures/x.md" \
+    "the skips log must carry the gate's stderr folded onto one line, not just verify-failed"
+  assert_not_contains "$(_skips_log)" "x.md;" "trailing newlines must not leave a dangling ';'"
 }
 
 
@@ -532,6 +537,8 @@ EOF
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
   assert_fails "a gated run that hit the turn cap must exit non-zero" bash "$CRON" agent-v-cap
   assert_contains "$(_skips_log)" "gated run ended turn-cap" "turn cap must be logged as such, not as a verification failure"
+  assert_not_contains "$(_skips_log)" "last verify stderr" \
+    "a record without verify_stderr (an older bridge) must log no stderr suffix"
 }
 
 test_runner_ollama_agent_clears_stale_digest_run_start_marker_before_dispatch() {
