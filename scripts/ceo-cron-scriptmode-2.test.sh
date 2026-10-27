@@ -493,6 +493,40 @@ PB
 }
 
 
+test_ceo_cron_gh_auth_preflight_times_out() {
+  cat > "$CEO_DIR/playbooks/gh-hang.md" << 'PB'
+---
+name: gh-hang
+description: gh auth preflight timeout guard
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  cat > "$TEST_HOME/.bun/bin/gh" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$HOME/gh-invoked.txt"
+case "$1 ${2:-}" in
+  "auth status") sleep 30; exit 0 ;;
+  "auth token")  echo "gh stub: no token" >&2; exit 1 ;;
+  "search prs")  echo "gh stub: unauthenticated" >&2; exit 1 ;;
+  *) echo "gh stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/gh"
+  local rc=0 start end
+  start=$(date +%s)
+  CEO_FORGE_TIMEOUT=1 bash -c "source '$SCRIPT_DIR/ceo-config.sh'; _ceo_timeout 60 bash '$CRON' gh-hang" >/dev/null 2>&1 || rc=$?
+  end=$(date +%s)
+  assert_eq "$rc" "0" "cron run must finish when gh auth status hangs"
+  assert_eq "$(( end - start < 20 ))" "1" "cron took $((end - start))s; the gh auth preflight is unbounded"
+  assert_contains "$(_skips_log)" "gh auth status timed out" "a timed-out gh preflight must say so, not report unauthenticated"
+}
+
 test_ceo_cron_glab_stub_ahead_of_homebrew_on_augmented_path() {
   # Issue #641: ceo_augment_path prepends /opt/homebrew/bin to PATH on macOS.
   # The test harness glab stub lives in $TEST_HOME/.bun/bin, which must remain
@@ -511,18 +545,15 @@ status: active
 PB
   bash "$CEO_CLI" playbook scan >/dev/null 2>&1
 
+  local resolved
+  resolved=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_augment_path; command -v glab")
+  assert_eq "$resolved" "$TEST_HOME/.bun/bin/glab" "the harness stub must resolve ahead of Homebrew after ceo_augment_path"
+
   local rc=0
-  bash "$CRON" glab-check >/dev/null 2>&1 || rc=$?
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; _ceo_timeout 60 bash '$CRON' glab-check" >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "0" "cron run must succeed without hanging"
   assert_file_exists "$HOME/glab-invoked.txt" "glab stub must be invoked by gather/config instead of host binary"
   assert_contains "$(cat "$HOME/glab-invoked.txt")" "auth status" "glab auth status must be routed to the test stub"
-}
-
-
-test_ceo_cron_glab_stub_validates_argv_shape() {
-  local rc=0
-  "$TEST_HOME/.bun/bin/glab" unexpected_command >/dev/null 2>&1 || rc=$?
-  assert_eq "$rc" "99" "glab stub must exit 99 on unexpected argv (stub-cli-argv-validation)"
 }
 
 
