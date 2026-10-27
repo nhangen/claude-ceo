@@ -1680,6 +1680,14 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # anchor for the post-run findings ingestion below. Overridable for tests.
   AGENT_RUN_ID="${CEO_AGENT_RUN_ID:-${TRIGGER}-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 
+  # The digest's verify gate compares its output against a run-start marker that
+  # step 1 writes and only a passing verify removes. A prior run that died before
+  # verify leaves it behind, and the next run that makes no tool calls would pass
+  # the gate on that run's digest (#560). Path mirrors docs/playbooks/cron-failure-digest.md.
+  if [ "$AGENT_TASK" = "cron-failure-digest" ]; then
+    rm -f "$CEO_DIR/reports/cron-failures/.run-start-$(hostname -s)"
+  fi
+
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
   AGENT_RC=0
   # No --mcp or --verify-cmd here: cli.py reads tasks.<name>.mcp and .verify from

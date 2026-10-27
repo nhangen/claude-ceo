@@ -227,6 +227,117 @@ test_scan_registers_real_cron_failure_digest_with_inline_registry() {
   verify=$(printf '%s' "$inline" | jq -r '.tasks["cron-failure-digest"].verify // empty' 2>/dev/null)
   assert_contains "$verify" "reports/cron-failures/" \
     "shipped low-stakes-write playbook must carry a verify gate through scan"
+  assert_contains "$verify" "-newer" \
+    "verify gate must require the digest to be newer than the run-start marker (#560)"
+  assert_not_contains "$verify" "-mmin" \
+    "verify gate must not rely on a wall-clock modification window (#560)"
+}
+
+# Scan the shipped cron-failure-digest playbook into the fixture registry and
+# print its verify gate as the bridge receives it (test-expected-from-production-entry-point).
+_scanned_verify_cmd() {
+  cp "$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md" "$CEO_DIR/playbooks/cron-failure-digest.md"
+  CEO_OLLAMA_SKIP_PROBE=1 _run_scan
+  jq -r '.playbooks[]|select(.name=="cron-failure-digest").registry' "$HOME/.ceo/registry.json" \
+    | jq -r '.tasks["cron-failure-digest"].verify // empty'
+}
+
+test_cron_failure_digest_verify_refuses_stale_same_day_file() {
+  # #560: A manual rerun within 30 minutes of a prior run must NOT pass verify
+  # if the model writes nothing this time.
+  local verify
+  verify=$(_scanned_verify_cmd)
+  assert_contains "$verify" "reports/cron-failures/" "verify command must be present in registry"
+
+  local marker target
+  marker="reports/cron-failures/.run-start-$(hostname -s)"
+  target="reports/cron-failures/$(date +%F)-$(hostname -s).md"
+  mkdir -p "$CEO_DIR/reports/cron-failures"
+
+  # Run 1: clean run. Step 1 records marker and path; step 2 writes valid heading.
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  sleep 0.05
+  printf '# Cron failures %s\n- [ ] failure line\n' "$(date +%F)" > "$CEO_DIR/$target"
+
+  local rc1=0
+  ( cd "$CEO_DIR" && sh -c "$verify" ) >/dev/null 2>&1 || rc1=$?
+  assert_eq "$rc1" "0" "clean run with valid digest must verify"
+  assert_eq "$([ -f "$CEO_DIR/$marker" ] && echo exists || echo absent)" "absent" \
+    "verify must remove marker on success"
+
+  # Run 2 (rerun within 30 min): step 1 runs and touches marker, but model writes nothing new.
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  assert_fails "rerun with stale same-day file must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+  # The bridge gives the model another turn after a failed gate; that retry is
+  # gated only while the marker is still there.
+  assert_file_exists "$CEO_DIR/$marker" "a failed verify must leave the marker in place"
+
+  # Run 3: rerun where model makes zero tool calls (marker not present).
+  rm -f "$CEO_DIR/$marker"
+  assert_fails "rerun where model makes zero tool calls must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  sleep 0.05
+  : > "$CEO_DIR/$target"
+  assert_fails "an empty digest must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  sleep 0.05
+  printf 'no heading here\n' > "$CEO_DIR/$target"
+  assert_fails "a digest without the heading must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  : > "$CEO_DIR/$marker"
+  assert_fails "an empty marker must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+
+  printf 'reports/cron-failures/does-not-exist.md\n' > "$CEO_DIR/$marker"
+  assert_fails "a marker naming a missing file must fail verify" \
+    sh -c "cd '$CEO_DIR' && $verify"
+}
+
+test_cron_failure_digest_verify_reads_target_from_marker_not_date() {
+  # #560: A run crossing midnight computes a date in step 1 that differs from
+  # the date when verify runs, so verify must take the path from the marker.
+  # The clock does not move here; the marker simply names a non-today file.
+  local verify
+  verify=$(_scanned_verify_cmd)
+
+  local marker yday yesterday
+  marker="reports/cron-failures/.run-start-$(hostname -s)"
+  yday=$(date -v-1d +%F 2>/dev/null || date -d yesterday +%F)
+  yesterday="reports/cron-failures/$yday-$(hostname -s).md"
+  mkdir -p "$CEO_DIR/reports/cron-failures"
+  printf '%s\n' "$yesterday" > "$CEO_DIR/$marker"
+  sleep 0.05
+  printf '# Cron failures %s\n- [ ] failure line\n' "$yday" > "$CEO_DIR/$yesterday"
+
+  local rc=0
+  ( cd "$CEO_DIR" && sh -c "$verify" ) >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "verify must succeed on step 1 recorded path across midnight"
+  assert_eq "$([ -f "$CEO_DIR/$marker" ] && echo exists || echo absent)" "absent" \
+    "verify must remove marker on success"
+}
+
+test_cron_failure_digest_step1_records_marker_and_outpath() {
+  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
+  local step1_cmd
+  step1_cmd=$(awk '/^[[:space:]]*mkdir -p reports\/cron-failures/{sub(/^[[:space:]]*/, ""); print}' "$real")
+  assert_contains "$step1_cmd" "mkdir -p reports/cron-failures" "step 1 shell command must exist in playbook"
+
+  local out
+  out=$(cd "$CEO_DIR" && eval "$step1_cmd")
+  local marker
+  marker="$CEO_DIR/reports/cron-failures/.run-start-$(hostname -s)"
+  assert_file_exists "$marker" "step 1 must create run-start marker"
+  local recorded_path expected_path
+  recorded_path=$(cat "$marker")
+  expected_path="reports/cron-failures/$(date +%F)-$(hostname -s).md"
+  assert_eq "$recorded_path" "$expected_path" "marker must contain expected OUTPATH"
+  assert_contains "$out" "OUTPATH=$expected_path" "step 1 stdout must print OUTPATH"
 }
 
 test_discord_report_flags_carried_to_registry() {

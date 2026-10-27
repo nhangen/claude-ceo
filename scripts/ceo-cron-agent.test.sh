@@ -534,4 +534,28 @@ EOF
   assert_contains "$(_skips_log)" "gated run ended turn-cap" "turn cap must be logged as such, not as a verification failure"
 }
 
+test_runner_ollama_agent_clears_stale_digest_run_start_marker_before_dispatch() {
+  # #560: the digest's verify gate trusts a run-start marker that step 1 writes
+  # and only a passing verify removes. A run that died before verify (turn cap,
+  # crash, timeout) leaves it behind, and the next run that makes no tool calls
+  # would pass the gate on that run's digest unless dispatch clears it first.
+  _register_agent_pb cron-failure-digest low-stakes-write
+  _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  cat > "$HOME/.bun/bin/marker-probe" << PROBE
+#!/bin/bash
+if [ -e "$CEO_DIR/reports/cron-failures/.run-start-\$(hostname -s)" ]; then echo present; else echo absent; fi > "$HOME/marker-at-dispatch.txt"
+exec "$HOME/.bun/bin/agent-stub" "\$@"
+PROBE
+  chmod +x "$HOME/.bun/bin/marker-probe"
+  export CEO_OLLAMA_AGENT_CMD="$HOME/.bun/bin/marker-probe"
+  mkdir -p "$CEO_DIR/reports/cron-failures"
+  echo "reports/cron-failures/stale.md" > "$CEO_DIR/reports/cron-failures/.run-start-$(hostname -s)"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  bash "$CRON" cron-failure-digest >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "dispatch must still succeed"
+  assert_eq "$(cat "$HOME/marker-at-dispatch.txt" 2>/dev/null)" "absent" \
+    "a run-start marker left by an earlier run must be gone before the bridge starts"
+}
+
 run_tests
