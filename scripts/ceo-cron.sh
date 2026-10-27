@@ -1684,8 +1684,15 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # step 1 writes and only a passing verify removes. A prior run that died before
   # verify leaves it behind, and the next run that makes no tool calls would pass
   # the gate on that run's digest (#560). Path mirrors docs/playbooks/cron-failure-digest.md.
+  # Resolve and export the host the way every other host-keyed path here does
+  # (#640): CEO_HOSTNAME may be a non-exported shell var from ~/.ceo/config that
+  # the bridge's run_shell children otherwise never see, and when cron resolves
+  # hostname -s the playbook must see the same value rather than re-resolving.
   if [ "$AGENT_TASK" = "cron-failure-digest" ]; then
-    rm -f "$CEO_DIR/reports/cron-failures/.run-start-$(hostname -s)"
+    _digest_host="${CEO_HOSTNAME:-$(hostname -s)}"
+    : "${_digest_host:?HOST resolution failed; set CEO_HOSTNAME or fix hostname}"
+    export CEO_HOSTNAME="$_digest_host"
+    rm -f "$CEO_DIR/reports/cron-failures/.run-start-$_digest_host"
   fi
 
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
