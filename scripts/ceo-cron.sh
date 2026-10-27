@@ -369,21 +369,10 @@ _record_success() {
     echo "$(date): ERROR — cannot record the completion for $TRIGGER in $RUNS_LOG; this run will not be cross-checked by ceo doctor" \
       >> "$SKIPS_LOG" || true
 
-  # A playbook runner may signal a degraded outcome via CEO_RUNNER_OUTCOME_FILE
-  # or pass an explicit warning to _record_success (#579).
-  if [ -z "$warn_reason" ] && [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ] && [ -f "$CEO_RUNNER_OUTCOME_FILE" ]; then
-    case "$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null)" in
-      degraded:*)
-        warn_reason="$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null | sed 's/^degraded:[[:space:]]*//')"
-        ;;
-      degraded)
-        warn_reason="skill reported degraded status (context fetch failed)"
-        ;;
-    esac
-  fi
+  # DEGRADED is in cron-failure-digest's action-required keyword list (#579).
   if [ -n "$warn_reason" ]; then
-    echo "$(date) [$TRIGGER] WARN — $warn_reason" >> "$SKIPS_LOG" || true
-    _v "WARN: $warn_reason"
+    echo "$(date) [$TRIGGER] DEGRADED — $warn_reason" >> "$SKIPS_LOG" || true
+    _v "DEGRADED: $warn_reason"
   fi
   # High-frequency/silent-by-design playbooks don't notify Discord on success —
   # only on failure (handled in _record_failure). disk-monitor (every 6h) and
@@ -2103,7 +2092,7 @@ if [ "$RUNNER" = "skill" ]; then
   SKILL_EXIT=0
   "$SKILL_SCRIPT" --out "$TMP_DIR" >/dev/null 2>>"$CRON_STDERR_LOG" || SKILL_EXIT=$?
   
-  if [ "$SKILL_EXIT" -ne 0 ] && [ "$SKILL_EXIT" -ne 2 ]; then
+  if [ "$SKILL_EXIT" -ne 0 ]; then
     _record_failure "Skill exited $SKILL_EXIT for $TRIGGER"
     _skill_cleanup
     exit "$SKILL_EXIT"
@@ -2144,31 +2133,25 @@ if [ "$RUNNER" = "skill" ]; then
   mkdir -p "$(dirname "$FINAL_OUT")"
   mv "$TMP_OUT" "$FINAL_OUT"
 
-  # Surface degraded context in the cron record (#579).
-  # A skill may signal degraded via CEO_RUNNER_OUTCOME_FILE, by exiting 2, or
-  # by stamping a context state into the generated markdown header.
+  # Surface degraded context in the cron record (#579). A skill signals it via
+  # CEO_RUNNER_OUTCOME_FILE ("degraded" or "degraded: <reason>") or by stamping
+  # its context state into the line-1 header of the generated markdown.
   degraded_reason=""
-  if [ -s "$CEO_RUNNER_OUTCOME_FILE" ]; then
-    skill_outcome=$(cat "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null || true)
-    case "$skill_outcome" in
-      degraded:*)
-        degraded_reason="$(sed 's/^degraded:[[:space:]]*//' <<< "$skill_outcome")"
-        ;;
-      degraded)
-        degraded_reason="skill reported degraded status (context fetch failed)"
-        ;;
-    esac
-  fi
-  if [ -z "$degraded_reason" ] && [ "$SKILL_EXIT" -eq 2 ]; then
-    degraded_reason="skill exited 2 (degraded context; fetch failed)"
-  fi
-  if [ -z "$degraded_reason" ]; then
-    if grep -Eq '^<!--.*context:[[:space:]]*unavailable' "$FINAL_OUT" 2>/dev/null; then
-      degraded_reason="profile context unavailable (context fetch failed)"
-    elif grep -Eq '^<!--.*context:[[:space:]]*truncated' "$FINAL_OUT" 2>/dev/null; then
-      degraded_reason="profile context truncated (context fetch failed)"
-    fi
-  fi
+  skill_outcome=$(head -n1 "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null || true)
+  case "$skill_outcome" in
+    degraded|degraded:*)
+      degraded_reason="$(sed 's/^degraded:\{0,1\}[[:space:]]*//' <<< "$skill_outcome")"
+      [ -n "$degraded_reason" ] || degraded_reason="skill reported degraded status"
+      ;;
+    *)
+      skill_header=$(head -n1 "$FINAL_OUT")
+      if [[ "$skill_header" =~ ^\<!--.*context:[[:space:]]*unavailable ]]; then
+        degraded_reason="profile context unavailable"
+      elif [[ "$skill_header" =~ ^\<!--.*context:[[:space:]]*truncated ]]; then
+        degraded_reason="profile context truncated (prompt budget cut)"
+      fi
+      ;;
+  esac
 
   _record_success "$degraded_reason"
   _skill_cleanup
