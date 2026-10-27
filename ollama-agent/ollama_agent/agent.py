@@ -104,9 +104,9 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     "verify-error" (out of turns, gate last observed timing out or failing with returncode=None),
     "error" (crashed run), or "killed" (interrupted run).
 
-    `verify_stderr` (#639) carries the last observed red gate's own stderr, so a
-    caller that logs only `reason` can still name the failing gate clause;
-    empty unless a returncode'd, non-zero check has run.
+    `verify_stderr` (#639) carries the last observed gate's own stderr, so a
+    caller can name the failing gate clause beside `reason`; empty after a
+    green gate or a timeout.
     """
     # cli.py refuses this earlier with a REFUSED line and exit 2, which is the
     # better operator message; keep that one. This is the library-caller backstop,
@@ -188,11 +188,10 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                     verify_error = False
                     _track(usage_tracker, "verified", False)
                 err_detail = ("\nerror:\n%s" % res["error"]) if res.get("error") else ""
-                if res.get("returncode") is not None:
-                    # Last observed red gate's stderr (#639): the ceo-cron failure
-                    # record reads only `reason`, so a silent gate clause must
-                    # surface here rather than only in the model's message feed.
-                    verify_stderr = res.get("stderr", "") or ""
+                # Last observed gate's stderr (#639), which ceo-cron logs beside
+                # `reason` so the skips log names the failing clause. A timeout has
+                # none, and an earlier red clause must not be reported as its cause.
+                verify_stderr = res.get("stderr", "") or ""
                 if verify_error:
                     # A timeout is not evidence the code is wrong, but a change that
                     # hangs the suite also lands here, so the model is told to find
