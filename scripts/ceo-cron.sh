@@ -348,6 +348,7 @@ _report() {
 # breakage, not "nothing to do" — but the distinction is the exit code, not the
 # intent, so any new deferral must exit 0 to stay out of the fail count.
 _record_success() {
+  local warn_reason="${1:-}"
   _bookkeeping_done=1   # read by the EXIT trap installed after the lock section
   if [ "${CEO_DRY_RUN:-}" = "1" ]; then
     _preview "Would record SUCCESS (no .last-run / fail-count reset / cron-runs-<host>.log / notify)."
@@ -367,6 +368,12 @@ _record_success() {
   echo "$(date): $TRIGGER completed" >> "$RUNS_LOG" || \
     echo "$(date): ERROR — cannot record the completion for $TRIGGER in $RUNS_LOG; this run will not be cross-checked by ceo doctor" \
       >> "$SKIPS_LOG" || true
+
+  # DEGRADED is in cron-failure-digest's action-required keyword list (#579).
+  if [ -n "$warn_reason" ]; then
+    echo "$(date) [$TRIGGER] DEGRADED — $warn_reason" >> "$SKIPS_LOG" || true
+    _v "DEGRADED: $warn_reason"
+  fi
   # High-frequency/silent-by-design playbooks don't notify Discord on success —
   # only on failure (handled in _record_failure). disk-monitor (every 6h) and
   # ticket-triage-autopilot (every 30m, silent-by-design v2 cache adapter) would
@@ -2091,14 +2098,18 @@ if [ "$RUNNER" = "skill" ]; then
   _v "Runner: skill — exec $SKILL_SCRIPT"
 
   TMP_DIR=$(mktemp -d)
+  CEO_RUNNER_OUTCOME_FILE="$(mktemp)"
   # Explicit cleanup, not a trap — same reason as the script-runner branch above.
   # An EXIT trap here replaces _on_exit wholesale (bash keeps one), which silently
   # disabled both the bookkeeping guarantee and the lock release for every
   # runner:skill playbook: weekly-synthesis, workload-report, story-points. An
   # unwritable vault made `mkdir -p`/`mv` below abort with nothing recorded and a
   # leaked lock dir — the exact #293 shape, in the branch meant to be protected.
-  _skill_cleanup() { rm -rf "$TMP_DIR"; }
-  export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER
+  _skill_cleanup() {
+    [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR"
+    [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ] && rm -f "$CEO_RUNNER_OUTCOME_FILE"
+  }
+  export CEO_VAULT CEO_DIR LOG_DIR TODAY NOW TRIGGER CEO_RUNNER_OUTCOME_FILE
   SKILL_EXIT=0
   "$SKILL_SCRIPT" --out "$TMP_DIR" >/dev/null 2>>"$CRON_STDERR_LOG" || SKILL_EXIT=$?
   
@@ -2143,7 +2154,27 @@ if [ "$RUNNER" = "skill" ]; then
   mkdir -p "$(dirname "$FINAL_OUT")"
   mv "$TMP_OUT" "$FINAL_OUT"
 
-  _record_success
+  # Surface degraded context in the cron record (#579). A skill signals it via
+  # CEO_RUNNER_OUTCOME_FILE ("degraded" or "degraded: <reason>") or by stamping
+  # its context state into the line-1 header of the generated markdown.
+  degraded_reason=""
+  skill_outcome=$(head -n1 "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null || true)
+  case "$skill_outcome" in
+    degraded|degraded:*)
+      degraded_reason="$(sed 's/^degraded:\{0,1\}[[:space:]]*//' <<< "$skill_outcome")"
+      [ -n "$degraded_reason" ] || degraded_reason="skill reported degraded status"
+      ;;
+    *)
+      skill_header=$(head -n1 "$FINAL_OUT")
+      if [[ "$skill_header" =~ ^\<!--.*context:[[:space:]]*unavailable ]]; then
+        degraded_reason="profile context unavailable"
+      elif [[ "$skill_header" =~ ^\<!--.*context:[[:space:]]*truncated ]]; then
+        degraded_reason="profile context truncated (prompt budget cut)"
+      fi
+      ;;
+  esac
+
+  _record_success "$degraded_reason"
   _skill_cleanup
   exit 0
 fi

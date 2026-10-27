@@ -235,6 +235,144 @@ SH
   assert_contains "$got_content" "Propagated domain" "skill child must see the canonical Active Domains content"
 }
 
+# Registers a runner:skill playbook <name> whose run-report.sh parses --out into
+# $out_dir and then runs <body>.
+_skill_fixture() {
+  local name="$1" body="$2"
+  cat > "$CEO_DIR/playbooks/$name.md" << PB
+---
+name: $name
+description: runner:skill degraded-outcome fixture (#579)
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: $name
+out_pattern: CEO/reports/$name/\${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+  mkdir -p "$HOME/.claude/skills/$name/scripts"
+  {
+    printf '#!/bin/bash\nwhile [[ "$#" -gt 0 ]]; do\n  case $1 in --out) out_dir="$2"; shift ;; esac\n  shift\ndone\n'
+    printf '%s\n' "$body"
+  } > "$HOME/.claude/skills/$name/scripts/run-report.sh"
+  chmod +x "$HOME/.claude/skills/$name/scripts/run-report.sh"
+}
+
+# Gather's own profile-reader WARN would otherwise share the skips log (#593).
+_current_profile() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n\n## Active Domains\n\n- Clean domain\n' "$(date +%Y-%m-%d)" \
+    > "$CEO_VAULT/Profile/goals.md"
+}
+
+test_runner_skill_degraded_outcome_file_records_degraded_line() {
+  _skill_fixture skill-degraded-outcome '
+printf "degraded: profile missing" > "$CEO_RUNNER_OUTCOME_FILE"
+echo "degraded skill report" > "$out_dir/report.md"'
+
+  local rc=0
+  bash "$CRON" skill-degraded-outcome >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "degraded runner:skill must exit 0"
+  assert_contains "$(_runs_log)" "skill-degraded-outcome completed" "runs log must record completion"
+  assert_contains "$(_skips_log)" "[skill-degraded-outcome] DEGRADED — profile missing" "skips log must carry the skill's own reason"
+  assert_file_exists "$CEO_VAULT/CEO/reports/skill-degraded-outcome/$(date +%Y-%m-%d).md" "report file must exist"
+  local fails
+  fails=$(cat "$TEST_HOME/.ceo/state/fail-count-skill-degraded-outcome" 2>/dev/null || echo 0)
+  assert_eq "$fails" "0" "degraded run must reset fail count to 0"
+}
+
+test_runner_skill_degraded_outcome_with_empty_reason_still_records_degraded_line() {
+  _skill_fixture skill-degraded-empty '
+printf "degraded:" > "$CEO_RUNNER_OUTCOME_FILE"
+echo "report" > "$out_dir/report.md"'
+
+  bash "$CRON" skill-degraded-empty >/dev/null 2>&1 || true
+  assert_contains "$(_skips_log)" "[skill-degraded-empty] DEGRADED — skill reported degraded status" \
+    "an empty reason must fall back to a default, not to a clean success"
+}
+
+test_runner_skill_degraded_outcome_keeps_only_first_line_of_reason() {
+  _skill_fixture skill-degraded-multiline '
+printf "degraded: first line\nERROR — injected second line\n" > "$CEO_RUNNER_OUTCOME_FILE"
+echo "report" > "$out_dir/report.md"'
+
+  bash "$CRON" skill-degraded-multiline >/dev/null 2>&1 || true
+  assert_contains "$(_skips_log)" "[skill-degraded-multiline] DEGRADED — first line" "first line of the reason must be recorded"
+  assert_not_contains "$(_skips_log)" "injected second line" "later lines must not become their own skips-log lines"
+}
+
+test_cron_failure_digest_matches_the_degraded_token() {
+  local line
+  line=$(grep -m1 'action-required line' "$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md")
+  assert_contains "$line" '`DEGRADED`' "the digest must surface DEGRADED skips-log lines"
+}
+
+test_runner_skill_unavailable_context_in_memo_records_degraded_line() {
+  _skill_fixture skill-memo-unavailable '
+cat > "$out_dir/report.md" << EOF
+<!-- engine: claude:opus, context: unavailable, generated: 2026-10-27T00:00:00Z -->
+# Weekly Synthesis Memo
+EOF'
+
+  local rc=0
+  bash "$CRON" skill-memo-unavailable >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "runner:skill with context unavailable memo must exit 0"
+  assert_contains "$(_runs_log)" "skill-memo-unavailable completed" "runs log must record completion"
+  assert_contains "$(_skips_log)" "[skill-memo-unavailable] DEGRADED — profile context unavailable" "skips log must record the degraded run"
+}
+
+test_runner_skill_truncated_context_in_memo_records_degraded_line() {
+  _skill_fixture skill-memo-truncated '
+cat > "$out_dir/report.md" << EOF
+<!-- engine: ollama:local-long, context: truncated, generated: 2026-10-27T00:00:00Z -->
+# Weekly Synthesis Memo
+EOF'
+
+  bash "$CRON" skill-memo-truncated >/dev/null 2>&1 || true
+  assert_contains "$(_skips_log)" "[skill-memo-truncated] DEGRADED — profile context truncated" "skips log must record the truncated run"
+}
+
+test_runner_skill_context_marker_below_line_one_is_not_degraded() {
+  _current_profile
+  _skill_fixture skill-memo-body-marker '
+cat > "$out_dir/report.md" << EOF
+<!-- engine: claude:opus, context: current, generated: 2026-10-27T00:00:00Z -->
+# Memo
+<!-- quoted from last week: context: unavailable -->
+EOF'
+
+  bash "$CRON" skill-memo-body-marker >/dev/null 2>&1 || true
+  assert_not_contains "$(_skips_log)" "[skill-memo-body-marker] DEGRADED" "only the line-1 marker describes this run"
+}
+
+test_runner_skill_exit_2_with_output_records_failure() {
+  _skill_fixture skill-exit-2 '
+echo "partial report" > "$out_dir/report.md"
+exit 2'
+
+  local rc=0
+  bash "$CRON" skill-exit-2 >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "2" "exit 2 is a failure, even with output on disk"
+  assert_contains "$(_skips_log)" "Skill exited 2 for skill-exit-2" "skips log must record the failure"
+  assert_not_contains "$(_runs_log)" "skill-exit-2 completed" "a failed run must not record completion"
+}
+
+test_runner_skill_clean_memo_records_no_degraded_line() {
+  _current_profile
+  _skill_fixture skill-clean-run '
+cat > "$out_dir/report.md" << EOF
+<!-- engine: claude:opus, context: current, generated: 2026-10-27T00:00:00Z -->
+# Clean Report
+EOF'
+
+  local rc=0
+  bash "$CRON" skill-clean-run >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "clean runner:skill must exit 0"
+  assert_contains "$(_runs_log)" "skill-clean-run completed" "runs log must record completion"
+  assert_not_contains "$(_skips_log)" "[skill-clean-run]" "skips log must not record any entry for clean run"
+}
 
 test_runner_skill_abort_is_recorded_and_releases_the_lock() {
   # runner:skill used to install its own `trap 'rm -rf "$TMP_DIR"' EXIT`, which
