@@ -139,8 +139,8 @@ except subprocess.TimeoutExpired:
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(p.pid, sig)
-        except ProcessLookupError:
-            break
+        except OSError:
+            pass
         try:
             p.wait(timeout=1)
         except subprocess.TimeoutExpired:
