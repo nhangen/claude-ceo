@@ -1740,7 +1740,7 @@ if [ "$RUNNER" = "ollama-agent" ]; then
     # skips log says which clause went red, not just "verify-failed". Newlines
     # are folded to ';' because _record_failure writes single log lines.
     _agent_verify_msg=$(printf '%s' "$AGENT_OUT" | jq -r '.verify_stderr // empty' \
-      | tr '\n' ';' | sed 's/;$//')
+      | tr '\n' ';' | sed 's/;*$//')
     _agent_fail_msg="ollama-agent task '$AGENT_TASK' gated run ended $_agent_reason (verified=$_agent_verified) for $TRIGGER"
     [ -n "$_agent_verify_msg" ] && \
       _agent_fail_msg="$_agent_fail_msg — last verify stderr: $_agent_verify_msg"
