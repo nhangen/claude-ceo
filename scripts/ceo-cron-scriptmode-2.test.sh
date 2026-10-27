@@ -518,6 +518,9 @@ case "$1 ${2:-}" in
 esac
 STUB
   chmod +x "$TEST_HOME/.bun/bin/gh"
+  # On a host without timeout(1) the harness installs a passthrough in its
+  # place, which would make every cap here a no-op; this arm needs a real one.
+  rm -f "$TEST_HOME/.bun/bin/timeout"
   local rc=0 start end
   start=$(date +%s)
   CEO_FORGE_TIMEOUT=1 bash -c "source '$SCRIPT_DIR/ceo-config.sh'; _ceo_timeout 60 bash '$CRON' gh-hang" >/dev/null 2>&1 || rc=$?
