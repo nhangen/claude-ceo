@@ -100,26 +100,16 @@ _gather_read_timed_out() {
 }
 
 # Timeout shim for vault and network reads (#594). The binary comes from the
-# library resolver; unlike it, gather falls back to python3 when neither timeout
-# nor gtimeout is on PATH (stock macOS), since a stalled mount would otherwise
-# hang the tick. CEO_GATHER_TIMEOUT_BIN overrides the binary for this script only.
+# library resolver and the python3 fallback from _ceo_timeout_with, so a stalled
+# mount cannot hang the tick on stock macOS. CEO_GATHER_TIMEOUT_BIN overrides
+# the binary for this script only.
 ceo_resolve_timeout_bin
 _gather_timeout_bin="${CEO_GATHER_TIMEOUT_BIN-$CEO_TIMEOUT_BIN}"
-if [ -n "$_gather_timeout_bin" ]; then
-  _CEO_TIMEOUT() { "$_gather_timeout_bin" "$@"; }
-elif command -v python3 &>/dev/null; then
-  _CEO_TIMEOUT() {
-    local secs="$1"; shift
-    python3 -c 'import subprocess, sys
-try:
-    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
-except subprocess.TimeoutExpired:
-    sys.exit(124)' "$secs" "$@"
-  }
-else
+if [ -z "$_gather_timeout_bin" ] && ! command -v python3 &>/dev/null; then
   echo "WARN: no timeout, gtimeout, or python3 on PATH; vault reads are unbounded" >&2
-  _CEO_TIMEOUT() { shift; "$@"; }
+  _CEO_TIMEOUT_UNBOUNDED_WARNED=1
 fi
+_CEO_TIMEOUT() { _ceo_timeout_with "$_gather_timeout_bin" "$@"; }
 
 # One shared read-timeout policy (#606): the binary is resolved once in
 # ceo-config.sh and the configured read timeout is validated at parse time, so
@@ -134,6 +124,7 @@ if [ -z "$_vault_timeout_ok" ]; then
   CEO_VAULT_TIMEOUT=10
 fi
 unset _vault_timeout_ok
+CEO_FORGE_TIMEOUT=$(ceo_forge_timeout)
 
 # --- Pending approvals ---
 PENDING_FILE="$CEO_DIR/approvals/pending.md"
@@ -217,7 +208,15 @@ $1"
 #   1  no PRs, and the search is trustworthy
 #   2  cannot tell — reason printed to stdout
 ceo_pr_review_preflight() {
-  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+  local _auth_rc=127
+  if command -v gh >/dev/null 2>&1; then
+    _auth_rc=0
+    _CEO_TIMEOUT "$CEO_FORGE_TIMEOUT" gh auth status >/dev/null 2>&1 || _auth_rc=$?
+  fi
+  if [ "$_auth_rc" -eq 124 ]; then
+    echo "gh auth status timed out after ${CEO_FORGE_TIMEOUT}s; cannot check PRs for review"
+    return 2
+  elif [ "$_auth_rc" -ne 0 ]; then
     echo "gh CLI missing or unauthenticated; cannot check PRs for review"
     return 2
   fi
@@ -372,7 +371,7 @@ if command -v gh &>/dev/null; then
   while IFS= read -r ACCT; do
     [ -z "$ACCT" ] && continue
     _GH_ACCTS_SEEN=$((_GH_ACCTS_SEEN + 1))
-    if ! TOKEN=$(gh auth token -u "$ACCT" 2>/dev/null); then
+    if ! TOKEN=$(_CEO_TIMEOUT "$CEO_FORGE_TIMEOUT" gh auth token -u "$ACCT" 2>/dev/null); then
       echo "WARN: gh auth token failed for '$ACCT' — run 'gh auth refresh -h github.com -u $ACCT'" >&2
       _pr_gather_mark_degraded "token-fetch-failed:$ACCT" review
       continue
@@ -422,9 +421,17 @@ if command -v gh &>/dev/null; then
   # with its own handling — the preflight's own `gh auth status` guard reports it,
   # and marking here as well would flip the gather's status from `empty` to
   # `failed` for a host that simply has not logged in.
-  if [ "$_GH_ACCTS_SEEN" -eq 0 ] && gh auth status >/dev/null 2>&1; then
-    echo "WARN: gh is authenticated but no accounts resolved — no PR search was issued" >&2
-    _pr_gather_mark_degraded "gh-review-no-accounts-resolved" review
+  # A timed-out probe is neither, and must not certify an empty queue either.
+  if [ "$_GH_ACCTS_SEEN" -eq 0 ]; then
+    _gh_auth_rc=0
+    _CEO_TIMEOUT "$CEO_FORGE_TIMEOUT" gh auth status >/dev/null 2>&1 || _gh_auth_rc=$?
+    if [ "$_gh_auth_rc" -eq 0 ]; then
+      echo "WARN: gh is authenticated but no accounts resolved — no PR search was issued" >&2
+      _pr_gather_mark_degraded "gh-review-no-accounts-resolved" review
+    elif [ "$_gh_auth_rc" -eq 124 ]; then
+      echo "WARN: gh auth status timed out after ${CEO_FORGE_TIMEOUT}s — the review queue is unknown" >&2
+      _pr_gather_mark_degraded "gh-auth-timeout" review
+    fi
   fi
 
   # Drop excluded orgs (case-insensitive match on the owner segment).
@@ -458,7 +465,25 @@ fi
 # --- GitLab MRs ---
 _GL_REVIEW_PARTS="[]"
 _GL_AUTHORED_PARTS="[]"
-if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
+_gl_configured_users=""
+_pr_path=$(ceo_pr_sources_path)
+if [ -f "$_pr_path" ] && command -v jq &>/dev/null && jq empty "$_pr_path" 2>/dev/null; then
+  _gl_configured_users=$(jq -r '.gitlab.usernames // [] | .[]' "$_pr_path" 2>/dev/null)
+fi
+
+_gl_auth_rc=127
+if command -v glab &>/dev/null; then
+  _gl_auth_rc=0
+  _CEO_TIMEOUT "$CEO_FORGE_TIMEOUT" glab auth status &>/dev/null || _gl_auth_rc=$?
+fi
+
+if [ "$_gl_auth_rc" -eq 0 ]; then
+  _gl_users="$_gl_configured_users"
+  [ -n "$_gl_users" ] || _gl_users=$(_CEO_TIMEOUT "$CEO_FORGE_TIMEOUT" glab api user 2>/dev/null | (command -v jq &>/dev/null && jq -r '.username // empty' || true)) || _gl_users=""
+  if [ -z "$_gl_users" ]; then
+    echo "WARN: glab is authenticated but no GitLab username resolved — no MR search was issued" >&2
+    _pr_gather_mark_degraded "glab-review-no-users-resolved" review
+  fi
   while IFS= read -r GL_USER; do
     [ -z "$GL_USER" ] && continue
     _err=$(mktemp)
@@ -482,8 +507,14 @@ if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
     _A=$(printf '%s' "$_GLA" | _pr_gather_jq "shape-gl-authored:$GL_USER" "[]" "$_gl_shape_jq")
     _GL_REVIEW_PARTS=$(printf '%s\n%s' "$_GL_REVIEW_PARTS" "$_R" | _pr_gather_jq "merge-gl-review:$GL_USER" "$_GL_REVIEW_PARTS" -s 'add')
     _GL_AUTHORED_PARTS=$(printf '%s\n%s' "$_GL_AUTHORED_PARTS" "$_A" | _pr_gather_jq "merge-gl-authored:$GL_USER" "$_GL_AUTHORED_PARTS" -s 'add')
-  done < <(ceo_pr_sources_gitlab_usernames)
-elif [ -n "$(ceo_pr_sources_gitlab_usernames)" ]; then
+  done <<< "$_gl_users"
+elif [ "$_gl_auth_rc" -eq 124 ]; then
+  # A hung probe (a Keychain prompt, a stalled network) is not "this host does
+  # not use GitLab", which is what an unauthenticated glab means when nothing is
+  # configured.
+  echo "WARN: glab auth status timed out after ${CEO_FORGE_TIMEOUT}s; the GitLab review queue is unknown" >&2
+  _pr_gather_mark_degraded "glab-auth-timeout" review
+elif [ -n "$_gl_configured_users" ]; then
   # Configured but unreachable — glab missing, unauthenticated, or an expired
   # token. Skipping the block silently leaves _GL_REVIEW_PARTS empty and nothing
   # marked, which the preflight would read as a trustworthy empty queue.
