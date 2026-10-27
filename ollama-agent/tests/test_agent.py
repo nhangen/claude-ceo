@@ -1090,6 +1090,101 @@ def test_reason_verify_failed_when_the_gate_is_still_red_at_the_cap(tmp_path):
     assert rec["reason"] == "verify-failed"
 
 
+def test_verify_stderr_carries_the_last_red_gate_diagnostics(tmp_path):
+    # #639: a silent gate clause leaves the cron record with only
+    # `reason: verify-failed`, so the failing gate's own stderr must ride
+    # alongside on the record (ceo-cron relays it into the skips log). The last
+    # red gate wins, and a later green clears it so a clean run ships none.
+    tb = ToolBox(cwd=tmp_path)
+    results = iter([
+        {"returncode": 1, "stdout": "", "stderr": "digest verify: digest empty or missing: x.md"},
+        {"returncode": 1, "stdout": "", "stderr": "digest verify: digest lacks '# Cron failures' heading: x.md"},
+    ])
+    tb.run_shell = lambda cmd: json.dumps(next(results))
+    transport = _script(
+        {"role": "assistant", "content": "done 1"},
+        {"role": "assistant", "content": "done 2"},
+    )
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=2, verify_cmd="false")
+    assert rec["verified"] is False
+    # Last observed red gate, not the first one.
+    assert rec["verify_stderr"] == "digest verify: digest lacks '# Cron failures' heading: x.md"
+
+    # Red on turn 1, green on turn 2: the record is clean, so it must not ship
+    # the first gate's stderr as though it still described the end state.
+    tb2 = ToolBox(cwd=tmp_path)
+    results2 = iter([
+        {"returncode": 1, "stdout": "", "stderr": "digest verify: digest empty or missing: x.md"},
+        {"returncode": 0, "stdout": "", "stderr": ""},
+    ])
+    tb2.run_shell = lambda cmd: json.dumps(next(results2))
+    transport = _script(
+        {"role": "assistant", "content": "done 1"},
+        {"role": "assistant", "content": "done 2"},
+    )
+    rec = run_agent("fix it", "sys", transport, tb2, TOOLS,
+                    turn_cap=2, verify_cmd="true")
+    assert rec["verified"] is True
+    assert rec["verify_stderr"] == ""
+
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, ToolBox(cwd=tmp_path), TOOLS,
+                    turn_cap=2, verify_cmd="false")
+    # A gate that reads "" on stderr still records empty: a silent clause is
+    # meant to become a loud one at the playbook, not here.
+    assert rec["verify_stderr"] == ""
+
+
+def test_verify_stderr_empty_on_green_and_timeout_gates(tmp_path):
+    # A green gate and a timeout both end with verify_stderr empty. The timeout
+    # follows a red gate, so the red clause must not outlive it: the record's
+    # `verify-error` reason already names the hang.
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("noop", "sys", transport, ToolBox(cwd=tmp_path), TOOLS, verify_cmd="true")
+    assert rec["verified"] is True
+    assert rec["verify_stderr"] == ""
+
+    tb = ToolBox(cwd=tmp_path)
+    results = iter([
+        {"returncode": 1, "stdout": "", "stderr": "digest verify: digest lacks '# Cron failures' heading: x.md"},
+        {"returncode": None, "error": "timeout>30s"},
+    ])
+    tb.run_shell = lambda cmd: json.dumps(next(results))
+    transport = _script(
+        {"role": "assistant", "content": "done 1"},
+        {"role": "assistant", "content": "done 2"},
+    )
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS,
+                    turn_cap=2, verify_cmd="pytest")
+    assert rec["reason"] == "verify-error"
+    assert rec["verify_stderr"] == ""
+
+
+def test_verify_stderr_is_redacted_and_capped(tmp_path):
+    # ceo-cron writes verify_stderr into the synced pending.md and the Discord
+    # embed, so a noisy gate must not carry credentials or kilobytes of output.
+    # The clause a `|| { echo ...; exit 1; }` gate prints is its last line, so
+    # the tail is what survives.
+    noise = "x" * 3000
+    stderr = "Authorization: Bearer abcdefghijklmnop0123\n" + noise + "\ndigest verify: the clause"
+    tb = ToolBox(cwd=tmp_path)
+    tb.run_shell = lambda cmd: json.dumps({"returncode": 1, "stdout": "", "stderr": stderr})
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS, turn_cap=1, verify_cmd="false")
+    assert len(rec["verify_stderr"]) <= 501
+    assert rec["verify_stderr"].endswith("digest verify: the clause")
+    assert "abcdefghijklmnop0123" not in rec["verify_stderr"]
+
+    tb = ToolBox(cwd=tmp_path)
+    tb.run_shell = lambda cmd: json.dumps(
+        {"returncode": 1, "stdout": "", "stderr": "Authorization: Bearer abcdefghijklmnop0123"})
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS, turn_cap=1, verify_cmd="false")
+    assert rec["verify_stderr"].startswith("Authorization:")
+    assert "abcdefghijklmnop0123" not in rec["verify_stderr"]
+
+
 def test_reason_verify_error_when_the_gate_times_out(tmp_path):
     # #487: A verify command that times out (returncode=None) never completed, so
     # it proves neither pass nor fail. reason must be verify-error and verified None.
