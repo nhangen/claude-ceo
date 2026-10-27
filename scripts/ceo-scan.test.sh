@@ -250,8 +250,8 @@ test_cron_failure_digest_verify_refuses_stale_same_day_file() {
   assert_contains "$verify" "reports/cron-failures/" "verify command must be present in registry"
 
   local marker target
-  marker="reports/cron-failures/.run-start-$(hostname -s)"
-  target="reports/cron-failures/$(date +%F)-$(hostname -s).md"
+  marker="reports/cron-failures/.run-start-testhost"
+  target="reports/cron-failures/$(date +%F)-testhost.md"
   mkdir -p "$CEO_DIR/reports/cron-failures"
 
   # Run 1: clean run. Step 1 records marker and path; step 2 writes valid heading.
@@ -323,9 +323,9 @@ test_cron_failure_digest_verify_reads_target_from_marker_not_date() {
   verify=$(_scanned_verify_cmd)
 
   local marker yday yesterday
-  marker="reports/cron-failures/.run-start-$(hostname -s)"
+  marker="reports/cron-failures/.run-start-testhost"
   yday=$(date -v-1d +%F 2>/dev/null || date -d yesterday +%F)
-  yesterday="reports/cron-failures/$yday-$(hostname -s).md"
+  yesterday="reports/cron-failures/$yday-testhost.md"
   mkdir -p "$CEO_DIR/reports/cron-failures"
   printf '%s\n' "$yesterday" > "$CEO_DIR/$marker"
   sleep 0.05
@@ -338,6 +338,46 @@ test_cron_failure_digest_verify_reads_target_from_marker_not_date() {
     "verify must remove marker on success"
 }
 
+test_cron_failure_digest_verify_and_step1_agree_with_CEO_HOSTNAME() {
+  # #640: on a host where CEO_HOSTNAME is set and differs from hostname -s, the
+  # shipped verify gate and step 1 must key on CEO_HOSTNAME so the digest path,
+  # the verify gate, cron's marker cleanup, and ceo doctor's {HOST} artifact
+  # cross-check all name the same file.
+  local verify
+  verify=$(_scanned_verify_cmd)
+  mkdir -p "$CEO_DIR/reports/cron-failures"
+  local marker target
+  marker="reports/cron-failures/.run-start-cohost"
+  target="reports/cron-failures/$(date +%F)-cohost.md"
+  printf '%s\n' "$target" > "$CEO_DIR/$marker"
+  sleep 0.05
+  printf '# Cron failures %s\n- [ ] failure line\n' "$(date +%F)" > "$CEO_DIR/$target"
+
+  local rc=0
+  ( cd "$CEO_DIR" && CEO_HOSTNAME=cohost sh -c "$verify" ) >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "verify must key its gate on CEO_HOSTNAME"
+  assert_eq "$([ -f "$CEO_DIR/$marker" ] && echo exists || echo absent)" "absent" \
+    "CEO_HOSTNAME-keyed verify must remove the CEO_HOSTNAME-keyed marker"
+
+  local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
+  local step1_cmd
+  step1_cmd=$(awk '/^[[:space:]]*mkdir -p reports\/cron-failures/{sub(/^[[:space:]]*/, ""); print}' "$real")
+  local out
+  out=$(cd "$CEO_DIR" && CEO_HOSTNAME=cohost sh -c "$step1_cmd")
+  assert_eq "$(cat "$CEO_DIR/$marker" 2>/dev/null)" "$target" \
+    "step 1 must record the CEO_HOSTNAME-keyed OUTPATH in the CEO_HOSTNAME-keyed marker"
+  assert_contains "$out" "OUTPATH=$target" "step 1 must print the CEO_HOSTNAME-keyed OUTPATH"
+
+  local artifact expanded
+  artifact=$(jq -r '.playbooks[]|select(.name=="cron-failure-digest").artifact' "$HOME/.ceo/registry.json")
+  expanded=$(
+    # shellcheck source=scripts/ceo-config.sh
+    source "$SCRIPT_DIR/ceo-config.sh"
+    CEO_HOSTNAME=cohost ceo_artifact_expand "$artifact"
+  )
+  assert_eq "CEO/$target" "$expanded" "step 1's OUTPATH must be the declared {HOST} artifact path"
+}
+
 test_cron_failure_digest_step1_records_marker_and_outpath() {
   local real="$SCRIPT_DIR/../docs/playbooks/cron-failure-digest.md"
   local step1_cmd
@@ -347,11 +387,11 @@ test_cron_failure_digest_step1_records_marker_and_outpath() {
   local out
   out=$(cd "$CEO_DIR" && eval "$step1_cmd")
   local marker
-  marker="$CEO_DIR/reports/cron-failures/.run-start-$(hostname -s)"
+  marker="$CEO_DIR/reports/cron-failures/.run-start-testhost"
   assert_file_exists "$marker" "step 1 must create run-start marker"
   local recorded_path expected_path
   recorded_path=$(cat "$marker")
-  expected_path="reports/cron-failures/$(date +%F)-$(hostname -s).md"
+  expected_path="reports/cron-failures/$(date +%F)-testhost.md"
   assert_eq "$recorded_path" "$expected_path" "marker must contain expected OUTPATH"
   assert_contains "$out" "OUTPATH=$expected_path" "step 1 stdout must print OUTPATH"
 }

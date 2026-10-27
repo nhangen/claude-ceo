@@ -546,6 +546,7 @@ test_runner_ollama_agent_clears_stale_digest_run_start_marker_before_dispatch() 
   # and only a passing verify removes. A run that died before verify (turn cap,
   # crash, timeout) leaves it behind, and the next run that makes no tool calls
   # would pass the gate on that run's digest unless dispatch clears it first.
+  unset CEO_HOSTNAME
   _register_agent_pb cron-failure-digest low-stakes-write
   _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
   cat > "$HOME/.bun/bin/marker-probe" << PROBE
@@ -563,6 +564,33 @@ PROBE
   assert_eq "$rc" "0" "dispatch must still succeed"
   assert_eq "$(cat "$HOME/marker-at-dispatch.txt" 2>/dev/null)" "absent" \
     "a run-start marker left by an earlier run must be gone before the bridge starts"
+}
+
+test_runner_ollama_agent_digest_marker_cleans_and_threads_CEO_HOSTNAME() {
+  # A manual run sources ~/.ceo/config, which leaves CEO_HOSTNAME a non-exported
+  # shell var: dispatch from that state so the bridge sees the host only if cron
+  # exports it. The probe reads the bridge env at dispatch (\$-escaped).
+  _register_agent_pb cron-failure-digest low-stakes-write
+  _make_agent_stub '{"completed": true, "verified": true, "verify_gated": true, "turns": 1, "calls": [], "unknown_calls": [], "tool_errors": []}'
+  cat > "$HOME/.bun/bin/marker-probe" << PROBE
+#!/bin/bash
+if [ -e "$CEO_DIR/reports/cron-failures/.run-start-\$CEO_HOSTNAME" ]; then echo present; else echo absent; fi > "$HOME/marker-at-dispatch.txt"
+echo "\${CEO_HOSTNAME:-UNSET}" > "$HOME/host-at-dispatch.txt"
+exec "$HOME/.bun/bin/agent-stub" "\$@"
+PROBE
+  chmod +x "$HOME/.bun/bin/marker-probe"
+  export CEO_OLLAMA_AGENT_CMD="$HOME/.bun/bin/marker-probe"
+  mkdir -p "$CEO_DIR/reports/cron-failures"
+  echo "reports/cron-failures/stale.md" > "$CEO_DIR/reports/cron-failures/.run-start-cohost"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  printf 'CEO_VAULT=%s\nCEO_HOSTNAME=cohost\n' "$CEO_VAULT" > "$HOME/.ceo/config"
+  local rc=0
+  ( unset CEO_VAULT CEO_HOSTNAME; bash "$CRON" cron-failure-digest ) >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "dispatch must still succeed"
+  assert_eq "$(cat "$HOME/host-at-dispatch.txt" 2>/dev/null)" "cohost" \
+    "cron must thread its resolved CEO_HOSTNAME into the bridge env"
+  assert_eq "$(cat "$HOME/marker-at-dispatch.txt" 2>/dev/null)" "absent" \
+    "the CEO_HOSTNAME-keyed run-start marker must be gone before the bridge starts"
 }
 
 run_tests
