@@ -1220,6 +1220,78 @@ test_ceo_enabled_path_honors_override() {
   assert_eq "$path" "/custom/enabled.json" "_ceo_enabled_path must honor CEO_ENABLED_FILE override"
 }
 
+test_ceo_timeout_runs_and_returns_exit_code() {
+  local out rc=0
+  out=$(bash -c "source '$LIB'; _ceo_timeout 5 echo 'hello timeout'") || rc=$?
+  assert_eq "$rc" "0" "_ceo_timeout must return 0 on success"
+  assert_eq "$out" "hello timeout" "_ceo_timeout must preserve command stdout"
+}
+
+test_ceo_timeout_times_out_hanging_command() {
+  local rc=0 start end duration
+  start=$(date +%s)
+  bash -c "source '$LIB'; _ceo_timeout 1 sleep 10" >/dev/null 2>&1 || rc=$?
+  end=$(date +%s)
+  duration=$((end - start))
+  assert_eq "$rc" "124" "_ceo_timeout must exit 124 on timeout"
+  [ "$duration" -lt 5 ] || fail_test "command did not time out quickly (took ${duration}s)"
+}
+
+test_ceo_timeout_prefers_existing_ceo_timeout_shim() {
+  local out
+  out=$(bash -c "
+    _CEO_TIMEOUT() { echo \"delegated:\$*\"; }
+    source '$LIB'
+    _ceo_timeout 7 echo 'test'
+  ")
+  assert_eq "$out" "delegated:7 echo test" "_ceo_timeout must delegate to _CEO_TIMEOUT when defined"
+}
+
+test_pr_sources_gitlab_usernames_discovers_via_glab() {
+  local stub_dir got
+  stub_dir="$TEST_HOME/glab-ok-stub"
+  mkdir -p "$stub_dir"
+  cat > "$stub_dir/glab" << 'STUB'
+#!/bin/bash
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "api user") echo '{"username":"discovered-gl-user"}' ;;
+  *) exit 99 ;;
+esac
+STUB
+  chmod +x "$stub_dir/glab"
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "
+    source '$LIB'
+    ceo_pr_sources_gitlab_usernames '$TEST_HOME/nonexistent.json'
+  " 2>/dev/null)
+  assert_eq "$got" "discovered-gl-user" "missing config must discover gitlab username via glab"
+}
+
+test_pr_sources_gitlab_usernames_times_out_on_hanging_glab() {
+  local stub_dir got rc=0 start end duration
+  stub_dir="$TEST_HOME/hang-stub"
+  mkdir -p "$stub_dir"
+  cat > "$stub_dir/glab" << 'STUB'
+#!/bin/bash
+case "$1 $2" in
+  "auth status") sleep 10; exit 0 ;;
+  "api user") echo '{"username":"leaked-user"}' ;;
+  *) exit 99 ;;
+esac
+STUB
+  chmod +x "$stub_dir/glab"
+  start=$(date +%s)
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_FORGE_TIMEOUT=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "
+    source '$LIB'
+    ceo_pr_sources_gitlab_usernames '$TEST_HOME/nonexistent.json'
+  " 2>/dev/null) || rc=$?
+  end=$(date +%s)
+  duration=$((end - start))
+  assert_eq "$got" "" "hanging glab auth status must time out and return empty usernames"
+  assert_eq "$rc" "0" "hanging glab auth status must not crash caller"
+  [ "$duration" -lt 5 ] || fail_test "hanging glab auth status took ${duration}s; timeout did not terminate it"
+}
+
 test_every_env_i_suppresses_the_desktop_notification() {
   # env -i strips CEO_NO_DESKTOP_NOTIFY, so a call site that drops it and
   # reaches ceo_require_vault three times pops a real "Claude CEO FATAL"

@@ -81,6 +81,22 @@ esac
 STUB
   chmod +x "$TEST_HOME/.bun/bin/gh"
 
+  # Stub glab: PR search must not hit real GitLab or the keychain in tests. Per
+  # stub-cli-argv-validation it matches the argv production actually emits and
+  # exits loudly on any other shape. `auth status` exits non-zero on purpose --
+  # unauthenticated keeps tests offline and deterministic (#641).
+  cat > "$TEST_HOME/.bun/bin/glab" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$HOME/glab-invoked.txt"
+case "$1 ${2:-}" in
+  "auth status") echo "glab stub: not logged in" >&2; exit 1 ;;
+  "api user")    echo "glab stub: unauthenticated" >&2; exit 1 ;;
+  "api merge_requests"*) echo "glab stub: unauthenticated" >&2; exit 1 ;;
+  *) echo "glab stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/glab"
+
   # Stub crontab so playbook scan's cron install can't touch the user's real crontab.
   cat > "$TEST_HOME/.bun/bin/crontab" << 'STUB'
 #!/bin/bash

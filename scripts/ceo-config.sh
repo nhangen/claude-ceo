@@ -119,6 +119,32 @@ ceo_resolve_timeout_bin() {
 }
 
 # ---------------------------------------------------------------------------
+# _ceo_timeout <seconds> <cmd...> — execute a command with a wall-clock timeout.
+# Prefers _CEO_TIMEOUT if defined (e.g. by ceo-gather.sh); else uses
+# CEO_TIMEOUT_BIN (timeout/gtimeout); falls back to python3 (macOS default userland);
+# passes through bare command when neither is available.
+# ---------------------------------------------------------------------------
+_ceo_timeout() {
+  if command -v _CEO_TIMEOUT >/dev/null 2>&1; then
+    _CEO_TIMEOUT "$@"
+    return $?
+  fi
+  local secs="$1"; shift
+  [ -z "${CEO_TIMEOUT_BIN+x}" ] && ceo_resolve_timeout_bin
+  if [ -n "$CEO_TIMEOUT_BIN" ]; then
+    "$CEO_TIMEOUT_BIN" "$secs" "$@"
+  elif command -v python3 &>/dev/null; then
+    python3 -c 'import subprocess, sys
+try:
+    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)' "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # ceo_validate_timeout <value> — echoes the value when it is a positive integer
 # (seconds); non-zero exit (empty echo) when it is not. `0` is rejected because
 # GNU timeout reads it as "no wall-clock cap", and a non-integer makes timeout
@@ -766,13 +792,13 @@ ceo_pr_sources_path() {
 # the human-readable output.
 _ceo_pr_sources_discover_gh_accounts() {
   command -v gh &>/dev/null || return 0
-  gh auth status &>/dev/null || return 0
+  _ceo_timeout "${CEO_FORGE_TIMEOUT:-10}" gh auth status &>/dev/null || return 0
   local raw accounts
-  if raw=$(gh auth status --json 2>/dev/null) && [ -n "$raw" ] && command -v jq &>/dev/null; then
+  if raw=$(_ceo_timeout "${CEO_FORGE_TIMEOUT:-10}" gh auth status --json 2>/dev/null) && [ -n "$raw" ] && command -v jq &>/dev/null; then
     accounts=$(echo "$raw" | jq -r '.. | objects | select(has("user")) | .user' 2>/dev/null | sort -u)
     [ -n "$accounts" ] && { printf '%s\n' "$accounts"; return 0; }
   fi
-  raw=$(gh auth status 2>&1)
+  raw=$(_ceo_timeout "${CEO_FORGE_TIMEOUT:-10}" gh auth status 2>&1)
   accounts=$(printf '%s\n' "$raw" | awk '/account [a-zA-Z0-9_-]+/ {for(i=1;i<=NF;i++) if($i=="account") print $(i+1)}' | sort -u)
   if [ -z "$accounts" ]; then
     echo "WARN: gh auth status succeeded but no accounts parsed; gh output format may have drifted." >&2
@@ -828,8 +854,8 @@ ceo_pr_sources_gitlab_usernames() {
       fi
     fi
   fi
-  if command -v glab &>/dev/null && glab auth status &>/dev/null; then
-    glab api user 2>/dev/null | (command -v jq &>/dev/null && jq -r '.username // empty' || true)
+  if command -v glab &>/dev/null && _ceo_timeout "${CEO_FORGE_TIMEOUT:-10}" glab auth status &>/dev/null; then
+    _ceo_timeout "${CEO_FORGE_TIMEOUT:-10}" glab api user 2>/dev/null | (command -v jq &>/dev/null && jq -r '.username // empty' || true)
   fi
 }
 
@@ -900,9 +926,9 @@ ceo_pr_sources_setup() {
   fi
 
   local -a gitlab_users=()
-  if command -v glab &>/dev/null && glab auth status &>/dev/null; then
+  if command -v glab &>/dev/null && _ceo_timeout "${CEO_FORGE_TIMEOUT:-10}" glab auth status &>/dev/null; then
     local gluser
-    gluser=$(glab api user 2>/dev/null | jq -r '.username // empty' 2>/dev/null)
+    gluser=$(_ceo_timeout "${CEO_FORGE_TIMEOUT:-10}" glab api user 2>/dev/null | jq -r '.username // empty' 2>/dev/null)
     if [ -n "$gluser" ]; then
       local ans
       printf "    Query GitLab MRs for '%s'? [Y/n] " "$gluser"

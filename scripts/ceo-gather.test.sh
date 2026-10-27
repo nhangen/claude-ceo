@@ -521,6 +521,34 @@ JSON
     "a configured GitLab source that could not be reached is a degradation, not an empty queue"
 }
 
+test_hanging_glab_auth_status_times_out_and_degrades_review_queue() {
+  cat > "$TMP/.ceo/pr-sources.json" << 'JSON'
+{ "github": { "accounts": ["testacct"] }, "gitlab": { "usernames": ["gluser"] } }
+JSON
+  _write_gh_stub '[]'
+  cat > "$TMP/bin/glab" << 'STUB'
+#!/bin/bash
+case "$1 $2" in
+  "auth status") sleep 10; exit 0 ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$TMP/bin/glab"
+  local out start end duration
+  start=$(date +%s)
+  out=$(
+    export CEO_FORGE_TIMEOUT=1
+    _run_gather
+  )
+  end=$(date +%s)
+  duration=$((end - start))
+  assert_contains "$out" "REVIEW_DEGRADED=1" \
+    "a hanging glab auth status must time out and degrade the review queue (#641)"
+  assert_contains "$out" "glab-review-unavailable" \
+    "degraded reason must be glab-review-unavailable, not an inner api failure (#641)"
+  [ "$duration" -lt 5 ] || fail_test "glab auth status hang was not terminated by timeout (took ${duration}s)"
+}
+
 # gh is authenticated and the account list resolves to nothing, so no search is
 # issued at all. Without a mark, the count is 0 and the preflight certifies an
 # empty queue it never looked for.

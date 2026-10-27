@@ -217,7 +217,7 @@ $1"
 #   1  no PRs, and the search is trustworthy
 #   2  cannot tell — reason printed to stdout
 ceo_pr_review_preflight() {
-  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+  if ! command -v gh >/dev/null 2>&1 || ! _CEO_TIMEOUT "${CEO_FORGE_TIMEOUT:-10}" gh auth status >/dev/null 2>&1; then
     echo "gh CLI missing or unauthenticated; cannot check PRs for review"
     return 2
   fi
@@ -422,7 +422,7 @@ if command -v gh &>/dev/null; then
   # with its own handling — the preflight's own `gh auth status` guard reports it,
   # and marking here as well would flip the gather's status from `empty` to
   # `failed` for a host that simply has not logged in.
-  if [ "$_GH_ACCTS_SEEN" -eq 0 ] && gh auth status >/dev/null 2>&1; then
+  if [ "$_GH_ACCTS_SEEN" -eq 0 ] && _CEO_TIMEOUT "${CEO_FORGE_TIMEOUT:-10}" gh auth status >/dev/null 2>&1; then
     echo "WARN: gh is authenticated but no accounts resolved — no PR search was issued" >&2
     _pr_gather_mark_degraded "gh-review-no-accounts-resolved" review
   fi
@@ -458,7 +458,14 @@ fi
 # --- GitLab MRs ---
 _GL_REVIEW_PARTS="[]"
 _GL_AUTHORED_PARTS="[]"
-if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
+_gl_configured_users=""
+_pr_path=$(ceo_pr_sources_path)
+if [ -f "$_pr_path" ] && command -v jq &>/dev/null && jq empty "$_pr_path" 2>/dev/null; then
+  _gl_configured_users=$(jq -r '.gitlab.usernames // [] | .[]' "$_pr_path" 2>/dev/null)
+fi
+
+if command -v glab &>/dev/null && _CEO_TIMEOUT "${CEO_FORGE_TIMEOUT:-10}" glab auth status &>/dev/null 2>&1; then
+  _gl_users="${_gl_configured_users:-$(glab api user 2>/dev/null | (command -v jq &>/dev/null && jq -r '.username // empty' || true))}"
   while IFS= read -r GL_USER; do
     [ -z "$GL_USER" ] && continue
     _err=$(mktemp)
@@ -482,8 +489,8 @@ if command -v glab &>/dev/null && glab auth status &>/dev/null 2>&1; then
     _A=$(printf '%s' "$_GLA" | _pr_gather_jq "shape-gl-authored:$GL_USER" "[]" "$_gl_shape_jq")
     _GL_REVIEW_PARTS=$(printf '%s\n%s' "$_GL_REVIEW_PARTS" "$_R" | _pr_gather_jq "merge-gl-review:$GL_USER" "$_GL_REVIEW_PARTS" -s 'add')
     _GL_AUTHORED_PARTS=$(printf '%s\n%s' "$_GL_AUTHORED_PARTS" "$_A" | _pr_gather_jq "merge-gl-authored:$GL_USER" "$_GL_AUTHORED_PARTS" -s 'add')
-  done < <(ceo_pr_sources_gitlab_usernames)
-elif [ -n "$(ceo_pr_sources_gitlab_usernames)" ]; then
+  done <<< "$_gl_users"
+elif [ -n "$_gl_configured_users" ]; then
   # Configured but unreachable — glab missing, unauthenticated, or an expired
   # token. Skipping the block silently leaves _GL_REVIEW_PARTS empty and nothing
   # marked, which the preflight would read as a trustworthy empty queue.
