@@ -1161,6 +1161,29 @@ def test_verify_stderr_empty_on_green_and_timeout_gates(tmp_path):
     assert rec["verify_stderr"] == ""
 
 
+def test_verify_stderr_is_redacted_and_capped(tmp_path):
+    # ceo-cron writes verify_stderr into the synced pending.md and the Discord
+    # embed, so a noisy gate must not carry credentials or kilobytes of output.
+    # The clause a `|| { echo ...; exit 1; }` gate prints is its last line, so
+    # the tail is what survives.
+    noise = "x" * 3000
+    stderr = "Authorization: Bearer abcdefghijklmnop0123\n" + noise + "\ndigest verify: the clause"
+    tb = ToolBox(cwd=tmp_path)
+    tb.run_shell = lambda cmd: json.dumps({"returncode": 1, "stdout": "", "stderr": stderr})
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS, turn_cap=1, verify_cmd="false")
+    assert len(rec["verify_stderr"]) <= 501
+    assert rec["verify_stderr"].endswith("digest verify: the clause")
+    assert "abcdefghijklmnop0123" not in rec["verify_stderr"]
+
+    tb = ToolBox(cwd=tmp_path)
+    tb.run_shell = lambda cmd: json.dumps(
+        {"returncode": 1, "stdout": "", "stderr": "Authorization: Bearer abcdefghijklmnop0123"})
+    transport = _script({"role": "assistant", "content": "done"})
+    rec = run_agent("fix it", "sys", transport, tb, TOOLS, turn_cap=1, verify_cmd="false")
+    assert rec["verify_stderr"].startswith("Authorization:")
+    assert "abcdefghijklmnop0123" not in rec["verify_stderr"]
+
 
 def test_reason_verify_error_when_the_gate_times_out(tmp_path):
     # #487: A verify command that times out (returncode=None) never completed, so

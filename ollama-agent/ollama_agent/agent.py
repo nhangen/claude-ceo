@@ -1,6 +1,19 @@
 """The agent loop: drive a model through tool calls until it stops or hits the cap."""
 import json
 
+from .transport import REDACT_WINDOW, redact_secrets
+
+VERIFY_STDERR_MAX = 500
+
+
+def _gate_stderr(text):
+    """The tail of a gate's stderr, redacted and cut to `VERIFY_STDERR_MAX`.
+
+    ceo-cron writes it into the synced pending.md and the Discord embed. The tail,
+    because a `|| { echo ...; exit 1; }` clause prints its message last."""
+    text = redact_secrets((text or "")[-(VERIFY_STDERR_MAX + REDACT_WINDOW):])
+    return text if len(text) <= VERIFY_STDERR_MAX else "…" + text[-VERIFY_STDERR_MAX:]
+
 
 def _normalize_args(raw):
     """ollama builds return tool-call arguments as either a dict or a JSON string.
@@ -191,7 +204,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                 # Last observed gate's stderr (#639), which ceo-cron logs beside
                 # `reason` so the skips log names the failing clause. A timeout has
                 # none, and an earlier red clause must not be reported as its cause.
-                verify_stderr = res.get("stderr", "") or ""
+                verify_stderr = _gate_stderr(res.get("stderr"))
                 if verify_error:
                     # A timeout is not evidence the code is wrong, but a change that
                     # hangs the suite also lands here, so the model is told to find
