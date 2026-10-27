@@ -9,10 +9,7 @@ preflight: none
 # report. Do not "fix" the read/write divergence.
 tier: read
 status: active
-# Every host-keyed path below resolves ${CEO_HOSTNAME:-$(hostname -s)} because
-# cron's dispatch exports the host it resolved (#640); a bare $(hostname -s)
-# diverges from the {HOST} artifact path, ceo doctor's cross-check, and the
-# pre-dispatch marker cleanup on a host where CEO_HOSTNAME is set.
+# Host-keyed paths below must resolve ${CEO_HOSTNAME:-$(hostname -s)}, as {HOST} does.
 runner: ollama-agent
 model: mistral-small3.2:24b
 task: cron-failure-digest
