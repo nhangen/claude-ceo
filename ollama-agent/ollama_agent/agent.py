@@ -10,7 +10,8 @@ def _gate_stderr(text):
     """The tail of a gate's stderr, redacted and cut to `VERIFY_STDERR_MAX`.
 
     ceo-cron writes it into the synced pending.md and the Discord embed. The tail,
-    because a `|| { echo ...; exit 1; }` clause prints its message last."""
+    because a `|| { echo ...; exit 1; }` clause prints its message last -- though
+    past `tools.MAX_OUTPUT` run_shell has already kept only the head (#648)."""
     text = redact_secrets((text or "")[-(VERIFY_STDERR_MAX + REDACT_WINDOW):])
     return text if len(text) <= VERIFY_STDERR_MAX else "…" + text[-VERIFY_STDERR_MAX:]
 
