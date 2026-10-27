@@ -235,6 +235,186 @@ SH
   assert_contains "$got_content" "Propagated domain" "skill child must see the canonical Active Domains content"
 }
 
+test_runner_skill_degraded_outcome_file_records_warning_in_skips_log() {
+  cat > "$CEO_DIR/playbooks/skill-degraded-outcome.md" << 'PB'
+---
+name: skill-degraded-outcome
+description: Verifies runner:skill degraded outcome file surfaces warning
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: skill-degraded-outcome
+out_pattern: CEO/reports/skill-degraded-outcome/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/skill-degraded-outcome/scripts"
+  cat > "$HOME/.claude/skills/skill-degraded-outcome/scripts/run-report.sh" << 'SH'
+#!/bin/bash
+while [[ "$#" -gt 0 ]]; do
+  case $1 in --out) out_dir="$2"; shift ;; esac
+  shift
+done
+[ -n "$CEO_RUNNER_OUTCOME_FILE" ] && printf 'degraded: profile context failed (unavailable)' > "$CEO_RUNNER_OUTCOME_FILE"
+echo "degraded skill report" > "$out_dir/report.md"
+exit 0
+SH
+  chmod +x "$HOME/.claude/skills/skill-degraded-outcome/scripts/run-report.sh"
+
+  local rc=0
+  bash "$CRON" skill-degraded-outcome >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "degraded runner:skill must exit 0"
+  assert_contains "$(_runs_log)" "skill-degraded-outcome completed" "runs log must record completion"
+  assert_contains "$(_skips_log)" "WARN — profile context failed (unavailable)" "skips log must record degraded warning"
+  assert_file_exists "$CEO_VAULT/CEO/reports/skill-degraded-outcome/$(date +%Y-%m-%d).md" "report file must exist"
+  local fails
+  fails=$(cat "$TEST_HOME/.ceo/state/fail-count-skill-degraded-outcome" 2>/dev/null || echo 0)
+  assert_eq "$fails" "0" "degraded run must reset fail count to 0"
+}
+
+test_runner_skill_unavailable_context_in_memo_records_warning_in_skips_log() {
+  cat > "$CEO_DIR/playbooks/skill-memo-unavailable.md" << 'PB'
+---
+name: skill-memo-unavailable
+description: Verifies runner:skill detects context unavailable comment in report
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: skill-memo-unavailable
+out_pattern: CEO/reports/skill-memo-unavailable/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/skill-memo-unavailable/scripts"
+  cat > "$HOME/.claude/skills/skill-memo-unavailable/scripts/run-report.sh" << 'SH'
+#!/bin/bash
+while [[ "$#" -gt 0 ]]; do
+  case $1 in --out) out_dir="$2"; shift ;; esac
+  shift
+done
+cat > "$out_dir/report.md" << 'EOF'
+<!-- engine: claude:opus, context: unavailable, generated: 2026-10-27T00:00:00Z -->
+# Weekly Synthesis Memo
+Active domains unavailable.
+EOF
+exit 0
+SH
+  chmod +x "$HOME/.claude/skills/skill-memo-unavailable/scripts/run-report.sh"
+
+  local rc=0
+  bash "$CRON" skill-memo-unavailable >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "runner:skill with context unavailable memo must exit 0"
+  assert_contains "$(_runs_log)" "skill-memo-unavailable completed" "runs log must record completion"
+  assert_contains "$(_skips_log)" "WARN — profile context unavailable (context fetch failed)" "skips log must record degraded warning"
+}
+
+test_runner_skill_exit_2_with_output_records_warning_in_skips_log() {
+  cat > "$CEO_DIR/playbooks/skill-exit-2.md" << 'PB'
+---
+name: skill-exit-2
+description: Verifies runner:skill exit 2 with output is treated as degraded warning
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: skill-exit-2
+out_pattern: CEO/reports/skill-exit-2/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/skill-exit-2/scripts"
+  cat > "$HOME/.claude/skills/skill-exit-2/scripts/run-report.sh" << 'SH'
+#!/bin/bash
+while [[ "$#" -gt 0 ]]; do
+  case $1 in --out) out_dir="$2"; shift ;; esac
+  shift
+done
+echo "report with exit 2" > "$out_dir/report.md"
+exit 2
+SH
+  chmod +x "$HOME/.claude/skills/skill-exit-2/scripts/run-report.sh"
+
+  local rc=0
+  bash "$CRON" skill-exit-2 >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "runner:skill with exit 2 and valid output must exit 0"
+  assert_contains "$(_runs_log)" "skill-exit-2 completed" "runs log must record completion"
+  assert_contains "$(_skips_log)" "WARN — skill exited 2 (degraded context; fetch failed)" "skips log must record degraded warning"
+}
+
+test_runner_skill_exit_2_without_output_records_failure() {
+  cat > "$CEO_DIR/playbooks/skill-exit-2-no-output.md" << 'PB'
+---
+name: skill-exit-2-no-output
+description: Verifies runner:skill exit 2 without output is treated as failure
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: skill-exit-2-no-output
+out_pattern: CEO/reports/skill-exit-2-no-output/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/skill-exit-2-no-output/scripts"
+  cat > "$HOME/.claude/skills/skill-exit-2-no-output/scripts/run-report.sh" << 'SH'
+#!/bin/bash
+exit 2
+SH
+  chmod +x "$HOME/.claude/skills/skill-exit-2-no-output/scripts/run-report.sh"
+
+  local rc=0
+  bash "$CRON" skill-exit-2-no-output >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "1" "runner:skill with exit 2 but no output must fail with exit 1"
+  assert_contains "$(_skips_log)" "ERROR — Skill produced no output file for skill-exit-2-no-output" "skips log must record error"
+}
+
+test_runner_skill_clean_memo_records_no_warning_in_skips_log() {
+  mkdir -p "$CEO_VAULT/Profile"
+  printf -- '---\nactive_domains_as_of: %s\n---\n\n## Active Domains\n\n- Clean domain\n' "$(date +%Y-%m-%d)" \
+    > "$CEO_VAULT/Profile/goals.md"
+  cat > "$CEO_DIR/playbooks/skill-clean-run.md" << 'PB'
+---
+name: skill-clean-run
+description: Verifies clean runner:skill emits no warning
+trigger: cron
+status: active
+tier: read
+runner: skill
+skill: skill-clean-run
+out_pattern: CEO/reports/skill-clean-run/${TODAY}.md
+---
+PB
+  "$CEO_CLI" playbook scan >/dev/null
+
+  mkdir -p "$HOME/.claude/skills/skill-clean-run/scripts"
+  cat > "$HOME/.claude/skills/skill-clean-run/scripts/run-report.sh" << 'SH'
+#!/bin/bash
+while [[ "$#" -gt 0 ]]; do
+  case $1 in --out) out_dir="$2"; shift ;; esac
+  shift
+done
+cat > "$out_dir/report.md" << 'EOF'
+<!-- engine: claude:opus, context: current, generated: 2026-10-27T00:00:00Z -->
+# Clean Report
+Everything is fine.
+EOF
+exit 0
+SH
+  chmod +x "$HOME/.claude/skills/skill-clean-run/scripts/run-report.sh"
+
+  local rc=0
+  bash "$CRON" skill-clean-run >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "clean runner:skill must exit 0"
+  assert_contains "$(_runs_log)" "skill-clean-run completed" "runs log must record completion"
+  assert_not_contains "$(_skips_log)" "skill-clean-run" "skips log must not record any entry for clean run"
+}
+
 
 test_runner_skill_abort_is_recorded_and_releases_the_lock() {
   # runner:skill used to install its own `trap 'rm -rf "$TMP_DIR"' EXIT`, which

@@ -81,6 +81,16 @@ esac
 STUB
   chmod +x "$TEST_HOME/.bun/bin/gh"
 
+  # Stub glab: PR search must not hit real GitLab or network in tests.
+  cat > "$TEST_HOME/.bun/bin/glab" << 'STUB'
+#!/bin/bash
+case "$1 ${2:-}" in
+  "auth status") echo "glab stub: not logged in" >&2; exit 1 ;;
+  *) echo "glab stub: unauthenticated" >&2; exit 1 ;;
+esac
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/glab"
+
   # Stub crontab so playbook scan's cron install can't touch the user's real crontab.
   cat > "$TEST_HOME/.bun/bin/crontab" << 'STUB'
 #!/bin/bash
