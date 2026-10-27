@@ -1244,6 +1244,20 @@ test_ceo_timeout_python_fallback_exits_124() {
   assert_eq "$rc" "124" "the python3 fallback must report a timeout as 124, like timeout(1)"
 }
 
+test_ceo_timeout_python_fallback_kills_grandchildren() {
+  local stub start end out rc=0
+  stub="$TEST_HOME/spawns-sleep"
+  printf '#!/bin/bash\nsleep 10\necho late\n' > "$stub"
+  chmod +x "$stub"
+  start=$(date +%s)
+  out=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="/usr/bin:/bin" CEO_TIMEOUT_BIN= \
+    bash -c "source '$LIB'; _ceo_timeout 1 '$stub'" 2>/dev/null) || rc=$?
+  end=$(date +%s)
+  assert_eq "$rc" "124" "the python3 fallback must report a timeout as 124"
+  assert_eq "$out" "" "a timed-out command must not print"
+  assert_eq "$(( end - start < 5 ))" "1" "a capture took $((end - start))s; the grandchild kept the pipe open"
+}
+
 test_ceo_timeout_warns_when_it_cannot_bound() {
   local bindir err
   bindir="$TEST_HOME/no-timeout-bin"

@@ -129,10 +129,22 @@ _ceo_timeout_with() {
   if [ -n "$bin" ]; then
     "$bin" "$secs" "$@"
   elif command -v python3 &>/dev/null; then
-    python3 -c 'import subprocess, sys
+    # Own session so a timeout kills the whole group, as timeout(1) does: killing
+    # only the child leaves a grandchild holding a $(...) capture pipe open.
+    python3 -c 'import os, signal, subprocess, sys
+p = subprocess.Popen(sys.argv[2:], start_new_session=True)
 try:
-    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
+    sys.exit(p.wait(timeout=float(sys.argv[1])))
 except subprocess.TimeoutExpired:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            break
+        try:
+            p.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
     sys.exit(124)' "$secs" "$@"
   else
     [ -n "${_CEO_TIMEOUT_UNBOUNDED_WARNED:-}" ] \
