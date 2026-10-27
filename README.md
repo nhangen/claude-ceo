@@ -371,6 +371,10 @@ Override the configured vault path for a single invocation:
 CEO_VAULT="$HOME/Documents/Obsidian" bash scripts/ceo-token-intake.sh
 ```
 
+### `CEO_FORGE_TIMEOUT`
+
+Wall-clock cap, in seconds, on each `gh` and `glab` auth probe and username lookup (default `10`). A probe that blocks on a Keychain prompt or a stalled network times out and marks the review queue degraded instead of hanging the cron tick. A value that is not a positive integer falls back to `10` with a warning, since `0` would disable the cap.
+
 ### `CEO_GIT_WRITE_GLOBAL_IDENTITY`
 
 `ceo setup` **preserves** an existing global git identity by default, and does not

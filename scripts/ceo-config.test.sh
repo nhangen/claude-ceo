@@ -1237,6 +1237,58 @@ test_ceo_timeout_times_out_hanging_command() {
   [ "$duration" -lt 5 ] || fail_test "command did not time out quickly (took ${duration}s)"
 }
 
+test_ceo_timeout_python_fallback_exits_124() {
+  local rc=0
+  env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="/usr/bin:/bin" CEO_TIMEOUT_BIN= \
+    bash -c "source '$LIB'; _ceo_timeout 1 sleep 10" >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "124" "the python3 fallback must report a timeout as 124, like timeout(1)"
+}
+
+test_ceo_timeout_warns_when_it_cannot_bound() {
+  local bindir err
+  bindir="$TEST_HOME/no-timeout-bin"
+  mkdir -p "$bindir"
+  ln -sf "$(command -v true)" "$bindir/true"
+  err=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="$bindir" CEO_TIMEOUT_BIN= \
+    "$BASH" -c "source '$LIB' 2>/dev/null; _ceo_timeout 1 true" 2>&1 >/dev/null)
+  assert_contains "$err" "unbounded" "running a command with no wall-clock cap must say so"
+}
+
+test_ceo_forge_timeout_validates() {
+  local v got
+  for v in 0 abc 10s ''; do
+    got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="/usr/bin:/bin" CEO_FORGE_TIMEOUT="$v" \
+      bash -c "source '$LIB'; ceo_forge_timeout" 2>/dev/null)
+    assert_eq "$got" "10" "CEO_FORGE_TIMEOUT='$v' must fall back to 10"
+  done
+  got=$(env -i CEO_NO_DESKTOP_NOTIFY=1 HOME="$TEST_HOME" PATH="/usr/bin:/bin" CEO_FORGE_TIMEOUT=3 \
+    bash -c "source '$LIB'; ceo_forge_timeout")
+  assert_eq "$got" "3" "a positive integer passes through"
+}
+
+test_discover_gh_accounts_times_out_on_hanging_gh() {
+  local stub_dir err rc=0 start end
+  stub_dir="$TEST_HOME/gh-hang-stub"
+  mkdir -p "$stub_dir"
+  cat > "$stub_dir/gh" << 'STUB'
+#!/bin/bash
+case "$1 $2" in
+  "auth status") sleep 10; exit 0 ;;
+  *) echo "gh stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$stub_dir/gh"
+  start=$(date +%s)
+  err=$(env -i CEO_NO_DESKTOP_NOTIFY=1 CEO_FORGE_TIMEOUT=1 HOME="$TEST_HOME" PATH="$stub_dir:/usr/bin:/bin" bash -c "
+    source '$LIB'
+    _ceo_pr_sources_discover_gh_accounts
+  " 2>&1 >/dev/null) || rc=$?
+  end=$(date +%s)
+  assert_eq "$rc" "0" "a hanging gh must not crash discovery"
+  assert_contains "$err" "timed out" "a timed-out gh probe must say so, not read as logged out"
+  [ $((end - start)) -lt 5 ] || fail_test "gh auth status hang took $((end - start))s"
+}
+
 test_ceo_timeout_prefers_existing_ceo_timeout_shim() {
   local out
   out=$(bash -c "
