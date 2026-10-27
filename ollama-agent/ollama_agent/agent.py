@@ -1,6 +1,20 @@
 """The agent loop: drive a model through tool calls until it stops or hits the cap."""
 import json
 
+from .transport import REDACT_WINDOW, redact_secrets
+
+VERIFY_STDERR_MAX = 500
+
+
+def _gate_stderr(text):
+    """The tail of a gate's stderr, redacted and cut to `VERIFY_STDERR_MAX`.
+
+    ceo-cron writes it into the synced pending.md and the Discord embed. The tail,
+    because a `|| { echo ...; exit 1; }` clause prints its message last -- though
+    past `tools.MAX_OUTPUT` run_shell has already kept only the head (#648)."""
+    text = redact_secrets((text or "")[-(VERIFY_STDERR_MAX + REDACT_WINDOW):])
+    return text if len(text) <= VERIFY_STDERR_MAX else "…" + text[-VERIFY_STDERR_MAX:]
+
 
 def _normalize_args(raw):
     """ollama builds return tool-call arguments as either a dict or a JSON string.
@@ -103,6 +117,10 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     "verify-failed" (out of turns, gate last observed red),
     "verify-error" (out of turns, gate last observed timing out or failing with returncode=None),
     "error" (crashed run), or "killed" (interrupted run).
+
+    `verify_stderr` (#639) carries the last observed gate's own stderr, so a
+    caller can name the failing gate clause beside `reason`; empty after a
+    green gate or a timeout.
     """
     # cli.py refuses this earlier with a REFUSED line and exit 2, which is the
     # better operator message; keep that one. This is the library-caller backstop,
@@ -118,6 +136,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
     verify_gated = bool(verify_cmd)
     verify_error = False
     reason = None
+    verify_stderr = ""
     turns = 0
     ollama_input_tokens = 0
     ollama_output_tokens = 0
@@ -164,6 +183,9 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
             if verify_cmd:
                 res = json.loads(toolbox.run_shell(verify_cmd))
                 if res.get("returncode") == 0:
+                    # A later green gate clears an earlier red gate's stderr (#639):
+                    # a clean run must not ship stale diagnostics for its reason.
+                    verify_stderr = ""
                     verified = True
                     verify_error = False
                     completed = True
@@ -180,6 +202,10 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
                     verify_error = False
                     _track(usage_tracker, "verified", False)
                 err_detail = ("\nerror:\n%s" % res["error"]) if res.get("error") else ""
+                # Last observed gate's stderr (#639), which ceo-cron logs beside
+                # `reason` so the skips log names the failing clause. A timeout has
+                # none, and an earlier red clause must not be reported as its cause.
+                verify_stderr = _gate_stderr(res.get("stderr"))
                 if verify_error:
                     # A timeout is not evidence the code is wrong, but a change that
                     # hangs the suite also lands here, so the model is told to find
@@ -242,6 +268,7 @@ def run_agent(task, system, transport, toolbox, tools, turn_cap=8, run_id=None,
         "verify_gated": verify_gated,
         "verify_cmd": verify_cmd,
         "reason": reason,
+        "verify_stderr": verify_stderr,
         "turns": turns,
         "run_id": run_id,
         "ollama_input_tokens": ollama_input_tokens,

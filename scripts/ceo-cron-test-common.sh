@@ -81,12 +81,15 @@ esac
 STUB
   chmod +x "$TEST_HOME/.bun/bin/gh"
 
-  # Stub glab: PR search must not hit real GitLab or network in tests.
+  # Stub glab for the same reason ceo-config.sh:831 probes it on every
+  # dispatch: a host with homebrew glab installed hangs the auth check for
+  # tens of seconds on network, turning every ceo-cron.sh call in this suite
+  # into a wall. Unauthenticated is the fail-fast branch the tests need.
   cat > "$TEST_HOME/.bun/bin/glab" << 'STUB'
 #!/bin/bash
 case "$1 ${2:-}" in
-  "auth status") echo "glab stub: not logged in" >&2; exit 1 ;;
-  *) echo "glab stub: unauthenticated" >&2; exit 1 ;;
+  "auth status") exit 1 ;;
+  *) echo "glab stub: unexpected argv: $*" >&2; exit 99 ;;
 esac
 STUB
   chmod +x "$TEST_HOME/.bun/bin/glab"

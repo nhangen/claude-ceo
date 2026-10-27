@@ -9,10 +9,11 @@ preflight: none
 # report. Do not "fix" the read/write divergence.
 tier: read
 status: active
+# Host-keyed paths below must resolve ${CEO_HOSTNAME:-$(hostname -s)}, as {HOST} does.
 runner: ollama-agent
 model: mistral-small3.2:24b
 task: cron-failure-digest
-registry: {"tasks":{"cron-failure-digest":{"runner":"ollama","model":"mistral-small3.2:24b","tier":"low-stakes-write","tools":["read_file","run_shell","write_file","edit_file","list_dir"],"rules":false,"skills":false,"verify":"m=\"reports/cron-failures/.run-start-$(hostname -s)\"; test -s \"$m\" && f=\"$(cat \"$m\")\" && test -s \"$f\" && grep -q '^# Cron failures' \"$f\" && find \"$f\" -newer \"$m\" | grep -q . && rm -f \"$m\""}}}
+registry: {"tasks":{"cron-failure-digest":{"runner":"ollama","model":"mistral-small3.2:24b","tier":"low-stakes-write","tools":["read_file","run_shell","write_file","edit_file","list_dir"],"rules":false,"skills":false,"verify":"m=\"reports/cron-failures/.run-start-${CEO_HOSTNAME:-$(hostname -s)}\"; test -s \"$m\" || { echo \"digest verify: run-start marker missing or empty: $m\" >&2; exit 1; }; f=\"$(cat \"$m\")\" || { echo \"digest verify: cannot read run-start marker: $m\" >&2; exit 1; }; test -s \"$f\" || { echo \"digest verify: digest empty or missing: $f\" >&2; exit 1; }; grep -q '^# Cron failures' \"$f\" || { echo \"digest verify: digest lacks '# Cron failures' heading: $f\" >&2; exit 1; }; find \"$f\" -newer \"$m\" | grep -q . || { echo \"digest verify: digest not newer than run-start marker\" >&2; exit 1; }; rm -f \"$m\""}}}
 artifact: CEO/reports/cron-failures/{TODAY}-{HOST}.md
 ---
 You are writing a digest of recent CEO cron failures. Your working directory is the vault's CEO directory. Make EXACTLY two tool calls, then stop with a one-line summary — do NOT run extra searches, greps, or re-reads (over-exploring is what makes this task fail to finish).
@@ -20,7 +21,7 @@ You are writing a digest of recent CEO cron failures. Your working directory is 
 1. ONE `run_shell`. Run only this command — it prints the output path, creates the directory, and emits all relevant log content with this digest's own lines removed:
    The completion- and skips-log globs are deliberately host-agnostic, unlike `ceo doctor`'s cross-check: a peer's failure line is worth surfacing in a digest even though it must not be cross-checked against this host's artifact paths. Note the tail slices the concatenation, so ordering is by filename, not time.
 
-   mkdir -p reports/cron-failures; m="reports/cron-failures/.run-start-$(hostname -s)"; f="reports/cron-failures/$(date +%F)-$(hostname -s).md"; echo "$f" > "$m"; echo "OUTPATH=$f"; { cat log/cron-runs.log log/cron-runs-*.log 2>/dev/null | tail -n 200; echo "===SKIPS==="; cat log/cron-skips.log log/cron-skips-*.log 2>/dev/null | tail -n 200; } | grep -v cron-failure-digest
+   mkdir -p reports/cron-failures; m="reports/cron-failures/.run-start-${CEO_HOSTNAME:-$(hostname -s)}"; f="reports/cron-failures/$(date +%F)-${CEO_HOSTNAME:-$(hostname -s)}.md"; echo "$f" > "$m"; echo "OUTPATH=$f"; { cat log/cron-runs.log log/cron-runs-*.log 2>/dev/null | tail -n 200; echo "===SKIPS==="; cat log/cron-skips.log log/cron-skips-*.log 2>/dev/null | tail -n 200; } | grep -v cron-failure-digest
 2. ONE `write_file` to the OUTPATH printed in step 1. Write a `# Cron failures <date>` heading, then one bullet per distinct playbook with an action-required line — those containing `ERROR`, `FATAL`, `DEGRADED`, `failed`, `did not complete`, or `not authenticated` — with its latest timestamp and reason. `FATAL` lines (e.g. a missing or corrupt registry) are the highest priority: they mean the whole cron is failing to dispatch, so never omit them. **Ignore only routine "last run too recent" cooldown skips — those are benign.** If nothing matched, the body must be exactly: `No cron failures in the recent logs.`
 
 Then reply with a one-line summary (e.g. "Wrote digest: N failing playbooks") and make NO further tool calls.

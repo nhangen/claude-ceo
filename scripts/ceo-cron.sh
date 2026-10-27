@@ -1691,8 +1691,13 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # step 1 writes and only a passing verify removes. A prior run that died before
   # verify leaves it behind, and the next run that makes no tool calls would pass
   # the gate on that run's digest (#560). Path mirrors docs/playbooks/cron-failure-digest.md.
+  # A manual run sources ~/.ceo/config, leaving CEO_HOSTNAME unexported, so the
+  # bridge's run_shell children would key the marker on a different host.
   if [ "$AGENT_TASK" = "cron-failure-digest" ]; then
-    rm -f "$CEO_DIR/reports/cron-failures/.run-start-$(hostname -s)"
+    _digest_host="${CEO_HOSTNAME:-$(hostname -s)}"
+    : "${_digest_host:?HOST resolution failed; set CEO_HOSTNAME or fix hostname}"
+    export CEO_HOSTNAME="$_digest_host"
+    rm -f "$CEO_DIR/reports/cron-failures/.run-start-$_digest_host"
   fi
 
   _v "Runner: ollama-agent — bridge task '$AGENT_TASK' (tier:$_ceo_tier, run:$AGENT_RUN_ID)"
@@ -1743,7 +1748,15 @@ if [ "$RUNNER" = "ollama-agent" ]; then
   # The bridge only sets completed on a gated run once verify passes, so this
   # mostly names the outcome; it also refuses a gated completion that did not verify.
   if [ "$_agent_verify_gated" = "true" ] && [ "$_agent_verified" != "true" ]; then
-    _record_failure "ollama-agent task '$AGENT_TASK' gated run ended $_agent_reason (verified=$_agent_verified) for $TRIGGER"
+    # verify_stderr (#639) carries the failing gate clause's own message, so the
+    # skips log says which clause went red, not just "verify-failed". Newlines
+    # are folded to ';' because _record_failure writes single log lines.
+    _agent_verify_msg=$(printf '%s' "$AGENT_OUT" | jq -r '.verify_stderr // empty' \
+      | tr '\n' ';' | sed 's/;*$//')
+    _agent_fail_msg="ollama-agent task '$AGENT_TASK' gated run ended $_agent_reason (verified=$_agent_verified) for $TRIGGER"
+    [ -n "$_agent_verify_msg" ] && \
+      _agent_fail_msg="$_agent_fail_msg — last verify stderr: $_agent_verify_msg"
+    _record_failure "$_agent_fail_msg"
     exit 1
   fi
 
