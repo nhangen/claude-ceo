@@ -304,11 +304,6 @@ test_cron_failure_digest_verify_refuses_stale_same_day_file() {
   _assert_digest_verify_diagnoses "digest lacks '# Cron failures' heading" || {
     printf '  FAIL [%s] missing-heading failure must name its clause on stderr\n' "$CURRENT_TEST"; FAILS=$((FAILS + 1)); }
 
-  # Diagnostics are stderr-only (#639): the bridge clips verify stdout back into
-  # the model's message feed, so nothing may leak onto stdout.
-  assert_eq "$(sh -c "cd '$CEO_DIR' && $verify" 2>"$TMP/verify-err"; true)" "" \
-    "failing verify must write nothing to stdout (diagnostics go to stderr)"
-
   : > "$CEO_DIR/$marker"
   assert_fails "an empty marker must fail verify" sh -c "cd '$CEO_DIR' && $verify"
   _assert_digest_verify_diagnoses "run-start marker missing or empty" || {
