@@ -28,6 +28,52 @@ def atomic_write(path, body):
 
 STATE_MARKER = "\n<!-- fleet-readiness-state -->\n```json\n"
 
+FINDING_REASONS = {
+    "collector-unsupported": (False, "Collector check not implemented; this is a coverage gap, not a verified outage.", "Add a tested provider probe."),
+    "probe-timeout": (True, "Management probe exceeded its time budget; dependent checks have no evidence.", "Inspect the bounded probe and retry."),
+    "ssh-authentication": (True, "The monitor SSH identity was rejected.", "Verify the dedicated monitor key and account."),
+    "ssh-host-key": (True, "Strict SSH host-key verification rejected the connection.", "Verify the fingerprint before updating trust."),
+    "ssh-unreachable": (True, "The monitor could not establish an SSH connection.", "Check the management route and SSH service."),
+    "probe-exit": (True, "The management probe exited unsuccessfully.", "Inspect the fixed helper exit and retry."),
+    "probe-invalid-output": (True, "The probe returned an invalid observation.", "Check the helper protocol and shell startup output."),
+    "probe-unavailable": (True, "The collector could not start its probe executable.", "Check the collector runtime and dependencies."),
+    "login-executable-unverified": (True, "Login executable wrapper was refused or could not be safely inspected; not proof of absence.", "Verify an installed native executable without automatic installation."),
+    "dependency-unverified": (True, "GitHub read could not run because login-shell gh was unverified.", "Verify the gh executable and repeat the private read."),
+    "workflow-skipped": (False, "Latest workflow was skipped, not failed or successfully validated.", "Inspect its condition if validation was expected."),
+    "workflow-incomplete": (True, "No completed workflow with valid timestamp evidence was established.", "Inspect the workflow state and timestamps."),
+    "workflow-inconclusive": (True, "Workflow conclusion does not establish success or failure.", "Inspect the recorded conclusion."),
+    "evidence-missing": (True, "Required observation was absent or inconclusive.", "Rerun the named probe and inspect its evidence."),
+    "check-failed": (True, "Negative evidence was returned for this required check.", "Correct the named capability and verify it passes."),
+}
+
+
+def clean_finding_details(report):
+    supplied = report.get("finding_details", {})
+    if not isinstance(supplied, dict):
+        raise ValueError("invalid finding details")
+    active = set(report.get("active_failures", []))
+    failures = set(report.get("failures", report.get("observed_failures", active)))
+    details = {}
+    for identity in failures | active | set(report.get("unknown", [])):
+        if identity not in supplied:
+            continue
+        entry = supplied[identity]
+        code = entry.get("code") if isinstance(entry, dict) else None
+        if not isinstance(code, str) or code not in FINDING_REASONS:
+            code = "evidence-missing"
+        if identity in failures:
+            code = "check-failed"
+        elif code == "collector-unsupported" and not identity.endswith((":serving-readiness", ":trust-state")):
+            code = "evidence-missing"
+        elif code == "workflow-skipped" and ":local-ci:workflow:" not in identity:
+            code = "evidence-missing"
+        actionable, summary, next_step = FINDING_REASONS[code]
+        details[identity] = {"code": code, "actionable": actionable, "summary": summary, "next_step": next_step}
+        exit_code = entry.get("exit_code") if isinstance(entry, dict) else None
+        if type(exit_code) is int and -255 <= exit_code <= 255:
+            details[identity]["exit_code"] = exit_code
+    return details
+
 
 def read_state(path, host):
     if not path.exists():
@@ -93,6 +139,7 @@ def validate(report, registry):
 
 def publish(report, registry, vault, host, outcome):
     evidence, workflow_evidence = validate(report, registry)
+    finding_details = clean_finding_details(report)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     publication_id = uuid.uuid4().hex
     root = vault / "CEO"
@@ -108,6 +155,7 @@ def publish(report, registry, vault, host, outcome):
     saved = {"host": host, "state": state, "since": since, "last_check": now, "publication_id": publication_id, "active_failures": sorted(active), "status": report["status"], "observed_failures": sorted(failures), "unknown": report["unknown"], "read_only": True, "schema_version": 1}
     saved["machines"] = [{"id": m["id"], "checks": m["checks"], **({"primary_status": m["primary_status"]} if m.get("primary_status") in {"pass", "fail", "unknown"} else {})} for m in report["machines"]]
     saved["workflow_evidence"] = workflow_evidence
+    saved["finding_details"] = finding_details
     saved["telemetry"] = {}
     for context, metrics in report.get("telemetry", {}).items():
         if not re.fullmatch(r"[a-z0-9-]+", context) or not isinstance(metrics, dict):
@@ -125,13 +173,13 @@ def publish(report, registry, vault, host, outcome):
     alert = "---\nstatus: " + state + "\nsince: " + since + "\nlast_check: " + now + "\nhost: " + host + "\n---\n\n# Fleet readiness\n\n"
     alert += "Current observation: " + report["status"] + ". Unknown observations never clear a previously verified failure.\n\n"
     alert += "## Verified problems\n\n" + ("\n".join("- " + x for x in sorted(active)) or "None observed.")
-    alert += "\n\n## Unverified checks\n\n" + ("\n".join("- " + x for x in report["unknown"]) or "None.") + "\n"
+    alert += "\n\n## Unverified checks\n\n" + ("\n".join("- " + x + (": " + finding_details[x]["summary"] + " Next: " + finding_details[x]["next_step"] + (" [informational]" if not finding_details[x]["actionable"] else "") if x in finding_details else ": reason unavailable from this collector version." ) for x in report["unknown"]) or "None.") + "\n"
     alert += STATE_MARKER + json.dumps(saved, sort_keys=True) + "\n```\n"
     log = root / "log" / "fleet-readiness" / (now[:7] + ".md")
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a", encoding="utf-8") as stream:
         stream.write(now + " host=" + host + " status=" + report["status"] + " verified_failures=" + str(len(active)) + " unknown=" + str(len(report["unknown"])) + "\n")
-    observation = {"schema_version": 1, "authoritative": False, "decision_record": "CEO/alerts/" + alert_path.name, "publication_id": publication_id, "checked_at": now, "status": report["status"], "failures": report["failures"], "unknown": report["unknown"], "machines": saved["machines"], "telemetry": saved["telemetry"], "workflow_evidence": workflow_evidence}
+    observation = {"schema_version": 1, "authoritative": False, "decision_record": "CEO/alerts/" + alert_path.name, "publication_id": publication_id, "checked_at": now, "status": report["status"], "failures": report["failures"], "unknown": report["unknown"], "finding_details": finding_details, "machines": saved["machines"], "telemetry": saved["telemetry"], "workflow_evidence": workflow_evidence}
     atomic_write(latest, json.dumps(observation, sort_keys=True) + "\n")
     if outcome:
         atomic_write(outcome, "fired" if changed else "noop")

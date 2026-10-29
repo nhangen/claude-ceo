@@ -35,7 +35,12 @@ def valid_receipt(value):
 
 
 def deliver(state, host, ack_path, pending_path, webhook):
-    event = {"failures": findings(state["active_failures"]), "warnings": findings(state["unknown"])}
+    details = REPORT.clean_finding_details(state)
+    unknown = findings(state["unknown"])
+    event = {"failures": findings(state["active_failures"]), "warnings": [key for key in unknown if details.get(key, {}).get("actionable", True)]}
+    codes = {key: details[key]["code"] for key in event["failures"] + event["warnings"] if key in details}
+    if codes:
+        event["reason_codes"] = codes
     fingerprint = hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest()
     previous = json.loads(ack_path.read_text()) if ack_path.exists() else None
     if ack_path.exists():
@@ -54,9 +59,10 @@ def deliver(state, host, ack_path, pending_path, webhook):
     query = dict(parse_qsl(parsed.query))
     query["wait"] = "true"
     destination = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
-    severity = "failures" if event["failures"] else "warnings" if event["warnings"] else "recovered"
+    severity = "failures" if event["failures"] else "warnings" if event["warnings"] else "attention cleared" if unknown else "recovered"
     description = "Unresolved failed checks: " + str(len(event["failures"])) + "; unverified/warning checks: " + str(len(event["warnings"])) + ".\nCapability gaps are not automatically inference outages.\n"
-    description += "\n".join(event["failures"] + ["warning: " + value for value in event["warnings"]])
+    description += "Informational coverage/skipped checks remain in the dashboard: " + str(len(unknown) - len(event["warnings"])) + ".\n"
+    description += "\n".join(("failure: " if key in event["failures"] else "warning: ") + key + (": " + details[key]["summary"] + (" Exit code: " + str(details[key]["exit_code"]) + "." if "exit_code" in details[key] else "") + " Next: " + details[key]["next_step"] if key in details else ": collector provided no reason; inspect the detailed report.") for key in event["failures"] + event["warnings"])
     payload = {"username": "CEO Fleet", "allowed_mentions": {"parse": []}, "embeds": [{"title": "Fleet readiness: " + severity + " (" + host + ")", "description": description[:3800], "color": 15158332 if event["failures"] else 16753920 if event["warnings"] else 3066993}]}
     for attempt in range(3):
         atomic_write(pending_path, json.dumps({"schema_version": 1, "host": host, "fingerprint": fingerprint, "attempted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "attempt": attempt + 1}) + "\n")
