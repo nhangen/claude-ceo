@@ -1,3 +1,4 @@
+import datetime
 import importlib.util
 import io
 import json
@@ -10,6 +11,43 @@ SPEC = importlib.util.spec_from_file_location("fleet_discord", Path(__file__).wi
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_retained_failure_preserves_current_causes_through_publication_and_delivery(self):
+        reporter = self.module.REPORT
+        identity = "mac:trust-state"
+        alert = self.root / "CEO/alerts/fleet-readiness-test.md"
+        transitions = (
+            ("fail", "collector-unsupported", "check-failed", True),
+            ("unknown", "probe-timeout", "probe-timeout", True),
+            ("unknown", "ssh-authentication", "ssh-authentication", True),
+            ("unknown", "collector-unsupported", "collector-unsupported", True),
+            ("pass", None, None, False),
+        )
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()) as post:
+            for check, supplied_code, expected_code, retained in transitions:
+                with self.subTest(check=check, reason=supplied_code):
+                    report = {
+                        "schema_version": 1, "read_only": True,
+                        "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "status": "pass" if check == "pass" else "fail" if check == "fail" else "unknown",
+                        "failures": [identity] if check == "fail" else [],
+                        "unknown": [identity] if check == "unknown" else [],
+                        "machines": [{"id": "mac", "checks": {"trust-state": check}}],
+                        "finding_details": {identity: {"code": supplied_code}} if supplied_code else {},
+                    }
+                    reporter.publish(report, {}, self.root, "test", None)
+                    state = reporter.read_state(alert, "test")
+                    self.assertEqual(state["active_failures"], [identity] if retained else [])
+                    self.assertTrue(self.module.deliver(state, "test", self.ack, self.pending, self.webhook))
+                    ack = json.loads(self.ack.read_text())
+                    self.assertEqual(ack["failures"], [identity] if retained else [])
+                    if expected_code:
+                        self.assertEqual(state["finding_details"][identity]["code"], expected_code)
+                        self.assertEqual(ack["reason_codes"][identity], expected_code)
+                        payload = json.loads(post.call_args.args[0].data)
+                        self.assertIn(state["finding_details"][identity]["summary"], payload["embeds"][0]["description"])
+                    self.assertFalse(self.module.deliver(state, "test", self.ack, self.pending, self.webhook))
+        self.assertEqual(post.call_count, len(transitions))
+
     def test_supported_reason_explains_warning_and_deduplicates_repeat(self):
         state = {"active_failures": [], "unknown": ["ml2:ml2:reachability"], "finding_details": {"ml2:ml2:reachability": {"code": "probe-timeout"}}}
         with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()) as post:

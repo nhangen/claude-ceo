@@ -51,9 +51,10 @@ def clean_finding_details(report):
     supplied = report.get("finding_details", {})
     if not isinstance(supplied, dict):
         raise ValueError("invalid finding details")
-    failures = set(report.get("failures", [])) | set(report.get("active_failures", []))
+    active = set(report.get("active_failures", []))
+    failures = set(report.get("failures", report.get("observed_failures", active)))
     details = {}
-    for identity in failures | set(report.get("unknown", [])):
+    for identity in failures | active | set(report.get("unknown", [])):
         if identity not in supplied:
             continue
         entry = supplied[identity]
