@@ -10,6 +10,25 @@ SPEC = importlib.util.spec_from_file_location("fleet_discord", Path(__file__).wi
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_supported_reason_explains_warning_and_deduplicates_repeat(self):
+        state = {"active_failures": [], "unknown": ["ml2:ml2:reachability"], "finding_details": {"ml2:ml2:reachability": {"code": "probe-timeout"}}}
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()) as post:
+            self.assertTrue(self.module.deliver(state, "test", self.ack, self.pending, self.webhook))
+            payload = json.loads(post.call_args.args[0].data)
+            self.assertIn("time budget", payload["embeds"][0]["description"])
+            self.assertFalse(self.module.deliver(state, "test", self.ack, self.pending, self.webhook))
+        self.assertEqual(post.call_count, 1)
+
+    def test_informational_gap_stays_in_state_without_initial_discord_warning(self):
+        state = {"active_failures": [], "unknown": ["gpu:trust-state"], "finding_details": {"gpu:trust-state": {"code": "collector-unsupported"}}}
+        with patch.object(self.module, "urlopen") as post:
+            self.assertFalse(self.module.deliver(state, "test", self.ack, self.pending, self.webhook))
+        post.assert_not_called()
+        state["active_failures"] = ["gpu:trust-state"]
+        with patch.object(self.module, "urlopen", side_effect=lambda *a, **k: self.response()) as post:
+            self.assertTrue(self.module.deliver(state, "test", self.ack, self.pending, self.webhook))
+        self.assertEqual(post.call_count, 1)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)

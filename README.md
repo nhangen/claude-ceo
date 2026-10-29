@@ -1,5 +1,7 @@
 # claude-ceo
 
+Fleet-readiness alerts retain safe reason codes and render an explanation and next step for each inconclusive check. Known collector coverage gaps and skipped workflows stay visible as informational items in the report instead of generating standalone warning notifications. Actionable warnings, verified failures and their reason changes remain transition-alerted; incomplete evidence never clears a verified failure.
+
 The draft `fleet-readiness` script playbook calls the llm-tools role-aware checker every four hours when activated and assigned. It retains verified failures until the same check positively passes and reports unknown evidence separately. Its dedicated Discord sender delivers initial failures/warnings, changed findings and verified recovery independently of generic success-notification filtering. Only a Discord message receipt acknowledges delivery; failed sends retry next run, while acknowledged unchanged findings stay quiet. See `docs/playbooks/fleet-readiness.md` for outputs and the live owner-host installation gate. No parallel scheduler or machine roster is introduced; `local-ci-health`, `disk-monitor`, `owners-health` and `ollama-smoke` retain their existing responsibilities.
 
 **Autonomous CEO agent for Claude Code. Reads your Obsidian vault, dispatches specialized subagents, runs scheduled playbooks, and gates writes by authority tier.**

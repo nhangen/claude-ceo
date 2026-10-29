@@ -29,7 +29,7 @@ class ReporterTests(unittest.TestCase):
         text = (self.root / "CEO/alerts/fleet-readiness-test.md").read_text()
         return json.loads(text.split("<!-- fleet-readiness-state -->\n```json\n")[1].split("\n```", 1)[0])
 
-    def run_report(self, checks, stale=False, workflow_evidence=None, telemetry=None):
+    def run_report(self, checks, stale=False, workflow_evidence=None, telemetry=None, finding_details=None):
         failures = sorted("mac:" + k for k, v in checks.items() if v == "fail")
         unknown = sorted("mac:" + k for k, v in checks.items() if v == "unknown")
         status = "fail" if failures else "unknown" if unknown else "pass"
@@ -39,8 +39,28 @@ class ReporterTests(unittest.TestCase):
             report["workflow_evidence"] = workflow_evidence
         if telemetry is not None:
             report["telemetry"] = telemetry
+        if finding_details is not None:
+            report["finding_details"] = finding_details
         self.observation.write_text(json.dumps(report))
         return subprocess.run(["python3", str(ROOT / "ceo-fleet-readiness-report.py"), "--vault", str(self.root), "--host", "test", "--checker", str(self.checker), "--registry", str(self.registry), "--outcome-file", str(self.outcome)], capture_output=True, text=True)
+
+    def test_finding_reason_survives_publication_without_untrusted_prose(self):
+        result = self.run_report({"trust-state": "unknown"}, finding_details={"mac:trust-state": {"code": "collector-unsupported", "summary": "secret-test-value", "next_step": "secret-test-value", "actionable": True}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        detail = self.state()["finding_details"]["mac:trust-state"]
+        self.assertEqual(detail["code"], "collector-unsupported")
+        self.assertFalse(detail["actionable"])
+        self.assertEqual(json.loads(self.latest.read_text())["finding_details"]["mac:trust-state"], detail)
+        alert = (self.root / "CEO/alerts/fleet-readiness-test.md").read_text()
+        self.assertIn("not implemented", alert)
+        self.assertNotIn("secret-test-value", alert + self.latest.read_text())
+
+    def test_informational_detail_does_not_clear_previous_failure(self):
+        self.assertEqual(self.run_report({"trust-state": "fail"}).returncode, 0)
+        self.assertEqual(self.run_report({"trust-state": "unknown"}, finding_details={"mac:trust-state": {"code": "collector-unsupported"}}).returncode, 0)
+        self.assertEqual(self.state()["active_failures"], ["mac:trust-state"])
+
+
 
     def test_telemetry_is_sanitized_in_both_publications(self):
         telemetry = {
