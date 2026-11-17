@@ -165,6 +165,10 @@ notify_discord() {
 # notified=false marks a transition whose notice has not landed yet.
 write_alert() {
   local status="$1" since="$2" reason="$3" notified="$4"
+  # The frontmatter value is a plain YAML scalar: ": " and " #" would break
+  # the synced note's YAML, so neutralize them there (the body keeps the text).
+  local fm_reason="${reason//: / - }"
+  fm_reason="${fm_reason// #/ }"
   local tmp
   tmp=$(mktemp "${ALERT_FILE}.XXXXXX") || {
     _log "ERROR: mktemp failed for $ALERT_FILE"
@@ -177,7 +181,7 @@ write_alert() {
       --since="$since" \
       --last-check="$NOW" \
       --host="$HOST" \
-      --field reason="$reason" \
+      --field reason="$fm_reason" \
       --field notified="$notified"
     printf '\n# Gargoyl checker — %s\n\n' "$HOST"
     printf 'Watch: `%s` (dev.gargoyl.monitor LaunchAgent, dashboard %s).\n\n' "$LABEL" "$DASHBOARD_URL"

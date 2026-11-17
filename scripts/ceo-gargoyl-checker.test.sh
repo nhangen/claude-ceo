@@ -421,6 +421,23 @@ test_stderr_excerpt_never_reaches_sinks() {
   assert_not_contains "$(discord_posts)" "sekrit-should-not-leak" "raw stderr text must not reach Discord"
 }
 
+test_alert_frontmatter_is_valid_yaml() {
+  # launchctl's exit field is external text; a value with ": " must not break
+  # the synced note's YAML (Obsidian properties/Dataview read it).
+  LAUNCHCTL_STUB_ROW="$(printf '\tsignal: 9\tdev.gargoyl.monitor')" run_checker
+  assert_eq "$(state_field status)" "firing" "the bad exit status fires"
+  python3 - "$(alert_file)" <<'PY2' || fail_test "alert frontmatter must parse as YAML"
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+text = open(sys.argv[1]).read().split("---")[1]
+doc = yaml.safe_load(text)
+assert doc["status"] == "firing", doc
+PY2
+}
+
 test_playbook_scan_registers_gargoyl_checker() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   mkdir -p "$CEO_DIR/playbooks"
