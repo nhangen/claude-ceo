@@ -72,6 +72,7 @@ test_retire_survives_bootout_miss() {
   LAUNCHCTL_STUB_FAIL=1 run_cutover --retire-only
   assert_eq "$RUN_CUTOVER_RC" "0" "a bootout miss must not abort the retirement"
   [ -f "$PLIST" ] && fail_test "the plist must still be removed when bootout misses"
+  assert_not_contains "$(cat "$TEST_HOME/stdout")" "bootout done" "a failed bootout must not be reported as done"
   return 0
 }
 

@@ -50,12 +50,15 @@ retire_launchd() {
       printf '[dry-run] would remove: %s\n' "$PLIST"
     else
       # bootout fails when the job is not currently loaded; removing the plist
-      # is what stops it loading again, so a bootout miss is noted and ignored.
-      if ! "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null; then
-        echo "NOTE: $PLIST_LABEL was not loaded (bootout said no); removing the plist anyway"
+      # is what stops it loading again, so a bootout miss is reported, not fatal.
+      # If the job is in fact still loaded it runs until logout.
+      local bootout="done"
+      if ! "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/$PLIST_LABEL"; then
+        bootout="failed"
+        echo "NOTE: bootout of $PLIST_LABEL failed (not loaded, or see the error above); removing the plist anyway"
       fi
       rm -f "$PLIST"
-      echo "retired: $PLIST_LABEL (bootout done, plist removed)"
+      echo "retired: $PLIST_LABEL (bootout $bootout, plist removed)"
     fi
   else
     echo "no legacy plist at $PLIST; nothing to retire"
