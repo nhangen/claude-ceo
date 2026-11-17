@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-CEO_CLI="$SCRIPT_DIR/ceo"
+CEO_CLI="${GARGOYL_CEO_CLI:-$SCRIPT_DIR/ceo}"
 PLIST_LABEL="dev.nhangen.gargoyl.checker"
 
 DRY_RUN=0

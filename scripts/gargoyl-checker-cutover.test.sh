@@ -1,9 +1,9 @@
 #!/bin/bash
 # Tests for gargoyl-checker-cutover.sh (#653): the human-run cutover from the
-# standalone launchd timer to the ceo-schedulerd/cronbird registry. Only the
-# launchd-retirement step is exercised — with a stubbed launchctl and a fixture
-# HOME — because the live steps (ceo playbook scan/enable) are real host
-# mutations the suite must never perform (test-writes-stay-in-the-fixture).
+# standalone launchd timer to the ceo-schedulerd/cronbird registry. launchctl
+# and the ceo CLI are stubbed (GARGOYL_CEO_CLI) against a fixture HOME, because
+# the live steps are real host mutations the suite must never perform
+# (test-writes-stay-in-the-fixture).
 
 set -uo pipefail
 
@@ -34,16 +34,28 @@ printf '%s\n' "\$*" >> "\$TEST_HOME/launchctl-calls"
 [ -n "\${LAUNCHCTL_STUB_FAIL:-}" ] && exit 1
 exit 0
 STUB
-  chmod +x "$TEST_HOME/stubs/launchctl"
+  cat > "$TEST_HOME/stubs/ceo" <<'STUB'
+#!/bin/bash
+# argv validation: only the two cutover calls are accepted.
+case "$*" in
+  "playbook scan"|"playbook enable gargoyl-checker") ;;
+  *) exit 64 ;;
+esac
+printf '%s\n' "$*" >> "$TEST_HOME/ceo-calls"
+[ "$*" = "playbook enable gargoyl-checker" ] && [ -n "${CEO_STUB_ENABLE_FAIL:-}" ] && exit 1
+exit 0
+STUB
+  chmod +x "$TEST_HOME/stubs/launchctl" "$TEST_HOME/stubs/ceo"
+  export GARGOYL_CEO_CLI="$TEST_HOME/stubs/ceo"
   export PATH="$TEST_HOME/stubs:$PATH"
-  unset LAUNCHCTL_STUB_FAIL
+  unset LAUNCHCTL_STUB_FAIL CEO_STUB_ENABLE_FAIL
 }
 
 teardown() {
   rm -rf "$TEST_HOME"
   export HOME="$HOME_BACKUP"
   export PATH="$PATH_BACKUP"
-  unset TEST_HOME HOME_BACKUP PATH_BACKUP PLIST LAUNCHCTL_STUB_FAIL
+  unset TEST_HOME HOME_BACKUP PATH_BACKUP PLIST LAUNCHCTL_STUB_FAIL GARGOYL_CEO_CLI CEO_STUB_ENABLE_FAIL
 }
 
 run_cutover() {
@@ -95,6 +107,25 @@ test_absent_plist_is_a_clean_noop() {
 test_unknown_flag_is_rejected() {
   run_cutover --bogus
   assert_eq "$RUN_CUTOVER_RC" "2" "an unknown flag must exit 2, not fall through"
+}
+
+test_full_cutover_registers_before_retiring() {
+  printf 'placeholder plist\n' > "$PLIST"
+  run_cutover
+  assert_eq "$RUN_CUTOVER_RC" "0" "the full cutover must succeed"
+  assert_eq "$(cat "$TEST_HOME/ceo-calls")" "$(printf 'playbook scan\nplaybook enable gargoyl-checker')" "scan, then enable"
+  [ -f "$PLIST" ] && fail_test "the legacy plist is retired after registration"
+  return 0
+}
+
+test_failed_enable_keeps_the_legacy_timer() {
+  # Never leave the monitor unwatched: a failed registration must stop before
+  # the legacy timer is retired.
+  printf 'placeholder plist\n' > "$PLIST"
+  CEO_STUB_ENABLE_FAIL=1 run_cutover
+  [ "$RUN_CUTOVER_RC" = "0" ] && fail_test "a failed enable must fail the cutover"
+  assert_file_exists "$PLIST" "the legacy plist must survive a failed enable"
+  assert_eq "$(bootout_calls)" "" "no bootout after a failed enable"
 }
 
 run_tests "$@"
