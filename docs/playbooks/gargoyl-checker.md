@@ -74,6 +74,9 @@ checker skips Discord entirely rather than re-post on every run.
 | `GARGOYL_TRACEBACK_WINDOW_SECONDS` | `900` |
 | `GARGOYL_LAUNCHCTL_BIN` / `GARGOYL_PGREP_BIN` / `GARGOYL_CURL_BIN` | PATH binaries (test seams) |
 | `GARGOYL_DISCORD_WEBHOOK_URL` | unset — webhook comes from the `discord_webhook` secret in `~/.config/claude-ceo/secrets.json` |
+| `CEO_DISCORD_WEBHOOK` | unset — second-choice webhook override, checked after `GARGOYL_DISCORD_WEBHOOK_URL` |
+| `CEO_SECRETS_FILE` | `~/.config/claude-ceo/secrets.json` |
+| `GARGOYL_NOTIFY_DEBUG_LOG` | `<checker log dir>/notify.log` — Discord delivery decisions |
 
 ## Install (cutover from the launchd timer)
 
