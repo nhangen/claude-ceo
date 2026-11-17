@@ -458,6 +458,13 @@ test_fleet_connection_offline_is_informational() {
   return 0
 }
 
+test_unknown_notify_events_warns_and_still_notifies() {
+  printf '%s\n' '{"notify_events":"of"}' > "$CEO_DIR/settings.json"
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  assert_eq "$(discord_count)" "1" "an unknown value must fail open to notifying"
+  assert_contains "$(checker_stderr)" "unknown notify_events" "an unknown value must be reported, not silently treated as all"
+}
+
 test_playbook_scan_registers_gargoyl_checker() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   mkdir -p "$CEO_DIR/playbooks"

@@ -111,10 +111,17 @@ notify_discord() {
   if [ -f "$CEO_DIR/settings.json" ]; then
     events=$(jq -r '.notify_events // "all"' "$CEO_DIR/settings.json" 2>/dev/null || echo "all")
   fi
-  if [ "$events" = "off" ]; then
-    _nlog "note: notify_events=off; $kind notice not sent"
-    return 0
-  fi
+  case "$events" in
+    off)
+      _nlog "note: notify_events=off; $kind notice not sent"
+      return 0
+      ;;
+    failures|all) ;;
+    *)
+      _nlog "WARN: unknown notify_events '$events'; notifying"
+      printf "WARN: gargoyl-checker: unknown notify_events '%s' in settings.json (want off|failures|all); notifying\n" "$events" >&2
+      ;;
+  esac
   local alert_rel="CEO/alerts/gargoyl-checker-$HOST.md"
   local payload
   if [ "$kind" = "failed" ]; then
