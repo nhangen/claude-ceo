@@ -101,6 +101,10 @@ nhangen/llm-tools#1144 cross-links here.
 - The alerts note is written on transitions only, so a steady-firing or
   steady-green monitor leaves `last_check` stale by design; per-run evidence
   is in the host-local checker log.
+- No `artifact:` in the frontmatter, unlike the other each-scope alert
+  playbooks. The alerts note is written on transitions only, so a host that has
+  never failed has no note, and `ceo doctor`'s "completed today but artifact
+  missing" check would flag it every day. Deliberate; do not add one.
 - The checker reports only the first failing probe per run (fail-fast, matching
   the calibrated original); a later probe failure surfaces on the next run.
 - An unreadable prior note (`status:` missing) suppresses the transition
