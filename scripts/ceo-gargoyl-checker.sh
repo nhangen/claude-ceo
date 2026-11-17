@@ -175,14 +175,21 @@ write_alert() {
     printf 'ERROR: gargoyl-checker: mktemp failed for %s\n' "$ALERT_FILE" >&2
     return 1
   }
-  if ! {
-    ceo_write_alert_frontmatter \
+  local fm
+  fm=$(ceo_write_alert_frontmatter \
       --status="$status" \
       --since="$since" \
       --last-check="$NOW" \
       --host="$HOST" \
       --field reason="$fm_reason" \
-      --field notified="$notified"
+      --field notified="$notified") || {
+    rm -f "$tmp"
+    _log "ERROR: frontmatter rejected for $ALERT_FILE"
+    printf 'ERROR: gargoyl-checker: frontmatter rejected for %s\n' "$ALERT_FILE" >&2
+    return 1
+  }
+  if ! {
+    printf '%s\n' "$fm"
     printf '\n# Gargoyl checker — %s\n\n' "$HOST"
     printf 'Watch: `%s` (dev.gargoyl.monitor LaunchAgent, dashboard %s).\n\n' "$LABEL" "$DASHBOARD_URL"
     if [ "$status" = "firing" ]; then
