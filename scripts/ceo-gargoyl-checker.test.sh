@@ -438,6 +438,17 @@ assert doc["status"] == "firing", doc
 PY2
 }
 
+test_fleet_connection_offline_is_informational() {
+  # Calibrated 2026-11-05: fleet.json is a fetch-time snapshot; its connection
+  # value must never fail the watch.
+  printf '%s\n' '{"connection":"offline"}' > "$GARGOYL_FLEET_JSON"
+  run_checker
+  assert_eq "$RUN_CHECKER_RC" "0" "an offline snapshot must stay green"
+  assert_contains "$(checker_stdout)" "connection=offline" "the value is logged as a note"
+  [ -f "$(alert_file)" ] && fail_test "an offline snapshot must not record a failure"
+  return 0
+}
+
 test_playbook_scan_registers_gargoyl_checker() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   mkdir -p "$CEO_DIR/playbooks"
