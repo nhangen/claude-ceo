@@ -465,6 +465,15 @@ test_unknown_notify_events_warns_and_still_notifies() {
   assert_contains "$(checker_stderr)" "unknown notify_events" "an unknown value must be reported, not silently treated as all"
 }
 
+test_future_snapshot_is_not_a_wedge() {
+  # A collector clock a little ahead of this host must not read as a wedge.
+  gen_report -30
+  run_checker
+  assert_eq "$RUN_CHECKER_RC" "0" "a snapshot stamped slightly in the future is fresh"
+  [ -f "$(alert_file)" ] && fail_test "clock skew must not record a failure"
+  return 0
+}
+
 test_playbook_scan_registers_gargoyl_checker() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   mkdir -p "$CEO_DIR/playbooks"

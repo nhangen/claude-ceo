@@ -434,7 +434,8 @@ if not newest:
     print("none")
 else:
     stamp = newest.replace("Z", "+00:00")
-    age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(stamp)).total_seconds()
+    # Clamp: a collector clock slightly ahead must read as fresh, not negative.
+    age = max(0.0, (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(stamp)).total_seconds())
     print(f"newest {newest} age {age:.0f}s")
 PY
 ) || fail_now "could not parse collector cadence from /report.json"
