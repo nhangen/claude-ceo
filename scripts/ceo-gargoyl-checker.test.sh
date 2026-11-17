@@ -218,12 +218,21 @@ test_first_failure_notifies_exactly_once() {
 
 test_steady_failure_does_not_spam() {
   GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
-  local first_since
-  first_since=$(state_field since)
   GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
   assert_eq "$(discord_count)" "1" "a repeat failure must not post a second Discord message"
   assert_contains "$(checker_log)" "still failing" "repeat failure must be logged without a notify"
-  assert_eq "$(state_field since)" "$first_since" "since must be preserved across repeat failures"
+}
+
+test_since_survives_repeat_failures_and_reaches_recovery() {
+  # Seed a past since: same-second runs would make a reset since look preserved.
+  local seeded="2026-01-01T00:00:00+0000"
+  mkdir -p "$CEO_DIR/alerts"
+  printf -- '---\nstatus: firing\nsince: %s\nlast_check: %s\nhost: %s\nreason: seeded\nnotified: true\n---\n' \
+    "$seeded" "$seeded" "$CEO_HOSTNAME" > "$(alert_file)"
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  assert_eq "$(state_field since)" "$seeded" "a repeat failure must keep the original since"
+  run_checker
+  assert_contains "$(discord_posts)" "was failing since $seeded" "the recovery notice must carry the original since"
 }
 
 test_recovery_notifies_once() {
