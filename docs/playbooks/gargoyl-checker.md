@@ -79,8 +79,8 @@ checker skips Discord entirely rather than re-post on every run.
 
 The 5-minute cadence moved from the standalone `dev.nhangen.gargoyl.checker`
 LaunchAgent to the `ceo-schedulerd`/cronbird registry. `scripts/gargoyl-checker-cutover.sh`
-(a human runs it) registers the playbook on this host — `ceo playbook enable gargoyl-checker`
-then `ceo playbook scan` — and boots out the legacy plist. `--retire-only` does
+(a human runs it) registers the playbook on this host — `ceo playbook scan`
+then `ceo playbook enable gargoyl-checker` — and boots out the legacy plist. `--retire-only` does
 just the launchd retirement; `--dry-run` prints without acting.
 
 This is `scope: each`, macOS-only (launchctl, `~/Library/Logs`): enable it only
