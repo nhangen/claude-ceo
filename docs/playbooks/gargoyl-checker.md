@@ -20,7 +20,7 @@ here since nhangen/claude-ceo#653; superseded the untracked
 `~/.claude/specs/2026-11-05-gargoyl-monitor-checker.md`, ticket
 nhangen/llm-tools#1144).
 
-Checks, in order — any failure exits 1 (the dispatcher records the failure):
+Checks, in order — the first failing probe fires the watch (fail-fast):
 
 1. Monitor logs exist (`~/Library/Logs/Gargoyl/monitor.{stderr,stdout}.log`).
 2. `launchctl list` has a `dev.gargoyl.monitor` job reporting `-` or `0`.
@@ -45,14 +45,20 @@ probe are intentional and must not be removed.
 | Channel | When |
 |---|---|
 | `CEO/alerts/gargoyl-checker-<host>.md` | On transitions only: overwritten with current state (`status: firing\|clear`, `since:`, `last_check:` frontmatter) plus the transition report. No per-run write — `last_check` records the last transition, not the last probe. |
-| Discord (`discord_webhook` secret) | Transitions only: one message on healthy->failed, one on failed->recovered. Repeat failures stay silent. Delivery failures are logged with the HTTP code, never the URL (no-secrets-in-logs). |
+| Discord (`discord_webhook` secret) | Transitions only: one message on healthy->failed, one on failed->recovered. Repeat failures stay silent. A notice that does not land is recorded as `notified: false` and retried next run; delivery failures are logged with the HTTP code, never the URL (no-secrets-in-logs). |
 | `~/Library/Logs/Gargoyl/checker/checker.log` | Every run. Host-local forensic line per check plus the informational notes. |
 
 `notify_events: "off"` in `CEO/settings.json` silences the Discord voice (the
-alerts note still writes). Under `ceo-cron.sh` the script reports
-`failure-notified` on failing runs — it owns failure notification, so the
-dispatcher does not re-post the same failure every five minutes — and `noop`
-on green runs.
+alerts note still writes).
+
+Exit contract under `ceo-cron.sh`: a run that recorded its state and whose
+transition notice landed (or was silenced) exits 0 and reports `noop`, firing
+or green. The state lives in the alerts note, so the dispatcher neither
+re-posts nor appends a three-strike block to `approvals/pending.md` every five
+minutes. A run exits 1 with no outcome when a failure notice did not land or
+the checker could not write the alerts note; then the dispatcher's own failure
+post and three-strike escalation take over. If the note cannot be written, the
+checker skips Discord entirely rather than re-post on every run.
 
 ## Overrides
 
@@ -95,6 +101,7 @@ nhangen/llm-tools#1144 cross-links here.
   notice for that run — the checker cannot tell fresh failure from repeat, and
   would rather stay silent than double-post. The note is repaired and the next
   run classifies normally.
-- If a transition's alerts-note write or Discord post fails, the state repair
-  happens on the next run (transition re-detected); the failed delivery is
-  logged with its HTTP code.
+- A transition notice that does not land is retried on every run until it
+  does. While Discord is down and the watch is firing, each run exits 1, so the
+  dispatcher's three-strike escalation fires from the third run on — the
+  intended non-Discord path when the checker cannot reach a human.

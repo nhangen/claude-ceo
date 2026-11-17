@@ -16,9 +16,14 @@
 #
 # Runs as the gargoyl-checker playbook (runner: script, */5 * * * *). Declared
 # outputs: the CEO/alerts note (on transitions only) and the Discord webhook
-# (transitions only: healthy->failed and failed->recovered). Exits 0 green,
-# 1 failure. Never writes outside its own log dir, the Discord webhook, and
-# the registered playbook outputs.
+# (transitions only: healthy->failed and failed->recovered). Exits 0 when the
+# run recorded its result and the transition notice landed (or was silenced by
+# notify_events=off), green or firing alike: the state lives in the note, so
+# ceo-cron.sh does not escalate a watch it has already been told about. Exits 1
+# when a failure notice did not land (persisted notified=false, retried next
+# run) or the checker could not record state, so the dispatcher's fallback and
+# three-strike escalation take over. Never writes outside its own log dir, the
+# Discord webhook, and the registered playbook outputs.
 
 set -euo pipefail
 
@@ -76,12 +81,9 @@ _nlog() {
 }
 
 _set_outcome() {
-  # CEO_RUNNER_OUTCOME_FILE (#173): tells ceo-cron.sh who owns this run's
-  # Discord voice. The checker owns failure notifications entirely (transition
-  # notice on the first failure, silence afterwards), so every failing run
-  # reports "failure-notified" — otherwise the dispatcher would re-post the
-  # same failure every five minutes. Green runs report "noop": a transition
-  # already posted its own recovered notice, and steady green stays silent.
+  # CEO_RUNNER_OUTCOME_FILE (#173): only exit-0 runs write it, always "noop"
+  # (the checker already delivered or deliberately skipped its own notice).
+  # Exit-1 runs leave it unset so ceo-cron.sh posts its failure fallback.
   if [ -n "${CEO_RUNNER_OUTCOME_FILE:-}" ]; then
     printf '%s' "$1" > "$CEO_RUNNER_OUTCOME_FILE" 2>/dev/null || \
       printf 'WARN: gargoyl-checker: cannot write outcome file %s\n' "$CEO_RUNNER_OUTCOME_FILE" >&2
@@ -89,18 +91,20 @@ _set_outcome() {
 }
 
 # notify_discord <kind: failed|recovered> <reason>
-# Delivery failures are logged (HTTP code only — never the URL or the body,
-# which could echo the token), never silently swallowed.
+# Returns 0 when the notice landed or notify_events=off silenced it, 1 when it
+# did not land. Delivery failures are logged with the HTTP code only — never
+# the URL or the body, which could echo the token.
 notify_discord() {
   local kind="$1" reason="$2" title color
   if [ -z "$DISCORD_WEBHOOK" ]; then
-    _nlog "note: no Discord webhook configured; $kind notice not sent"
-    return 0
+    _nlog "ERROR: no Discord webhook configured; $kind notice not sent"
+    printf 'WARN: gargoyl-checker: no Discord webhook configured; %s notice not sent\n' "$kind" >&2
+    return 1
   fi
   if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
     _nlog "ERROR: jq or curl missing; $kind notice not sent"
     printf 'WARN: gargoyl-checker: jq or curl missing; Discord %s notice not sent\n' "$kind" >&2
-    return 0
+    return 1
   fi
   local events="all"
   if [ -f "$CEO_DIR/settings.json" ]; then
@@ -140,7 +144,7 @@ notify_discord() {
   if [ -z "$payload" ]; then
     _nlog "ERROR: could not build $kind payload (jq failed); notice not sent"
     printf 'WARN: gargoyl-checker: jq could not build the %s payload\n' "$kind" >&2
-    return 0
+    return 1
   fi
   local http_code
   http_code=$("$CURL_BIN" -sS -o /dev/null -w '%{http_code}' -X POST -H "Content-Type: application/json" \
@@ -148,17 +152,18 @@ notify_discord() {
   if ! [[ $http_code =~ ^2[0-9]{2}$ ]]; then
     _nlog "ERROR: Discord delivery for $kind failed (HTTP $http_code)"
     printf 'WARN: gargoyl-checker: Discord %s notice failed (HTTP %s)\n' "$kind" "$http_code" >&2
-  else
-    _nlog "notified: $kind (HTTP $http_code)"
+    return 1
   fi
+  _nlog "notified: $kind (HTTP $http_code)"
 }
 
-# write_alert <status: clear|firing> <since> <reason-1line> [kind: failed|recovered]
+# write_alert <status: clear|firing> <since> <reason-1line> <notified: true|false>
 # Transition-only (per ticket #653): the note is current state, overwritten,
 # with status/since/last_check frontmatter. last_check therefore records the
 # last transition, not the last probe; per-run lines live in the checker log.
+# notified=false marks a transition whose notice has not landed yet.
 write_alert() {
-  local status="$1" since="$2" reason="$3" kind="${4:-}"
+  local status="$1" since="$2" reason="$3" notified="$4"
   local tmp
   tmp=$(mktemp "${ALERT_FILE}.XXXXXX") || {
     _log "ERROR: mktemp failed for $ALERT_FILE"
@@ -171,7 +176,8 @@ write_alert() {
       --since="$since" \
       --last-check="$NOW" \
       --host="$HOST" \
-      --field reason="$reason"
+      --field reason="$reason" \
+      --field notified="$notified"
     printf '\n# Gargoyl checker — %s\n\n' "$HOST"
     printf 'Watch: `%s` (dev.gargoyl.monitor LaunchAgent, dashboard %s).\n\n' "$LABEL" "$DASHBOARD_URL"
     if [ "$status" = "firing" ]; then
@@ -225,61 +231,97 @@ case "$_status_rc" in
 esac
 PRIOR_SINCE=$(ceo_read_alert_field "$ALERT_FILE" since 2>/dev/null) || PRIOR_SINCE=""
 PRIOR_REASON=$(ceo_read_alert_field "$ALERT_FILE" reason 2>/dev/null) || PRIOR_REASON=""
+PRIOR_NOTIFIED=$(ceo_read_alert_field "$ALERT_FILE" notified 2>/dev/null) || PRIOR_NOTIFIED=""
 
-# fail_now <reason...> — record the failure, notify on the clear->firing
-# transition only, and exit 1.
+# checker_fault <msg> — state could not be recorded. No Discord post (with no
+# persisted state it would repeat every run); exit 1 without an outcome so
+# ceo-cron.sh owns the fault.
+checker_fault() {
+  _log "ERROR: $*"
+  printf 'ERROR: gargoyl-checker: %s\n' "$*" >&2
+  exit 1
+}
+
+# deliver <status> <since> <reason> <kind> <message> — persist the transition
+# as notified=false, post, then persist notified=true. Returns 1 when the
+# notice did not land; the next run retries from notified=false.
+deliver() {
+  local status="$1" since="$2" reason="$3" kind="$4" message="$5"
+  write_alert "$status" "$since" "$reason" false || \
+    checker_fault "could not record $status state in $ALERT_FILE; $kind notice not sent"
+  if ! notify_discord "$kind" "$message"; then
+    _log "$kind notice not delivered; the next run retries it"
+    return 1
+  fi
+  write_alert "$status" "$since" "$reason" true || \
+    checker_fault "$kind notice sent but not recorded in $ALERT_FILE; the next run may re-send it"
+}
+
+# fail_now <reason...> — record the failure and notify on the clear->firing
+# transition (or retry an undelivered one). Exits 0 once recorded and notified,
+# 1 when the notice did not land.
 fail_now() {
   local reason="$*"
   reason=$(printf '%s' "$reason" | tr '\n' ' ' | cut -c1-300)
   _log "FAILED: $reason"
   printf '%s FAILED: %s\n' "$NOW" "$reason" >&2
-  local since="$NOW"
   case "$PRIOR_STATUS" in
     clear)
-      _log "transition: NEW FAILURE (notified)"
-      printf '%s transition: NEW FAILURE (notified)\n' "$NOW"
-      write_alert firing "$since" "$reason" failed || true
-      notify_discord failed "$reason"
+      _log "transition: NEW FAILURE (notifying)"
+      printf '%s transition: NEW FAILURE (notifying)\n' "$NOW"
+      deliver firing "$NOW" "$reason" failed "$reason" || exit 1
       ;;
     firing)
-      since="$PRIOR_SINCE"
-      [ -n "$since" ] || since="$NOW"
-      _log "still failing: $reason (no repeat notification)"
-      printf '%s still failing: %s (no repeat notification)\n' "$NOW" "$reason"
+      local since="${PRIOR_SINCE:-$NOW}"
+      if [ "$PRIOR_NOTIFIED" = "false" ]; then
+        _log "still failing; retrying the undelivered failure notice"
+        printf '%s still failing; retrying the undelivered failure notice\n' "$NOW"
+        deliver firing "$since" "$reason" failed "$reason" || exit 1
+      else
+        _log "still failing: $reason (no repeat notification)"
+        printf '%s still failing: %s (no repeat notification)\n' "$NOW" "$reason"
+      fi
       ;;
     *)
-      # Unknown prior (first sighting of a corrupt note, or mid-transition
-      # restart): record the state so the next run can classify, but do not
-      # notify — a duplicate recovery/failure post is the failure mode.
+      # Unknown prior (corrupt note): record the state so the next run can
+      # classify, but do not notify — a duplicate post is the failure mode.
       _log "prior state unknown; recording firing without a transition notice"
       printf '%s prior state unknown; recording firing without a transition notice\n' "$NOW"
-      write_alert firing "$since" "$reason" failed || true
+      write_alert firing "$NOW" "$reason" true || \
+        checker_fault "could not record firing state in $ALERT_FILE"
       ;;
   esac
-  _set_outcome "failure-notified"
-  exit 1
+  _set_outcome "noop"
+  exit 0
 }
 
-# recover — green exit. On a firing->clear transition, post the recovered
-# notice and rewrite the note; exit 0 regardless (probe results, not delivery,
-# decide the exit code).
+# recover — green exit. On a firing->clear transition (or an undelivered
+# recovered notice), post and rewrite the note. A recovered notice that does
+# not land is retried next run but does not fail the run: the watch is green.
 recover() {
   case "$PRIOR_STATUS" in
     firing)
-      _log "transition: RECOVERED (notified)"
-      printf '%s transition: RECOVERED (notified)\n' "$NOW"
-      write_alert clear "$NOW" "$PRIOR_REASON" recovered || true
-      notify_discord recovered "Gargoyl monitor watch is green again (was failing since ${PRIOR_SINCE:-unknown})"
+      _log "transition: RECOVERED (notifying)"
+      printf '%s transition: RECOVERED (notifying)\n' "$NOW"
+      deliver clear "$NOW" "$PRIOR_REASON" recovered \
+        "Gargoyl monitor watch is green again (was failing since ${PRIOR_SINCE:-unknown})" || true
       ;;
     unknown)
       # Repair the note without a notice — the prior state was unreadable, so
       # a "recovered" post could duplicate one already sent.
       _log "prior state unknown; recording clear without a transition notice"
-      write_alert clear "$NOW" "" recovered || true
+      write_alert clear "$NOW" "" true || checker_fault "could not record clear state in $ALERT_FILE"
       ;;
     clear)
-      _log "green"
-      printf '%s green\n' "$NOW"
+      if [ "$PRIOR_NOTIFIED" = "false" ]; then
+        _log "green; retrying the undelivered recovered notice"
+        printf '%s green; retrying the undelivered recovered notice\n' "$NOW"
+        deliver clear "${PRIOR_SINCE:-$NOW}" "$PRIOR_REASON" recovered \
+          "Gargoyl monitor watch is green again (recovered at ${PRIOR_SINCE:-unknown})" || true
+      else
+        _log "green"
+        printf '%s green\n' "$NOW"
+      fi
       ;;
   esac
   _set_outcome "noop"

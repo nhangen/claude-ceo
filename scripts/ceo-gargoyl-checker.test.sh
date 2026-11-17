@@ -204,14 +204,15 @@ PY
 
 test_first_failure_notifies_exactly_once() {
   GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a failing probe must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "a failing probe is recorded and notified, so the run exits 0"
   assert_eq "$(state_field status)" "firing" "first failure must record firing"
   assert_eq "$(state_field reason)" "monitor dashboard on http://127.0.0.1:8766 did not answer a loopback GET within 5s (process present but wedged)" \
     "the alert must carry the probe reason"
   assert_eq "$(discord_count)" "1" "healthy->failed must produce exactly one Discord message"
   assert_contains "$(discord_posts)" "FAILED" "the Discord message must report the failure"
   assert_contains "$(discord_posts)" "did not answer a loopback GET" "the Discord message must carry the reason"
-  assert_eq "$(outcome)" "failure-notified" "failing run must own failure notification (#173 failure-notified)"
+  assert_eq "$(outcome)" "noop" "a delivered failure notice leaves the dispatcher quiet"
+  assert_eq "$(state_field notified)" "true" "a delivered notice must be recorded as notified"
   assert_contains "$(checker_log)" "transition: NEW FAILURE" "the checker log must record the transition"
 }
 
@@ -247,7 +248,7 @@ test_steady_recovery_is_silent() {
 
 test_launchd_job_absent_fails() {
   LAUNCHCTL_STUB_ABSENT=1 run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "the launchd failure must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "the launchd failure is recorded and notified, so the run exits 0"
   assert_eq "$(state_field status)" "firing" "an unloaded daemon must fire"
   assert_contains "$(state_field reason)" "launchd has no job named dev.gargoyl.monitor" "reason must name the missing launchd job"
   assert_eq "$(discord_count)" "1" "the launchd failure is a transition and must notify"
@@ -255,57 +256,57 @@ test_launchd_job_absent_fails() {
 
 test_bad_launchd_exit_status_fails() {
   LAUNCHCTL_STUB_ROW="$(printf '\t5\tdev.gargoyl.monitor')" run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a bad launchd exit status must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "a bad launchd exit status is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "last exit status is 5" "reason must carry the launchd exit status"
-  assert_eq "$(outcome)" "failure-notified" "failing run must report failure-notified"
+  assert_eq "$(outcome)" "noop" "a recorded, notified failure must report noop"
 }
 
 test_monitor_process_gone_fails() {
   PGREP_STUB_RC=1 run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a missing monitor process must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "a missing monitor process is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "no running gargoyl monitor process found" "reason must name the dead process"
-  assert_eq "$(outcome)" "failure-notified" "failing run must report failure-notified"
+  assert_eq "$(outcome)" "noop" "a recorded, notified failure must report noop"
 }
 
 test_report_json_unreachable_fails() {
   GARGOYL_CURL_REPORT_FAIL=1 run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a wedged dashboard must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "a wedged dashboard is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "/report.json did not answer a loopback GET" "reason must name the wedged report endpoint"
-  assert_eq "$(outcome)" "failure-notified" "failing run must report failure-notified"
+  assert_eq "$(outcome)" "noop" "a recorded, notified failure must report noop"
 }
 
 test_stale_collector_fails() {
   gen_report 3600
   run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a stale collector must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "a stale collector is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "collection loop appears wedged" "a stale snapshot must fire the wedge probe"
 }
 
 test_report_without_snapshots_fails() {
   printf '%s\n' '{"snapshots":[]}' > "$REPORT_STUB_FILE"
   run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a snapshot-less report must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "a snapshot-less report is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "returned no snapshots" "an empty report must fire"
 }
 
 test_fleet_json_unreadable_fails() {
   printf 'not json at all\n' > "$GARGOYL_FLEET_JSON"
   run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "an unreadable fleet.json must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "an unreadable fleet.json is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "fleet.json exists but does not parse as JSON" "a parse failure must be a finding"
 }
 
 test_stderr_traceback_fails() {
   printf 'Traceback (most recent call last):\n  File "monitor.py"\n' >> "$GARGOYL_MONITOR_LOG_DIR/monitor.stderr.log"
   run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a fresh traceback must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "a fresh traceback is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "Traceback" "fresh traceback shapes must fire"
 }
 
 test_missing_monitor_logs_fail() {
   rm -f "$GARGOYL_MONITOR_LOG_DIR/monitor.stderr.log"
   run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "missing monitor logs must exit 1"
+  assert_eq "$RUN_CHECKER_RC" "0" "missing monitor logs is recorded and notified, so the run exits 0"
   assert_contains "$(state_field reason)" "no monitor logs exist" "missing logs must fire"
 }
 
@@ -328,7 +329,7 @@ test_webhook_never_reaches_logs_notes_or_output() {
 
 test_discord_delivery_failure_is_logged_not_swallowed() {
   GARGOYL_CURL_DASHBOARD_FAIL=1 GARGOYL_CURL_DISCORD_HTTP=500 run_checker
-  assert_eq "$RUN_CHECKER_RC" "1" "a failed delivery does not change the probe verdict"
+  assert_eq "$RUN_CHECKER_RC" "1" "an undelivered failure notice must exit 1 so the dispatcher escalates"
   assert_contains "$(checker_stderr)" "Discord failed notice failed (HTTP 500)" "a failed delivery must be reported on stderr with the code"
   assert_contains "$(cat "$GARGOYL_NOTIFY_DEBUG_LOG" 2>/dev/null)" "Discord delivery for failed failed (HTTP 500)" "a failed delivery must be logged with the code"
 }
@@ -342,6 +343,58 @@ test_corrupt_prior_state_suppresses_transition_notice() {
   assert_eq "$(discord_count)" "0" "unknown prior state must not notify"
   assert_eq "$(state_field status)" "firing" "the state must be repaired to firing"
   assert_contains "$(checker_log)" "prior state unknown" "the suppression must be logged"
+}
+
+test_undelivered_failure_notice_escalates_and_retries() {
+  GARGOYL_CURL_DASHBOARD_FAIL=1 GARGOYL_CURL_DISCORD_HTTP=500 run_checker
+  assert_eq "$RUN_CHECKER_RC" "1" "an undelivered notice must exit 1"
+  assert_eq "$(outcome)" "" "an undelivered notice must not claim failure-notified or noop"
+  assert_eq "$(state_field status)" "firing" "the failure is still recorded"
+  assert_eq "$(state_field notified)" "false" "the undelivered notice must be recorded for retry"
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  assert_eq "$RUN_CHECKER_RC" "0" "the retried notice landed, so the run exits 0"
+  assert_eq "$(discord_count)" "2" "the next run must retry the undelivered notice"
+  assert_eq "$(state_field notified)" "true" "the retry must be recorded as delivered"
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  assert_eq "$(discord_count)" "2" "once delivered, repeat failures stay silent"
+}
+
+test_missing_webhook_escalates() {
+  unset GARGOYL_DISCORD_WEBHOOK_URL
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  assert_eq "$RUN_CHECKER_RC" "1" "no webhook means the notice did not land"
+  assert_eq "$(outcome)" "" "no webhook must not suppress the dispatcher"
+}
+
+test_undelivered_recovery_notice_retries() {
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  GARGOYL_CURL_DISCORD_HTTP=500 run_checker
+  assert_eq "$RUN_CHECKER_RC" "0" "a green run exits 0 even when its recovery notice failed"
+  assert_eq "$(state_field status)" "clear" "recovery is recorded"
+  assert_eq "$(state_field notified)" "false" "the undelivered recovery notice is recorded for retry"
+  run_checker
+  assert_eq "$(discord_count)" "3" "the next green run must retry the recovery notice"
+  assert_eq "$(state_field notified)" "true" "the retried recovery notice is recorded"
+  run_checker
+  assert_eq "$(discord_count)" "3" "steady green after delivery stays silent"
+}
+
+test_notify_events_off_counts_as_delivered() {
+  printf '%s\n' '{"notify_events":"off"}' > "$CEO_DIR/settings.json"
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  assert_eq "$RUN_CHECKER_RC" "0" "a deliberately silenced notice is not a delivery failure"
+  assert_eq "$(outcome)" "noop" "silenced runs report noop"
+}
+
+test_unwritable_alerts_dir_skips_discord_and_escalates() {
+  mkdir -p "$CEO_DIR/alerts"
+  chmod 555 "$CEO_DIR/alerts"
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  chmod 755 "$CEO_DIR/alerts"
+  assert_eq "$RUN_CHECKER_RC" "1" "an unrecordable state is a checker fault"
+  assert_eq "$(outcome)" "" "a checker fault must leave the dispatcher in charge"
+  assert_eq "$(discord_count)" "0" "without persisted state the checker must not post (it would repeat every run)"
 }
 
 test_playbook_scan_registers_gargoyl_checker() {
