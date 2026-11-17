@@ -54,6 +54,7 @@ LABEL="dev.gargoyl.monitor"
 DASHBOARD_URL="${GARGOYL_DASHBOARD_URL:-http://127.0.0.1:8766}"
 MONITOR_PATTERN="${GARGOYL_MONITOR_PGREP_PATTERN:-ML-AI/gargoyl/.venv/bin/gargoyl monitor}"
 
+TRACEBACK_WINDOW="${GARGOYL_TRACEBACK_WINDOW_SECONDS:-900}"
 CHECKER_LOG_DIR="${GARGOYL_CHECKER_LOG_DIR:-$HOME/Library/Logs/Gargoyl/checker}"
 NOTIFY_LOG="${GARGOYL_NOTIFY_DEBUG_LOG:-$CHECKER_LOG_DIR/notify.log}"
 
@@ -354,7 +355,14 @@ if [ -f "$STDERR_LOG" ]; then
     _log "note: monitor.stderr.log age $((NOW_EPOCH - MTIME)) seconds (informational only)"
     printf '%s note: monitor.stderr.log age %s seconds (informational only)\n' "$NOW" "$((NOW_EPOCH - MTIME))"
   fi
-  if tail -c 20000 "$STDERR_LOG" 2>/dev/null | grep -qE "Traceback|FATAL|fatal error|Uncaught"; then
+  # "Fresh" means the log was written within the window: a traceback in a log
+  # untouched since is a crash launchd already recovered. An unreadable mtime
+  # scans anyway rather than skip the probe.
+  STDERR_AGE=""
+  [ -n "$MTIME" ] && STDERR_AGE=$((NOW_EPOCH - MTIME))
+  if [ -n "$STDERR_AGE" ] && [ "$STDERR_AGE" -gt "$TRACEBACK_WINDOW" ]; then
+    _log "note: monitor.stderr.log last written ${STDERR_AGE}s ago, outside the ${TRACEBACK_WINDOW}s traceback window; not scanned"
+  elif tail -c 20000 "$STDERR_LOG" 2>/dev/null | grep -qE "Traceback|FATAL|fatal error|Uncaught"; then
     _tail_excerpt=$(tail -c 20000 "$STDERR_LOG" 2>/dev/null | grep -E "Traceback|FATAL|fatal error|Uncaught" | tail -2 | tr '\n' ' ' | cut -c1-240) || _tail_excerpt=""
     fail_now "fresh Traceback/FATAL-shaped lines in monitor.stderr.log: ${_tail_excerpt:-unavailable}"
   fi

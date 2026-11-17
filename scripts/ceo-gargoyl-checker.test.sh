@@ -397,6 +397,21 @@ test_unwritable_alerts_dir_skips_discord_and_escalates() {
   assert_eq "$(discord_count)" "0" "without persisted state the checker must not post (it would repeat every run)"
 }
 
+test_old_traceback_in_quiet_log_does_not_fire() {
+  # A crash launchd already recovered must not keep the watch red for days
+  # while the event-driven monitor stays quiet.
+  printf 'Traceback (most recent call last):\n  File "monitor.py"\n' >> "$GARGOYL_MONITOR_LOG_DIR/monitor.stderr.log"
+  python3 - "$GARGOYL_MONITOR_LOG_DIR/monitor.stderr.log" <<'PY2'
+import os, sys, time
+old = time.time() - 5 * 86400
+os.utime(sys.argv[1], (old, old))
+PY2
+  run_checker
+  assert_eq "$RUN_CHECKER_RC" "0" "a five-day-old traceback must not fire"
+  [ -f "$(alert_file)" ] && fail_test "an old traceback must not record a failure"
+  return 0
+}
+
 test_playbook_scan_registers_gargoyl_checker() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   mkdir -p "$CEO_DIR/playbooks"

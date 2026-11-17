@@ -25,7 +25,9 @@ Checks, in order — the first failing probe fires the watch (fail-fast):
 1. Monitor logs exist (`~/Library/Logs/Gargoyl/monitor.{stderr,stdout}.log`).
 2. `launchctl list` has a `dev.gargoyl.monitor` job reporting `-` or `0`.
 3. Fresh `Traceback`/`FATAL`/`Uncaught` shapes in the last 20 KB of
-   `monitor.stderr.log`. stderr *freshness* alone is a logged note, not a
+   `monitor.stderr.log`, scanned only when the log was written within the last
+   15 minutes (`GARGOYL_TRACEBACK_WINDOW_SECONDS`), so a crash launchd already
+   recovered does not keep the watch red while the monitor stays quiet. stderr *freshness* alone is a logged note, not a
    failure — the monitor is event-driven and legitimately silent for days
    (calibrated 2026-11-05).
 4. A running `gargoyl monitor` process exists.
@@ -69,6 +71,7 @@ checker skips Discord entirely rather than re-post on every run.
 | `GARGOYL_DASHBOARD_URL` | `http://127.0.0.1:8766` |
 | `GARGOYL_MONITOR_PGREP_PATTERN` | `ML-AI/gargoyl/.venv/bin/gargoyl monitor` |
 | `GARGOYL_CHECKER_LOG_DIR` | `~/Library/Logs/Gargoyl/checker` |
+| `GARGOYL_TRACEBACK_WINDOW_SECONDS` | `900` |
 | `GARGOYL_LAUNCHCTL_BIN` / `GARGOYL_PGREP_BIN` / `GARGOYL_CURL_BIN` | PATH binaries (test seams) |
 | `GARGOYL_DISCORD_WEBHOOK_URL` | unset — webhook comes from the `discord_webhook` secret in `~/.config/claude-ceo/secrets.json` |
 
