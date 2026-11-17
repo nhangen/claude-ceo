@@ -363,8 +363,12 @@ if [ -f "$STDERR_LOG" ]; then
   if [ -n "$STDERR_AGE" ] && [ "$STDERR_AGE" -gt "$TRACEBACK_WINDOW" ]; then
     _log "note: monitor.stderr.log last written ${STDERR_AGE}s ago, outside the ${TRACEBACK_WINDOW}s traceback window; not scanned"
   elif tail -c 20000 "$STDERR_LOG" 2>/dev/null | grep -qE "Traceback|FATAL|fatal error|Uncaught"; then
-    _tail_excerpt=$(tail -c 20000 "$STDERR_LOG" 2>/dev/null | grep -E "Traceback|FATAL|fatal error|Uncaught" | tail -2 | tr '\n' ' ' | cut -c1-240) || _tail_excerpt=""
-    fail_now "fresh Traceback/FATAL-shaped lines in monitor.stderr.log: ${_tail_excerpt:-unavailable}"
+    # Raw stderr lines can carry secrets; only the count and the matched shapes
+    # leave the host (no-secrets-in-logs). The log itself has the detail.
+    _matches=$(tail -c 20000 "$STDERR_LOG" 2>/dev/null | grep -oE "Traceback|FATAL|fatal error|Uncaught") || _matches=""
+    _count=$(printf '%s\n' "$_matches" | grep -c . || true)
+    _shapes=$(printf '%s\n' "$_matches" | grep . | sort -u | paste -sd, - | sed 's/,/, /g')
+    fail_now "fresh error-shaped lines in monitor.stderr.log ($_count matching ${_shapes:-unknown}); see $STDERR_LOG"
   fi
 fi
 

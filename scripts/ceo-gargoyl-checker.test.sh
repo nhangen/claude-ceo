@@ -412,6 +412,15 @@ PY2
   return 0
 }
 
+test_stderr_excerpt_never_reaches_sinks() {
+  printf 'FATAL: auth refused token=sekrit-should-not-leak\n' >> "$GARGOYL_MONITOR_LOG_DIR/monitor.stderr.log"
+  run_checker
+  assert_eq "$(state_field status)" "firing" "a fresh FATAL line must fire"
+  assert_contains "$(state_field reason)" "FATAL" "the reason names the matched shape"
+  assert_not_contains "$(cat "$(alert_file)")" "sekrit-should-not-leak" "raw stderr text must not reach the synced note"
+  assert_not_contains "$(discord_posts)" "sekrit-should-not-leak" "raw stderr text must not reach Discord"
+}
+
 test_playbook_scan_registers_gargoyl_checker() {
   local ceo_cli="$SCRIPT_DIR/ceo"
   mkdir -p "$CEO_DIR/playbooks"
