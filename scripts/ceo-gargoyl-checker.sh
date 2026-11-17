@@ -302,11 +302,12 @@ fail_now() {
       fi
       ;;
     *)
-      # Unknown prior (corrupt note): record the state so the next run can
-      # classify, but do not notify — a duplicate post is the failure mode.
-      _log "prior state unknown; recording firing without a transition notice"
-      printf '%s prior state unknown; recording firing without a transition notice\n' "$NOW"
-      write_alert firing "$NOW" "$reason" true || \
+      # Unknown prior (corrupt note): no notice this run (it may duplicate one
+      # already sent), but record it as undelivered so the next run announces
+      # it — an outage nobody hears about is worse than one duplicate post.
+      _log "prior state unknown; recording firing, notice deferred to the next run"
+      printf '%s prior state unknown; recording firing, notice deferred to the next run\n' "$NOW"
+      write_alert firing "$NOW" "$reason" false || \
         checker_fault "could not record firing state in $ALERT_FILE"
       ;;
   esac

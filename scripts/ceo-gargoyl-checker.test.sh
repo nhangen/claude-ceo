@@ -352,6 +352,16 @@ test_corrupt_prior_state_suppresses_transition_notice() {
   assert_eq "$(discord_count)" "0" "unknown prior state must not notify"
   assert_eq "$(state_field status)" "firing" "the state must be repaired to firing"
   assert_contains "$(checker_log)" "prior state unknown" "the suppression must be logged"
+  GARGOYL_CURL_DASHBOARD_FAIL=1 run_checker
+  assert_eq "$(discord_count)" "1" "the next run must announce the outage rather than stay silent for all of it"
+}
+
+test_failed_retry_keeps_escalating() {
+  GARGOYL_CURL_DASHBOARD_FAIL=1 GARGOYL_CURL_DISCORD_HTTP=500 run_checker
+  GARGOYL_CURL_DASHBOARD_FAIL=1 GARGOYL_CURL_DISCORD_HTTP=500 run_checker
+  assert_eq "$RUN_CHECKER_RC" "1" "a retry that fails again must still exit 1"
+  assert_eq "$(outcome)" "" "a failed retry must not report noop"
+  assert_eq "$(state_field notified)" "false" "a failed retry stays pending"
 }
 
 test_undelivered_failure_notice_escalates_and_retries() {

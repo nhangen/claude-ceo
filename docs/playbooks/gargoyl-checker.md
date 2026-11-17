@@ -60,7 +60,7 @@ re-posts nor appends a three-strike block to `approvals/pending.md` every five
 minutes. A run exits 1 with no outcome when a failure notice did not land or
 the checker could not write the alerts note; then the dispatcher's own failure
 post and three-strike escalation take over. If the note cannot be written, the
-checker skips Discord entirely rather than re-post on every run.
+checker itself does not post (the dispatcher's fallback reports the fault).
 
 ## Overrides
 
@@ -108,9 +108,10 @@ nhangen/llm-tools#1144 cross-links here.
 - The checker reports only the first failing probe per run (fail-fast, matching
   the calibrated original); a later probe failure surfaces on the next run.
 - An unreadable prior note (`status:` missing) suppresses the transition
-  notice for that run — the checker cannot tell fresh failure from repeat, and
-  would rather stay silent than double-post. The note is repaired and the next
-  run classifies normally.
+  notice for that run — the checker cannot tell fresh failure from repeat. A
+  failing run records the note as `notified: false`, so the next run still
+  announces the outage (possibly one duplicate post) rather than staying silent
+  for all of it.
 - A transition notice that does not land is retried on every run until it
   does. While Discord is down and the watch is firing, each run exits 1, so the
   dispatcher's three-strike escalation fires from the third run on — the
