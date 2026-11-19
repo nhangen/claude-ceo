@@ -301,12 +301,6 @@ async function main(): Promise<void> {
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-/**
- * Removes the running marker file for a job.
- * rmSync with force: true suppresses ENOENT; any non-ENOENT error (EACCES, EROFS)
- * is logged so operators know if permissions or read-only filesystems prevented
- * marker removal (#586).
- */
 // The heartbeat is the double-fire guard's backing store, so a corrupt or
 // unreadable one silently boots with an empty guard unless its warning is logged.
 export function createHeartbeatReader(path: string, log: (msg: string) => void): () => Heartbeat | null {
@@ -326,6 +320,12 @@ export function createLookbackResolver(
     lookbackForSchedule(job.cronSchedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
 }
 
+/**
+ * Removes the running marker file for a job.
+ * rmSync with force: true suppresses ENOENT; any non-ENOENT error (EACCES, EROFS)
+ * is logged so operators know if permissions or read-only filesystems prevented
+ * marker removal (#586).
+ */
 export function createClearRunning(runMarker: string, log: (msg: string) => void): () => void {
   return () => {
     try {
