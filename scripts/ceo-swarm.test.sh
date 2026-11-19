@@ -712,6 +712,20 @@ test_swarm_doctor_help_prints_usage() {
   assert_contains "$out" "Usage: ceo swarm doctor" "--help must print usage, not an unknown-option error"
 }
 
+test_owners_health_reports_firing_peer_auth_without_desktop_notify() {
+  # A Linux host, or one with desktop notify off, still has to say in its
+  # report that a peer cannot run claude.
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"
+  mkdir -p "$TEST_VAULT/CEO/alerts"
+  printf -- '---\nstatus: firing\nsince: 2026-05-01T00:00:00Z\nlast_check: 2026-05-01T01:00:00Z\nhost: ml-1\n---\n' \
+    > "$TEST_VAULT/CEO/alerts/auth-ml-1.md"
+  local out
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" CEO_NO_DESKTOP_NOTIFY=1 \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" bash "$CEO_CLI" swarm owners-health 2>&1) || true
+  assert_contains "$out" "Claude auth firing on ml-1" "a firing peer auth alert must be reported even when no notification fires"
+}
+
 test_owners_health_self_skip_matches_slugged_alert_name() {
   # The alert file is named through _ceo_host_slug, so a CEO_HOSTNAME with a
   # space produces auth-checker-box.md; the self-skip must still recognize it.

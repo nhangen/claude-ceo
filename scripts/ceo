@@ -1358,8 +1358,9 @@ cmd_swarm_owners_health() {
   # whichever comes first. Non-blocking: a locked session must not stall the
   # check. Gated by CEO_NO_DESKTOP_NOTIFY (same as the CEO_VAULT FATAL
   # escalation) so the test suite can assert without popping real
-  # notifications. Self-host auth alerts are not notified here — the local
-  # ceo-cron path is the authority for that host.
+  # notifications. A host's own auth alert is skipped here, and ceo-cron does
+  # not notify for it either, so a Mac whose own session died gets no toast;
+  # ceo doctor, ceo scan and the shadow inbox task are what surface it (#662).
   local auth_alert_dir="$CEO_VAULT/CEO/alerts"
   local auth_alert peer_auth status_auth prev_status_auth self_slug
   # Alert files are named through _ceo_host_slug, so compare against the slug,
@@ -1380,6 +1381,8 @@ cmd_swarm_owners_health() {
       # on >24h elapsed since the last notify — the 24h gate lives in
       # ceo_auth_notify_fire so it is the single source of truth.
       new_state=$(jq -c --arg k "auth:$peer_auth" '.[$k] = "firing"' <<<"$new_state")
+      line="  ⚠ Claude auth firing on $peer_auth (see CEO/alerts/auth-$peer_auth.md)"
+      echo "$line"; report+="$line"$'\n'
       if [ "$prev_status_auth" != "firing" ]; then
         if ceo_auth_notify_fire "$peer_auth" 1; then
           line="  🔔 notified: Claude OAuth expired on $peer_auth"
