@@ -35,6 +35,7 @@ import {
   CATCHUP_LOOKBACK_CAP_MS,
   MAX_SLEEP_MS,
   FATAL_EXIT_CODE,
+  type CronMatcher,
   type DaemonDeps,
   type Heartbeat,
 } from "cronbird/core";
@@ -202,9 +203,10 @@ async function main(): Promise<void> {
 
   // Per-schedule derived look-back (#157), unless the host pins a fixed window.
   const matcher = createMatcher();
-  const fixedLookback = resolveFixedLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS);
-  const resolveLookback = (schedule: string, now: Date): number =>
-    fixedLookback ?? lookbackForSchedule(schedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
+  const resolveLookback = createLookbackResolver(
+    resolveFixedLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS),
+    matcher,
+  );
   const dispatchContext = new SchedulerDispatchContext();
 
   const deps: DaemonDeps = {
@@ -233,7 +235,7 @@ async function main(): Promise<void> {
       dispatchArgv: cfg.dispatchArgv,
       log,
     }),
-    readHeartbeat: () => readHeartbeatFile(hbPath),
+    readHeartbeat: createHeartbeatReader(hbPath, log),
     writeHeartbeat: (hb) =>
       dispatchContext.persist(hb, () => {
         writeHeartbeatWithSync(hb, {
@@ -298,6 +300,25 @@ async function main(): Promise<void> {
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+// The heartbeat is the double-fire guard's backing store, so a corrupt or
+// unreadable one silently boots with an empty guard unless its warning is logged.
+export function createHeartbeatReader(path: string, log: (msg: string) => void): () => Heartbeat | null {
+  return () => {
+    const { value, warnings } = readHeartbeatFile(path);
+    for (const w of warnings) log(`warning: ${w}; double-fire guard starts empty`);
+    return value;
+  };
+}
+
+export function createLookbackResolver(
+  fixedLookbackMs: number | null,
+  matcher: CronMatcher,
+): (job: { cronSchedule: string }, now: Date) => number {
+  return (job, now) =>
+    fixedLookbackMs ??
+    lookbackForSchedule(job.cronSchedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
+}
 
 /**
  * Removes the running marker file for a job.

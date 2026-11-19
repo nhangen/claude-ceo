@@ -9,7 +9,7 @@ import {
   table,
   type StatusCliDeps,
 } from "@/status";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 describe("parseDuration", () => {
@@ -494,10 +494,27 @@ describe("runCeoStatusCommand — degraded inputs", () => {
       mkdirSync(`${fix.home}/.ceo/schedulerd`, { recursive: true });
       writeFileSync(`${fix.home}/.ceo/schedulerd/heartbeat.json`, "{trunc");
       const r = run(fix, "status");
-      expect(r.err).toContain("heartbeat file present but unparseable");
+      expect(r.err.match(/heartbeat file present but unparseable/g)).toHaveLength(1);
       expect(r.out).toContain("daemon: heartbeat file unreadable");
       expect(r.out).not.toContain("never checked in");
     } finally {
+      fix.cleanup();
+    }
+  });
+
+  test.skipIf(process.getuid?.() === 0)("an unreadable heartbeat names the errno, not a parse failure", () => {
+    const fix = fixture();
+    const hb = `${fix.home}/.ceo/schedulerd/heartbeat.json`;
+    try {
+      seed(fix);
+      mkdirSync(`${fix.home}/.ceo/schedulerd`, { recursive: true });
+      writeFileSync(hb, "{}");
+      chmodSync(hb, 0o000);
+      const r = run(fix, "status");
+      expect(r.err).toContain(`heartbeat file present but unreadable: ${hb} (EACCES)`);
+      expect(r.err).not.toContain("unparseable");
+    } finally {
+      chmodSync(hb, 0o644);
       fix.cleanup();
     }
   });

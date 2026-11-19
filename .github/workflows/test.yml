@@ -135,11 +135,13 @@ jobs:
         # source-level path dependency, so our strict `tsc` compiles its internals
         # too — an unpinned HEAD lets any upstream cronbird change (new required
         # DaemonDeps fields, stricter code) break this job with no change here.
-        # The daemon runs against this same ref in production; bump deliberately
-        # (update CRONBIRD_REF, adapt src/main.ts, re-run) when adopting new
-        # cronbird features.
+        # Hosts do NOT run this ref: the path dependency resolves to whatever the
+        # host's sibling cronbird clone has checked out, so a host can move past
+        # this pin and break the daemon while CI stays green (#656). Keep it at
+        # the cronbird commit the hosts run, and bump it (update CRONBIRD_REF,
+        # adapt src/main.ts, re-run) whenever a host's cronbird moves.
         env:
-          CRONBIRD_REF: c373de9cc466a6c1e574751afe610cfc83d195ad
+          CRONBIRD_REF: e7d8ac9ae024438290ecb0a8afab264d3dca61de
         run: |
           git clone --filter=blob:none https://github.com/nhangen/cronbird.git "${GITHUB_WORKSPACE}/../cronbird"
           git -C "${GITHUB_WORKSPACE}/../cronbird" checkout --quiet "$CRONBIRD_REF"
