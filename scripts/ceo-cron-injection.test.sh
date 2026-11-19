@@ -973,6 +973,36 @@ STUB
 # WSL credential auto-sync (ticket #660)
 # ---------------------------------------------------------------------------
 
+test_auth_alert_not_cleared_by_ollama_runner_success() {
+  _auth_alert_fixture
+  local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_set testhost firing"
+  cat > "$CEO_DIR/playbooks/authollama.md" << 'PB'
+---
+name: authollama
+description: ollama run on a host whose claude session is down
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+runner: ollama
+---
+# Body
+PB
+  cat > "$TEST_HOME/.bun/bin/curl" << 'SH'
+#!/bin/bash
+cat >/dev/null
+printf 'ollama-stub-response' | jq -Rs '{response:.}'
+SH
+  chmod +x "$TEST_HOME/.bun/bin/curl"
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+  local rc=0
+  CEO_FORCE=1 bash "$CRON" authollama >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "0" "the ollama run must succeed so _record_success runs"
+  assert_eq "$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")" "firing" "an ollama success must not clear a firing claude auth alert"
+}
+
 test_wsl_creds_heal_copies_newer_win_creds_and_retries_once() {
   _auth_alert_fixture
   _seed_authfail_playbook
