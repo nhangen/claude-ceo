@@ -1324,8 +1324,7 @@ ceo_auth_alert_set() {
   fi
   mkdir -p "$(dirname "$alert_file")" || return 1
   local tmp
-  tmp=$(mktemp "$(dirname "$alert_file")/.auth-<host>.md.XXXXXX" 2>/dev/null) || \
-    tmp=$(mktemp "$alert_file.XXXXXX") || return 1
+  tmp=$(mktemp "$alert_file.XXXXXX") || return 1
   local body
   if [ "$status" = "firing" ]; then
     body="
@@ -1378,8 +1377,7 @@ ceo_auth_alert_inbox_task() {
   local done_line
   done_line="- [done] Fix Claude authentication on $host — run claude login $marker"
   local tmp
-  tmp=$(mktemp "$inbox_dir/.auth-<host>.md.XXXXXX" 2>/dev/null) || \
-    tmp=$(mktemp "$inbox_file.XXXXXX") || return 1
+  tmp=$(mktemp "$inbox_file.XXXXXX") || return 1
   awk -v mkr="$marker" -v done="$done_line" '
     /^- \[ \] / && index($0, mkr) { print done; next } { print }
   ' "$inbox_file" > "$tmp" || { rm -f "$tmp"; return 1; }
