@@ -1019,6 +1019,9 @@ test_wsl_creds_heal_noop_when_win_creds_invalid_json() {
   mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
   printf 'NOT JSON' > "$win_creds"
   printf '{"token":"stale"}' > "$linux_creds"
+  # Backdate the Linux side so the mtime guard passes and only the JSON check
+  # can stop the copy.
+  touch -t 2601010000 "$linux_creds" 2>/dev/null || touch -d "2026-01-01T00:00:00Z" "$linux_creds" 2>/dev/null || true
 
   _stub_claude_authfail
   local before; before=$(cat "$linux_creds")
