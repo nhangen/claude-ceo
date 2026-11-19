@@ -990,7 +990,7 @@ echo ""
 SH
   chmod +x "$TEST_HOME/.bun/bin/hostname"
   _seed_authfail_playbook
-  CEO_HOSTNAME= bash "$CRON" authfail >/dev/null 2>&1 || true
+  CEO_HOSTNAME='' bash "$CRON" authfail >/dev/null 2>&1 || true
   rm -f "$TEST_HOME/.bun/bin/hostname"
   assert_eq "$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")" "firing" "an unresolved host must not clear the shared auth-unknown alert"
 }
