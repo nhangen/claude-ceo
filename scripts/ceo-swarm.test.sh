@@ -733,7 +733,7 @@ EOF
   cat > "$bindir/osascript" << 'STUB'
 #!/bin/bash
 case "$*" in
-  *"display notification"*"Claude OAuth expired on ml-1"*"Claude CEO FATAL"*"Basso"*)
+  *"display notification"*"Claude OAuth expired on "*"Claude CEO FATAL"*"Basso"*)
     echo "$*" >> "$OSA_MARKER"
     exit 0
     ;;
