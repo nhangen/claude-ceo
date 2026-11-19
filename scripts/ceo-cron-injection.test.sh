@@ -899,7 +899,7 @@ test_auth_clear_writes_status_clear_and_marks_inbox_done() {
   status=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")
   assert_eq "$status" "clear" "status must be clear after clear"
   local done_lines
-  done_lines=$(grep -c '^\- \[done\] Fix Claude authentication on testhost' "$inbox" 2>/dev/null || true)
+  done_lines=$(grep -c "^- \[done\] Claude authentication restored on testhost $(date +%Y-%m-%d) " "$inbox" 2>/dev/null || true)
   assert_eq "$done_lines" "1" "inbox task must be rewritten to [done]"
   local unchecked
   unchecked=$(grep -c '^\- \[ \] Fix Claude authentication on testhost' "$inbox" 2>/dev/null || true)
@@ -967,6 +967,9 @@ STUB
   local status
   status=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")
   assert_eq "$status" "clear" "claude-backed success must auto-clear the alert"
+  local inbox="$CEO_VAULT/CEO/inbox/testhost.md"
+  assert_eq "$(grep -c '^- \[done\] Claude authentication restored on testhost' "$inbox" 2>/dev/null || true)" "1" "the cron-path clear must mark the inbox task done"
+  assert_eq "$(grep -c '^- \[ \] ' "$inbox" 2>/dev/null || true)" "0" "no unchecked auth task may remain after the cron-path clear"
 }
 
 test_auth_alert_for_unresolved_host_is_not_cleared_by_another_host() {

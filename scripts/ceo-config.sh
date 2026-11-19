@@ -1364,7 +1364,7 @@ ceo_auth_alert_inbox_task() {
   local marker="<!-- auth:$host -->"
   local line
   if [ "$status" = "firing" ]; then
-    line="- [ ] Fix Claude authentication on $host — run claude login $marker"
+    line="- [ ] Fix Claude authentication on $host — run claude login, see [[CEO/alerts/auth-$host]] $marker"
     mkdir -p "$inbox_dir" || return 1
     if [ -f "$inbox_file" ] && \
       awk -v m="$marker" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$inbox_file"; then
@@ -1375,7 +1375,7 @@ ceo_auth_alert_inbox_task() {
   fi
   [ -f "$inbox_file" ] || return 0
   local done_line
-  done_line="- [done] Fix Claude authentication on $host — run claude login $marker"
+  done_line="- [done] Claude authentication restored on $host $(date +%Y-%m-%d) $marker"
   local tmp
   tmp=$(mktemp "$inbox_file.XXXXXX") || return 1
   awk -v mkr="$marker" -v done="$done_line" '
