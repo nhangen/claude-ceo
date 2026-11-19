@@ -1078,7 +1078,7 @@ STUB
   assert_contains "$(_skips_log)" "WSL credential sync" "a credential swap must leave a line in cron-skips.log"
   # The heal must have produced a 600-permission file.
   local perms
-  perms=$(stat -f %Lp "$linux_creds" 2>/dev/null || stat -c %a "$linux_creds" 2>/dev/null)
+  perms=$(stat -c %a "$linux_creds" 2>/dev/null || stat -f %Lp "$linux_creds" 2>/dev/null)
   assert_eq "$perms" "600" "healed credentials must be chmod 600"
   # The alert should NOT have been raised because the retry succeeded.
   local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
