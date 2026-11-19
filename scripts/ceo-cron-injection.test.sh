@@ -981,7 +981,7 @@ test_wsl_creds_heal_copies_newer_win_creds_and_retries_once() {
   local win_creds="$TEST_HOME/win-creds/.credentials.json"
   local linux_creds="$TEST_HOME/linux-creds/.credentials.json"
   mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
-  printf '{"token":"fresh"}' > "$win_creds"
+  printf '{"claudeAiOauth":{"accessToken":"fresh","refreshToken":"r"}}' > "$win_creds"
   printf '{"token":"stale"}' > "$linux_creds"
   # Make the Windows side newer.
   touch -d "2026-01-01T00:00:00Z" "$linux_creds" 2>/dev/null || touch -t 2601010000 "$linux_creds" 2>/dev/null || true
@@ -1016,6 +1016,10 @@ STUB
   assert_eq "$calls" "2" "claude must be invoked exactly twice (initial + heal retry)"
   # The linux credentials must now match the windows ones.
   assert_contains "$(cat "$linux_creds")" "fresh" "linux credentials must be replaced by the windows ones"
+  local backup
+  backup=$(ls "$(dirname "$linux_creds")"/.credentials.json.bak.* 2>/dev/null | head -1)
+  assert_eq "$(cat "$backup" 2>/dev/null)" '{"token":"stale"}' "the replaced linux credentials must be kept as a backup"
+  assert_contains "$(_skips_log)" "WSL credential sync" "a credential swap must leave a line in cron-skips.log"
   # The heal must have produced a 600-permission file.
   local perms
   perms=$(stat -f %Lp "$linux_creds" 2>/dev/null || stat -c %a "$linux_creds" 2>/dev/null)
@@ -1048,6 +1052,68 @@ test_wsl_creds_heal_noop_when_win_creds_invalid_json() {
   CEO_FORCE_WSL=1 CEO_WINDOWS_CREDS_PATH="$win_creds" CEO_LINUX_CREDS_PATH="$linux_creds"     bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
   assert_eq "$rc" "78" "invalid Windows credentials must still exit 78"
   assert_eq "$(cat "$linux_creds")" "$before" "linux credentials must be untouched when Windows side is invalid JSON"
+}
+
+test_wsl_creds_heal_noop_when_win_creds_lack_oauth_token() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  local win_creds="$TEST_HOME/win-shape/.credentials.json"
+  local linux_creds="$TEST_HOME/linux-shape/.credentials.json"
+  mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
+  printf '{"token":"fresh"}' > "$win_creds"
+  printf '{"token":"stale"}' > "$linux_creds"
+  touch -t 2601010000 "$linux_creds" 2>/dev/null || touch -d "2026-01-01T00:00:00Z" "$linux_creds" 2>/dev/null || true
+  _stub_claude_authfail
+  local rc=0
+  CEO_FORCE_WSL=1 CEO_WINDOWS_CREDS_PATH="$win_creds" CEO_LINUX_CREDS_PATH="$linux_creds" \
+    bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "78" "Windows credentials without an OAuth token must still exit 78"
+  assert_eq "$(cat "$linux_creds")" '{"token":"stale"}' "linux credentials must be untouched when the Windows file has no OAuth token"
+  assert_contains "$(_skips_log)" "not a Claude OAuth credential file" "a rejected Windows credential file must be logged"
+}
+
+test_wsl_creds_heal_noop_when_win_creds_older() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  local win_creds="$TEST_HOME/win-old/.credentials.json"
+  local linux_creds="$TEST_HOME/linux-new/.credentials.json"
+  mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
+  printf '{"claudeAiOauth":{"accessToken":"old","refreshToken":"r"}}' > "$win_creds"
+  printf '{"token":"current"}' > "$linux_creds"
+  touch -t 2601010000 "$win_creds" 2>/dev/null || touch -d "2026-01-01T00:00:00Z" "$win_creds" 2>/dev/null || true
+  _stub_claude_authfail
+  local rc=0
+  CEO_FORCE_WSL=1 CEO_WINDOWS_CREDS_PATH="$win_creds" CEO_LINUX_CREDS_PATH="$linux_creds" \
+    bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "78" "older Windows credentials must not heal"
+  assert_eq "$(cat "$linux_creds")" '{"token":"current"}' "linux credentials must be untouched when the Windows side is older"
+}
+
+test_wsl_creds_heal_retry_still_failing_exits_78_after_two_calls() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  local win_creds="$TEST_HOME/win-dead/.credentials.json"
+  local linux_creds="$TEST_HOME/linux-dead/.credentials.json"
+  mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
+  printf '{"claudeAiOauth":{"accessToken":"also-expired","refreshToken":"r"}}' > "$win_creds"
+  printf '{"token":"stale"}' > "$linux_creds"
+  touch -t 2601010000 "$linux_creds" 2>/dev/null || touch -d "2026-01-01T00:00:00Z" "$linux_creds" 2>/dev/null || true
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+n=$(cat "$HOME/claude-call-count" 2>/dev/null || echo 0)
+echo $((n+1)) > "$HOME/claude-call-count"
+echo '{"type":"result","is_error":true,"subtype":"error","api_error_status":401,"result":""}'
+exit 1
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+  rm -f "$HOME/claude-call-count"
+  local rc=0
+  CEO_FORCE_WSL=1 CEO_WINDOWS_CREDS_PATH="$win_creds" CEO_LINUX_CREDS_PATH="$linux_creds" \
+    bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "78" "a heal whose retry still fails auth must exit 78"
+  assert_eq "$(cat "$HOME/claude-call-count" 2>/dev/null)" "2" "claude must run exactly twice: no second heal loop"
+  local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
+  assert_eq "$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")" "firing" "the auth alert must be raised after a failed heal retry"
 }
 
 test_wsl_creds_heal_noop_when_not_wsl() {

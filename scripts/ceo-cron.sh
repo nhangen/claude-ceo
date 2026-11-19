@@ -660,17 +660,20 @@ _file_mtime() {
 
 # _maybe_wsl_creds_heal
 #
-# If we are in WSL and the Windows-side credentials are present, valid JSON,
-# and newer than the Linux-side ones, copy them over atomically (mktemp + mv
-# in the same directory), chmod 600, and return 0. Returns 1 when no heal is
-# possible. Never fails the caller — a heal that cannot be applied is a
-# non-event; the auth-failure path still proceeds.
+# If we are in WSL and the Windows-side credentials hold a Claude OAuth token
+# and are newer than the Linux-side ones, copy them over atomically (mktemp +
+# mv in the same directory), chmod 600, and return 0. The replaced file is
+# kept as .credentials.json.bak.<epoch> so a bad swap can be undone by hand.
+# Returns 1 when no heal is possible; the auth-failure path still proceeds.
 _maybe_wsl_creds_heal() {
   _is_wsl || return 1
   local win_creds
   win_creds=$(_wsl_creds_file) || return 1
   command -v jq &>/dev/null || return 1
-  jq -e . "$win_creds" &>/dev/null || return 1
+  if ! jq -e '.claudeAiOauth.accessToken | strings | length > 0' "$win_creds" &>/dev/null; then
+    echo "$(date): WARN — WSL credential sync skipped: $win_creds is not a Claude OAuth credential file" >> "$SKIPS_LOG"
+    return 1
+  fi
   local linux_creds="${CEO_LINUX_CREDS_PATH:-$HOME/.claude/.credentials.json}"
   local win_mt linux_mt
   win_mt=$(_file_mtime "$win_creds")
@@ -683,8 +686,13 @@ _maybe_wsl_creds_heal() {
   tmp=$(mktemp "$dest_dir/.credentials.json.XXXXXX") || return 1
   cp "$win_creds" "$tmp" || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+  local backup=""
+  if [ -f "$linux_creds" ]; then
+    backup="$linux_creds.bak.$(date +%s)"
+    cp -p "$linux_creds" "$backup" || { rm -f "$tmp"; return 1; }
+  fi
   mv -f "$tmp" "$linux_creds" || { rm -f "$tmp"; return 1; }
-  _v "WSL credential sync: copied $win_creds -> $linux_creds (retrying once)"
+  echo "$(date): WSL credential sync: replaced $linux_creds with $win_creds${backup:+ (previous copy: $backup)}; retrying claude once" >> "$SKIPS_LOG"
   return 0
 }
 
