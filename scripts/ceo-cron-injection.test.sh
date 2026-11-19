@@ -842,8 +842,7 @@ test_auth_failure_writes_firing_alert_with_frontmatter() {
   assert_eq "$status" "firing" "status must be firing"
   assert_eq "$host" "testhost" "host must match the test host"
   assert_eq "$err" '"OAuth session expired and could not be refreshed"' "error must match requirement"
-  [ -n "$since" ] && [ "$since" != "null" ]
-  assert_eq "1" "1" "since must be non-empty"
+  assert_eq "$([[ "$since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo iso)" "iso" "since must be an ISO-8601 UTC timestamp"
 }
 
 test_auth_failure_preserves_since_on_reaffirm() {
