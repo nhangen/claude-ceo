@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createHeartbeatReader } from "@/main";
+import { createMatcher, CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "cronbird/core";
+import { createHeartbeatReader, createLookbackResolver } from "@/main";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,5 +43,22 @@ describe("createHeartbeatReader (#656)", () => {
       expect(createHeartbeatReader(join(dir, "absent.json"), (m) => logged.push(m))()).toBeNull();
       expect(logged).toEqual([]);
     });
+  });
+});
+
+describe("createLookbackResolver", () => {
+  const now = new Date(2026, 10, 19, 12, 0, 0);
+  const matcher = createMatcher();
+
+  test("derives the window from the job's cronSchedule: a daily job gets the cap", () => {
+    expect(createLookbackResolver(null, matcher)({ cronSchedule: "0 6 * * *" }, now)).toBe(CATCHUP_LOOKBACK_CAP_MS);
+  });
+
+  test("a sub-hourly job gets the floor", () => {
+    expect(createLookbackResolver(null, matcher)({ cronSchedule: "*/5 * * * *" }, now)).toBe(CATCHUP_LOOKBACK_FLOOR_MS);
+  });
+
+  test("a host-pinned fixed window wins", () => {
+    expect(createLookbackResolver(1234, matcher)({ cronSchedule: "0 6 * * *" }, now)).toBe(1234);
   });
 });

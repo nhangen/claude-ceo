@@ -35,6 +35,7 @@ import {
   CATCHUP_LOOKBACK_CAP_MS,
   MAX_SLEEP_MS,
   FATAL_EXIT_CODE,
+  type CronMatcher,
   type DaemonDeps,
   type Heartbeat,
 } from "cronbird/core";
@@ -202,9 +203,10 @@ async function main(): Promise<void> {
 
   // Per-schedule derived look-back (#157), unless the host pins a fixed window.
   const matcher = createMatcher();
-  const fixedLookback = resolveFixedLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS);
-  const resolveLookback = (job: { cronSchedule: string }, now: Date): number =>
-    fixedLookback ?? lookbackForSchedule(job.cronSchedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
+  const resolveLookback = createLookbackResolver(
+    resolveFixedLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS),
+    matcher,
+  );
   const dispatchContext = new SchedulerDispatchContext();
 
   const deps: DaemonDeps = {
@@ -313,6 +315,15 @@ export function createHeartbeatReader(path: string, log: (msg: string) => void):
     for (const w of warnings) log(`warning: ${w}; double-fire guard starts empty`);
     return value;
   };
+}
+
+export function createLookbackResolver(
+  fixedLookbackMs: number | null,
+  matcher: CronMatcher,
+): (job: { cronSchedule: string }, now: Date) => number {
+  return (job, now) =>
+    fixedLookbackMs ??
+    lookbackForSchedule(job.cronSchedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
 }
 
 export function createClearRunning(runMarker: string, log: (msg: string) => void): () => void {
