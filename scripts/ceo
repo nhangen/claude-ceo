@@ -1361,14 +1361,17 @@ cmd_swarm_owners_health() {
   # notifications. Self-host auth alerts are not notified here — the local
   # ceo-cron path is the authority for that host.
   local auth_alert_dir="$CEO_VAULT/CEO/alerts"
-  local auth_alert peer_auth status_auth prev_status_auth
+  local auth_alert peer_auth status_auth prev_status_auth self_slug
+  # Alert files are named through _ceo_host_slug, so compare against the slug,
+  # not the trimmed CEO_HOSTNAME used for heartbeats.
+  self_slug=$(_ceo_host_slug 2>/dev/null) || true
   if [ -d "$auth_alert_dir" ]; then
     for auth_alert in "$auth_alert_dir"/auth-*.md; do
       [ -f "$auth_alert" ] || continue
       peer_auth=$(basename "$auth_alert" .md)
       peer_auth="${peer_auth#auth-}"
       [ -n "$peer_auth" ] || continue
-      [ "$peer_auth" = "$self_host" ] && continue
+      [ "$peer_auth" = "$self_slug" ] && continue
       status_auth=$(ceo_read_alert_field "$auth_alert" status 2>/dev/null || true)
       [ "$status_auth" = "firing" ] || continue
       prev_status_auth=$(jq -r --arg k "auth:$peer_auth" '.[$k] // "fresh"' <<<"$prior_state" 2>/dev/null) || prev_status_auth="fresh"
