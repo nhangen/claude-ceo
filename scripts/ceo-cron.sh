@@ -714,10 +714,10 @@ _auth_alert_raise() {
   if ceo_auth_alert_set "$host" "firing" "$playbook"; then
     _AUTH_ALERT_WRITTEN=1
   else
-    echo "$(date): WARN — auth alert for $host could not be written to CEO/alerts; the 3-strike approvals block stays on for this failure" >> "$SKIPS_LOG"
+    echo "$(date): WARN — auth alert for $host could not be written to CEO/alerts; the 3-strike approvals block stays on for this failure" >> "$SKIPS_LOG" || true
   fi
   ceo_auth_alert_inbox_task "$host" "firing" \
-    || echo "$(date): WARN — auth inbox task for $host could not be written to CEO/inbox" >> "$SKIPS_LOG"
+    || echo "$(date): WARN — auth inbox task for $host could not be written to CEO/inbox" >> "$SKIPS_LOG" || true
   return 0
 }
 
@@ -725,9 +725,9 @@ _auth_alert_clear() {
   local host="$1"
   _v "AUTH ALERT: clearing auth alert host=$host"
   ceo_auth_alert_set "$host" "clear" \
-    || echo "$(date): WARN — auth alert for $host recovered but could not be cleared in CEO/alerts" >> "$SKIPS_LOG"
+    || echo "$(date): WARN — auth alert for $host recovered but could not be cleared in CEO/alerts" >> "$SKIPS_LOG" || true
   ceo_auth_alert_inbox_task "$host" "clear" \
-    || echo "$(date): WARN — auth inbox task for $host could not be marked done in CEO/inbox" >> "$SKIPS_LOG"
+    || echo "$(date): WARN — auth inbox task for $host could not be marked done in CEO/inbox" >> "$SKIPS_LOG" || true
   return 0
 }
 
