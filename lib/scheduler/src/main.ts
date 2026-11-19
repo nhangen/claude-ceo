@@ -233,7 +233,7 @@ async function main(): Promise<void> {
       dispatchArgv: cfg.dispatchArgv,
       log,
     }),
-    readHeartbeat: () => readHeartbeatFile(hbPath).value,
+    readHeartbeat: createHeartbeatReader(hbPath, log),
     writeHeartbeat: (hb) =>
       dispatchContext.persist(hb, () => {
         writeHeartbeatWithSync(hb, {
@@ -305,6 +305,16 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
  * is logged so operators know if permissions or read-only filesystems prevented
  * marker removal (#586).
  */
+// The heartbeat is the double-fire guard's backing store, so a corrupt or
+// unreadable one silently boots with an empty guard unless its warning is logged.
+export function createHeartbeatReader(path: string, log: (msg: string) => void): () => Heartbeat | null {
+  return () => {
+    const { value, warnings } = readHeartbeatFile(path);
+    for (const w of warnings) log(`warning: ${w}; double-fire guard starts empty`);
+    return value;
+  };
+}
+
 export function createClearRunning(runMarker: string, log: (msg: string) => void): () => void {
   return () => {
     try {
