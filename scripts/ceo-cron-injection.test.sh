@@ -851,16 +851,20 @@ test_auth_failure_preserves_since_on_reaffirm() {
   _seed_authfail_playbook
   _stub_claude_authfail
   local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
-  local first_since
-  bash "$CRON" authfail >/dev/null 2>&1 || true
+  local first_since first_check
+  # CEO_FORCE=1: without it the cooldown skips the second run and the
+  # reaffirm path never executes.
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
   first_since=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' since")
+  first_check=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' last_check")
   [ -n "$first_since" ] || { echo "first since missing"; return 1; }
 
-  # Simulate 24h passing, then re-fire.
   sleep 2  # ensure last_check differs
-  bash "$CRON" authfail >/dev/null 2>&1 || true
-  local second_since
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
+  local second_since second_check
   second_since=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' since")
+  second_check=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' last_check")
+  assert_eq "$([ "$second_check" != "$first_check" ] && echo moved)" "moved" "the reaffirm run must rewrite last_check"
   assert_eq "$second_since" "$first_since" "since must be preserved across reaffirmations"
 }
 
@@ -869,8 +873,8 @@ test_auth_failure_appends_shadow_inbox_task_once() {
   _seed_authfail_playbook
   _stub_claude_authfail
   local inbox="$CEO_VAULT/CEO/inbox/testhost.md"
-  bash "$CRON" authfail >/dev/null 2>&1 || true
-  bash "$CRON" authfail >/dev/null 2>&1 || true
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
   local count
   count=$(grep -c '^\- \[ \] Fix Claude authentication on testhost' "$inbox" 2>/dev/null || true)
   assert_eq "$count" "1" "shadow inbox task must be appended exactly once"
@@ -911,10 +915,12 @@ test_auth_failure_does_not_append_approvals_block() {
   local before
   before=$(wc -l < "$pending" 2>/dev/null || echo 0)
 
-  # Force three consecutive failures to cross the 3-strike threshold.
-  bash "$CRON" authfail >/dev/null 2>&1 || true
-  bash "$CRON" authfail >/dev/null 2>&1 || true
-  bash "$CRON" authfail >/dev/null 2>&1 || true
+  # CEO_FORCE=1 bypasses the cooldown; without it runs 2 and 3 are skipped
+  # and the fail count never reaches the 3-strike threshold.
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
+  assert_eq "$(cat "$HOME/.ceo/state/.fail-count-authfail" 2>/dev/null)" "3" "all three runs must reach _record_failure"
 
   local after
   after=$(wc -l < "$pending" 2>/dev/null || echo 0)
