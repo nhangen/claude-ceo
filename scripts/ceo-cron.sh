@@ -2773,7 +2773,7 @@ if [ $PLAN_EXIT -ne 0 ] && _classify_claude_failure "$PLAN_EXIT" "$PLAN_OUTPUT" 
     export CEO_AUTH_RETRY_DONE=1
     PLAN_EXIT=0
     PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
-      --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$CRON_STDERR_LOG") || PLAN_EXIT=$?
+      --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>>"$CRON_STDERR_LOG") || PLAN_EXIT=$?
     if [ $PLAN_EXIT -eq 0 ]; then
       _v "WSL credential heal: plan retry succeeded"
     fi
