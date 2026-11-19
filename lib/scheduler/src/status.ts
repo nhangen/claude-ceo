@@ -299,7 +299,8 @@ export function runCeoStatusCommand(sub: StatusSubcommand, args: string[], deps:
   const owners = loadOwners(swP, deps);
 
   const hbP = heartbeatPath(home);
-  const heartbeat = readHeartbeatFile(hbP);
+  const heartbeatResult = readHeartbeatFile(hbP);
+  const heartbeat = heartbeatResult.value;
   const hbState: HeartbeatState = !existsSync(hbP)
     ? "absent"
     : heartbeat === null
@@ -307,15 +308,19 @@ export function runCeoStatusCommand(sub: StatusSubcommand, args: string[], deps:
       : "ok";
   if (hbState === "corrupt") {
     deps.err(`warning: heartbeat file present but unparseable: ${hbP}\n`);
+  } else if (heartbeatResult.warnings.length > 0) {
+    for (const w of heartbeatResult.warnings) {
+      deps.err(`warning: ${w}\n`);
+    }
   }
-
+  const matcher = createMatcher();
   const report = computeStatus({
     jobs,
     host: cfg.host,
     enabled,
     owners,
     heartbeat,
-    matcher: createMatcher(),
+    matcherFor: () => matcher,
     now: deps.now(),
     options: {
       staleGraceMs: HEARTBEAT_STALE_MS,

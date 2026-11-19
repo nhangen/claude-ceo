@@ -203,8 +203,8 @@ async function main(): Promise<void> {
   // Per-schedule derived look-back (#157), unless the host pins a fixed window.
   const matcher = createMatcher();
   const fixedLookback = resolveFixedLookbackMs(process.env.CEO_SCHEDULERD_CATCHUP_LOOKBACK_MS);
-  const resolveLookback = (schedule: string, now: Date): number =>
-    fixedLookback ?? lookbackForSchedule(schedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
+  const resolveLookback = (job: { cronSchedule: string }, now: Date): number =>
+    fixedLookback ?? lookbackForSchedule(job.cronSchedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS);
   const dispatchContext = new SchedulerDispatchContext();
 
   const deps: DaemonDeps = {
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
       dispatchArgv: cfg.dispatchArgv,
       log,
     }),
-    readHeartbeat: () => readHeartbeatFile(hbPath),
+    readHeartbeat: () => readHeartbeatFile(hbPath).value,
     writeHeartbeat: (hb) =>
       dispatchContext.persist(hb, () => {
         writeHeartbeatWithSync(hb, {
