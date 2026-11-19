@@ -1004,6 +1004,18 @@ test_doctor_stignore_symlink_invocation_honors_repo_override() {
   assert_eq "$rc" "0" "matching override must not fail doctor"
 }
 
+test_doctor_tells_how_to_clear_an_unknown_host_auth_alert() {
+  # ceo-cron never auto-clears auth-unknown.md (#660), so the remediation has
+  # to say how to get rid of it instead of "ssh to unknown".
+  mkdir -p "$CEO_VAULT/CEO/alerts"
+  printf -- '---\nstatus: firing\nsince: 2026-05-01T00:00:00Z\nlast_check: 2026-05-01T01:00:00Z\nhost: unknown\n---\n' \
+    > "$CEO_VAULT/CEO/alerts/auth-unknown.md"
+  local output
+  output=$("$CEO_BIN" doctor 2>&1) || true
+  assert_contains "$output" "set CEO_HOSTNAME" "an unknown-host auth alert must say to set CEO_HOSTNAME"
+  assert_not_contains "$output" "ssh to unknown" "an unknown-host auth alert must not tell you to ssh to 'unknown'"
+}
+
 test_doctor_reports_firing_claude_auth_alert() {
   mkdir -p "$CEO_VAULT/CEO/alerts"
   local alert="$CEO_VAULT/CEO/alerts/auth-ml-1.md"

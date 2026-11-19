@@ -765,7 +765,11 @@ cmd_doctor() {
       [ "$auth_status" = "firing" ] || continue
       auth_since=$(ceo_read_alert_field "$auth_alert" since 2>/dev/null || true)
       echo "  ⚠ Claude auth alert firing on $auth_host since ${auth_since:-<unknown>}"
-      echo "    fix: ssh to $auth_host, run \`claude\`, then /login (or sync newer Windows credentials into WSL)"
+      if [ "$auth_host" = "unknown" ]; then
+        echo "    fix: a host with no resolvable name raised this; set CEO_HOSTNAME there, re-login, then delete CEO/alerts/auth-unknown.md (it never auto-clears)"
+      else
+        echo "    fix: ssh to $auth_host, run \`claude\`, then /login (or sync newer Windows credentials into WSL)"
+      fi
       warn=$(( warn + 1 ))
       any_firing=1
     done
