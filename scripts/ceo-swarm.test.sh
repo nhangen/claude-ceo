@@ -712,4 +712,121 @@ test_swarm_doctor_help_prints_usage() {
   assert_contains "$out" "Usage: ceo swarm doctor" "--help must print usage, not an unknown-option error"
 }
 
+test_owners_health_reports_firing_peer_auth_without_desktop_notify() {
+  # A Linux host, or one with desktop notify off, still has to say in its
+  # report that a peer cannot run claude.
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"
+  mkdir -p "$TEST_VAULT/CEO/alerts"
+  printf -- '---\nstatus: firing\nsince: 2026-05-01T00:00:00Z\nlast_check: 2026-05-01T01:00:00Z\nhost: ml-1\n---\n' \
+    > "$TEST_VAULT/CEO/alerts/auth-ml-1.md"
+  local out
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" CEO_NO_DESKTOP_NOTIFY=1 \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" bash "$CEO_CLI" swarm owners-health 2>&1) || true
+  assert_contains "$out" "Claude auth firing on ml-1" "a firing peer auth alert must be reported even when no notification fires"
+}
+
+test_owners_health_self_skip_matches_slugged_alert_name() {
+  # The alert file is named through _ceo_host_slug, so a CEO_HOSTNAME with a
+  # space produces auth-checker-box.md; the self-skip must still recognize it.
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"
+  mkdir -p "$TEST_VAULT/CEO/alerts"
+  printf -- '---\nstatus: firing\nsince: 2026-05-01T00:00:00Z\nlast_check: 2026-05-01T01:00:00Z\nhost: checker-box\n---\n' \
+    > "$TEST_VAULT/CEO/alerts/auth-checker-box.md"
+  local bindir="$TEST_HOME/bin-slug"; mkdir -p "$bindir"
+  local marker="$TEST_HOME/osa-fired-slug"
+  cat > "$bindir/osascript" << 'STUB'
+#!/bin/bash
+echo "$*" >> "$OSA_MARKER"
+exit 0
+STUB
+  chmod +x "$bindir/osascript"
+  local out
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker box" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" OSA_MARKER="$marker" PATH="$bindir:$PATH" \
+    bash "$CEO_CLI" swarm owners-health 2>&1) || true
+  assert_not_contains "$out" "checker-box" "this host's own auth alert must not be reported as a peer's"
+  assert_eq "$([ -f "$marker" ] && echo 1 || echo 0)" "0" "this host must not notify about its own auth alert"
+}
+
+test_owners_health_peer_auth_alert_notification_and_throttle() {
+  _seed_owners '{ "schema_version": 1, "hosts": ["ml-1"], "owners": { "pb1": "ml-1" } }'
+  _write_heartbeat_iso "ml-1" "$(_iso_at_offset 60)"  # fresh owner heartbeat
+
+  mkdir -p "$TEST_VAULT/CEO/alerts"
+  cat > "$TEST_VAULT/CEO/alerts/auth-ml-1.md" << 'EOF'
+---
+status: firing
+since: 2026-05-01T00:00:00Z
+last_check: 2026-05-01T01:00:00Z
+host: ml-1
+playbook: morning
+error: "OAuth session expired and could not be refreshed"
+---
+EOF
+
+  local bindir="$TEST_HOME/bin"; mkdir -p "$bindir"
+  local marker="$TEST_HOME/osa-fired"
+  cat > "$bindir/osascript" << 'STUB'
+#!/bin/bash
+case "$*" in
+  *"display notification"*"Claude OAuth expired on "*"Claude CEO FATAL"*"Basso"*)
+    echo "$*" >> "$OSA_MARKER"
+    exit 0
+    ;;
+  *) echo "osascript stub: unexpected argv: $*" >&2; exit 99 ;;
+esac
+STUB
+  chmod +x "$bindir/osascript"
+
+  # 1. First run: transitions from fresh to firing -> notification fires
+  local out rc=0
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" OSA_MARKER="$marker" PATH="$bindir:$PATH" \
+    bash "$CEO_CLI" swarm owners-health 2>&1) || rc=$?
+  assert_contains "$out" "notified: Claude OAuth expired on ml-1" "first run must notify"
+  local count
+  count=$(wc -l < "$marker" | tr -d '[:space:]')
+  assert_eq "$count" "1" "osascript must be invoked once on transition"
+
+  # 2. Immediate second run: state has auth:ml-1 firing, stamp <24h -> throttled
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" OSA_MARKER="$marker" PATH="$bindir:$PATH" \
+    bash "$CEO_CLI" swarm owners-health 2>&1) || rc=$?
+  assert_not_contains "$out" "notified" "second run within 24h must not notify"
+  count=$(wc -l < "$marker" | tr -d '[:space:]')
+  assert_eq "$count" "1" "osascript must not be invoked on throttled run"
+
+  # 3. Old stamp (>24h): re-notifies
+  local stamp="$TEST_HOME/.ceo/last-notified-auth-ml-1"
+  assert_file_exists "$stamp" "stamp file must exist"
+  echo "$(( $(date +%s) - 90000 ))" > "$stamp"
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" OSA_MARKER="$marker" PATH="$bindir:$PATH" \
+    bash "$CEO_CLI" swarm owners-health 2>&1) || rc=$?
+  assert_contains "$out" "re-notified (>24h): Claude OAuth expired on ml-1" "must re-notify after 24h"
+  count=$(wc -l < "$marker" | tr -d '[:space:]')
+  assert_eq "$count" "2" "osascript must be invoked once more"
+
+  # 4. Self-host auth alert: must NOT notify
+  cat > "$TEST_VAULT/CEO/alerts/auth-checker.md" << 'EOF'
+---
+status: firing
+since: 2026-05-01T00:00:00Z
+last_check: 2026-05-01T01:00:00Z
+host: checker
+playbook: morning
+error: "OAuth session expired and could not be refreshed"
+---
+EOF
+  rm -f "$TEST_VAULT/CEO/alerts/auth-ml-1.md"
+  rm -f "$marker"
+  out=$(env HOME="$TEST_HOME" CEO_VAULT="$TEST_VAULT" CEO_HOSTNAME="checker" \
+    CEO_SWARM_NOW_EPOCH="$OH_REF_EPOCH" OSA_MARKER="$marker" PATH="$bindir:$PATH" \
+    bash "$CEO_CLI" swarm owners-health 2>&1) || rc=$?
+  assert_not_contains "$out" "notified: Claude OAuth expired on checker" "self-host must not notify"
+  assert_eq "$([ -f "$marker" ] && echo 1 || echo 0)" "0" "osascript must not fire for self-host"
+}
+
 run_tests

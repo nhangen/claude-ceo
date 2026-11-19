@@ -750,6 +750,32 @@ cmd_doctor() {
     ok=$(( ok + 1 ))
   fi
 
+  # Firing Claude auth alerts (#660): the durable alert file is the
+  # source of truth for "this host's claude session is dead"; surfacing it in
+  # doctor output makes a new machine / new user see the problem in the first
+  # diagnostic run instead of only via the morning brief.
+  local auth_alert_dir="$CEO_VAULT/CEO/alerts"
+  local auth_alert auth_host auth_status auth_since
+  if [ -d "$auth_alert_dir" ]; then
+    local any_firing=0
+    for auth_alert in "$auth_alert_dir"/auth-*.md; do
+      [ -f "$auth_alert" ] || continue
+      auth_host=$(basename "$auth_alert" .md); auth_host="${auth_host#auth-}"
+      auth_status=$(ceo_read_alert_field "$auth_alert" status 2>/dev/null || true)
+      [ "$auth_status" = "firing" ] || continue
+      auth_since=$(ceo_read_alert_field "$auth_alert" since 2>/dev/null || true)
+      echo "  ⚠ Claude auth alert firing on $auth_host since ${auth_since:-<unknown>}"
+      if [ "$auth_host" = "unknown" ]; then
+        echo "    fix: a host with no resolvable name raised this; set CEO_HOSTNAME there, re-login, then delete CEO/alerts/auth-unknown.md (it never auto-clears)"
+      else
+        echo "    fix: ssh to $auth_host, run \`claude\`, then /login (or sync newer Windows credentials into WSL)"
+      fi
+      warn=$(( warn + 1 ))
+      any_firing=1
+    done
+    [ "$any_firing" -eq 0 ] && { echo "  ✓ no firing Claude auth alerts"; ok=$(( ok + 1 )); }
+  fi
+
   echo ""
   echo "Result: $ok ok, $warn warnings, $fail failures"
   [ "$fail" -gt 0 ] && return 1
@@ -1329,6 +1355,53 @@ cmd_swarm_owners_health() {
       echo "$line"; report+="$line"$'\n'
     fi
   done <<<"$owner_hosts"
+
+  # Throttled macOS desktop notification for peer auth alerts (#660).
+  # Scans CEO/alerts/auth-<peer>.md across synced vaults; fires osascript on
+  # the firing transition OR when >24h has elapsed since the last notify,
+  # whichever comes first. Non-blocking: a locked session must not stall the
+  # check. Gated by CEO_NO_DESKTOP_NOTIFY (same as the CEO_VAULT FATAL
+  # escalation) so the test suite can assert without popping real
+  # notifications. A host's own auth alert is skipped here, and ceo-cron does
+  # not notify for it either, so a Mac whose own session died gets no toast;
+  # ceo doctor, ceo scan and the shadow inbox task are what surface it (#662).
+  local auth_alert_dir="$CEO_VAULT/CEO/alerts"
+  local auth_alert peer_auth status_auth prev_status_auth self_slug
+  # Alert files are named through _ceo_host_slug, so compare against the slug,
+  # not the trimmed CEO_HOSTNAME used for heartbeats.
+  self_slug=$(_ceo_host_slug 2>/dev/null) || true
+  if [ -d "$auth_alert_dir" ]; then
+    for auth_alert in "$auth_alert_dir"/auth-*.md; do
+      [ -f "$auth_alert" ] || continue
+      peer_auth=$(basename "$auth_alert" .md)
+      peer_auth="${peer_auth#auth-}"
+      [ -n "$peer_auth" ] || continue
+      [ "$peer_auth" = "$self_slug" ] && continue
+      status_auth=$(ceo_read_alert_field "$auth_alert" status 2>/dev/null || true)
+      [ "$status_auth" = "firing" ] || continue
+      prev_status_auth=$(jq -r --arg k "auth:$peer_auth" '.[$k] // "fresh"' <<<"$prior_state" 2>/dev/null) || prev_status_auth="fresh"
+      # Always record the firing in the per-host state (so a later recovery
+      # can be measured); fire the notification on the firing transition or
+      # on >24h elapsed since the last notify — the 24h gate lives in
+      # ceo_auth_notify_fire so it is the single source of truth.
+      new_state=$(jq -c --arg k "auth:$peer_auth" '.[$k] = "firing"' <<<"$new_state")
+      line="  ⚠ Claude auth firing on $peer_auth (see CEO/alerts/auth-$peer_auth.md)"
+      echo "$line"; report+="$line"$'\n'
+      if [ "$prev_status_auth" != "firing" ]; then
+        if ceo_auth_notify_fire "$peer_auth" 1; then
+          line="  🔔 notified: Claude OAuth expired on $peer_auth"
+          echo "$line"; report+="$line"$'\n'
+        fi
+      else
+        # Already known-firing from prior_state: re-check the 24h window so a
+        # long-lived firing alert still pings at most once per day.
+        if ceo_auth_notify_fire "$peer_auth" 0; then
+          line="  🔔 re-notified (>24h): Claude OAuth expired on $peer_auth"
+          echo "$line"; report+="$line"$'\n'
+        fi
+      fi
+    done
+  fi
 
   # The alert file goes first: it is the playbook's declared artifact, so it
   # should reflect this run even when the state write below fails.
