@@ -969,6 +969,29 @@ STUB
   assert_eq "$status" "clear" "claude-backed success must auto-clear the alert"
 }
 
+test_auth_alert_for_unresolved_host_is_not_cleared_by_another_host() {
+  # Every host that cannot resolve its name shares auth-unknown.md, so a
+  # success on one of them says nothing about the one that raised it.
+  _auth_alert_fixture
+  local alert="$CEO_VAULT/CEO/alerts/auth-unknown.md"
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_set unknown firing"
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+echo '{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.01}'
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+  cat > "$TEST_HOME/.bun/bin/hostname" << 'SH'
+#!/bin/bash
+echo ""
+SH
+  chmod +x "$TEST_HOME/.bun/bin/hostname"
+  _seed_authfail_playbook
+  CEO_HOSTNAME= bash "$CRON" authfail >/dev/null 2>&1 || true
+  rm -f "$TEST_HOME/.bun/bin/hostname"
+  assert_eq "$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")" "firing" "an unresolved host must not clear the shared auth-unknown alert"
+}
+
 # ---------------------------------------------------------------------------
 # WSL credential auto-sync (ticket #660)
 # ---------------------------------------------------------------------------

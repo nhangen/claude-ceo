@@ -178,7 +178,9 @@ LOCK_FILE="${CEO_LOCK_FILE:-$CEO_DIR/log/ceo-cron.lock}"
 # state like the fail counters and should never have synced. But `ceo doctor`
 # warns when a host has no .stignore installed at all, so the file is also keyed
 # by host: on such a host the logs stay distinct instead of forking.
+RUNS_LOG_HOST_UNRESOLVED=0
 RUNS_LOG_HOST=$(_ceo_host_slug) || {
+  RUNS_LOG_HOST_UNRESOLVED=1
   # $LOG_DIR is created much later in the run, and this is the one message that
   # must survive a first-ever run on a fresh install — which is where an
   # unresolved host is most likely.
@@ -737,6 +739,9 @@ _auth_alert_clear() {
 # successful run, not by a manual clear.
 _auth_alert_maybe_clear() {
   local host="$1"
+  # auth-unknown.md is shared by every host that cannot resolve its name, so
+  # this host's success does not mean the one that raised it recovered.
+  [ "${RUNS_LOG_HOST_UNRESOLVED:-0}" -eq 1 ] && return 0
   local alert_file cur_status
   alert_file=$(ceo_auth_alert_file "$VAULT" "$host")
   [ -f "$alert_file" ] || return 0
