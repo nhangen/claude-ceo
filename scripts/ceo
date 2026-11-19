@@ -764,7 +764,7 @@ cmd_doctor() {
       auth_status=$(ceo_read_alert_field "$auth_alert" status 2>/dev/null || true)
       [ "$auth_status" = "firing" ] || continue
       auth_since=$(ceo_read_alert_field "$auth_alert" since 2>/dev/null || true)
-      echo "  ✗ Claude auth alert firing on $auth_host since ${auth_since:-<unknown>}"
+      echo "  ⚠ Claude auth alert firing on $auth_host since ${auth_since:-<unknown>}"
       echo "    fix: ssh to $auth_host, run \`claude\`, then /login (or sync newer Windows credentials into WSL)"
       warn=$(( warn + 1 ))
       any_firing=1

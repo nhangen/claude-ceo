@@ -1019,7 +1019,7 @@ error: "OAuth session expired and could not be refreshed"
 EOF
   local output rc=0
   output=$("$CEO_BIN" doctor 2>&1) || rc=$?
-  assert_contains "$output" "✗ Claude auth alert firing on ml-1 since 2026-05-01T00:00:00Z" \
+  assert_contains "$output" "⚠ Claude auth alert firing on ml-1 since 2026-05-01T00:00:00Z" \
     "doctor must report firing Claude auth alert"
   assert_contains "$output" "fix: ssh to ml-1, run \`claude\`, then /login" \
     "doctor must report remediation for firing auth alert"
