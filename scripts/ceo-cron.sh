@@ -426,18 +426,12 @@ _record_failure() {
   fails=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
   fails=$((fails + 1))
   echo "$fails" > "$FAIL_COUNT_FILE"
-  # Approvals-queue hygiene (ticket #660): an auth failure is already surfaced
-  # as a durable CEO/alerts/auth-<host>.md (status: firing) plus a shadow-inbox
-  # task. Appending a third generic "CEO cron failing repeatedly" block for the
-  # same event is noise — the specific alert is actionable and the inbox task
-  # is the human-facing to-do. Gate the generic 3-strike block on the reason
-  # not being an auth failure; the fail counter still increments for
-  # observability.
-  _is_auth_failure=0
-  case "$reason" in
-    "Claude auth failure"*) _is_auth_failure=1 ;;
-  esac
-  if [ "$fails" -ge 3 ] && [ "$_is_auth_failure" -eq 0 ]; then
+  # An auth failure whose CEO/alerts/auth-<host>.md was written is already
+  # surfaced there and in the shadow inbox (#660), so the generic 3-strike
+  # block would only duplicate it. Keyed on the write having succeeded, not on
+  # the reason text: if the alert write failed, this block is the remaining
+  # durable signal. The fail counter still increments either way.
+  if [ "$fails" -ge 3 ] && [ "${_AUTH_ALERT_WRITTEN:-0}" -ne 1 ]; then
     # pending.md is synced and every swarm host appends to it, while the counter
     # behind this alert is host-local (CEO/log/.fail-count* is excluded by
     # syncthing/shared.stignore). So "3 consecutive failures" is a claim about
@@ -698,26 +692,33 @@ _maybe_wsl_creds_heal() {
 # _auth_alert_raise <host> <phase> <playbook>   /   _auth_alert_clear <host>
 #
 # Thin wrappers over the ceo-config.sh pair (ceo_auth_alert_set /
-# _inbox_task) that keep the auth-failure path non-fatal to alert writing:
-# a failure to write the alert or inbox task is logged and swallowed, never
-# masks the underlying auth failure, and never changes the exit code.
+# _inbox_task). A failed write never changes the exit code, but it goes to
+# $SKIPS_LOG rather than the verbose-only channel: _record_failure drops the
+# generic 3-strike approvals block only when _AUTH_ALERT_WRITTEN=1, so a
+# failed alert write must not leave the failure with no durable signal.
 # ---------------------------------------------------------------------------
+_AUTH_ALERT_WRITTEN=0
 _auth_alert_raise() {
   local host="$1" phase="$2" playbook="${3:-}"
   _v "AUTH ALERT: raising firing alert host=$host phase=$phase playbook=$playbook"
-  ceo_auth_alert_set "$host" "firing" "$playbook" \
-    || { _v "AUTH ALERT: failed to write alert file (continuing)"; return 0; }
+  if ceo_auth_alert_set "$host" "firing" "$playbook"; then
+    _AUTH_ALERT_WRITTEN=1
+  else
+    echo "$(date): WARN — auth alert for $host could not be written to CEO/alerts; the 3-strike approvals block stays on for this failure" >> "$SKIPS_LOG"
+  fi
   ceo_auth_alert_inbox_task "$host" "firing" \
-    || { _v "AUTH ALERT: failed to write inbox task (continuing)"; return 0; }
+    || echo "$(date): WARN — auth inbox task for $host could not be written to CEO/inbox" >> "$SKIPS_LOG"
+  return 0
 }
 
 _auth_alert_clear() {
   local host="$1"
   _v "AUTH ALERT: clearing auth alert host=$host"
   ceo_auth_alert_set "$host" "clear" \
-    || { _v "AUTH ALERT: failed to write clear alert (continuing)"; return 0; }
+    || echo "$(date): WARN — auth alert for $host recovered but could not be cleared in CEO/alerts" >> "$SKIPS_LOG"
   ceo_auth_alert_inbox_task "$host" "clear" \
-    || { _v "AUTH ALERT: failed to mark inbox task done (continuing)"; return 0; }
+    || echo "$(date): WARN — auth inbox task for $host could not be marked done in CEO/inbox" >> "$SKIPS_LOG"
+  return 0
 }
 
 # _auth_alert_maybe_clear <host>

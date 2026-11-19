@@ -928,6 +928,24 @@ test_auth_failure_does_not_append_approvals_block() {
   assert_not_contains "$(cat "$pending")" "CEO cron failing repeatedly" "pending.md must not carry the generic 3-strike line"
 }
 
+test_auth_alert_write_failure_is_logged_and_keeps_approvals_block() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  _stub_claude_authfail
+  local pending="$CEO_VAULT/CEO/approvals/pending.md"
+  local inbox="$CEO_VAULT/CEO/inbox/testhost.md"
+  chmod 500 "$CEO_DIR/alerts"
+  local rc=0
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
+  CEO_FORCE=1 bash "$CRON" authfail >/dev/null 2>&1 || true
+  chmod 700 "$CEO_DIR/alerts"
+  assert_eq "$rc" "78" "a failed alert write must not change the auth exit code"
+  assert_contains "$(_skips_log)" "auth alert for testhost could not be written" "a failed alert write must leave a line in cron-skips.log"
+  assert_eq "$(grep -c '^- \[ \] Fix Claude authentication on testhost' "$inbox" 2>/dev/null || true)" "1" "the inbox task must still be written when the alert write fails"
+  assert_contains "$(cat "$pending")" "CEO cron failing repeatedly" "with no auth alert written, the 3-strike approvals block must still fire"
+}
+
 test_auth_clear_via_claude_success_auto_clears_alert() {
   _auth_alert_fixture
   local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
