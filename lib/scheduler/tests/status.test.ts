@@ -494,7 +494,7 @@ describe("runCeoStatusCommand — degraded inputs", () => {
       mkdirSync(`${fix.home}/.ceo/schedulerd`, { recursive: true });
       writeFileSync(`${fix.home}/.ceo/schedulerd/heartbeat.json`, "{trunc");
       const r = run(fix, "status");
-      expect(r.err).toContain("heartbeat file present but unparseable");
+      expect(r.err.match(/heartbeat file present but unparseable/g)).toHaveLength(1);
       expect(r.out).toContain("daemon: heartbeat file unreadable");
       expect(r.out).not.toContain("never checked in");
     } finally {
