@@ -306,12 +306,9 @@ export function runCeoStatusCommand(sub: StatusSubcommand, args: string[], deps:
     : heartbeat === null
       ? "corrupt"
       : "ok";
-  if (hbState === "corrupt") {
+  for (const w of heartbeatResult.warnings) deps.err(`warning: ${w}\n`);
+  if (hbState === "corrupt" && heartbeatResult.warnings.length === 0) {
     deps.err(`warning: heartbeat file present but unparseable: ${hbP}\n`);
-  } else if (heartbeatResult.warnings.length > 0) {
-    for (const w of heartbeatResult.warnings) {
-      deps.err(`warning: ${w}\n`);
-    }
   }
   const matcher = createMatcher();
   const report = computeStatus({
