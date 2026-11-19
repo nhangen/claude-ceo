@@ -1398,6 +1398,9 @@ ceo_auth_alert_inbox_task() {
 ceo_auth_notify_fire() {
   local host="$1" force="${2:-0}"
   [ -n "$host" ] || return 1
+  # The host is read from a filename in the synced vault and lands inside an
+  # AppleScript string literal; anything outside the slug set could escape it.
+  [[ "$host" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
   [ -n "${CEO_NO_DESKTOP_NOTIFY:-}" ] && return 1
   command -v osascript &>/dev/null || return 1
   local state_dir stamp_file now_epoch last_epoch

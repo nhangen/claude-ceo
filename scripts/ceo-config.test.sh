@@ -806,6 +806,25 @@ STUB
   assert_eq "$got" "fired" "unguarded escalation must reach the notification path"
 }
 
+test_auth_notify_fire_rejects_host_outside_slug_set() {
+  # The host comes from a filename in the synced vault and is interpolated
+  # into an AppleScript string, so a quote in it must never reach osascript.
+  local bindir="$TEST_HOME/stubbin-q"; mkdir -p "$bindir"
+  local marker="$TEST_HOME/osa-fired-q"
+  cat > "$bindir/osascript" <<'STUB'
+#!/bin/bash
+echo "$*" >> "$OSA_MARKER"
+exit 0
+STUB
+  chmod +x "$bindir/osascript"
+  local rc=0
+  # notify-unguarded: deliberate, stub osascript is first on PATH
+  env -i HOME="$TEST_HOME" OSA_MARKER="$marker" PATH="$bindir:$PATH" \
+    bash -c "source '$LIB'; ceo_auth_notify_fire 'x\" & do shell script \"id' 1" || rc=$?
+  assert_eq "$rc" "1" "a host outside [A-Za-z0-9._-] must be refused"
+  assert_eq "$([ -f "$marker" ] && echo 1 || echo 0)" "0" "a refused host must never reach osascript"
+}
+
 test_auth_notify_fire_throttling() {
   local bindir="$TEST_HOME/stubbin"; mkdir -p "$bindir"
   local marker="$TEST_HOME/osa-fired"
