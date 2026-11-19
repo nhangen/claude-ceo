@@ -1004,4 +1004,39 @@ test_doctor_stignore_symlink_invocation_honors_repo_override() {
   assert_eq "$rc" "0" "matching override must not fail doctor"
 }
 
+test_doctor_reports_firing_claude_auth_alert() {
+  mkdir -p "$CEO_VAULT/CEO/alerts"
+  local alert="$CEO_VAULT/CEO/alerts/auth-ml-1.md"
+  cat > "$alert" << 'EOF'
+---
+status: firing
+since: 2026-05-01T00:00:00Z
+last_check: 2026-05-01T01:00:00Z
+host: ml-1
+playbook: morning
+error: "OAuth session expired and could not be refreshed"
+---
+EOF
+  local output rc=0
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "✗ Claude auth alert firing on ml-1 since 2026-05-01T00:00:00Z" \
+    "doctor must report firing Claude auth alert"
+  assert_contains "$output" "fix: ssh to ml-1, run \`claude\`, then /login" \
+    "doctor must report remediation for firing auth alert"
+
+  # Cleared alert must not report a firing warning
+  cat > "$alert" << 'EOF'
+---
+status: clear
+since: 2026-05-01T02:00:00Z
+last_check: 2026-05-01T02:00:00Z
+host: ml-1
+playbook: morning
+---
+EOF
+  output=$("$CEO_BIN" doctor 2>&1) || rc=$?
+  assert_contains "$output" "✓ no firing Claude auth alerts" \
+    "doctor must report no firing alerts when all are clear"
+}
+
 run_tests

@@ -357,6 +357,16 @@ _record_success() {
   echo 0 > "$FAIL_COUNT_FILE"
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LAST_SCAN_FILE"
+
+  # Auth-alert auto-clear (ticket #660): a claude-backed success proves the
+  # OAuth session on this host recovered, so a firing auth alert for this
+  # host transitions to status: clear and the matching shadow-inbox task is
+  # rewritten to [done]. Gated on RUNNER=claude so an ollama fallback run
+  # doesn't mask a still-broken claude session, and on the alert actually
+  # being in firing state (no-op when the file is absent or already clear).
+  if [ "${RUNNER:-claude}" = "claude" ]; then
+    _auth_alert_maybe_clear "$RUNS_LOG_HOST"
+  fi
   # Not bare, for two reasons. Under set -e a failed append aborts _record_success
   # here — after the fail counter is zeroed and .last-run stamped, before notify —
   # and _on_exit records nothing because _bookkeeping_done is already 1, so the
@@ -416,7 +426,18 @@ _record_failure() {
   fails=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0)
   fails=$((fails + 1))
   echo "$fails" > "$FAIL_COUNT_FILE"
-  if [ "$fails" -ge 3 ]; then
+  # Approvals-queue hygiene (ticket #660): an auth failure is already surfaced
+  # as a durable CEO/alerts/auth-<host>.md (status: firing) plus a shadow-inbox
+  # task. Appending a third generic "CEO cron failing repeatedly" block for the
+  # same event is noise — the specific alert is actionable and the inbox task
+  # is the human-facing to-do. Gate the generic 3-strike block on the reason
+  # not being an auth failure; the fail counter still increments for
+  # observability.
+  _is_auth_failure=0
+  case "$reason" in
+    "Claude auth failure"*) _is_auth_failure=1 ;;
+  esac
+  if [ "$fails" -ge 3 ] && [ "$_is_auth_failure" -eq 0 ]; then
     # pending.md is synced and every swarm host appends to it, while the counter
     # behind this alert is host-local (CEO/log/.fail-count* is excluded by
     # syncthing/shared.stignore). So "3 consecutive failures" is a claim about
@@ -599,6 +620,122 @@ _release_lock() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Self-healing WSL credential sync (ticket #660)
+#
+# Inside WSL, the claude CLI reads ~/.claude/.credentials.json in the Linux
+# home, but a human typically logs in on the Windows side — the fresh session
+# lives at /mnt/c/Users/*/.claude/.credentials.json. When we are about to
+# declare a fatal auth failure, offer to copy the newer Windows credentials
+# over the stale Linux ones and retry the claude invocation once.
+#
+# The Windows path is overridable via CEO_WINDOWS_CREDS_PATH (mirrors the
+# CEO_DISK_C_MOUNT pattern in ceo-disk-monitor.sh) so the test harness can
+# drive the branch without a real /mnt/c. CEO_FORCE_WSL=1 drives the WSL
+# branch in tests; CEO_LINUX_CREDS_PATH pins the destination for the same
+# reason.
+# ---------------------------------------------------------------------------
+
+# _is_wsl — true when running inside a Windows Subsystem for Linux distro.
+_is_wsl() {
+  [ "${CEO_FORCE_WSL:-}" = "1" ] && return 0
+  [ -n "${WSL_DISTRO_NAME:-}" ] && return 0
+  [ -r /proc/version ] && grep -qiE 'microsoft|wsl' /proc/version
+}
+
+# _wsl_creds_file — best candidate for the Windows-side credentials file.
+# Prints the path; returns 1 when no candidate exists.
+_wsl_creds_file() {
+  local c
+  if [ -n "${CEO_WINDOWS_CREDS_PATH:-}" ]; then
+    [ -f "$CEO_WINDOWS_CREDS_PATH" ] && { printf '%s\n' "$CEO_WINDOWS_CREDS_PATH"; return 0; }
+    return 1
+  fi
+  for c in /mnt/c/Users/*/.claude/.credentials.json; do
+    [ -f "$c" ] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
+# _file_mtime <path> — portable mtime in epoch seconds (GNU stat, BSD stat).
+_file_mtime() {
+  stat -c %Y "$1" 2>/dev/null && return 0
+  stat -f %m "$1" 2>/dev/null && return 0
+  echo 0
+}
+
+# _maybe_wsl_creds_heal
+#
+# If we are in WSL and the Windows-side credentials are present, valid JSON,
+# and newer than the Linux-side ones, copy them over atomically (mktemp + mv
+# in the same directory), chmod 600, and return 0. Returns 1 when no heal is
+# possible. Never fails the caller — a heal that cannot be applied is a
+# non-event; the auth-failure path still proceeds.
+_maybe_wsl_creds_heal() {
+  _is_wsl || return 1
+  local win_creds
+  win_creds=$(_wsl_creds_file) || return 1
+  command -v jq &>/dev/null || return 1
+  jq -e . "$win_creds" &>/dev/null || return 1
+  local linux_creds="${CEO_LINUX_CREDS_PATH:-$HOME/.claude/.credentials.json}"
+  local win_mt linux_mt
+  win_mt=$(_file_mtime "$win_creds")
+  linux_mt=0
+  [ -f "$linux_creds" ] && linux_mt=$(_file_mtime "$linux_creds")
+  [ "$win_mt" -gt "$linux_mt" ] || return 1
+  local dest_dir tmp
+  dest_dir=$(dirname "$linux_creds")
+  mkdir -p "$dest_dir" || return 1
+  tmp=$(mktemp "$dest_dir/.credentials.json.XXXXXX") || return 1
+  cp "$win_creds" "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$linux_creds" || { rm -f "$tmp"; return 1; }
+  _v "WSL credential sync: copied $win_creds -> $linux_creds (retrying once)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _auth_alert_raise <host> <phase> <playbook>   /   _auth_alert_clear <host>
+#
+# Thin wrappers over the ceo-config.sh pair (ceo_auth_alert_set /
+# _inbox_task) that keep the auth-failure path non-fatal to alert writing:
+# a failure to write the alert or inbox task is logged and swallowed, never
+# masks the underlying auth failure, and never changes the exit code.
+# ---------------------------------------------------------------------------
+_auth_alert_raise() {
+  local host="$1" phase="$2" playbook="${3:-}"
+  _v "AUTH ALERT: raising firing alert host=$host phase=$phase playbook=$playbook"
+  ceo_auth_alert_set "$host" "firing" "$playbook" \
+    || { _v "AUTH ALERT: failed to write alert file (continuing)"; return 0; }
+  ceo_auth_alert_inbox_task "$host" "firing" \
+    || { _v "AUTH ALERT: failed to write inbox task (continuing)"; return 0; }
+}
+
+_auth_alert_clear() {
+  local host="$1"
+  _v "AUTH ALERT: clearing auth alert host=$host"
+  ceo_auth_alert_set "$host" "clear" \
+    || { _v "AUTH ALERT: failed to write clear alert (continuing)"; return 0; }
+  ceo_auth_alert_inbox_task "$host" "clear" \
+    || { _v "AUTH ALERT: failed to mark inbox task done (continuing)"; return 0; }
+}
+
+# _auth_alert_maybe_clear <host>
+#
+# Only transitions a firing auth alert on <host> to clear; an absent or
+# already-clear alert is a no-op. Called from _record_success on every
+# claude-backed success so the alert's lifetime is bounded by the first
+# successful run, not by a manual clear.
+_auth_alert_maybe_clear() {
+  local host="$1"
+  local alert_file cur_status
+  alert_file=$(ceo_auth_alert_file "$VAULT" "$host")
+  [ -f "$alert_file" ] || return 0
+  cur_status=$(ceo_read_alert_field "$alert_file" status 2>/dev/null || true)
+  [ "$cur_status" = "firing" ] || return 0
+  _auth_alert_clear "$host"
+}
+
 # _route_claude_failure <exit_code> <raw_stdout> <phase> — called when a
 # `claude --print` invocation exited non-zero. Classifies the failure via
 # _classify_claude_failure (ceo-cron-lib.sh) and handles the two classes that
@@ -636,6 +773,10 @@ _route_claude_failure() {
       ;;
     auth)
       _v "AUTH FAILURE in $phase — not falling back (would mask a logged-out host)"
+      # Surface the failure as a durable alert + shadow-inbox task before the
+      # cronbird FATAL exit so the morning brief / ceo scan pick it up
+      # (ticket #660). Since is preserved across updates; last_check moves.
+      _auth_alert_raise "$RUNS_LOG_HOST" "$phase" "${PLAYBOOK_REL:-$TRIGGER}"
       _report action "$TRIGGER" "**Status:** failed: auth
 **Playbook:** $PLAYBOOK_REL
 **Note:** Claude authentication failed in $phase — automation is down until re-auth. Fix: ssh to this host, run \`claude\`, then /login. Raw output saved to cron-raw.log."
@@ -2487,9 +2628,34 @@ END_LOG_ENTRY"
   export CEO_MODEL_SOURCE="invoked"
   SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
 
+  # _run_single_claude — extracted so the WSL credential-heal path (ticket
+  # #660) can retry the claude invocation exactly once after copying newer
+  # Windows-side credentials over the stale Linux ones.
+  _run_single_claude() {
+    (
+      cd "$VAULT"
+      echo "$SINGLE_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
+        --model "$MODEL" --disallowedTools "Bash,Write,Edit" --output-format json 2>>"$CRON_STDERR_LOG"
+    )
+  }
+
   SINGLE_EXIT=0
-  SINGLE_RAW=$(cd "$VAULT" && echo "$SINGLE_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
-    --model "$MODEL" --disallowedTools "Bash,Write,Edit" --output-format json 2>>"$CRON_STDERR_LOG") || SINGLE_EXIT=$?
+  SINGLE_RAW=$(_run_single_claude) || SINGLE_EXIT=$?
+  # Self-healing WSL credential sync (ticket #660): if the first attempt hit
+  # an auth failure and a newer Windows-side credential file was copied into
+  # ~/.claude/.credentials.json, retry the claude invocation once before
+  # routing back into _route_claude_failure (which would declare the fatal).
+  if [ $SINGLE_EXIT -ne 0 ] && _classify_claude_failure "$SINGLE_EXIT" "$SINGLE_RAW" | grep -q '^auth$' && [ "${CEO_AUTH_RETRY_DONE:-0}" != "1" ]; then
+    if _maybe_wsl_creds_heal; then
+      _v "WSL credential heal: retrying claude invocation once"
+      export CEO_AUTH_RETRY_DONE=1
+      SINGLE_EXIT=0
+      SINGLE_RAW=$(_run_single_claude) || SINGLE_EXIT=$?
+      if [ $SINGLE_EXIT -eq 0 ]; then
+        _v "WSL credential heal: retry succeeded"
+      fi
+    fi
+  fi
   # jq exits non-zero (parse error) when SINGLE_RAW isn't valid JSON — e.g. a
   # session-limit banner printed instead of the JSON envelope. Under set -e
   # that would kill the script here, before the rate-limit check below ever
@@ -2591,6 +2757,19 @@ PLAN_EXIT=0
 _v "Using model: $MODEL"
 PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
   --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$CRON_STDERR_LOG") || PLAN_EXIT=$?
+
+if [ $PLAN_EXIT -ne 0 ] && _classify_claude_failure "$PLAN_EXIT" "$PLAN_OUTPUT" | grep -q '^auth$' && [ "${CEO_AUTH_RETRY_DONE:-0}" != "1" ]; then
+  if _maybe_wsl_creds_heal; then
+    _v "WSL credential heal: retrying claude plan invocation once"
+    export CEO_AUTH_RETRY_DONE=1
+    PLAN_EXIT=0
+    PLAN_OUTPUT=$(cd "$VAULT" && echo "$PLAN_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 300) claude --print --max-turns 5 \
+      --model "$MODEL" --disallowedTools "Bash,Write,Edit" 2>"$CRON_STDERR_LOG") || PLAN_EXIT=$?
+    if [ $PLAN_EXIT -eq 0 ]; then
+      _v "WSL credential heal: plan retry succeeded"
+    fi
+  fi
+fi
 
 if [ $PLAN_EXIT -ne 0 ]; then
   _route_claude_failure "$PLAN_EXIT" "$PLAN_OUTPUT" "plan"
@@ -2801,6 +2980,19 @@ END_LOG_ENTRY"
   EXEC_EXIT=0
   EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 600) claude --print --max-turns 20 \
     --model "$MODEL" 2>>"$CRON_STDERR_LOG") || EXEC_EXIT=$?
+
+  if [ $EXEC_EXIT -ne 0 ] && _classify_claude_failure "$EXEC_EXIT" "$EXEC_OUTPUT" | grep -q '^auth$' && [ "${CEO_AUTH_RETRY_DONE:-0}" != "1" ]; then
+    if _maybe_wsl_creds_heal; then
+      _v "WSL credential heal: retrying claude exec invocation once"
+      export CEO_AUTH_RETRY_DONE=1
+      EXEC_EXIT=0
+      EXEC_OUTPUT=$(cd "$VAULT" && echo "$EXEC_PROMPT" | CLAUDE_MEM_INTERNAL=1 $(_with_timeout 600) claude --print --max-turns 20 \
+        --model "$MODEL" 2>>"$CRON_STDERR_LOG") || EXEC_EXIT=$?
+      if [ $EXEC_EXIT -eq 0 ]; then
+        _v "WSL credential heal: exec retry succeeded"
+      fi
+    fi
+  fi
 
   _v "Phase 3 done (exit: $EXEC_EXIT)"
   if [ $EXEC_EXIT -ne 0 ]; then

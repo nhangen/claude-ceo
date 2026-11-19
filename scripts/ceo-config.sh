@@ -1271,3 +1271,148 @@ ceo_read_alert_field() {
     END { exit !found }
   ' "$path"
 }
+
+# ---------------------------------------------------------------------------
+# ceo_auth_alert_file <vault> <host>
+#
+# Path of the per-host Claude auth alert: CEO/alerts/auth-<host>.md. One
+# function because three writers (ceo-cron firing/clear, ceo swarm
+# owners-health notify, ceo doctor) must agree on the exact name.
+# ---------------------------------------------------------------------------
+ceo_auth_alert_file() {
+  printf '%s/CEO/alerts/auth-%s.md\n' "$1" "$2"
+}
+
+# ---------------------------------------------------------------------------
+# ceo_auth_alert_set <host> <status> [playbook]
+#
+# Transition CEO/alerts/auth-<host>.md to firing|clear. While firing, `since`
+# marks the transition and is preserved across updates (only last_check moves);
+# a clear resets the span so the next firing starts a fresh `since`. Writes
+# atomically (mktemp + mv in the same directory) the way
+# _owners_health_write_alert does.
+# ---------------------------------------------------------------------------
+ceo_auth_alert_set() {
+  local host="$1" status="$2" playbook="${3:-}"
+  [ -n "$host" ] || { echo "ERROR: ceo_auth_alert_set: host required" >&2; return 1; }
+  case "$status" in clear|firing) ;;
+    *) echo "ERROR: ceo_auth_alert_set: status must be clear|firing" >&2; return 1 ;;
+  esac
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo_auth_alert_set}"
+  local alert_file now prev_status="" since=""
+  alert_file=$(ceo_auth_alert_file "$CEO_VAULT" "$host")
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ "$status" = "firing" ]; then
+    prev_status=$(ceo_read_alert_field "$alert_file" status 2>/dev/null || true)
+    if [ "$prev_status" = "firing" ]; then
+      since=$(ceo_read_alert_field "$alert_file" since 2>/dev/null || true)
+    fi
+    [ -n "$since" ] || since="$now"
+  else
+    since="$now"
+  fi
+  local fm
+  if [ "$status" = "firing" ]; then
+    fm=$(ceo_write_alert_frontmatter --status="$status" --since="$since" \
+      --last-check="$now" --host="$host" \
+      --field "playbook=$playbook" \
+      --field 'error="OAuth session expired and could not be refreshed"') || return 1
+  else
+    fm=$(ceo_write_alert_frontmatter --status="$status" --since="$since" \
+      --last-check="$now" --host="$host" \
+      --field "playbook=$playbook") || return 1
+  fi
+  mkdir -p "$(dirname "$alert_file")" || return 1
+  local tmp
+  tmp=$(mktemp "$(dirname "$alert_file")/.auth-<host>.md.XXXXXX" 2>/dev/null) || \
+    tmp=$(mktemp "$alert_file.XXXXXX") || return 1
+  local body
+  if [ "$status" = "firing" ]; then
+    body="
+Claude OAuth expired on $host and could not be refreshed.
+
+- run \`claude\` on $host, then /login, to restore automation
+- playbook last tried: ${playbook:-<unknown>}
+- this alert is surfaced by ceo scan until it clears
+"
+  else
+    body="
+Claude authentication on $host recovered (a claude-backed run succeeded).
+"
+  fi
+  printf '%s\n%s\n' "$fm" "$body" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$alert_file" || { rm -f "$tmp"; return 1; }
+}
+
+# ---------------------------------------------------------------------------
+# ceo_auth_alert_inbox_task <host> <status>
+#
+# Shadow-inbox task for the auth alert. Firing appends an unchecked task line
+# to CEO/inbox/<host>.md unless one is already unchecked there (re-alert after
+# the user checks it off). Clear rewrites the matching unchecked line to [done]
+# in place, leaving history intact. CEO/inbox.md is intentionally untouched —
+# it is not the synced per-host inbox and would conflict under Syncthing.
+# ---------------------------------------------------------------------------
+ceo_auth_alert_inbox_task() {
+  local host="$1" status="$2"
+  [ -n "$host" ] || { echo "ERROR: ceo_auth_alert_inbox_task: host required" >&2; return 1; }
+  case "$status" in clear|firing) ;;
+    *) echo "ERROR: ceo_auth_alert_inbox_task: status must be clear|firing" >&2; return 1 ;;
+  esac
+  : "${CEO_VAULT:?CEO_VAULT must be set before ceo_auth_alert_inbox_task}"
+  local inbox_dir="$CEO_VAULT/CEO/inbox"
+  local inbox_file="$inbox_dir/$host.md"
+  local marker="<!-- auth:$host -->"
+  local line
+  if [ "$status" = "firing" ]; then
+    line="- [ ] Fix Claude authentication on $host — run claude login $marker"
+    mkdir -p "$inbox_dir" || return 1
+    if [ -f "$inbox_file" ] && \
+      awk -v m="$marker" '/^- \[ \]/ && index($0, m) { found=1; exit } END { exit !found }' "$inbox_file"; then
+      return 0
+    fi
+    printf '%s\n' "$line" >> "$inbox_file" || return 1
+    return 0
+  fi
+  [ -f "$inbox_file" ] || return 0
+  local done_line
+  done_line="- [done] Fix Claude authentication on $host — run claude login $marker"
+  local tmp
+  tmp=$(mktemp "$inbox_dir/.auth-<host>.md.XXXXXX" 2>/dev/null) || \
+    tmp=$(mktemp "$inbox_file.XXXXXX") || return 1
+  awk -v mkr="$marker" -v done="$done_line" '
+    /^- \[ \] / && index($0, mkr) { print done; next } { print }
+  ' "$inbox_file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$inbox_file" || { rm -f "$tmp"; return 1; }
+}
+
+# ---------------------------------------------------------------------------
+# ceo_auth_notify_fire <host> [force]
+#
+# Fire the throttled macOS desktop notification for a firing auth alert on
+# <host>. Gated by the same CEO_NO_DESKTOP_NOTIFY guard as the CEO_VAULT FATAL
+# escalation so the suite never pops a real notification. Returns 0 if a
+# notification fired (or was just recorded), 1 if not due. If force=1 (e.g.
+# transition to firing), fires unconditionally and stamps the throttle file;
+# otherwise (force=0) requires >24 hours to have elapsed since the last
+# notification.
+# ---------------------------------------------------------------------------
+ceo_auth_notify_fire() {
+  local host="$1" force="${2:-0}"
+  [ -n "$host" ] || return 1
+  [ -n "${CEO_NO_DESKTOP_NOTIFY:-}" ] && return 1
+  command -v osascript &>/dev/null || return 1
+  local state_dir stamp_file now_epoch last_epoch
+  state_dir="$HOME/.ceo"
+  stamp_file="$state_dir/last-notified-auth-$host"
+  now_epoch=$(date +%s)
+  mkdir -p "$state_dir" 2>/dev/null || return 1
+  last_epoch=$(cat "$stamp_file" 2>/dev/null)
+  case "$last_epoch" in ''|*[!0-9]*) last_epoch=0 ;; esac
+  if [ "$force" -ne 1 ] && [ $(( now_epoch - last_epoch )) -lt 86400 ]; then
+    return 1
+  fi
+  osascript -e "display notification \"Claude OAuth expired on $host\" with title \"Claude CEO FATAL\" sound name \"Basso\"" &>/dev/null || true
+  echo "$now_epoch" > "$stamp_file" 2>/dev/null || true
+  return 0
+}

@@ -782,4 +782,265 @@ test_morning_uses_current_canonical_domains_without_legacy_fallback() {
   assert_not_contains "$prompt" "DO NOT INJECT" "non-domain profile sections stay private"
 }
 
+
+# ---------------------------------------------------------------------------
+# Ticket #660 — Claude auth failure visibility
+# ---------------------------------------------------------------------------
+
+# _auth_alert_fixture — point the harness at an isolated HOME and seed the
+# vault directories the auth-alert code paths need. Returns nothing.
+_auth_alert_fixture() {
+  mkdir -p "$CEO_DIR/alerts" "$CEO_DIR/inbox" "$CEO_DIR/approvals"
+  echo "- [ ] existing user task" > "$CEO_DIR/approvals/pending.md"
+  # Default host for the test.
+  export CEO_HOSTNAME="${CEO_HOSTNAME:-testhost}"
+}
+
+# Helper: seed a playbook named authfail that exercises the single-call path.
+_seed_authfail_playbook() {
+  cat > "$CEO_DIR/playbooks/authfail.md" << 'PB'
+---
+name: authfail
+description: auth failure
+trigger: cron
+schedule: "0 9 * * *"
+preflight: none
+tier: read
+status: active
+---
+# noop
+PB
+  bash "$CEO_CLI" playbook scan >/dev/null 2>&1
+}
+
+# Helper: claude stub that emits a 401 envelope and exits 1.
+_stub_claude_authfail() {
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+echo '{"type":"result","is_error":true,"subtype":"error","api_error_status":401,"result":""}'
+exit 1
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+}
+
+test_auth_failure_writes_firing_alert_with_frontmatter() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  _stub_claude_authfail
+
+  local rc=0
+  bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "78" "auth failure must still exit 78"
+
+  local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
+  assert_file_exists "$alert" "auth alert file must be written"
+  local status since host err
+  status=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")
+  since=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' since")
+  host=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' host")
+  err=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' error")
+  assert_eq "$status" "firing" "status must be firing"
+  assert_eq "$host" "testhost" "host must match the test host"
+  assert_eq "$err" '"OAuth session expired and could not be refreshed"' "error must match requirement"
+  [ -n "$since" ] && [ "$since" != "null" ]
+  assert_eq "1" "1" "since must be non-empty"
+}
+
+test_auth_failure_preserves_since_on_reaffirm() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  _stub_claude_authfail
+  local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
+  local first_since
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+  first_since=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' since")
+  [ -n "$first_since" ] || { echo "first since missing"; return 1; }
+
+  # Simulate 24h passing, then re-fire.
+  sleep 2  # ensure last_check differs
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+  local second_since
+  second_since=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' since")
+  assert_eq "$second_since" "$first_since" "since must be preserved across reaffirmations"
+}
+
+test_auth_failure_appends_shadow_inbox_task_once() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  _stub_claude_authfail
+  local inbox="$CEO_VAULT/CEO/inbox/testhost.md"
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+  local count
+  count=$(grep -c '^\- \[ \] Fix Claude authentication on testhost' "$inbox" 2>/dev/null || true)
+  assert_eq "$count" "1" "shadow inbox task must be appended exactly once"
+  # CEO/inbox.md must NOT be written (not the synced per-host inbox).
+  if [ -f "$CEO_VAULT/CEO/inbox.md" ]; then
+    assert_not_contains "$(cat "$CEO_VAULT/CEO/inbox.md")" "Fix Claude authentication on testhost" "CEO/inbox.md must not carry the auth task"
+  fi
+}
+
+test_auth_clear_writes_status_clear_and_marks_inbox_done() {
+  _auth_alert_fixture
+  local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
+  local inbox="$CEO_VAULT/CEO/inbox/testhost.md"
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_set testhost firing"
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_inbox_task testhost firing"
+  [ -f "$alert" ] || { echo "alert not written by direct set"; return 1; }
+  [ -f "$inbox" ] || { echo "inbox not written by direct set"; return 1; }
+
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_set testhost clear"
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_inbox_task testhost clear"
+
+  local status
+  status=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")
+  assert_eq "$status" "clear" "status must be clear after clear"
+  local done_lines
+  done_lines=$(grep -c '^\- \[done\] Fix Claude authentication on testhost' "$inbox" 2>/dev/null || true)
+  assert_eq "$done_lines" "1" "inbox task must be rewritten to [done]"
+  local unchecked
+  unchecked=$(grep -c '^\- \[ \] Fix Claude authentication on testhost' "$inbox" 2>/dev/null || true)
+  assert_eq "$unchecked" "0" "no unchecked auth task must remain"
+}
+
+test_auth_failure_does_not_append_approvals_block() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  _stub_claude_authfail
+  local pending="$CEO_VAULT/CEO/approvals/pending.md"
+  local before
+  before=$(wc -l < "$pending" 2>/dev/null || echo 0)
+
+  # Force three consecutive failures to cross the 3-strike threshold.
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+
+  local after
+  after=$(wc -l < "$pending" 2>/dev/null || echo 0)
+  local delta=$(( after - before ))
+  assert_eq "$delta" "0" "auth failure must NOT append a 3-strike approvals block"
+  assert_not_contains "$(cat "$pending")" "CEO cron failing repeatedly" "pending.md must not carry the generic 3-strike line"
+}
+
+test_auth_clear_via_claude_success_auto_clears_alert() {
+  _auth_alert_fixture
+  local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_set testhost firing"
+  bash -c "source '$SCRIPT_DIR/ceo-config.sh'; CEO_VAULT='$CEO_VAULT' ceo_auth_alert_inbox_task testhost firing"
+  [ "$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")" = "firing" ] || { echo "precondition: alert not firing"; return 1; }
+
+  # Stub claude to succeed (exit 0, valid JSON envelope).
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+echo '{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.01}'
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+
+  _seed_authfail_playbook
+  bash "$CRON" authfail >/dev/null 2>&1 || true
+
+  local status
+  status=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")
+  assert_eq "$status" "clear" "claude-backed success must auto-clear the alert"
+}
+
+# ---------------------------------------------------------------------------
+# WSL credential auto-sync (ticket #660)
+# ---------------------------------------------------------------------------
+
+test_wsl_creds_heal_copies_newer_win_creds_and_retries_once() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+
+  # Simulate WSL via CEO_FORCE_WSL=1 and pin both paths.
+  local win_creds="$TEST_HOME/win-creds/.credentials.json"
+  local linux_creds="$TEST_HOME/linux-creds/.credentials.json"
+  mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
+  printf '{"token":"fresh"}' > "$win_creds"
+  printf '{"token":"stale"}' > "$linux_creds"
+  # Make the Windows side newer.
+  touch -d "2026-01-01T00:00:00Z" "$linux_creds" 2>/dev/null || touch -t 2601010000 "$linux_creds" 2>/dev/null || true
+  touch "$win_creds"
+
+  # First claude call fails auth; second (after heal) succeeds.
+  cat > "$TEST_HOME/.bun/bin/claude" << 'STUB'
+#!/bin/bash
+if [ -f "$HOME/claude-call-count" ]; then
+  n=$(cat "$HOME/claude-call-count")
+else
+  n=0
+fi
+n=$((n+1))
+echo "$n" > "$HOME/claude-call-count"
+if [ "$n" -eq 1 ]; then
+  echo '{"type":"result","is_error":true,"subtype":"error","api_error_status":401,"result":""}'
+  exit 1
+fi
+echo '{"type":"result","is_error":false,"result":"ok after heal","total_cost_usd":0.01}'
+exit 0
+STUB
+  chmod +x "$TEST_HOME/.bun/bin/claude"
+  rm -f "$HOME/claude-call-count"
+
+  local rc=0
+  CEO_FORCE_WSL=1 CEO_WINDOWS_CREDS_PATH="$win_creds" CEO_LINUX_CREDS_PATH="$linux_creds" \
+    bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+
+  local calls
+  calls=$(cat "$HOME/claude-call-count" 2>/dev/null || echo 0)
+  assert_eq "$calls" "2" "claude must be invoked exactly twice (initial + heal retry)"
+  # The linux credentials must now match the windows ones.
+  assert_contains "$(cat "$linux_creds")" "fresh" "linux credentials must be replaced by the windows ones"
+  # The heal must have produced a 600-permission file.
+  local perms
+  perms=$(stat -f %Lp "$linux_creds" 2>/dev/null || stat -c %a "$linux_creds" 2>/dev/null)
+  assert_eq "$perms" "600" "healed credentials must be chmod 600"
+  # The alert should NOT have been raised because the retry succeeded.
+  local alert="$CEO_VAULT/CEO/alerts/auth-testhost.md"
+  local status=""
+  if [ -f "$alert" ]; then
+    status=$(bash -c "source '$SCRIPT_DIR/ceo-config.sh'; ceo_read_alert_field '$alert' status")
+  fi
+  assert_eq "$status" "" "alert must not be raised when the WSL heal retry succeeds"
+}
+
+test_wsl_creds_heal_noop_when_win_creds_invalid_json() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  local win_creds="$TEST_HOME/win-bad/.credentials.json"
+  local linux_creds="$TEST_HOME/linux-bad/.credentials.json"
+  mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
+  printf 'NOT JSON' > "$win_creds"
+  printf '{"token":"stale"}' > "$linux_creds"
+
+  _stub_claude_authfail
+  local before; before=$(cat "$linux_creds")
+
+  local rc=0
+  CEO_FORCE_WSL=1 CEO_WINDOWS_CREDS_PATH="$win_creds" CEO_LINUX_CREDS_PATH="$linux_creds"     bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "78" "invalid Windows credentials must still exit 78"
+  assert_eq "$(cat "$linux_creds")" "$before" "linux credentials must be untouched when Windows side is invalid JSON"
+}
+
+test_wsl_creds_heal_noop_when_not_wsl() {
+  _auth_alert_fixture
+  _seed_authfail_playbook
+  local win_creds="$TEST_HOME/win-nwsl/.credentials.json"
+  local linux_creds="$TEST_HOME/linux-nwsl/.credentials.json"
+  mkdir -p "$(dirname "$win_creds")" "$(dirname "$linux_creds")"
+  printf '{"token":"fresh"}' > "$win_creds"
+  printf '{"token":"stale"}' > "$linux_creds"
+  touch -t 2601010000 "$linux_creds" 2>/dev/null || touch -d "2026-01-01T00:00:00Z" "$linux_creds" 2>/dev/null || true
+  touch "$win_creds"
+
+  _stub_claude_authfail
+  local rc=0
+  # CEO_FORCE_WSL unset; WSL_DISTRO_NAME unset; /proc/version not WSL on macOS.
+  CEO_WINDOWS_CREDS_PATH="$win_creds" CEO_LINUX_CREDS_PATH="$linux_creds"     bash "$CRON" authfail >/dev/null 2>&1 || rc=$?
+  assert_eq "$rc" "78" "non-WSL host must still exit 78"
+  assert_eq "$(cat "$linux_creds")" '{"token":"stale"}' "linux credentials must be untouched outside WSL"
+}
+
 run_tests
