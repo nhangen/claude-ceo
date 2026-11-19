@@ -996,7 +996,7 @@ SH
 }
 
 # ---------------------------------------------------------------------------
-# WSL credential auto-sync (ticket #660)
+# WSL credential auto-sync (#660)
 # ---------------------------------------------------------------------------
 
 test_auth_alert_not_cleared_by_ollama_runner_success() {

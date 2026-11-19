@@ -1389,8 +1389,9 @@ ceo_auth_alert_inbox_task() {
 #
 # Fire the throttled macOS desktop notification for a firing auth alert on
 # <host>. Gated by the same CEO_NO_DESKTOP_NOTIFY guard as the CEO_VAULT FATAL
-# escalation so the suite never pops a real notification. Returns 0 if a
-# notification fired (or was just recorded), 1 if not due. If force=1 (e.g.
+# escalation so the suite never pops a real notification. Returns 0 once it
+# has tried osascript and stamped the throttle file (osascript failure is not
+# reported, matching the FATAL notifier), 1 if suppressed or not due. If force=1 (e.g.
 # transition to firing), fires unconditionally and stamps the throttle file;
 # otherwise (force=0) requires >24 hours to have elapsed since the last
 # notification.

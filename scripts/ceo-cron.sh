@@ -360,7 +360,7 @@ _record_success() {
   date +%s > "$LAST_RUN_FILE"
   [ "$TRIGGER" = "morning-scan" ] && touch "$LAST_SCAN_FILE"
 
-  # Auth-alert auto-clear (ticket #660): a claude-backed success proves the
+  # Auth-alert auto-clear (#660): a claude-backed success proves the
   # OAuth session on this host recovered, so a firing auth alert for this
   # host transitions to status: clear and the matching shadow-inbox task is
   # rewritten to [done]. Gated on RUNNER=claude so an ollama fallback run
@@ -617,7 +617,7 @@ _release_lock() {
 }
 
 # ---------------------------------------------------------------------------
-# Self-healing WSL credential sync (ticket #660)
+# Self-healing WSL credential sync (#660)
 #
 # Inside WSL, the claude CLI reads ~/.claude/.credentials.json in the Linux
 # home, but a human typically logs in on the Windows side — the fresh session
@@ -789,7 +789,7 @@ _route_claude_failure() {
       _v "AUTH FAILURE in $phase — not falling back (would mask a logged-out host)"
       # Surface the failure as a durable alert + shadow-inbox task before the
       # cronbird FATAL exit so the morning brief / ceo scan pick it up
-      # (ticket #660). Since is preserved across updates; last_check moves.
+      # (#660). Since is preserved across updates; last_check moves.
       _auth_alert_raise "$RUNS_LOG_HOST" "$phase" "${PLAYBOOK_REL:-$TRIGGER}"
       _report action "$TRIGGER" "**Status:** failed: auth
 **Playbook:** $PLAYBOOK_REL
@@ -2642,9 +2642,8 @@ END_LOG_ENTRY"
   export CEO_MODEL_SOURCE="invoked"
   SINGLE_PROMPT="${SINGLE_PROMPT_PREAMBLE}${SINGLE_PROMPT_BODY}"
 
-  # _run_single_claude — extracted so the WSL credential-heal path (ticket
-  # #660) can retry the claude invocation exactly once after copying newer
-  # Windows-side credentials over the stale Linux ones.
+  # A function so the WSL credential heal (#660) can retry the claude
+  # invocation exactly once after copying newer Windows-side credentials.
   _run_single_claude() {
     (
       cd "$VAULT"
@@ -2655,7 +2654,7 @@ END_LOG_ENTRY"
 
   SINGLE_EXIT=0
   SINGLE_RAW=$(_run_single_claude) || SINGLE_EXIT=$?
-  # Self-healing WSL credential sync (ticket #660): if the first attempt hit
+  # Self-healing WSL credential sync (#660): if the first attempt hit
   # an auth failure and a newer Windows-side credential file was copied into
   # ~/.claude/.credentials.json, retry the claude invocation once before
   # routing back into _route_claude_failure (which would declare the fatal).

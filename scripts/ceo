@@ -750,7 +750,7 @@ cmd_doctor() {
     ok=$(( ok + 1 ))
   fi
 
-  # Firing Claude auth alerts (ticket #660): the durable alert file is the
+  # Firing Claude auth alerts (#660): the durable alert file is the
   # source of truth for "this host's claude session is dead"; surfacing it in
   # doctor output makes a new machine / new user see the problem in the first
   # diagnostic run instead of only via the morning brief.
@@ -1352,7 +1352,7 @@ cmd_swarm_owners_health() {
     fi
   done <<<"$owner_hosts"
 
-  # Throttled macOS desktop notification for peer auth alerts (ticket #660).
+  # Throttled macOS desktop notification for peer auth alerts (#660).
   # Scans CEO/alerts/auth-<peer>.md across synced vaults; fires osascript on
   # the firing transition OR when >24h has elapsed since the last notify,
   # whichever comes first. Non-blocking: a locked session must not stall the
